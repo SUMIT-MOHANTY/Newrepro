@@ -1,2135 +1,3652 @@
 #!/usr/bin/env python3
 """
-AI-Powered Self-Healing Agent
-Fully dynamic: works with any tech stack via pure AI-driven analysis.
-All tunables controlled via environment variables — zero hardcoded assumptions.
+🤖 VibeCoding Autonomous Agent v4
+===================================
+Two-phase agent:
+  Phase 1 — CODE GENERATION: Call AI to generate app files into /project/workspace
+  Phase 2 — DEPLOYMENT:      Detect stack, install deps, build, start server, configure Nginx
 
-ENV VARS (all optional):
-  AI_API_KEY / NVIDIA_API_KEY   - LLM provider API key
-  AI_API_URL                    - OpenAI-compatible endpoint
-  AI_MODEL                      - Model name
-  PORT                          - Port the server must bind to (default: 8080)
-  MAX_RETRIES                   - Self-healing retry limit (default: 3)
-  STARTUP_TIMEOUT               - Seconds to monitor startup (default: 20)
-  AI_TIMEOUT                    - Seconds to wait for AI response (default: 60)
-  MAX_FILE_SIZE                 - Max bytes per file sent to AI (default: 5000)
-  MAX_FILES                     - Max files in AI context (default: 10)
-  ERROR_KEYWORDS                - Comma-separated error log signals
-  SUCCESS_KEYWORDS              - Comma-separated startup success signals
-  SCAN_EXTENSIONS               - Comma-separated file extensions (default: auto)
-  PROJECT_VERSIONS_DIR          - Root dir for versioned workspaces (default: /project/versions)
-  WORKSPACE_PATH                - Explicit workspace path override
-  FALLBACK_RUN_CMD              - Command when no AI key is available
-  ERROR_LOG_TAIL                - Chars of error log sent to AI (default: 3000)
-  FILE_SNIPPET_CHARS            - Chars per file in AI context (default: 3000)
-  MAX_CONTEXT_FILES             - Files included in fix prompt (default: 5)
-  POLL_INTERVAL                 - Stdout read loop sleep in seconds (default: 0.05)
-  DRAIN_TIMEOUT                 - Extra seconds to drain output after process exits (default: 3.0)
-  MAX_ATTEMPTS                  - Hard ceiling on total attempts regardless of fix success (default: MAX_RETRIES * 3)
-  BG_READY_TIMEOUT              - Seconds to wait for background process ready signal (default: 30)
-  FUZZY_PATCH_THRESHOLD         - difflib match threshold for fuzzy patching (default: 0.85)
+Self-healing watchdog monitors Nginx error logs and re-runs Phase 2 on failures.
+Mailbox at /tmp/vibe_prompt accepts new user instructions at any time.
+All user-facing messages are written in plain, friendly language.
 """
 
 import os
 import sys
-import subprocess
 import json
 import time
 import re
-import shutil
-import tempfile
-import platform
-import difflib
+import signal
+import sqlite3
+import uuid
+import subprocess
+import requests
+import threading
+import queue
 from pathlib import Path
-from dataclasses import dataclass, field
-from typing import Optional, Tuple
-from queue import Queue, Empty
-from threading import Thread
+from datetime import datetime
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+PROJECT_DIR   = Path(os.environ.get('PROJECT_DIR', '/project'))
+WORKSPACE_DIR = PROJECT_DIR / 'workspace'
+DB_PATH       = '/tmp/vibecoding_users.db'
+NGINX_CONF    = '/etc/nginx/sites-available/default'
+PROJECT_ID    = os.environ.get('PROJECT_ID', 'default')
+
+API_KEY     = os.environ.get('AI_API_KEY', '')
+API_URL     = os.environ.get('AI_API_URL', 'https://integrate.api.nvidia.com/v1/chat/completions')
+AI_MODEL    = os.environ.get('AI_MODEL', 'openai/gpt-4.1')
+AI_PROVIDER = os.environ.get('AI_PROVIDER', 'openai').lower().strip()
+
+NGINX_ERROR_LOG = '/var/log/nginx/error.log'
+MAILBOX         = Path('/tmp/vibe_prompt')
 
 
-# ---------------------------------------------------------------------------
-# Centralised configuration — all values from environment, never hardcoded
-# ---------------------------------------------------------------------------
-
-@dataclass
-class Config:
-    api_key: Optional[str] = field(
-        default_factory=lambda: os.environ.get('AI_API_KEY')
-    )
-    api_url: Optional[str] = field(
-        default_factory=lambda: os.environ.get('AI_API_URL') or os.environ.get('AI_URL')
-    )
-    ai_model: Optional[str] = field(
-        default_factory=lambda: os.environ.get('AI_MODEL')
-    )
-    port: str = field(
-        default_factory=lambda: os.environ.get('PORT', '8080')
-    )
-    additional_ports: list = field(
-        default_factory=lambda: [p.strip() for p in os.environ.get('ADDITIONAL_PORTS', '').split(',') if p.strip()]
-    )
-    max_retries: int = field(
-        default_factory=lambda: int(os.environ.get('MAX_RETRIES', '3'))
-    )
-    max_attempts: int = field(
-        default_factory=lambda: int(os.environ.get('MAX_ATTEMPTS', str(int(os.environ.get('MAX_RETRIES', '3')) * 3)))
-    )
-    startup_timeout: int = field(
-        default_factory=lambda: int(os.environ.get('STARTUP_TIMEOUT', '20'))
-    )
-    ai_timeout: int = field(
-        default_factory=lambda: int(os.environ.get('AI_TIMEOUT', '120'))
-    )
-    max_file_size: int = field(
-        default_factory=lambda: int(os.environ.get('MAX_FILE_SIZE', '30000'))
-    )
-    max_files: int = field(
-        default_factory=lambda: int(os.environ.get('MAX_FILES', '20'))
-    )
-    error_keywords: list = field(
-        default_factory=lambda: os.environ.get(
-            'ERROR_KEYWORDS', 'error,exception,traceback,failed,fatal,panic,crash'
-        ).lower().split(',')
-    )
-    success_keywords: list = field(
-        default_factory=lambda: os.environ.get(
-            'SUCCESS_KEYWORDS', 'running,listening,started,ready,serving'
-        ).lower().split(',')
-    )
-    scan_extensions: Optional[list] = field(
-        default_factory=lambda: (
-            [e.strip() for e in os.environ['SCAN_EXTENSIONS'].split(',')]
-            if os.environ.get('SCAN_EXTENSIONS') else None
-        )
-    )
-    versions_dir: str = field(
-        default_factory=lambda: os.environ.get('PROJECT_VERSIONS_DIR', '/project/versions')
-    )
-    bg_ready_timeout: float = field(
-        default_factory=lambda: float(os.environ.get('BG_READY_TIMEOUT', '30'))
-    )
-    fallback_run_cmd: str = field(
-        default_factory=lambda: os.environ.get('FALLBACK_RUN_CMD', '')
-    )
-    fuzzy_threshold: float = field(
-        default_factory=lambda: float(os.environ.get('FUZZY_PATCH_THRESHOLD', '0.85'))
-    )
-    user_prompt: str = field(
-        default_factory=lambda: os.environ.get('USER_PROMPT', '')
-    )
-    # State tracking for monitoring
-    seen_bind_all: bool = False
-    seen_bind_local: bool = False
+# ── Logging ────────────────────────────────────────────────────────────────────
+def log(msg: str):
+    print(f'🛠️  [Agent] {msg}', flush=True)
 
 
-# ---------------------------------------------------------------------------
-# Agent
-# ---------------------------------------------------------------------------
-
-class AIAgent:
-    def __init__(self):
-        self.config = Config()
-        self.retry_count = 0
-        self.os_info = f"{platform.system()} {platform.release()} ({platform.version()})"
-        self.workspace = self._resolve_workspace()
-        self.tools = self._get_installed_tools()
-        self.manifest = self._get_manifest_contents()
-
-    # ------------------------------------------------------------------
-    # Workspace resolution
-    # ------------------------------------------------------------------
-
-    def _resolve_workspace(self) -> str:
-        explicit = os.environ.get('WORKSPACE_PATH', os.getcwd())
-        if not os.path.isabs(explicit):
-            explicit = os.path.abspath(explicit)
-
-        # 1. If explicit path exists and has files, use it (highest priority)
-        if os.path.exists(explicit) and os.listdir(explicit):
-            os.chdir(explicit)
-            return explicit
-
-        # 2. Check for version-specific overrides
-        for env_var in ('CURRENT_VERSION', 'INITIAL_VERSION'):
-            version = os.environ.get(env_var)
-            if not version:
-                continue
-                
-            # If version is specifically 'workspace', we don't look in versions/
-            if version == 'workspace':
-                workspace_dir = os.path.join(self.config.project_dir, 'workspace')
-                if os.path.exists(workspace_dir):
-                    os.chdir(workspace_dir)
-                    return workspace_dir
-                continue
-
-            versioned = os.path.join(self.config.versions_dir, version)
-            if os.path.exists(versioned):
-                os.chdir(versioned)
-                return versioned
-
-        # 3. Last resort: use newest version if available
-        if os.path.exists(self.config.versions_dir):
-            versions = sorted(os.listdir(self.config.versions_dir))
-            if versions:
-                latest = os.path.join(self.config.versions_dir, versions[-1])
-                os.chdir(latest)
-                return latest
-
-        # 4. Fallback to whatever we have
-        os.chdir(explicit)
-        return explicit
-
-    # ------------------------------------------------------------------
-    # Core AI call — single reusable method
-    # ------------------------------------------------------------------
-
-    # Directories to always skip when scanning
-    SKIP_DIRS = frozenset({
-        'node_modules', '.git', '__pycache__', 'venv', '.venv', 'dist',
-        'build', '.next', '.cache', '.nuxt', '.svelte-kit', 'target',
-        'bin', 'obj', '.gradle', '.idea', '.vscode', 'coverage',
-        'tmp', 'temp', '.tmp', '.temp', 'vendor', 'bower_components',
-    })
-
-    def _get_installed_tools(self) -> str:
-        """Dynamically discover all available executables in the system PATH."""
-        tools = set()
-        path_env = os.environ.get("PATH", "")
-        for folder in path_env.split(os.pathsep):
-            if not os.path.isdir(folder):
-                continue
-            try:
-                for item in os.listdir(folder):
-                    path = os.path.join(folder, item)
-                    if os.path.isfile(path) and os.access(path, os.X_OK):
-                        tools.add(item)
-            except:
-                continue
-        return ", ".join(sorted(list(tools)))
-
-    def _get_file_tree(self, max_entries: int = 200) -> str:
-        """Recursively list all project files as a tree (like `find .`) for full AI context.
-        This is critical — without seeing subdirectories (src/, public/, components/),
-        the AI cannot understand React/Vue/Angular projects."""
-        tree_lines = []
-        count = 0
-        for root, dirs, fnames in os.walk(self.workspace):
-            # Prune skip directories in-place
-            dirs[:] = sorted([d for d in dirs if d not in self.SKIP_DIRS])
-            for fname in sorted(fnames):
-                if count >= max_entries:
-                    tree_lines.append(f"... and more files (truncated at {max_entries})")
-                    return "\n".join(tree_lines)
-                rel = os.path.relpath(os.path.join(root, fname), self.workspace)
-                try:
-                    size = os.path.getsize(os.path.join(root, fname))
-                    tree_lines.append(f"  {rel} ({size} bytes)")
-                except OSError:
-                    tree_lines.append(f"  {rel}")
-                count += 1
-        return "\n".join(tree_lines) if tree_lines else "(empty workspace)"
-
-    def _get_manifest_contents(self) -> str:
-        """Recursively find and read config/manifest files as metadata context.
-        Reads package.json, requirements.txt, Cargo.toml, pom.xml, etc.
-        Also reads key source files (index.html, index.js, App.js) for better context."""
-        # Config files to always include (any depth)
-        PRIORITY_FILES = {
-            'package.json', 'requirements.txt', 'Pipfile', 'pyproject.toml',
-            'Cargo.toml', 'go.mod', 'pom.xml', 'build.gradle', 'Gemfile',
-            'composer.json', 'tsconfig.json', 'vite.config.js', 'vite.config.ts',
-            'next.config.js', 'next.config.mjs', 'webpack.config.js',
-            'babel.config.js', '.babelrc', 'tailwind.config.js',
-            'Dockerfile', 'docker-compose.yml', 'docker-compose.yaml',
-            'run.sh', 'start.sh', 'Procfile', 'Makefile',
-        }
-        # Source entry points to include for structural understanding
-        ENTRY_POINT_FILES = {
-            'index.html', 'index.js', 'index.jsx', 'index.ts', 'index.tsx',
-            'App.js', 'App.jsx', 'App.tsx', 'app.py', 'main.py', 'server.js',
-            'app.js', 'main.go', 'main.rs', 'Program.cs',
-        }
-        manifests = {}
+def _get_db(timeout: int = 15):
+    """Get a robust DB connection with WAL mode enabled."""
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=timeout)
+        conn.row_factory = sqlite3.Row
+        # Always try to enable WAL - it improves performance and prevents some locks
         try:
-            for root, dirs, fnames in os.walk(self.workspace):
-                dirs[:] = [d for d in dirs if d not in self.SKIP_DIRS]
-                for fname in fnames:
-                    if fname in PRIORITY_FILES or fname in ENTRY_POINT_FILES:
-                        fpath = Path(root) / fname
-                        rel_path = str(fpath.relative_to(self.workspace))
-                        try:
-                            size = fpath.stat().st_size
-                            if size < 30000:  # Don't read very large files
-                                content = fpath.read_text(encoding="utf-8").strip()
-                                if content:
-                                    # Config files get more space, source files less
-                                    limit = 4000 if fname in PRIORITY_FILES else 2000
-                                    manifests[rel_path] = content[:limit]
-                        except (UnicodeDecodeError, PermissionError, OSError):
-                            continue
-        except Exception:
+            conn.execute("PRAGMA journal_mode=WAL")
+        except:
             pass
-        return json.dumps(manifests, indent=2)
-
-    def _call_ai(self, prompt: str, temperature: float = 0.1) -> Optional[dict]:
-        if not self.config.api_key:
-            self.log("⚠️", "No AI API key — skipping AI call")
-            return None
-
-        provider = os.environ.get('AI_PROVIDER', 'openai').lower().strip()
-
-        try:
-            import requests
-
-            if provider == 'bournai':
-                headers = {"Content-Type": "application/json"}
-                payload = {
-                    "agent_id": self.config.api_key,
-                    "model": self.config.ai_model or "BournAI",
-                    "platform_id": os.environ.get('BOURNAI_PLATFORM_ID', 'DSuite'),
-                    "stream": True,
-                    "prompt": prompt,
-                }
-            else:
-                headers = {
-                    "Authorization": f"Bearer {self.config.api_key}",
-                    "Content-Type": "application/json",
-                }
-                payload = {
-                    "model": self.config.ai_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": temperature,
-                }
-
-            is_stream = payload.get("stream", False)
-            response = requests.post(
-                self.config.api_url,
-                headers=headers,
-                json=payload,
-                stream=is_stream,
-                timeout=self.config.ai_timeout,
-            )
-
-            if response.status_code != 200:
-                self.log("❌", f"AI API error {response.status_code}: {response.text[:300]}")
-                return None
-
-            if is_stream:
-                content = self._aggregate_stream(response)
-            else:
-                content = response.json()["choices"][0]["message"]["content"]
-
-            # Primary: parse <vibe-fix> tags (expected format)
-            if "<vibe-fix" in content:
-                parsed = self._parse_vibe_fix_tags(content)
-                if parsed:
-                    return parsed
-                else:
-                    self.log("⚠️", "<vibe-fix> tags found but parsing failed")
-                    self.log("📄", f"Response preview (first 1200 chars):\n{content[:1200]}")
-            else:
-                # Fallback: try JSON extraction (for backward compatibility)
-                self.log("⚠️", "No <vibe-fix> tags found, trying JSON extraction")
-                parsed_json = self._extract_json_from_response(content)
-                if parsed_json:
-                    return parsed_json
-
-            # Log the response for debugging
-            self.log("❌", "AI response could not be parsed")
-            self.log("📄", f"Full response:\n{content}")
-
-        except json.JSONDecodeError as e:
-            self.log("❌", f"JSON parse error in AI response: {e}")
-            if 'content' in locals():
-                self.log("📄", f"Response preview: {content[:500]}")
-        except Exception as e:
-            self.log("❌", f"AI call failed: {e}")
-            import traceback
-            self.log("📄", f"Traceback: {traceback.format_exc()}")
-
+        return conn
+    except Exception as e:
+        log(f"DB Connection failed: {e}")
         return None
 
-    def _extract_json_from_response(self, content: str) -> Optional[dict]:
-        """Extract and parse JSON from AI response with multiple fallback strategies"""
-        
-        # Strategy 1: JSON in code blocks (most reliable)
-        for pattern in (r"```json\s*(\{.*?\})\s*```", r"```json\s*(\[.*?\])\s*```"):
-            match = re.search(pattern, content, re.DOTALL)
-            if match:
-                try:
-                    return json.loads(match.group(1))
-                except json.JSONDecodeError:
-                    pass
-        
-        # Strategy 2: Raw JSON object (only if it looks like valid JSON structure)
-        # Must start with { and end with }, and have at least one key-value pair
-        match = re.search(r'\{\s*"[^"]+"\s*:', content, re.DOTALL)
-        if match:
-            # Find the complete JSON object starting from this position
-            start_pos = match.start()
-            brace_count = 0
-            in_string = False
-            escape_next = False
-            
-            for i in range(start_pos, len(content)):
-                char = content[i]
-                
-                if escape_next:
-                    escape_next = False
-                    continue
-                    
-                if char == '\\':
-                    escape_next = True
-                    continue
-                    
-                if char == '"' and not escape_next:
-                    in_string = not in_string
-                    continue
-                    
-                if not in_string:
-                    if char == '{':
-                        brace_count += 1
-                    elif char == '}':
-                        brace_count -= 1
-                        if brace_count == 0:
-                            # Found complete JSON object
-                            json_str = content[start_pos:i+1]
-                            try:
-                                return json.loads(json_str)
-                            except json.JSONDecodeError:
-                                break
-        
-        # Strategy 3: Try to find and fix common JSON errors
-        # Only attempt this if we see clear JSON structure indicators
-        if '{"' in content or '{ "' in content:
-            # Remove trailing commas before } or ]
-            cleaned = re.sub(r',(\s*[}\]])', r'\1', content)
-            
-            # Try to extract JSON object from cleaned content
-            match = re.search(r'\{\s*"[^"]+"\s*:', cleaned, re.DOTALL)
-            if match:
-                start_pos = match.start()
-                brace_count = 0
-                in_string = False
-                escape_next = False
-                
-                for i in range(start_pos, len(cleaned)):
-                    char = cleaned[i]
-                    
-                    if escape_next:
-                        escape_next = False
-                        continue
-                        
-                    if char == '\\':
-                        escape_next = True
-                        continue
-                        
-                    if char == '"' and not escape_next:
-                        in_string = not in_string
-                        continue
-                        
-                    if not in_string:
-                        if char == '{':
-                            brace_count += 1
-                        elif char == '}':
-                            brace_count -= 1
-                            if brace_count == 0:
-                                json_str = cleaned[start_pos:i+1]
-                                try:
-                                    return json.loads(json_str)
-                                except json.JSONDecodeError:
-                                    break
-        
-        return None
 
-    def _parse_vibe_fix_tags(self, text: str) -> Optional[dict]:
-        """
-        Parse a tagged fix response:
-        <vibe-fix>
-          <diagnosis>...</diagnosis>
-          <fix_type>code_patch|code_change|commands</fix_type>
-          <confidence>high|medium|low</confidence>
-          <fix_details>...</fix_details>
-        </vibe-fix>
-        """
+def report(msg: str, code: str = None, suggestions: list = None, metadata: dict = None, summary: str = None, message_type: str = None):
+    """
+    Persist a user-facing message to the host SQLite DB with rich context.
+    
+    Args:
+        msg: Main message content
+        code: Code snippet or error output
+        suggestions: List of actionable suggestions for the user
+        metadata: Additional structured data (status, progress, etc.)
+        summary: Short summary for UI display
+        message_type: Type of message (status, question, error, success, thinking, action)
+    """
+    clean = str(msg).strip()
+    print(f'\n💬 {clean}', flush=True)
+
+    if not os.path.exists(DB_PATH):
+        return
+        
+    conn = _get_db()
+    if not conn:
+        return
+    
+    # Build metadata
+    meta = metadata or {}
+    if message_type:
+        meta['type'] = message_type
+    
+    # Auto-detect message type from emoji if not provided
+    if not message_type:
+        if clean.startswith('❓'):
+            meta['type'] = 'question'
+            meta['requires_response'] = True
+        elif clean.startswith('✅'):
+            meta['type'] = 'success'
+        elif clean.startswith('⚠️') or clean.startswith('❌'):
+            meta['type'] = 'error'
+        elif clean.startswith('🔧') or clean.startswith('📦'):
+            meta['type'] = 'action'
+        elif clean.startswith('💡'):
+            meta['type'] = 'thinking'
+        elif clean.startswith('🎉'):
+            meta['type'] = 'celebration'
+        else:
+            meta['type'] = 'status'
+    
+    # Generate suggestions if this is an error or question
+    if meta.get('type') in ['error', 'question'] and not suggestions:
+        suggestions = _generate_contextual_suggestions(clean, code)
+    
+    # Generate summary if not provided
+    if not summary:
+        summary = _generate_summary(clean)
+    
+    try:
+        conn.execute(
+            """INSERT INTO messages
+               (id, project_id, container_id, role, content, code, version_id,
+                timestamp, suggestions, tool_calls, image_paths, metadata, summary)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (f'agent_{int(time.time())}_{uuid.uuid4().hex[:4]}',
+             PROJECT_ID, 'vibecoding-ai-agent', 'assistant',
+             clean, code, None,
+             datetime.now().isoformat(),
+             json.dumps(suggestions) if suggestions else None,
+             None, None,
+             json.dumps(meta) if meta else None,
+             summary)
+        )
+        conn.commit()
+    except Exception as e:
+        print(f'DEBUG: DB write failed: {e}', flush=True)
+    finally:
         try:
-            # Quick guard
-            if "<vibe-fix" not in text:
-                return None
+            conn.close()
+        except:
+            pass
 
-            # Extract outer block
-            m_fix = re.search(r"<vibe-fix\b[^>]*>([\s\S]*?)</vibe-fix>", text, re.DOTALL)
-            if not m_fix:
-                self.log("⚠️", "Found <vibe-fix but no closing </vibe-fix>")
-                return None
-            block = m_fix.group(1)
 
-            def _tag(tag: str) -> str:
-                m = re.search(rf"<{tag}>([\s\S]*?)</{tag}>", block, re.DOTALL)
-                return m.group(1).strip() if m else ""
+def _generate_contextual_suggestions(message: str, code: str = None) -> list:
+    """Generate actionable suggestions based on the message context."""
+    suggestions = []
+    
+    msg_lower = message.lower()
+    
+    # Error-specific suggestions
+    if 'syntax error' in msg_lower or 'syntaxerror' in msg_lower:
+        suggestions.append({
+            'text': 'Review the syntax error and send me the corrected code',
+            'action': 'edit_code',
+            'icon': '✏️'
+        })
+        suggestions.append({
+            'text': 'Let me try to auto-fix the syntax error',
+            'action': 'auto_fix',
+            'icon': '🔧',
+            'prompt': 'Fix the syntax error automatically'
+        })
+    
+    elif 'command not found' in msg_lower or 'exit 127' in msg_lower:
+        suggestions.append({
+            'text': 'Install missing dependencies',
+            'action': 'install_deps',
+            'icon': '📦',
+            'prompt': 'Install the missing dependencies'
+        })
+        suggestions.append({
+            'text': 'Check the deployment script',
+            'action': 'review_script',
+            'icon': '🔍',
+            'prompt': 'Review and fix the deployment script'
+        })
+    
+    elif 'port' in msg_lower or '502' in msg_lower or 'connection' in msg_lower:
+        suggestions.append({
+            'text': 'Try a different port',
+            'action': 'change_port',
+            'icon': '🔌',
+            'prompt': 'Use a different port for the application'
+        })
+        suggestions.append({
+            'text': 'Check if the app is running',
+            'action': 'check_status',
+            'icon': '🔍',
+            'prompt': 'Check the application status and logs'
+        })
+    
+    elif 'test' in msg_lower and 'fail' in msg_lower:
+        suggestions.append({
+            'text': 'Fix the failing tests',
+            'action': 'fix_tests',
+            'icon': '🔧',
+            'prompt': 'Fix the code to make the tests pass'
+        })
+        suggestions.append({
+            'text': 'Show me the test results',
+            'action': 'show_tests',
+            'icon': '📊',
+            'prompt': 'Show detailed test results'
+        })
+        suggestions.append({
+            'text': 'Skip tests for now',
+            'action': 'skip_tests',
+            'icon': '⏭️',
+            'prompt': 'Skip the tests and deploy anyway'
+        })
+    
+    # Question-specific suggestions
+    elif message.startswith('❓'):
+        suggestions.append({
+            'text': 'Provide more details',
+            'action': 'clarify',
+            'icon': '💬',
+            'prompt': None  # User will type their own response
+        })
+        suggestions.append({
+            'text': 'Just fix it based on your analysis',
+            'action': 'auto_decide',
+            'icon': '🤖',
+            'prompt': 'Fix it based on your best judgment'
+        })
+    
+    # General suggestions
+    if not suggestions:
+        suggestions.append({
+            'text': 'Try again',
+            'action': 'retry',
+            'icon': '🔄',
+            'prompt': 'Try the deployment again'
+        })
+        suggestions.append({
+            'text': 'Show me the logs',
+            'action': 'show_logs',
+            'icon': '📋',
+            'prompt': 'Show me the detailed logs'
+        })
+    
+    return suggestions
 
-            diagnosis = _tag("diagnosis")
-            fix_type = _tag("fix_type")
-            confidence = _tag("confidence")
 
-            details_block_match = re.search(r"<fix_details>([\s\S]*?)</fix_details>", block, re.DOTALL)
-            details_block = details_block_match.group(1) if details_block_match else block
+def _generate_summary(message: str) -> str:
+    """Generate a short summary for UI display."""
+    # Remove emoji
+    clean = re.sub(r'[^\w\s\-.,!?]', '', message)
+    
+    # Truncate to first sentence or 100 chars
+    sentences = re.split(r'[.!?]\s+', clean)
+    if sentences:
+        summary = sentences[0]
+        if len(summary) > 100:
+            summary = summary[:97] + '...'
+        return summary
+    
+    return clean[:100]
 
-            if not fix_type:
-                self.log("⚠️", "No <fix_type> found in <vibe-fix> block")
-                return None
 
-            if fix_type == "code_patch":
-                file = re.search(r"<file>([\s\S]*?)</file>", details_block, re.DOTALL)
-                if not file:
-                    self.log("⚠️", "code_patch missing <file> tag")
-                    return None
-                filepath = file.group(1).strip()
-                hunks = []
-                for hm in re.finditer(r"<vibe-hunk>([\s\S]*?)</vibe-hunk>", details_block, re.DOTALL):
-                    h = hm.group(1)
-                    sm = re.search(r"<search>([\s\S]*?)</search>", h, re.DOTALL)
-                    rm = re.search(r"<replace>([\s\S]*?)</replace>", h, re.DOTALL)
-                    if not sm or not rm:
-                        continue
-                    search = sm.group(1)
-                    replace = rm.group(1)
-                    if search.strip() == "":
-                        continue
-                    hunks.append({"search": search, "replace": replace})
+# ── Nginx helpers ──────────────────────────────────────────────────────────────
+def nginx_reload() -> bool:
+    t = subprocess.run(['/usr/sbin/nginx', '-t'], capture_output=True, text=True)
+    if t.returncode != 0:
+        log(f'Nginx config error: {t.stderr}')
+        return False
+    r = subprocess.run(['/usr/sbin/nginx', '-s', 'reload'], capture_output=True, text=True)
+    if r.returncode != 0:
+        subprocess.run('pkill -9 nginx || true', shell=True, capture_output=True)
+        time.sleep(0.5)
+        s = subprocess.run(['/usr/sbin/nginx'], capture_output=True, text=True)
+        if s.returncode != 0:
+            log(f'Nginx failed to start: {s.stderr}')
+            return False
+    return True
 
-                if not hunks:
-                    self.log("⚠️", "code_patch has no valid hunks")
-                    return None
 
-                return {
-                    "diagnosis": diagnosis,
-                    "fix_type": "code_patch",
-                    "fix_details": {"file": filepath, "hunks": hunks},
-                    "confidence": confidence,
-                }
+def write_nginx_config(conf: str) -> bool:
+    """
+    Write and validate nginx configuration.
+    Automatically fixes common issues before applying.
+    """
+    # ═══════════════════════════════════════════════════════════════════
+    # AUTO-FIX: Ensure all location blocks have proxy_pass or root/alias
+    # ═══════════════════════════════════════════════════════════════════
+    conf = _auto_fix_nginx_config(conf)
+    
+    Path(NGINX_CONF).parent.mkdir(parents=True, exist_ok=True)
+    Path(NGINX_CONF).write_text(conf)
+    subprocess.run('rm -f /etc/nginx/sites-enabled/*', shell=True)
+    subprocess.run('rm -f /etc/nginx/conf.d/*.conf', shell=True)
+    subprocess.run(f'ln -sf {NGINX_CONF} /etc/nginx/sites-enabled/default', shell=True)
+    return nginx_reload()
 
-            if fix_type == "code_change":
-                file = re.search(r"<file>([\s\S]*?)</file>", details_block, re.DOTALL)
-                content_tag = re.search(r"<content>([\s\S]*?)</content>", details_block, re.DOTALL)
-                append_tag = re.search(r"<append>([\s\S]*?)</append>", details_block, re.DOTALL)
-                if not file or not content_tag:
-                    self.log("⚠️", "code_change missing <file> or <content> tag")
-                    return None
-                append = False
-                if append_tag:
-                    append = append_tag.group(1).strip().lower() in ("true", "1", "yes")
 
-                return {
-                    "diagnosis": diagnosis,
-                    "fix_type": "code_change",
-                    "fix_details": {"file": file.group(1).strip(), "content": content_tag.group(1), "append": append},
-                    "confidence": confidence,
-                }
+def _validate_nginx_config(conf: str, app_port: int = None) -> list:
+    """
+    Validate nginx configuration for common issues.
+    Returns list of issues found (empty if config is valid).
+    """
+    issues = []
+    
+    # Issue 1: Location blocks with caching but no proxy_pass/root/alias
+    location_pattern = re.compile(
+        r'location\s+[^{]+\{[^}]*?(?:expires|add_header\s+Cache-Control)[^}]*?\}',
+        re.DOTALL
+    )
+    
+    for match in location_pattern.finditer(conf):
+        location_block = match.group(0)
+        has_backend = any(keyword in location_block for keyword in ['proxy_pass', 'root ', 'alias '])
+        
+        if not has_backend:
+            # Extract location path
+            loc_match = re.search(r'location\s+([^{]+)\{', location_block)
+            loc_path = loc_match.group(1).strip() if loc_match else 'unknown'
+            issues.append(f'Location "{loc_path}" has caching headers but no proxy_pass/root/alias')
+    
+    # Issue 2: proxy_pass without required headers
+    proxy_locations = re.finditer(
+        r'location\s+[^{]+\{[^}]*?proxy_pass[^}]*?\}',
+        conf,
+        re.DOTALL
+    )
+    
+    for match in proxy_locations:
+        location_block = match.group(0)
+        
+        # Check for essential proxy headers
+        if 'proxy_set_header Host' not in location_block:
+            loc_match = re.search(r'location\s+([^{]+)\{', location_block)
+            loc_path = loc_match.group(1).strip() if loc_match else 'unknown'
+            issues.append(f'Location "{loc_path}" missing proxy_set_header Host')
+    
+    # Issue 3: No gzip compression
+    if 'gzip on' not in conf and 'gzip_static on' not in conf:
+        issues.append('Gzip compression not enabled')
+    
+    # Issue 4: App port mismatch
+    if app_port:
+        proxy_passes = re.findall(r'proxy_pass\s+http://[^:]+:(\d+)', conf)
+        if proxy_passes:
+            for port_str in proxy_passes:
+                port = int(port_str)
+                if port != app_port:
+                    issues.append(f'Nginx proxies to port {port} but app uses port {app_port}')
+    
+    return issues
 
-            if fix_type == "commands":
-                cmds = []
-                for cm in re.finditer(r"<command>([\s\S]*?)</command>", details_block, re.DOTALL):
-                    c = cm.group(1).strip()
-                    if c:
-                        cmds.append(c)
-                run_cmd_m = re.search(r"<run_command>([\s\S]*?)</run_command>", details_block, re.DOTALL)
-                fix_details = {"commands": cmds}
-                if run_cmd_m:
-                    fix_details["run_command"] = run_cmd_m.group(1).strip()
 
-                return {
-                    "diagnosis": diagnosis,
-                    "fix_type": "commands",
-                    "fix_details": fix_details,
-                    "confidence": confidence,
-                }
+def _auto_fix_nginx_config(conf: str) -> str:
+    """
+    Automatically fix common nginx configuration issues:
+    1. Location blocks missing proxy_pass/root/alias
+    2. Static asset caching without proxy_pass
+    3. Missing proxy headers
+    
+    Returns fixed configuration.
+    """
+    original_conf = conf
+    fixes_applied = []
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # FIX 1: Static asset location blocks missing proxy_pass
+    # ═══════════════════════════════════════════════════════════════════
+    # Pattern: location block with caching headers but no proxy_pass/root/alias
+    location_pattern = re.compile(
+        r'(location\s+[^{]+\{[^}]*?(?:expires|add_header\s+Cache-Control)[^}]*?)(\})',
+        re.DOTALL
+    )
+    
+    for match in location_pattern.finditer(conf):
+        location_block = match.group(1)
+        closing_brace = match.group(2)
+        
+        # Check if this location block has proxy_pass, root, or alias
+        has_backend = any(keyword in location_block for keyword in ['proxy_pass', 'root ', 'alias '])
+        
+        if not has_backend:
+            # Extract app port from main location / block
+            main_proxy = re.search(r'location\s+/\s*\{[^}]*?proxy_pass\s+([^;]+);', conf)
+            if main_proxy:
+                proxy_url = main_proxy.group(1).strip()
+                
+                # Inject proxy_pass before closing brace
+                fixed_block = location_block + f'\n        proxy_pass {proxy_url};\n    ' + closing_brace
+                conf = conf.replace(match.group(0), fixed_block)
+                fixes_applied.append('Added missing proxy_pass to static asset location block')
+                log(f'🔧 Auto-fix: Added proxy_pass to static asset caching block')
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # FIX 2: Ensure proxy headers are present in all proxy_pass blocks
+    # ═══════════════════════════════════════════════════════════════════
+    required_headers = [
+        'proxy_set_header Host $host;',
+        'proxy_set_header X-Real-IP $remote_addr;',
+        'proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;'
+    ]
+    
+    # Find all location blocks with proxy_pass
+    proxy_locations = re.finditer(
+        r'(location\s+[^{]+\{[^}]*?proxy_pass[^}]*?)(\})',
+        conf,
+        re.DOTALL
+    )
+    
+    for match in proxy_locations:
+        location_block = match.group(1)
+        closing_brace = match.group(2)
+        
+        # Check which headers are missing
+        missing_headers = [h for h in required_headers if h not in location_block]
+        
+        if missing_headers:
+            # Add missing headers before closing brace
+            headers_to_add = '\n        ' + '\n        '.join(missing_headers)
+            fixed_block = location_block + headers_to_add + '\n    ' + closing_brace
+            conf = conf.replace(match.group(0), fixed_block)
+            fixes_applied.append(f'Added {len(missing_headers)} missing proxy headers')
+            log(f'🔧 Auto-fix: Added {len(missing_headers)} missing proxy headers')
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # FIX 3: Ensure gzip is enabled for common types
+    # ═══════════════════════════════════════════════════════════════════
+    if 'gzip on;' not in conf:
+        # Find server block and add gzip config
+        server_match = re.search(r'(server\s*\{)', conf)
+        if server_match:
+            gzip_config = '''
+    # Gzip compression
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_types text/plain text/css text/xml text/javascript application/json application/javascript application/xml+rss application/rss+xml font/truetype font/opentype application/vnd.ms-fontobject image/svg+xml;
+'''
+            conf = conf.replace(server_match.group(0), server_match.group(0) + gzip_config)
+            fixes_applied.append('Added gzip compression configuration')
+            log('🔧 Auto-fix: Added gzip compression')
+    
+    # Log all fixes
+    if fixes_applied:
+        log(f'🔧 Nginx auto-fix applied {len(fixes_applied)} fixes:')
+        for fix in fixes_applied:
+            log(f'   ✓ {fix}')
+    
+    return conf
 
-            # Unknown fix type
-            self.log("⚠️", f"Unknown fix_type: {fix_type}")
-            return None
-            
-        except Exception as e:
-            self.log("❌", f"Exception parsing <vibe-fix> tags: {e}")
-            import traceback
-            self.log("📄", f"Traceback: {traceback.format_exc()}")
-            return None
 
-    def _aggregate_stream(self, response) -> str:
-        """Aggregate SSE stream into a single string. Handles both OpenAI and BournAI formats."""
-        provider = os.environ.get('AI_PROVIDER', 'openai').lower().strip()
-        content = ""
-        for raw_line in response.iter_lines():
-            if not raw_line:
+def apply_baseline_gateway():
+    """Serve a friendly loading page immediately so the iframe never shows a connection error."""
+    write_nginx_config("""
+server {
+    listen 80 default_server;
+    server_name _;
+    location / {
+        default_type text/html;
+        return 200 '<html><body style="background:#0f172a;color:white;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;flex-direction:column;gap:16px"><h2 style="margin:0">🚀 Getting things ready...</h2><p style="margin:0;opacity:.7">Your app is being built. This usually takes about a minute.</p></body></html>';
+    }
+}
+""")
+
+
+def get_nginx_errors():
+    try:
+        if not Path(NGINX_ERROR_LOG).exists():
+            return []
+        lines = Path(NGINX_ERROR_LOG).read_text().strip().split('\n')
+        return [l for l in lines[-30:] if 'connect() failed' in l or '502' in l or 'upstream' in l]
+    except:
+        return []
+
+
+# ── AI call ────────────────────────────────────────────────────────────────────
+def call_ai(messages: list, temperature: float = 0.2, show_thinking: bool = True) -> str:
+    """
+    Call AI model and optionally extract/show thinking.
+    
+    Args:
+        messages: List of message dicts with 'role' and 'content'
+        temperature: Sampling temperature
+        show_thinking: If True, extract and show AI's thinking to user
+    
+    Returns:
+        AI response text
+    """
+    headers = {'Content-Type': 'application/json'}
+
+    if AI_PROVIDER == 'bournai':
+        parts = []
+        for m in messages:
+            role = m.get('role', 'user')
+            content = m.get('content', '')
+            tag = {'system': '[System]', 'user': '[User]', 'assistant': '[Assistant]'}.get(role, f'[{role}]')
+            parts.append(f'{tag}\n{content}')
+        payload = {
+            'agent_id': API_KEY,
+            'model': AI_MODEL or 'BournAI',
+            'platform_id': os.environ.get('BOURNAI_PLATFORM_ID', 'DSuite'),
+            'stream': True,
+            'prompt': '\n\n'.join(parts),
+        }
+        resp = requests.post(API_URL, headers=headers, json=payload, stream=True, timeout=180)
+        resp.raise_for_status()
+        content = ''
+        for raw in resp.iter_lines():
+            if not raw:
                 continue
-            line = raw_line.decode("utf-8")
-            if line.startswith("data: "):
+            line = raw.decode('utf-8')
+            if line.startswith('data: '):
                 line = line[6:]
-            if line.strip() == "[DONE]":
+            if line.strip() == '[DONE]':
                 break
             try:
                 chunk = json.loads(line)
-                if provider == 'bournai':
-                    for part in chunk.get("content", []):
-                        if isinstance(part, dict) and part.get("type") == "text":
-                            content += part.get("text", "")
-                    if chunk.get("stop_reason") == "end_turn":
-                        break
-                else:
-                    if "choices" in chunk and chunk["choices"]:
-                        delta = chunk["choices"][0].get("delta", {})
-                        if delta.get("content"):
-                            content += delta["content"]
+                for part in chunk.get('content', []):
+                    if isinstance(part, dict) and part.get('type') == 'text':
+                        content += part.get('text', '')
+                if chunk.get('stop_reason') == 'end_turn':
+                    break
             except json.JSONDecodeError:
-                continue
+                pass
+        
+        # Extract and show thinking if enabled
+        if show_thinking and content:
+            _extract_and_show_thinking(content)
+        
+        return content
+    else:
+        headers['Authorization'] = f'Bearer {API_KEY}'
+        payload = {
+            'model': AI_MODEL,
+            'messages': messages,
+            'temperature': temperature,
+        }
+        resp = requests.post(API_URL, headers=headers, json=payload, timeout=180)
+        resp.raise_for_status()
+        content = resp.json()['choices'][0]['message']['content']
+        
+        # Extract and show thinking if enabled
+        if show_thinking and content:
+            _extract_and_show_thinking(content)
+        
         return content
 
-    # ------------------------------------------------------------------
-    # Project file scanner
-    # ------------------------------------------------------------------
 
-    def scan_project_files(self) -> dict:
-        """Recursively scan project files for AI context.
-        Uses os.walk to find ALL source files, not just root-level.
-        This is critical for React/Vue/Angular projects where source is in src/."""
-        files_content: dict = {}
-
-        for root, dirs, fnames in os.walk(self.workspace):
-            # Prune directories we never want to scan
-            dirs[:] = [d for d in dirs if d not in self.SKIP_DIRS]
-
-            for fname in sorted(fnames):
-                if len(files_content) >= self.config.max_files:
-                    return files_content
-
-                fpath = Path(root) / fname
-
-                # Apply extension filter if configured
-                if self.config.scan_extensions:
-                    if fpath.suffix not in self.config.scan_extensions:
-                        continue
-
-                # Skip binary / lock files
-                if fname in ('package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
-                             'Pipfile.lock', 'poetry.lock', '.DS_Store'):
-                    continue
-
-                try:
-                    size = fpath.stat().st_size
-                    if size > self.config.max_file_size:
-                        continue
-                    content = fpath.read_text(encoding="utf-8")
-                    rel_path = str(fpath.relative_to(self.workspace))
-                    files_content[rel_path] = content
-                except (UnicodeDecodeError, PermissionError, OSError):
-                    pass
-
-        return files_content
-
-    # ------------------------------------------------------------------
-    # Execution plan
-    # ------------------------------------------------------------------
-
-    def get_ai_execution_plan(self, files: list) -> Optional[dict]:
-        """Ask AI for execution plan based on full recursive file analysis.
-        Provides the AI with the complete project tree, manifest contents,
-        and framework-aware build guidance."""
-        if not self.config.api_key:
-            if self.config.fallback_run_cmd:
-                self.log("📜", f"No AI key, using configured fallback: {self.config.fallback_run_cmd}")
-                return {
-                    "project_type": "unknown",
-                    "processes": [
-                        {
-                            "name": "fallback-server",
-                            "command": self.config.fallback_run_cmd,
-                            "type": "primary",
-                            "ready_signal": None
-                        }
-                    ],
-                    "success_patterns": self.config.success_keywords,
-                    "analysis": "Configured fallback mode (No AI key)",
-                }
-            
-            self.log("❌", "No AI key provided and no fallback command found. Cannot determine execution plan.")
-            return None
-
-        self.log("🤖", "AI is analyzing project structure and requirements...")
-
-        # Build a full recursive file tree for proper context
-        file_tree = self._get_file_tree(max_entries=200)
-
-        prompt = """You are an expert DevOps engineer. Analyze the project structure below and produce a
-complete, working execution plan for this system.
-
-USER INTENT (CRITICAL): [USER_PROMPT]
-SYSTEM: [OS_INFO]
-INSTALLED TOOLS: [TOOLS]
-TARGET PORT: [PORT]
-ADDITIONAL PORTS: [ADDITIONAL_PORTS]
-
-═══════════════════════════════════════════
- COMPLETE PROJECT FILE TREE
-═══════════════════════════════════════════
-[FILE_TREE]
-
-═══════════════════════════════════════════
- KEY FILE CONTENTS (manifests, configs, entry points)
-═══════════════════════════════════════════
-[MANIFEST]
-
-Return ONLY a raw JSON object (no markdown fences, no extra text):
-{
-    "project_type": "detected runtime/framework(s)",
-    "file_writes": [
-        {
-            "path": "relative/path/to/file.ext",
-            "content": "full file content as a string"
-        }
-    ],
-    "processes": [
-        {
-            "name": "descriptive name",
-            "command": "exact shell command",
-            "type": "setup | background | primary",
-            "ready_signal": "log substring that means this process is ready (null for setup/primary)"
-        }
-    ],
-    "success_patterns": ["log substrings that confirm the primary server started successfully"],
-    "analysis": "one-sentence explanation",
-    "nginx_config": "site configuration (server blocks ONLY - no http/events wrapper). MUST listen on port 80 to proxy backends (e.g. 8080) and serve frontends."
-}
-
-FILE WRITES (CRITICAL — use instead of echo/cat for creating or updating files):
-- file_writes is an array of {path, content} objects. The agent writes each file directly
-  from Python — no shell quoting, no bash escaping, no truncation risk.
-- Use file_writes for ALL file creation/modification (HTML, CSS, JS, JSON, config files, etc.).
-- Setup commands should ONLY be used for: installing packages (npm install, pip3 install),
-  building assets (npm run build), chmod, mkdir, or other non-file-write operations.
-- NEVER use 'echo', 'cat', 'printf', or shell redirection (>, >>) to write file content
-  inside setup commands — it breaks on quotes, backticks, and special characters.
-- file_writes entries are applied BEFORE setup commands run.
-
-
-- If you provide `nginx_config`, you MUST add `nginx` to the `processes` list as the `primary` process.
-- Use `nginx_config` as the primary gateway on port 80.
-- Ensure `nginx_config` contains ONLY `server { ... }` blocks (no `http {` or `events {`).
-- Redirect/Proxy internal backend requests from the frontend to their respective background ports (e.g. 8080).
-
-PROCESS TYPES:
-- setup      → one-time commands that must complete before anything runs (install deps, build assets, compile code, etc.).
-               NEVER use setup commands to write file content — use file_writes instead.
-- background → long-running processes that other processes depend on (databases, backend APIs, message queues, etc.).
-               Must include a ready_signal so the agent waits for it before starting next steps.
-- primary    → exactly ONE entry — the main server that will be monitored and exposed on port [PORT].
-               This MUST be the last entry in the array.
-
-═══════════════════════════════════════════
- FRAMEWORK BUILD PATTERNS (CRITICAL)
-═══════════════════════════════════════════
-IMPORTANT: Many modern web frameworks require a BUILD step before serving.
-Do NOT serve source files directly — you MUST build first.
-
-React (create-react-app / react-scripts):
-  setup: npm install
-  setup: npm run build
-  primary: serve -s build -l [PORT]    (serve is pre-installed globally)
-  → Serves from build/ directory. NEVER use react-scripts start in production.
-
-React (Vite-based):
-  setup: npm install
-  setup: npm run build
-  primary: serve -s dist -l [PORT]
-  → Serves from dist/ directory.
-
-Vue.js:
-  setup: npm install
-  setup: npm run build
-  primary: serve -s dist -l [PORT]
-
-Angular:
-  setup: npm install
-  setup: npx ng build --configuration production
-  primary: serve -s dist/{project-name} -l [PORT]
-
-Svelte / SvelteKit:
-  setup: npm install
-  setup: npm run build
-  primary: serve -s build -l [PORT]   (or node build/index.js for SvelteKit)
-
-Next.js:
-  setup: npm install
-  setup: npm run build
-  primary: npx next start -p [PORT]
-  → Next.js has its own server, no need for serve.
-
-Python (Flask/FastAPI/Django):
-  setup: pip3 install -r requirements.txt (if exists)
-  primary: python3 app.py  OR  uvicorn main:app --host 0.0.0.0 --port [PORT]
-  → CRITICAL: Always use 'python3', never 'python' (python command may not exist on the system)
-
-Static HTML/CSS/JS (no package.json):
-  primary: serve -l [PORT]
-  → serve is pre-installed globally, just point it at the directory.
-
-Node.js Backend (Express/Koa/Fastify):
-  setup: npm install
-  primary: node server.js  (or whatever the entry point is, with PORT=[PORT])
-  → MUST set HOST=0.0.0.0 or bind to 0.0.0.0 explicitly.
-
-Full-Stack (Backend + Frontend in same project):
-  setup: npm install (in frontend dir)
-  setup: npm run build (in frontend dir)
-  setup: pip3 install -r requirements.txt (in backend dir, if Python)
-  background: python3 backend/app.py (on port 8000)
-  primary: nginx (on port [PORT], reverse proxy to backend + serve frontend build)
-  → Use nginx_config to route /api/* to backend and serve static from frontend build dir.
-
-KEY RULE: If package.json exists with a "build" script, you MUST run "npm run build".
-NEVER skip the build step for framework-based projects.
-
-ARCHITECTURE DETECTION:
-- Analyze the project structure to determine if it's single-tier or multi-tier.
-- If multiple services need to run (e.g., separate backend and frontend, or multiple microservices):
-  * Use Nginx as a reverse proxy/load balancer for the primary process
-  * Run dependent services as background processes on different ports
-  * Configure Nginx to route requests appropriately
-- If it's a single service, run it directly as the primary process.
-
-NGINX USAGE (when needed):
-- Use Nginx when you need to:
-  * Serve static files AND proxy API requests
-  * Combine multiple services under one port
-  * Provide routing, load balancing, or SSL termination
-- Nginx config should:
-  * Listen on port [PORT]
-  * Route requests based on path patterns (e.g., /api/*, /ws/*, etc.)
-  * Serve static files from the appropriate directory
-  * Proxy dynamic requests to background services
-  * Include appropriate headers and error handling
-- CRITICAL: nginx_config should ONLY contain server blocks. NEVER include events, http, or worker_processes directives - these belong in the main nginx.conf, not site configs.
-- Only include nginx_config if Nginx is actually needed. Set to null otherwise.
-
-CONSTRAINTS:
-- Running inside Docker (Ubuntu 22.04, Python3 + Node.js 18 + Nginx + serve pre-installed).
-- CRITICAL: Always use 'python3' command, never 'python' (python command does not exist on this system).
-- The primary server MUST bind to port [PORT] on ALL interfaces (0.0.0.0).
-- Background services can use any available ports (recommend 8000, 8001, 8002, etc.).
-- Services should communicate via localhost or environment variables.
-- Working directory is /project/workspace.
-- Consider the USER INTENT when making architectural decisions.
-"""
+def _extract_and_show_thinking(response_text: str):
+    """
+    Extract and show AI's thinking from response.
+    Looks for:
+    1. "thinking" field in JSON responses
+    2. Text before first code/file marker
+    3. Explanatory text at the start
+    """
+    # Try to extract from JSON first
+    try:
+        # Clean markdown code fences
+        cleaned = re.sub(r'^```[a-z]*\n?', '', response_text.strip(), flags=re.MULTILINE)
+        cleaned = re.sub(r'\n?```$', '', cleaned.strip(), flags=re.MULTILINE)
         
-        # Perform replacements on the template
-        prompt = prompt.replace("[USER_PROMPT]", str(self.config.user_prompt or "Unknown"))
-        prompt = prompt.replace("[OS_INFO]", str(self.os_info))
-        prompt = prompt.replace("[TOOLS]", str(self.tools))
-        prompt = prompt.replace("[PORT]", str(self.config.port))
-        prompt = prompt.replace("[ADDITIONAL_PORTS]", str(", ".join(self.config.additional_ports) or "None"))
-        prompt = prompt.replace("[FILE_TREE]", str(file_tree))
-        prompt = prompt.replace("[MANIFEST]", str(self.manifest))
-        
-        result = self._call_ai(prompt, temperature=0.1)
-        if result:
-            return result
-
-        self.log("❌", "AI could not produce an execution plan")
-        return None
-
-    # ------------------------------------------------------------------
-    # grep pre-flight — AI decides what regex patterns to search
-    # ------------------------------------------------------------------
-
-    def locate_error_files(self, error_log: str) -> list:
-        patterns = self._get_ai_search_terms(error_log)
-        if not patterns:
-            return []
-
-        try:
-            combined = '|'.join(patterns)
-            result = subprocess.run(
-                ['grep', '-rlE', combined, self.workspace],
-                capture_output=True, text=True, timeout=5
-            )
-            if result.returncode == 0:
-                matched = []
-                for p in result.stdout.strip().splitlines():
-                    try:
-                        rel = str(Path(p).relative_to(self.workspace))
-                        matched.append(rel)
-                    except ValueError:
-                        matched.append(Path(p).name)
-                self.log("🔍", f"AI-directed grep found: {', '.join(matched)}")
-                return matched
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
-
-        return []
-
-    def _get_ai_search_terms(self, error_log: str) -> list:
-        prompt = """Analyze this error log. Return ONLY a JSON object with grep regex patterns.
-
-ERROR LOG:
-{error_log[-1500:]}
-
-Return ONLY:
-{
-    "patterns": [
-        "regex pattern 1",
-        "regex pattern 2",
-        "regex pattern 3"
+        # Try to find JSON
+        m = re.search(r'\{.*\}', cleaned, re.DOTALL)
+        if m:
+            try:
+                data = json.loads(m.group(0))
+                thinking = data.get('thinking') or data.get('thought') or data.get('analysis')
+                if thinking and isinstance(thinking, str) and 10 < len(thinking) < 500:
+                    report(f'💡 {thinking}')
+                    log(f'AI thinking: {thinking}')
+                    return
+            except:
+                pass
+    except:
+        pass
+    
+    # Try to extract text before first marker (FILE:, PATCH:, code fence, etc.)
+    markers = [
+        r'(?://|#|<!--)\s*(?:FILE|PATCH):',  # File/patch markers
+        r'^```',  # Code fences
+        r'^\{',  # JSON start
     ]
-}
-
-RULES:
-- Maximum 5 patterns. Each must be a valid grep -E extended regex.
-- Patterns should match filenames, function names, class names, module imports,
-  variable names, or any identifier directly related to the error.
-- Write broader patterns where useful:
-    e.g. "authMiddleware|auth_middleware" to catch naming variants
-    e.g. "import.*express|require.*express" to catch the import line
-    e.g. "def\\s+handle_request" to match a specific function definition
-- Do NOT use generic patterns like "error", "line", "failed", "undefined".
-- If nothing meaningful can be extracted, return empty patterns array.
-"""
-        
-        # Simple replacement - no template variables needed for this prompt
-        prompt = prompt.replace("{error_log[-1500:]}", error_log[-1500:])
-        
-        result = self._call_ai(prompt, temperature=0.0)
-        if not result:
-            return []
-
-        patterns = [p for p in result.get("patterns", []) if p and len(p) > 2]
-        self.log("🔍", f"AI regex patterns: {patterns}")
-        return patterns
-
-    # ------------------------------------------------------------------
-    # Error fix — AI diagnosis with grep-prioritised file context
-    # ------------------------------------------------------------------
-
-
-    def _check_hardcoded_fixes(self, error_log: str) -> Optional[dict]:
-        """Check for extremely common errors that have 100% reliable fixes."""
-        # Fix for python command not found - use python3 instead
-        if "python: command not found" in error_log or "/bin/bash: line 1: python: command not found" in error_log:
-            self.log("💡", "Detected 'python' command not found. Switching to 'python3'...")
-            return {
-                "diagnosis": "python command not found, system uses python3",
-                "fix_type": "commands",
-                "confidence": "high",
-                "fix_details": {
-                    "run_command": "python3 app.py"  # Update the run command
-                }
-            }
-        
-        # Fix for JSX syntax errors - mismatched tags
-        if "Expected closing" in error_log and "tag to match opening" in error_log:
-            self.log("💡", "Detected JSX syntax error with mismatched tags. Needs AI fix for proper JSX structure...")
-            # Return None to let AI handle the complex JSX fix
-            return None
-        
-        if "ImportError: cannot import name 'url_quote' from 'werkzeug.urls'" in error_log:
-            self.log("💡", "Detected Flask/Werkzeug version incompatibility. Applying fix...")
-            return {
-                "diagnosis": "Flask/Werkzeug version mismatch (url_quote removed in Werkzeug 3.x)",
-                "fix_type": "commands",
-                "confidence": "high",
-                "fix_details": {
-                    "commands": ["pip3 install werkzeug==2.2.2"]
-                }
-            }
-        
-        if "ModuleNotFoundError: No module named" in error_log:
-            module_match = re.search(r"No module named '(.*?)'", error_log)
-            if module_match:
-                module = module_match.group(1)
-                self.log("💡", f"Detected missing module: {module}. Installing...")
-                return {
-                    "diagnosis": f"Missing python module: {module}",
-                    "fix_type": "commands",
-                    "confidence": "high",
-                    "fix_details": {
-                        "commands": [f"pip3 install {module}"]
-                    }
-                }
-        
-        return None
-
-    def call_ai_for_fix(
-        self, error_log: str, project_type: str, files_content: dict
-    ) -> Optional[dict]:
-        hard_fix = self._check_hardcoded_fixes(error_log)
-        if hard_fix:
-            return hard_fix
-        
-        self.log("🤖", "Consulting AI for error diagnosis...")
-
-        priority_files = self.locate_error_files(error_log)
-        if priority_files:
-            ordered = {k: v for k, v in files_content.items() if k in priority_files}
-            ordered.update({k: v for k, v in files_content.items() if k not in priority_files})
-            files_content = ordered
-
-        tail_chars    = int(os.environ.get('ERROR_LOG_TAIL', '5000'))
-        snippet_chars = int(os.environ.get('FILE_SNIPPET_CHARS', '20000'))
-        max_ctx_files = int(os.environ.get('MAX_CONTEXT_FILES', '8'))
-
-        files_context = ""
-        for name, content in list(files_content.items())[:max_ctx_files]:
-            # Use the smaller of original content or snippet_chars limit
-            display_content = content[:snippet_chars]
-            files_context += f"// FILE: {name}\n{display_content}\n\n"
-
-        prompt = """You are an expert debugging engineer. Diagnose this runtime error and provide a surgical fix.
-
-USER INTENT (CRITICAL): [USER_PROMPT]
-SYSTEM: [OS_INFO]
-INSTALLED TOOLS: [TOOLS]
-MANIFESTS: [MANIFEST]
-PROJECT TYPE: [PROJECT_TYPE]
-
-ERROR LOG (last_tail):
-[ERROR_LOG]
-
-PROJECT FILES:
-[FILES_CONTEXT]
-
-CRITICAL: Return ONLY the following tagged XML-like structure (no JSON, no narrative, no markdown):
-
-<vibe-fix>
-  <diagnosis>root cause in one sentence</diagnosis>
-  <fix_type>commands | code_patch | code_change</fix_type>
-  <confidence>high | medium | low</confidence>
-  <fix_details>
-    <!-- code_patch -->
-    <file>relative file path</file>
-    <vibe-hunk>
-      <search>exact verbatim block to find</search>
-      <replace>replacement block</replace>
-    </vibe-hunk>
-
-    <!-- code_change -->
-    <content>complete new file content (only for code_change full rewrite)</content>
-    <append>false</append>
-
-    <!-- commands -->
-    <command>one-time setup/install command only (never server start)</command>
-    <run_command>updated server start command if it needs to change (optional)</run_command>
-  </fix_details>
-</vibe-fix>
-
-RULES:
-- Prefer fix_type=code_patch for targeted fixes (1-10 lines changed).
-- Prefer fix_type=commands for missing packages/dependencies.
-- Prefer fix_type=code_change if the entire file needs restructuring, is corrupted, or has syntax errors.
-- For SyntaxError, IndentationError, EOF errors, bash quoting errors, or truncated files:
-  ALWAYS use fix_type=code_change to provide the FULL, CORRECTED file. DO NOT TRUNCATE.
-- JSX SYNTAX ERRORS: For React/JSX errors like "Expected closing tag" or mismatched tags:
-  * Use fix_type=code_change to provide the complete corrected JSX file
-  * Ensure ALL opening tags have matching closing tags: <div>...</div>, <button>...</button>
-  * Check for proper nesting - buttons cannot contain divs, spans are inline elements
-  * Verify all JSX expressions are properly closed with matching braces and parentheses
-  * Self-closing tags must end with /> (e.g., <img />, <br />, <input />)
-- 0.0.0.0 BINDING: Servers MUST bind to 0.0.0.0, never localhost.
-- RELATIVE URLs: Frontend-to-backend calls must use relative paths (e.g., fetch('/api/todos')).
-- NAMESPACING: API routes should stay under /api/* prefix.
-- SPA FALLBACK: If fixing a backend that serves a frontend, ensure the fallback to index.html is preserved.
-- NO DEV SERVERS: Fixes should never introduce dev servers (like Vite dev) as the primary process.
-- ENVIRONMENT: Global installs only. No venv/virtualenv. No 'python' (use 'python3'). Bash syntax only.
-- For pip conflicts: pip3 install --upgrade pip && pip3 install -r requirements.txt --use-deprecated=legacy-resolver
-- NEVER use shell redirection syntax (echo, cat, printf with > or >>) inside 'commands' to write file content.
-  If you need to create or fix a file, use fix_type=code_change instead. The agent writes files directly — no shell quoting needed.
-- 'code_change' content must ONLY contain the literal source code for that file — no shell syntax.
-- IGNORE access logs in the error log (e.g., "GET / HTTP/1.1 302" or "200"). These are NORMAL behaviors and not errors.
-- DO NOT assume templates are missing just because you see a redirect to /login. Only fix missing files if there is an explicit "TemplateNotFound" or "FileNotExists" error.
-- NEVER put the server start command inside commands[]. It will time out and kill the fix.
-  If the run command needs to change (wrong path, wrong module, wrong port), put the
-  corrected command in fix_details.run_command instead.
-- NGINX SITE CONFIGS: When fixing nginx configs in /etc/nginx/sites-enabled/ or /etc/nginx/sites-available/, NEVER include events, http, or worker_processes directives. These belong ONLY in /etc/nginx/nginx.conf. Site configs should ONLY contain server blocks.
-"""
-        # Perform template replacements
-        prompt = prompt.replace("[USER_PROMPT]", str(self.config.user_prompt or "Unknown"))
-        prompt = prompt.replace("[OS_INFO]", str(self.os_info))
-        prompt = prompt.replace("[TOOLS]", str(self.tools))
-        prompt = prompt.replace("[MANIFEST]", str(self.manifest))
-        prompt = prompt.replace("[PROJECT_TYPE]", str(project_type))
-        prompt = prompt.replace("[ERROR_LOG]", error_log[-tail_chars:])
-        prompt = prompt.replace("[FILES_CONTEXT]", files_context)
-        
-        return self._call_ai(prompt, temperature=0.2)
-
-    # ------------------------------------------------------------------
-    # Patch helpers — validation, line endings, atomic writes
-    # ------------------------------------------------------------------
-
-    def _validate_syntax(self, content: str, filepath: Path) -> Tuple[bool, Optional[str]]:
-        """Validate syntax of patched content for known file types."""
-        suffix = filepath.suffix.lower()
-        if suffix == '.py':
-            try:
-                compile(content, str(filepath), 'exec')
-                return True, None
-            except SyntaxError as e:
-                return False, f"line {e.lineno}: {e.msg}"
-        if suffix == '.json':
-            try:
-                json.loads(content)
-                return True, None
-            except json.JSONDecodeError as e:
-                return False, f"line {e.lineno}: {e.msg}"
-        return True, None
-
-    def _detect_line_separator(self, text: str) -> str:
-        """Detect the dominant line separator in text."""
-        crlf = text.count('\r\n')
-        lf = text.count('\n') - crlf
-        if crlf > 0 and crlf >= lf:
-            return '\r\n'
-        return '\n'
-
-    def _atomic_write(self, filepath: Path, content: str):
-        """Write atomically via temp file + os.replace."""
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=str(filepath.parent), suffix='.tmp'
-        )
-        try:
-            with os.fdopen(tmp_fd, 'w', encoding='utf-8') as f:
-                f.write(content)
-            os.replace(tmp_path, str(filepath))
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-
-    def _match_hunk(self, content: str, search: str, replace: str, line_sep: str) -> Tuple[Optional[str], str]:
-        """
-        4-tier matching for a single hunk.
-        Returns (new_content, tier_name) on success, or (None, reason) on failure.
-        """
-        # Tier 1: Exact match
-        if search in content:
-            return content.replace(search, replace, 1), "exact"
-
-        search_lines = search.splitlines()
-        replace_lines = replace.splitlines()
-        content_lines = content.split(line_sep) if line_sep != '\n' else content.splitlines()
-        trailing = content.endswith(line_sep) or content.endswith('\n')
-
-        def _rejoin(lines):
-            joined = line_sep.join(lines)
-            if trailing:
-                joined = joined.rstrip(line_sep) + line_sep
-            return joined
-
-        # Tier 2: Whitespace-normalised match
-        def normalize(s):
-            return re.sub(r'\s+', ' ', s).strip()
-
-        norm_search = [normalize(l) for l in search_lines]
-        for idx in range(len(content_lines) - len(search_lines) + 1):
-            window = content_lines[idx: idx + len(search_lines)]
-            if [normalize(l) for l in window] == norm_search:
-                content_lines[idx: idx + len(search_lines)] = replace_lines
-                return _rejoin(content_lines), "whitespace-norm"
-
-        # Tier 3: Indentation-flexible match with relative indent preservation
-        search_stripped = [l.strip() for l in search_lines]
-        search_base = min(
-            (len(l) - len(l.lstrip()) for l in search_lines if l.strip()),
-            default=0
-        )
-
-        for idx in range(len(content_lines) - len(search_stripped) + 1):
-            window = content_lines[idx: idx + len(search_stripped)]
-            if [l.strip() for l in window] == search_stripped:
-                window_base = min(
-                    (len(l) - len(l.lstrip()) for l in window if l.strip()),
-                    default=0
-                )
-                delta = window_base - search_base
-                new_lines = []
-                for l in replace_lines:
-                    if not l.strip():
-                        new_lines.append(l)
-                    else:
-                        new_indent = max(0, (len(l) - len(l.lstrip())) + delta)
-                        new_lines.append(" " * new_indent + l.lstrip())
-                content_lines[idx: idx + len(search_stripped)] = new_lines
-                return _rejoin(content_lines), f"indent-flex(delta={delta:+d})"
-
-        # Tier 4: difflib fuzzy match with variable window size (±2 lines)
-        # Use whitespace-normalized matching to handle formatting drift.
-        def norm_text(s: str) -> str:
-            return re.sub(r'\s+', ' ', s).strip()
-
-        search_norm = norm_text(search)
-
-        base_window = len(search_lines)
-        best_score, best_idx, best_size = 0.0, -1, base_window
-
-        for size_delta in (0, -1, 1, -2, 2):
-            ws = base_window + size_delta
-            if ws < 1 or ws > len(content_lines):
-                continue
-            for idx in range(len(content_lines) - ws + 1):
-                window_text = "\n".join(content_lines[idx: idx + ws])
-                window_norm = norm_text(window_text)
-                score = difflib.SequenceMatcher(None, search_norm, window_norm).ratio()
-                if score > best_score:
-                    best_score, best_idx, best_size = score, idx, ws
-
-        if best_idx >= 0 and best_score >= self.config.fuzzy_threshold:
-            content_lines[best_idx: best_idx + best_size] = replace_lines
-            return _rejoin(content_lines), f"fuzzy(score={best_score:.2f}, win={best_size})"
-
-        # Relaxed second-chance retry to prevent false negatives like no-match(best=0.51).
-        relaxed_threshold = 0.65
-        if best_idx >= 0 and best_score >= relaxed_threshold:
-            anchor_lines = [l.strip() for l in search_lines[:3] if l.strip()]
-            if not anchor_lines:
-                content_lines[best_idx: best_idx + best_size] = replace_lines
-                return _rejoin(content_lines), f"fuzzy-relaxed(score={best_score:.2f}, win={best_size})"
-
-            window_norm = norm_text("\n".join(content_lines[best_idx: best_idx + best_size]))
-            if any(norm_text(a) in window_norm for a in anchor_lines):
-                content_lines[best_idx: best_idx + best_size] = replace_lines
-                return _rejoin(content_lines), f"fuzzy-relaxed(score={best_score:.2f}, win={best_size})"
-
-        return None, f"no-match(best={best_score:.2f})"
-
-        # ------------------------------------------------------------------
-        # Surgical patch engine — tolerant (best-effort per-hunk)
-        # ------------------------------------------------------------------
-
-    def _apply_code_patch(self, filepath: Path, hunks: list) -> bool:
-        if not filepath.exists():
-            self.log("❌", f"Patch target not found: {filepath}")
-            return False
-
-        try:
-            original = filepath.read_text(encoding="utf-8")
-        except Exception as e:
-            self.log("❌", f"Cannot read {filepath}: {e}")
-            return False
-
-        line_sep = self._detect_line_separator(original)
-        content = original
-        applied = 0
-        tiers = []
-
-        for i, hunk in enumerate(hunks):
-            search = hunk.get("search", "")
-            replace = hunk.get("replace", "")
-
-            if not search:
-                self.log("⚠️", f"Hunk {i+1}: empty search — skipping")
-                continue
-
-            new_content, tier = self._match_hunk(content, search, replace, line_sep)
-
-            if new_content is None:
-                # Retry mechanism: re-read file from disk and try again
-                self.log("⚠️", f"Hunk {i+1}: {tier} — re-reading file and retrying")
-                
-                try:
-                    # Re-read current file state from disk
-                    fresh_content = filepath.read_text(encoding="utf-8")
-                    fresh_line_sep = self._detect_line_separator(fresh_content)
-                    
-                    # Retry the hunk with fresh content
-                    new_content, retry_tier = self._match_hunk(fresh_content, search, replace, fresh_line_sep)
-                    
-                    if new_content is None:
-                        # Still failed after retry - skip this hunk
-                        self.log("⚠️", f"Hunk {i+1}: {retry_tier} after retry — skipping hunk")
-                        continue
-                    else:
-                        # Retry succeeded
-                        self.log("✅", f"Hunk {i+1}: {retry_tier} (after retry)")
-                        content = new_content
-                        line_sep = fresh_line_sep
-                        applied += 1
-                        tiers.append(f"{retry_tier}(retry)")
-                except Exception as e:
-                    self.log("❌", f"Hunk {i+1}: retry failed with error: {e} — skipping hunk")
-                    continue
-            else:
-                content = new_content
-                applied += 1
-                tiers.append(tier)
-                self.log("✅", f"Hunk {i+1}: {tier}")
-
-        if applied == 0:
-            self.log("❌", "No hunks applied")
-            return False
-
-        if content == original:
-            self.log("⚠️", "Patch produced no changes")
-            return False
-
-        is_valid, err = self._validate_syntax(content, filepath)
-        if not is_valid:
-            self.log("❌", f"Post-patch syntax error in {filepath.name}: {err} — aborting")
-            return False
-
-        if "/etc/nginx/sites-enabled" in str(filepath):
-            backup = Path("/tmp") / f"{filepath.name}.bak"
-        else:
-            backup = filepath.with_suffix(filepath.suffix + ".bak")
-        shutil.copy2(filepath, backup)
-        self.log("💾", f"Backup: {backup}")
-
-        try:
-            self._atomic_write(filepath, content)
-        except Exception as e:
-            self.log("❌", f"Atomic write failed for {filepath.name}: {e} — restoring backup")
-            shutil.copy2(backup, filepath)
-            return False
-
-        self.log("🩹", f"Patched {filepath.name}: {applied}/{len(hunks)} hunks [{', '.join(tiers)}]")
-        return True
-
-    def _resolve_path(self, filename: str) -> Optional[Path]:
-        """Tries to find the intended file within the workspace if direct path fails."""
-        if not filename:
-            return None
-        
-        # 1. Direct match
-        direct = Path(self.workspace) / filename
-        if direct.exists():
-            return direct
+    
+    for marker_pattern in markers:
+        match = re.search(marker_pattern, response_text, re.MULTILINE)
+        if match:
+            thinking = response_text[:match.start()].strip()
+            # Clean up common prefixes
+            thinking = re.sub(r'^(Sure|Okay|Alright|Got it)[,!.]?\s*', '', thinking, flags=re.IGNORECASE)
+            thinking = re.sub(r'^(I will|I\'ll|Let me)\s+', '', thinking, flags=re.IGNORECASE)
             
-        # 2. Search for filename (basename) in workspace
-        basename = os.path.basename(filename)
-        for root, _, files in os.walk(self.workspace):
-            if basename in files:
-                target = Path(root) / basename
-                self.log("🔍", f"Redirected {filename} -> {target.relative_to(self.workspace)}")
-                return target
-                
-        return None
-
-    # ------------------------------------------------------------------
-    # Apply fix dispatcher
-    # ------------------------------------------------------------------
-
-    def apply_fix(self, fix_data: dict) -> Tuple[bool, Optional[str]]:
-        """
-        Returns (success, new_run_command).
-        new_run_command is non-None when AI provides a corrected server start command.
-        """
-        if not fix_data:
-            return False, None
-
-        self.log("🔧", f"Applying fix [{fix_data.get('confidence', '?')}]: "
-                        f"{fix_data.get('diagnosis', '')[:120]}")
-
-        fix_type        = fix_data.get("fix_type")
-        details         = fix_data.get("fix_details", {})
-        new_run_command = details.get("run_command") or None   # ← extract updated run command
-
-        if new_run_command:
-            self.log("🔄", f"AI updated run command: {new_run_command}")
-
-        try:
-            if fix_type == "commands":
-                for cmd in details.get("commands", []):
-                    # Use streaming runner to avoid blind hangs
-                    success, _ = self._run_setup_command(cmd)
-                    if not success:
-                        self.log("⚠️", f"Command failed: {cmd}")
-                return True, new_run_command
-
-            elif fix_type == "code_patch":
-                filename = details.get("file")
-                hunks    = details.get("hunks", [])
-                if not filename or not hunks:
-                    self.log("⚠️", "code_patch missing file or hunks")
-                    return False, None
-                
-                filepath = self._resolve_path(filename)
-                if not filepath:
-                    self.log("❌", f"Patch target not found: {filename}")
-                    return False, None
-                    
-                return self._apply_code_patch(filepath, hunks), new_run_command
-
-            elif fix_type == "code_change":
-                filename = details.get("file")
-                content  = details.get("content")
-                append   = details.get("append", False)
-                if filename and content:
-                    filepath = self._resolve_path(filename)
-                    if not filepath:
-                        # If totally new file, create in root or as specified
-                        filepath = Path(self.workspace) / filename
-                        filepath.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    if append:
-                        with filepath.open("a", encoding="utf-8") as f:
-                            f.write(content)
-                    else:
-                        filepath.write_text(content, encoding="utf-8")
-                    self.log("✅", f"{'Appended' if append else 'Wrote'} {filename}")
-                    return True, new_run_command
-
-            else:
-                self.log("⚠️", f"Unknown fix_type '{fix_type}' — skipping")
-
-        except subprocess.TimeoutExpired:
-            self.log("❌", "Command timed out")
-        except Exception as e:
-            self.log("❌", f"Fix application failed: {e}")
-
-        return False, None
-
-    # ------------------------------------------------------------------
-    # Log-line classifiers
-    # ------------------------------------------------------------------
-
-    def log(self, emoji: str, msg: str, color: str = "") -> None:
-        """Central logging with duplicate suppression for high-frequency messages."""
-        if not hasattr(self, '_last_log'):
-            self._last_log = None
-            self._last_log_time = 0
-            self._dup_count = 0
-
-        current_time = time.time()
-        log_key = f"{emoji} {msg}"
-        
-        # Suppress identical messages within a 10-second window, unless it's the first repeat
-        if log_key == self._last_log and (current_time - self._last_log_time) < 10:
-            self._dup_count += 1
-            if self._dup_count == 1:
-                # Still log once or twice, but then quiet down
-                pass
-            else:
+            if thinking and 10 < len(thinking) < 500:
+                report(f'💡 {thinking}')
+                log(f'AI thinking: {thinking}')
                 return
+    
+    # If response is short and looks like an explanation, show it
+    if len(response_text) < 300 and not any(marker in response_text for marker in ['```', '//', '<<<', '>>>']):
+        thinking = response_text.strip()
+        if thinking and 10 < len(thinking) < 300:
+            report(f'💡 {thinking}')
+            log(f'AI thinking: {thinking}')
 
-        self._last_log = log_key
-        self._last_log_time = current_time
-        self._dup_count = 0
 
-        timestamp = time.strftime("%H:%M:%S")
-        prefix = f"[{timestamp}] {emoji} "
-        print(f"{prefix}{msg}")
-        sys.stdout.flush()
+# ── Phase 1: Code Generation ───────────────────────────────────────────────────
+def generate_code(user_prompt: str, existing_files: dict = None) -> bool:
+    is_edit = bool(existing_files)
 
-    def _is_error_line(self, line: str) -> bool:
-        lower = line.lower()
+    if is_edit:
+        report('✏️ Got your request! Updating the code now...')
+    else:
+        report('🧠 Thinking about how to build this for you...')
+
+    WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+
+    existing_context = ''
+    if existing_files:
+        lines = []
+        for path, content in list(existing_files.items())[:20]:
+            lines.append(f'// FILE: {path}\n{content[:3000]}')
+        existing_context = '\n\n'.join(lines)
+
+    system_prompt = """You are an elite full-stack engineer. Generate complete, production-ready application code.
+
+DEPLOYMENT ENVIRONMENT (Docker Ubuntu 22.04):
+- Pre-installed: Python3, pip3, Node.js 18, npm, Nginx, serve, git, curl
+- Nginx listens on port 80 and reverse-proxies to your app's internal port
+- Your app MUST use an internal port (3000, 5000, 8000, etc.) — NEVER port 80
+
+CRITICAL PORT RULE:
+- Nginx owns port 80. Your app binds to an internal port like 3000 or 5000.
+- Use process.env.PORT || 3000 for Node/Express
+- Use os.environ.get('PORT', '5000') for Python/Flask
+- NEVER bind to port 80 in your app code
+
+FILE OUTPUT FORMAT — use EXACTLY this, one marker per file:
+// FILE: path/to/file.ext
+[complete file content]
+
+FOR EDITS — use EXACTLY this patch format (NOT git diff):
+// PATCH: path/to/file.ext
+<<<SEARCH
+exact lines to replace (include 2-3 lines of context)
+>>>
+<<<REPLACE
+new lines
+>>>
+
+RULES:
+1. Write COMPLETE files — no truncation, no "// ... rest of code"
+2. NEVER use git diff format (no @@, no +line, no -line) — use <<<SEARCH/<<<REPLACE only
+3. NEVER hardcode localhost or 127.0.0.1 in frontend fetch/axios — use relative paths (/api/...)
+4. Dark-mode first UI: rich dark backgrounds, glassmorphism cards, smooth transitions
+5. For React/Vite: include index.html, src/main.jsx, src/App.jsx, package.json, vite.config.js
+6. For static HTML: just index.html (+ style.css, script.js) — no build tools needed
+7. Keep conversational text to 1-2 sentences max before file markers
+8. NO setup instructions — the platform deploys automatically
+
+FOR EDITS: Start your response with a brief explanation of what you're changing (1-2 sentences), then output the file markers."""
+
+    if is_edit:
+        user_content = f"""EXISTING PROJECT FILES:
+{existing_context}
+
+USER REQUEST: {user_prompt}
+
+CRITICAL: You MUST use file markers to apply changes:
+- For small changes: Use // PATCH: with <<<SEARCH/<<<REPLACE blocks
+- For complete rewrites: Use // FILE: with full file content
+- DO NOT respond conversationally - output ONLY file markers and code
+
+Apply the requested changes now."""
+    else:
+        user_content = f'Build this: {user_prompt}'
+
+    try:
+        response_text = call_ai([
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': user_content},
+        ], temperature=0.3, show_thinking=is_edit)  # Show thinking for edits
         
-        # Track binding signals
-        is_running_msg = any(x in lower for x in ("listening", "running", "serving"))
-        if is_running_msg:
-            if "0.0.0.0" in lower or "all addresses" in lower or "*:" in lower:
-                self.config.seen_bind_all = True
-            elif "127.0.0.1" in lower or "localhost" in lower:
-                self.config.seen_bind_local = True
+        # Log AI response for debugging
+        log(f'AI response length: {len(response_text)} chars')
+        log(f'AI response preview: {response_text[:500]}...')
+        
+    except Exception as e:
+        report(f'⚠️ Something went wrong while generating the code. Please try again. (Details: {e})')
+        return False
 
-        # Actual error keywords (ignoring access logs unless they indicate a broken root)
-        # We look for "GET / HTTP/1.1" 404 which usually means the entrypoint is misconfigured
-        if re.search(r'GET /\s+HTTP/.*"\s+404', line, re.IGNORECASE) or \
-           re.search(r'GET /\?.*HTTP/.*"\s+404', line, re.IGNORECASE):
-            self.log("⚠️", "Root path returned 404 — entrypoint might be misconfigured")
+    # Parse FILE: markers
+    file_marker_re = re.compile(
+        r'(?://\s*FILE:\s*|#\s*FILE:\s*|<!--\s*FILE:\s*)([^\n>]+?)(?:\s*-->)?\s*\n',
+        re.IGNORECASE
+    )
+    matches = list(file_marker_re.finditer(response_text))
+
+    # Parse PATCH: markers
+    patch_marker_re = re.compile(r'//\s*PATCH:\s*([^\n]+)', re.IGNORECASE)
+    patch_matches = list(patch_marker_re.finditer(response_text))
+    
+    log(f'Found {len(matches)} FILE markers and {len(patch_matches)} PATCH markers')
+
+    if not matches and not patch_matches:
+        # No file markers found
+        if is_edit:
+            # For edits, we MUST have file markers - don't guess
+            log('⚠️ AI response for edit has no FILE/PATCH markers')
+            log(f'Response preview: {response_text[:500]}')
+            report('⚠️ I need to try that again with the proper format. One moment...')
+            
+            # Retry with more explicit instructions
+            retry_prompt = f"""CRITICAL: You must use file markers to make changes.
+
+USER REQUEST: {user_prompt}
+
+EXISTING FILES:
+{existing_context[:2000]}
+
+Output ONLY file markers - no explanations:
+// PATCH: filename.ext
+<<<SEARCH
+exact lines to find
+>>>
+<<<REPLACE
+new lines
+>>>
+
+Or for complete rewrites:
+// FILE: filename.ext
+[complete file content]
+
+Apply the changes now using ONLY these markers."""
+            
+            try:
+                response_text = call_ai([
+                    {'role': 'system', 'content': system_prompt},
+                    {'role': 'user', 'content': retry_prompt},
+                ], temperature=0.2, show_thinking=True)  # Show retry thinking
+                
+                log(f'Retry response length: {len(response_text)} chars')
+                
+                # Re-parse markers
+                matches = list(file_marker_re.finditer(response_text))
+                patch_matches = list(patch_marker_re.finditer(response_text))
+                log(f'Retry found {len(matches)} FILE markers and {len(patch_matches)} PATCH markers')
+                
+                if not matches and not patch_matches:
+                    report('⚠️ The AI didn\'t return any code changes. Please try rephrasing your request.')
+                    return False
+            except Exception as e:
+                report(f'⚠️ Something went wrong. Please try again. (Details: {e})')
+                return False
+        else:
+            # For new projects, try to detect the file type
+            code = response_text.strip()
+            if not code or len(code) < 30:
+                report('⚠️ The AI didn\'t return any code. Please try rephrasing your request.')
+                return False
+            filename = _detect_filename(code)
+            _write_file(WORKSPACE_DIR / filename, code)
+            report(f'✅ Code is ready! Starting the build process...')
             return True
 
-        if re.search(r'"[A-Z]+\s+.*\s+HTTP/.*"\s+\d{3}', line):
-            # Ignore standard 2xx/3xx/404 on subpaths (which might be user clicking around)
-            return False
+    files_written = []
+    for i, match in enumerate(matches):
+        filename = _clean_filename(match.group(1))
+        start = match.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(response_text)
+        patch_in_range = [p for p in patch_matches if start <= p.start() < end]
+        if patch_in_range:
+            end = patch_in_range[0].start()
+        content = response_text[start:end].strip()
+        if content:
+            log(f'Writing file: {filename} ({len(content)} chars)')
+            _write_file(WORKSPACE_DIR / filename, content)
+            files_written.append(filename)
+        else:
+            log(f'Skipping empty file: {filename}')
 
-        return any(kw in lower for kw in self.config.error_keywords)
+    patches_applied = _apply_patches(response_text, patch_matches)
+    log(f'Applied {patches_applied} patches')
 
-    def _is_success_line(self, line: str, extra_patterns: list) -> bool:
-        lower = line.lower().strip()
-        all_patterns = self.config.success_keywords + [p.lower() for p in extra_patterns]
-        for p in all_patterns:
-            if not p: continue
-            if p in lower: return True
-            import re
-            if any(c in p for c in ('*', '+', '?', '[', '(', '^', '$')):
-                try:
-                    if re.search(p, line, re.IGNORECASE): return True
-                except re.error: pass
+    total = len(files_written) + patches_applied
+    if total == 0:
+        log('⚠️ No files written and no patches applied!')
+        report('⚠️ The code was generated but couldn\'t be saved. Please try again.')
         return False
 
-    def _check_port_open(self, port: int, host: str = "127.0.0.1") -> bool:
-        import socket
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(0.2)
-                return s.connect_ex((host, port)) == 0
-        except: return False
-
-    # ------------------------------------------------------------------
-    # Subprocess output streamer — Thread + Queue (stdlib only)
-    # ------------------------------------------------------------------
-
-    def _stream_process(self, process) -> tuple:
-        """
-        Streams process stdout via a background thread into a Queue.
-        Guarantees ALL output is captured even if process dies instantly.
-
-        Returns (q, sentinel, reader_thread)
-        """
-        q        = Queue()
-        sentinel = object()  # signals thread has finished draining
-
-        def _reader(stream, queue):
-            """Runs in background — reads until EOF then posts sentinel."""
-            try:
-                for line in iter(stream.readline, ''):
-                    queue.put(line)
-            finally:
-                queue.put(sentinel)   # always signals done, even on exception
-                stream.close()
-
-        reader_thread = Thread(target=_reader, args=(process.stdout, q), daemon=True)
-        reader_thread.start()
-        return q, sentinel, reader_thread
+    if is_edit:
+        report(f'✅ Changes applied to {total} file(s). Rebuilding your app...')
+        # Store what changed for post-deployment testing
+        changed_files = files_written + [_clean_filename(pm.group(1)) for pm in patch_matches]
+        return {'success': True, 'changed_files': changed_files, 'user_prompt': user_prompt}
+    else:
+        report(f'✅ Code is ready ({total} file(s) created). Starting the build process...')
+        return True
 
 
-    def _monitor_process(self, process, success_patterns: list) -> tuple:
-        """
-        Monitors a running process using Thread + Queue.
-        Collects output for startup_timeout seconds, then drains any remaining
-        buffered output if the process has already exited.
+def _write_file(path: Path, content: str):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding='utf-8')
+    log(f'  📄 {path.relative_to(PROJECT_DIR)}')
 
-        Returns (output_lines: list, error_flag: bool)
-        """
-        q, sentinel, reader_thread = self._stream_process(process)
-        # Store queue info so _monitor_runtime can continue later
-        setattr(process, '_q_info', (q, sentinel, reader_thread))
 
-        output_lines = []
-        error_flag   = False
-        start        = time.time()
-        done         = False
+def _clean_filename(filename: str) -> str:
+    filename = filename.strip().lstrip('/')
+    for prefix in ('project/workspace/', 'workspace/'):
+        if filename.startswith(prefix):
+            filename = filename[len(prefix):]
+    return filename
 
-        # ── Phase 1: Live monitoring window ──────────────────────────────
-        process_ready = False
-        last_port_check = 0
-        target_port = None
-        import re
-        cmd = str(getattr(process, 'args', ''))
-        port_match = re.search(r'(?:--port|PORT=)\s*(\d+)', cmd) or re.search(r':(\d{3,})\b', cmd)
-        if port_match:
-            try: target_port = int(port_match.group(1))
-            except: pass
 
-        while time.time() - start < self.config.startup_timeout:
-            if target_port and time.time() - last_port_check > 1.2:
-                last_port_check = time.time()
-                if self._check_port_open(target_port):
-                    self.log("✅", f"Port {target_port} is open — process is ready")
-                    process_ready = True
-                    break
+def _detect_filename(code: str) -> str:
+    c = code.strip()
+    if '<html' in c.lower() or '<!doctype' in c.lower():
+        return 'index.html'
+    if 'def ' in c or 'import flask' in c or 'from flask' in c or 'fastapi' in c:
+        return 'app.py'
+    if 'function ' in c or 'const ' in c or 'require(' in c:
+        return 'index.js'
+    return 'index.html'
 
-            try:
-                item = q.get(timeout=float(os.environ.get('POLL_INTERVAL', '0.05')))
-            except Empty:
-                if process.poll() is not None and done: break
-                continue
 
-            if item is sentinel:
-                done = True
-                break
+def _apply_patches(text: str, patch_matches: list) -> int:
+    """
+    Apply SEARCH/REPLACE patch hunks to workspace files.
+    Also handles git-diff format (@@...@@ / +line / -line) by converting it first.
+    Falls back to rewriting the full file if no hunks match.
+    """
+    applied = 0
+    hunk_re = re.compile(r'<<<SEARCH\n(.*?)\n>>>\n<<<REPLACE\n(.*?)\n>>>', re.DOTALL)
 
-            print(item, end="", flush=True)
-            output_lines.append(item)
-            if self._is_error_line(item): error_flag = True
-            
-            if not process_ready and self._is_success_line(item, success_patterns) and not error_flag:
-                self.log("✅", "Ready signal detected in logs")
-                process_ready = True
-                if getattr(process, '_vibe_type', '') == 'setup': break
-            
-            if process_ready and not error_flag: break
+    for pm in patch_matches:
+        filename = _clean_filename(pm.group(1))
+        log(f'Processing PATCH for: {filename}')
+        target = WORKSPACE_DIR / filename
+        if not target.exists():
+            log(f'  ⚠️ PATCH target not found: {filename}')
+            continue
 
-        if not process_ready and not error_flag and process.poll() is None:
-            if target_port and self._check_port_open(target_port):
-                self.log("✅", f"Port {target_port} is active — proceeding")
-                process_ready = True
-
-        # ── Phase 1.5: Final Binding Validation ──────────────────────────
-        # If we finished the startup window and strictly only saw 127.0.0.1
-        if self.config.seen_bind_local and not self.config.seen_bind_all:
-            self.log("⚠️", "Detected local-only binding — triggering self-healing for 0.0.0.0")
-            error_flag = True
-
-        # ── Phase 2: Drain remaining buffer after process exits ──────────
-        # Captures the actual error line that arrives after the traceback header
-        if process.poll() is not None:
-            drain_timeout = float(os.environ.get('DRAIN_TIMEOUT', '3.0'))
-            drain_start   = time.time()
-
-            while time.time() - drain_start < drain_timeout:
-                try:
-                    item = q.get(timeout=0.1)
-                except Empty:
-                    if done:
-                        break
-                    continue
-
-                if item is sentinel:
-                    break
-
-                print(item, end="", flush=True)
-                output_lines.append(item)
-
-                if self._is_error_line(item):
-                    error_flag = True
-
-        return output_lines, error_flag
-
-    def _monitor_background_processes(self, background_pids: list) -> Optional[str]:
-        """Check all background processes for crashes and return an error message if any died."""
-        for bg in background_pids:
-            if bg.poll() is not None:
-                # Process died — get its name/type if possible
-                name = getattr(bg, '_vibe_name', 'background process')
-                rc = bg.returncode
-                # We can't easily read its whole stdout now because it's piped and might be empty
-                # but poll() != None is enough to trigger a fix cycle
-                return f"Background process [{name}] exited unexpectedly with code {rc}"
-        return None
-
-    def _monitor_runtime(self, process, success_patterns: list, background_pids: list = None) -> tuple:
-        """
-        Continuously drains and monitors a process after it has successfully started.
-        Maintains real-time log streaming and checks for runtime errors.
-        Now also monitors background processes for crashes.
-        """
-        # Reduced noise: Only log 'Entering runtime' once per session if possible
-        if not getattr(self, '_already_monitoring', False):
-            self.log("👁️", "Entering runtime monitoring mode...")
-            self._already_monitoring = True
+        file_content = target.read_text(encoding='utf-8')
+        next_patch = next((p for p in patch_matches if p.start() > pm.start()), None)
+        segment_end = next_patch.start() if next_patch else len(text)
+        segment = text[pm.end():segment_end]
         
-        # Retrieve the queue state from the process (stored by _monitor_process)
-        qinfo = getattr(process, '_q_info', None)
-        if not qinfo:
-            self.log("⚠️", "No queue info found on process — cannot monitor runtime")
-            return [], False
-            
-        q, sentinel, _ = qinfo
-        runtime_lines = []
-        runtime_error = False
+        log(f'  Patch segment length: {len(segment)} chars')
+
+        # Detect and convert git-diff format to SEARCH/REPLACE
+        if re.search(r'^@@.*@@', segment, re.MULTILINE):
+            log(f'  Converting git-diff format to SEARCH/REPLACE')
+            segment = _git_diff_to_search_replace(segment, file_content)
+
+        hunks = list(hunk_re.finditer(segment))
+        log(f'  Found {len(hunks)} hunks in patch')
         
-        while True:
-            # 1. Check background processes for health
-            if background_pids:
-                bg_err = self._monitor_background_processes(background_pids)
-                if bg_err:
-                    self.log("🚨", bg_err)
-                    runtime_lines.append(f"\nCRITICAL: {bg_err}\n")
-                    runtime_error = True
-                    break
+        if not hunks:
+            log(f'  ⚠️ No valid patch hunks found for {filename}')
+            log(f'  Segment preview: {segment[:200]}')
+            continue
 
-            try:
-                # Use a slightly longer timeout for idle runtime
-                item = q.get(timeout=float(os.environ.get('POLL_INTERVAL', '0.05')))
-            except Empty:
-                if process.poll() is not None:
-                    break
-                continue
-
-            if item is sentinel:
-                break
-
-            print(item, end="", flush=True)
-            runtime_lines.append(item)
-
-            if self._is_error_line(item):
-                self.log("🚨", "Runtime issue detected in logs")
-                runtime_error = True
-                # Break to trigger self-healing
-                break
+        for idx, hunk in enumerate(hunks):
+            search, replace = hunk.group(1), hunk.group(2)
+            log(f'  Hunk {idx+1}: searching for {len(search)} chars, replacing with {len(replace)} chars')
+            
+            # Show first and last line of search for debugging
+            search_lines = search.splitlines()
+            if search_lines:
+                log(f'  Search first line: "{search_lines[0][:80]}"')
+                if len(search_lines) > 1:
+                    log(f'  Search last line: "{search_lines[-1][:80]}"')
+            
+            if search in file_content:
+                file_content = file_content.replace(search, replace, 1)
+                applied += 1
+                log(f'  ✅ Hunk {idx+1} applied successfully')
+            else:
+                log(f'  ⚠️ Hunk {idx+1} not found in {filename}')
+                log(f'  Search text (first 100 chars): {search[:100]}...')
                 
-        return runtime_lines, runtime_error
+                # Try to find similar content (for debugging)
+                search_stripped = search.strip()
+                if search_stripped in file_content:
+                    log(f'  ℹ️ Found similar content when ignoring leading/trailing whitespace')
+                else:
+                    # Check if individual lines exist
+                    search_lines = [l.strip() for l in search.splitlines() if l.strip()]
+                    found_lines = sum(1 for l in search_lines if l in file_content)
+                    log(f'  ℹ️ Found {found_lines}/{len(search_lines)} individual lines in file')
 
-    def _apply_file_writes(self, file_writes: list) -> int:
-        """
-        Write files directly from structured data — no shell quoting needed.
-        Returns the number of files successfully written.
-        """
-        written = 0
-        for entry in file_writes:
-            rel_path = entry.get("path", "").strip()
-            content = entry.get("content")
-            if not rel_path or content is None:
-                continue
-            filepath = Path(self.workspace) / rel_path
-            try:
-                filepath.parent.mkdir(parents=True, exist_ok=True)
-                
-                # PERSISTENT FIX: Strip '---' or other common LLM garbage if they are on a line by themselves
-                lines = content.splitlines()
-                cleaned_lines = [line for line in lines if line.strip() != "---"]
-                content = "\n".join(cleaned_lines)
-                if lines and lines[-1] == "" and not content.endswith("\n"):
-                    content += "\n"
+        target.write_text(file_content, encoding='utf-8')
+        log(f'  📄 Updated {filename}')
 
-                filepath.write_text(content, encoding="utf-8")
-                self.log("📄", f"Wrote {rel_path} ({len(content)} chars)")
-                written += 1
-            except Exception as e:
-                self.log("❌", f"Failed to write {rel_path}: {e}")
-        return written
+    return applied
 
-    @staticmethod
-    def _is_echo_redirect(cmd: str) -> bool:
-        """Detect shell commands that try to write file content via echo/cat/printf redirection."""
-        return bool(re.search(
-            r"""(?:^|\s)(?:echo|printf|cat)\s+['"].*['"]?\s*>{1,2}\s*\S+""",
-            cmd, re.DOTALL
-        ))
 
-    def _run_setup_command(self, cmd: str) -> tuple:
-        """
-        Runs a setup command to completion with live streaming output.
-        Returns (success: bool, output: list)
-        """
-        if self._is_echo_redirect(cmd):
-            self.log("⚠️", f"[setup] Intercepted unsafe echo/redirect — skipping: {cmd[:80]}...")
-            return True, []
+def _git_diff_to_search_replace(diff_segment: str, original_content: str) -> str:
+    """
+    Convert a git unified diff segment into <<<SEARCH/<<<REPLACE format.
+    Each @@ hunk becomes one SEARCH/REPLACE block.
+    """
+    result_blocks = []
+    hunk_re = re.compile(r'@@[^@]*@@[^\n]*\n((?:[+\- ][^\n]*\n?)*)', re.MULTILINE)
 
-        self.log("⚙️", f"[setup] {cmd}")
-        output_lines = []
+    for hunk in hunk_re.finditer(diff_segment):
+        hunk_lines = hunk.group(1).splitlines()
+        search_lines = []
+        replace_lines = []
+        for line in hunk_lines:
+            if line.startswith('-'):
+                search_lines.append(line[1:])
+            elif line.startswith('+'):
+                replace_lines.append(line[1:])
+            else:
+                # Context line — appears in both
+                ctx = line[1:] if line.startswith(' ') else line
+                search_lines.append(ctx)
+                replace_lines.append(ctx)
 
-        try:
-            process = subprocess.Popen(
-                cmd, shell=True,
-                executable='/bin/bash',
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
+        if search_lines:
+            result_blocks.append(
+                f'<<<SEARCH\n{chr(10).join(search_lines)}\n>>>\n'
+                f'<<<REPLACE\n{chr(10).join(replace_lines)}\n>>>'
             )
 
-            q        = Queue()
-            sentinel = object()
+    return '\n'.join(result_blocks)
 
-            def _reader(stream, queue):
-                try:
-                    for line in iter(stream.readline, ''):
-                        queue.put(line)
-                finally:
-                    queue.put(sentinel)
-                    stream.close()
 
-            Thread(target=_reader, args=(process.stdout, q), daemon=True).start()
+def read_workspace_files() -> dict:
+    skip_dirs  = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next'}
+    skip_files = {'metadata.json'}
+    files = {}
+    if not WORKSPACE_DIR.exists():
+        return files
+    for fp in sorted(WORKSPACE_DIR.rglob('*')):
+        if any(p in skip_dirs for p in fp.parts):
+            continue
+        if fp.name in skip_files or not fp.is_file():
+            continue
+        try:
+            files[str(fp.relative_to(WORKSPACE_DIR))] = fp.read_text(encoding='utf-8')[:8000]
+        except Exception:
+            pass
+    return files
 
-            while True:
-                try:
-                    item = q.get(timeout=1.0)
-                except Empty:
-                    # No output for 1s — check if process is still alive
-                    if process.poll() is not None:
-                        break
-                    continue
 
-                if item is sentinel:
-                    break
+def sanitize_workspace():
+    """
+    Scan all text files in the workspace for git diff corruption
+    (lines starting with @@, +, - that indicate a raw diff was written as file content).
+    For corrupted files, ask the AI to regenerate them cleanly.
+    """
+    skip_dirs  = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next'}
+    corrupted  = []
 
-                print(item, end="", flush=True)
-                output_lines.append(item)
+    if not WORKSPACE_DIR.exists():
+        return
 
-            process.wait()
+    for fp in sorted(WORKSPACE_DIR.rglob('*')):
+        if any(p in skip_dirs for p in fp.parts):
+            continue
+        if not fp.is_file():
+            continue
+        # Only check text-based source files
+        if fp.suffix not in ('.css', '.js', '.jsx', '.ts', '.tsx', '.html', '.py', '.json', '.md'):
+            continue
+        try:
+            content = fp.read_text(encoding='utf-8')
+            # Detect git diff markers: lines starting with @@ or a block of +/- lines
+            lines = content.splitlines()
+            diff_lines = sum(1 for l in lines if l.startswith('@@') or (len(l) > 1 and l[0] in ('+', '-') and not l.startswith('---') and not l.startswith('+++')))
+            if diff_lines > 3 or any(l.startswith('@@') for l in lines):
+                corrupted.append(fp)
+                log(f'  🔴 Corrupted file detected: {fp.relative_to(PROJECT_DIR)}')
+        except Exception:
+            pass
 
-            if process.returncode != 0:
-                self.log("⚠️", f"Setup exited {process.returncode}")
-                return False, output_lines
+    if not corrupted:
+        return
 
-            return True, output_lines
+    report(f'🔧 Found {len(corrupted)} file(s) with formatting issues — fixing them automatically...')
+
+    for fp in corrupted:
+        try:
+            rel = str(fp.relative_to(WORKSPACE_DIR))
+            content = fp.read_text(encoding='utf-8')
+
+            # Ask AI to regenerate the clean version of this file
+            fix_prompt = f"""The following file has been corrupted with git diff markers (lines starting with @@, +, -).
+Please rewrite it as a clean, complete, valid file with no diff markers.
+
+File: {rel}
+Corrupted content:
+{content[:4000]}
+
+Return ONLY the clean file content with no explanation, no markers, no fences."""
+
+            clean = call_ai([
+                {'role': 'system', 'content': 'You are a code repair tool. Return only clean file content.'},
+                {'role': 'user', 'content': fix_prompt},
+            ], temperature=0.1, show_thinking=False)  # Don't show thinking for file repair
+
+            # Strip any accidental code fences
+            clean = re.sub(r'^```[a-z]*\n?', '', clean.strip(), flags=re.MULTILINE)
+            clean = re.sub(r'\n?```$', '', clean.strip(), flags=re.MULTILINE)
+
+            if clean and len(clean) > 10:
+                fp.write_text(clean, encoding='utf-8')
+                log(f'  ✅ Fixed: {rel}')
+            else:
+                log(f'  ⚠️ AI returned empty content for {rel} — skipping')
 
         except Exception as e:
-            self.log("❌", f"Setup command failed: {e}")
-            return False, []
+            log(f'  ⚠️ Failed to fix {fp.name}: {e}')
 
-    # ------------------------------------------------------------------
-    # Main execution loop
-    # ------------------------------------------------------------------
 
-    def run_with_healing(self) -> bool:
-        self.log("🚀", "Starting AI-Driven Self-Healing Agent")
-        self.log("📂", f"Workspace : {self.workspace}")
-        self.log("🖥️", f"System    : {self.os_info}")
-        self.log("🔌", f"Port      : {self.config.port}")
+# ── Phase 2: Deployment ────────────────────────────────────────────────────────
+def deploy(error_context: dict = None, max_retries: int = 3, test_changes: bool = False, changed_files: list = None, user_prompt: str = None) -> bool:
+    report('🔧 Figuring out the best way to run your app...')
+    
+    # Show loading page immediately so users see progress
+    apply_baseline_gateway()
 
-        # Build recursive file list for full project awareness
-        all_files = []
-        for root, dirs, fnames in os.walk(self.workspace):
-            dirs[:] = [d for d in dirs if d not in self.SKIP_DIRS]
-            for fname in fnames:
-                rel = os.path.relpath(os.path.join(root, fname), self.workspace)
-                all_files.append(rel)
+    # Scan and fix any corrupted workspace files before attempting deployment
+    sanitize_workspace()
 
-        if not all_files:
-            self.log("❌", "Workspace is empty — nothing to run")
-            return False
+    tree      = _discover_workspace()
+    manifests = _read_manifests()
+    
+    # Detect available ports
+    available_ports = _detect_available_ports()
 
-        self.log("📋", f"Found {len(all_files)} files in workspace")
+    system_prompt = """You are a senior DevOps engineer deploying applications in a Docker container.
 
-        plan = self.get_ai_execution_plan(all_files)
-        if not plan:
-            return False
+ENVIRONMENT:
+- Ubuntu 22.04 container with Node.js, Python, Nginx pre-installed
+- Workspace: /project/workspace/ (all user files are here)
+- Nginx: Listens on port 80, proxies to your app's internal port
+- Available ports: {available_ports}
 
-        # Log the full plan for debugging
-        self.log("📋", f"AI Plan received: {json.dumps(plan, indent=2)[:500]}")
+YOUR TASK:
+Analyze the workspace structure and create a deployment strategy.
 
-        # Prepare context for AI (define at method level for exception handler access)
-        files_content    = self.scan_project_files()
-        project_type     = plan.get("project_type", "unknown")
-        processes        = plan.get("processes", [])
-        success_patterns = plan.get("success_patterns", [])
-        nginx_config     = plan.get("nginx_config")
-        background_pids  = []   # Initialize early for exception handler cleanup
+STEP 1: UNDERSTAND THE STRUCTURE
+- workspace_discovery shows the complete file tree
+- workspace_discovery.server_files_content contains the ACTUAL CODE of server files (server.js, app.py, etc.)
+- manifest_list shows where package.json, requirements.txt, etc. are located
+- entry_point_list shows main files like server.js, app.py, index.html
 
-        self.log("🎯", f"Stack  : {project_type}")
-        self.log("📋", f"Plan   : {plan.get('analysis', '')}")
+STEP 2: READ SERVER FILES TO UNDERSTAND DEPENDENCIES
+The workspace_discovery.server_files_content gives you the actual code.
+Look for these patterns:
 
-        # ── Phase 0: Apply structured file writes (safe, no shell quoting) ──
-        file_writes = plan.get("file_writes") or []
-        if file_writes:
-            n = self._apply_file_writes(file_writes)
-            self.log("📝", f"Applied {n}/{len(file_writes)} file writes")
-            if n > 0:
-                files_content = self.scan_project_files()
+In server.js or app.js:
+```javascript
+app.use(express.static(path.join(__dirname, 'dist')))
+// → Server expects dist/ in same directory
 
-        if not processes:
-            self.log("❌", "AI returned no processes")
-            self.log("💡", "Hint: The AI response must include a 'processes' array with at least one 'primary' type entry")
-            return False
+app.use(express.static(path.join(__dirname, 'client', 'dist')))
+// → Server expects dist/ at ./client/dist/
 
-        # Separate by type — order matters: setup → background → primary
-        setup_procs      = [p for p in processes if p.get("type") == "setup"]
-        background_procs = [p for p in processes if p.get("type") == "background"]
-        primary_proc     = next((p for p in processes if p.get("type") == "primary"), None)
+app.use(express.static(path.join(__dirname, '../frontend/build')))
+// → Server expects build/ at ../frontend/build/
+```
 
-        if not primary_proc:
-            # SAFETY FALLBACK: If AI provided nginx_config but forgot to add nginx as primary process
-            if nginx_config:
-                self.log("🔧", "No primary process found, but nginx_config is present. Using nginx as primary.")
-                primary_proc = {
-                    "name": "nginx-gateway",
-                    "command": "nginx -g 'daemon off;'",
-                    "type": "primary",
-                    "ready_signal": None
-                }
-            else:
-                self.log("❌", "AI returned no primary process")
-                self.log("💡", f"Processes found: {[p.get('type') for p in processes]}")
-                self.log("💡", "The AI must return exactly ONE process with type='primary'")
-                return False
+In Python (app.py, main.py):
+```python
+app.mount("/", StaticFiles(directory="dist"), name="static")
+# → Server expects dist/ in same directory
 
-        run_command      = primary_proc.get("command", "")
-        
-        # PERSISTENT FIX: Auto-inject build steps if AI forgot them for React/Node projects
-        frontend_dir = Path(self.workspace) / "frontend"
-        if not any("npm install" in p.get("command", "") for p in setup_procs):
-            if (frontend_dir / "package.json").exists():
-                self.log("🔧", "Injected missing npm install for frontend")
-                setup_procs.insert(0, {"name": "auto-install", "command": "npm --prefix frontend install", "type": "setup"})
-            elif (Path(self.workspace) / "package.json").exists():
-                self.log("🔧", "Injected missing npm install for project")
-                setup_procs.insert(0, {"name": "auto-install", "command": "npm install", "type": "setup"})
+app.mount("/", StaticFiles(directory="../client/dist"), name="static")
+# → Server expects dist/ at ../client/dist/
+```
 
-        if not any("npm run build" in p.get("command", "") for p in setup_procs):
-            if (frontend_dir / "package.json").exists():
-                self.log("🔧", "Injected missing npm run build for frontend")
-                setup_procs.append({"name": "auto-build", "command": "npm --prefix frontend run build", "type": "setup"})
-            elif (Path(self.workspace) / "package.json").exists():
-                self.log("🔧", "Injected missing npm run build for project")
-                setup_procs.append({"name": "auto-build", "command": "npm run build", "type": "setup"})
-        # background_pids already initialized earlier
+STEP 3: DETERMINE BUILD ORDER
+- If server references a dist/build folder, that component must be built FIRST
+- Then copy/move dist to where server expects it OR start server from correct directory
 
-        for proc in setup_procs:
-            cmd = proc.get("command", "")
-            success, setup_output = self._run_setup_command(cmd)
-            
-            if not success:
-                self.log("🚨", "Setup failed — attempting AI fix...")
-                error_log = "".join(setup_output)
-                fix = self.call_ai_for_fix(error_log, project_type, files_content)
-                fix_success, _ = self.apply_fix(fix) if fix else (False, None)
-                
-                if fix_success:
-                    self.log("🔄", "Setup fix applied — retrying setup...")
-                    files_content = self.scan_project_files()
-                    # Re-run the current setup command once more
-                    success, _ = self._run_setup_command(cmd)
-                    if not success:
-                        self.log("⚠️", "Retry failed — continuing anyway")
-                else:
-                    self.log("⚠️", "No fix applied — continuing anyway")
+STEP 4: GENERATE DEPLOYMENT SCRIPT
 
-        
-        # ── Phase 1.5: Apply Nginx gateway (after setup/build) ──
-        nginx_config = plan.get("nginx_config")
-        if nginx_config:
-            try:
-                # Clean up sites-enabled backup garbage
-                sites_enabled_dir = Path("/etc/nginx/sites-enabled")
-                if sites_enabled_dir.exists():
-                    for f in sites_enabled_dir.glob("*.bak*"):
-                        try: f.unlink()
-                        except: pass
-                
-                # CLEANUP NGINX CONFIG: strip http, events, and other global blocks
-                # We only want the server { ... } blocks for sites-enabled/default
-                original_nginx_config = nginx_config
-                if "http {" in nginx_config:
-                    self.log("🧹", "Stripping http wrapper from Nginx config")
-                    # Try to extract contents of http block using balanced braces or regex
-                    # Simple regex approach first:
-                    h_match = re.search(r'http\s*\{(.+)\}\s*(?:events|$|worker)', nginx_config, re.DOTALL)
-                    if h_match:
-                        nginx_config = h_match.group(1).strip()
-                    else:
-                        # Fallback for complex nesting: remove first '{' and last '}'
-                        parts = nginx_config.split('{', 1)
-                        if len(parts) > 1:
-                            nginx_config = parts[1].rsplit('}', 1)[0]
-                
-                # Further cleanup: remove events, worker_processes, etc. if they are still at top level
-                nginx_config = re.sub(r'events\s*\{.*?\}', '', nginx_config, flags=re.DOTALL)
-                nginx_config = re.sub(r'worker_processes\s+.*?;', '', nginx_config)
-                nginx_config = re.sub(r'user\s+.*?;', '', nginx_config)
-                nginx_config = re.sub(r'error_log\s+.*?;', '', nginx_config)
-                nginx_config = re.sub(r'pid\s+.*?;', '', nginx_config)
-                
-                # Re-wrap in a single server block if only directives are left without server wrapper
-                # (Handle case where AI might give location blocks only)
-                if "location" in nginx_config and "server {" not in nginx_config:
-                    self.log("🔧", "Wrapping location blocks in a default server block")
-                    nginx_config = f"server {{\n    listen {self.config.port};\n    server_name localhost;\n" + nginx_config + "\n}"
-                
-                # Also replace any hardcoded 'listen 80;' with the dynamic port if the user's config has it
-                nginx_config = nginx_config.replace("listen 80;", f"listen {self.config.port};")
+Pattern A: Single-page app (Vite/React) with no backend
+```bash
+cd /project/workspace
+rm -rf dist build .next out node_modules/.vite
+npm install
+npm run build
+npx serve -s dist -l 3000 &
+```
 
-                # Inject health endpoint if not already present
-                if "/health" not in nginx_config and f"location /health" not in nginx_config:
-                    self.log("🏥", "Injecting /health endpoint into nginx config")
-                    health_location = """
-    # Health check endpoint
-    location /health {
-        proxy_pass http://127.0.0.1:9090/health;
+Pattern B: Client/Server in separate folders (server expects ./client/dist)
+```bash
+# Build client first
+cd /project/workspace/client
+rm -rf dist build node_modules/.vite
+npm install
+npm run build
+
+# Copy dist to where server expects it
+mkdir -p /project/workspace/server/client
+cp -r dist /project/workspace/server/client/
+
+# Start server
+cd /project/workspace/server
+npm install
+PORT=3000 node server.js >> /tmp/app.log 2>&1 &
+```
+
+Pattern C: Client/Server in separate folders (server expects ../client/dist)
+```bash
+# Build client first
+cd /project/workspace/client
+rm -rf dist build node_modules/.vite
+npm install
+npm run build
+
+# Start server (it will find ../client/dist)
+cd /project/workspace/server
+npm install
+PORT=3000 node server.js >> /tmp/app.log 2>&1 &
+```
+
+Pattern D: Frontend/Backend (separate apps)
+```bash
+# Build frontend
+cd /project/workspace/frontend
+rm -rf dist build node_modules/.vite
+npm install
+npm run build
+
+# Start backend
+cd /project/workspace/backend
+pip3 install -r requirements.txt
+gunicorn -w 4 -b 0.0.0.0:5000 app:app >> /tmp/app.log 2>&1 &
+
+# Serve frontend
+cd /project/workspace/frontend
+npx serve -s dist -l 3000 >> /tmp/app.log 2>&1 &
+```
+
+Pattern E: Monorepo (server in root, serves built client)
+```bash
+# Build client
+cd /project/workspace
+npm install
+npm run build:client  # or npm run build
+
+# Start server
+PORT=3000 node server.js >> /tmp/app.log 2>&1 &
+```
+
+STEP 5: CHOOSE THE RIGHT PATTERN
+- Look at workspace_discovery structure
+- Read server file to see what path it expects
+- Match to the appropriate pattern above
+- Adjust paths based on actual structure
+
+IMPORTANT:
+- ALWAYS clean build artifacts first: rm -rf dist build .next out node_modules/.vite
+- Use "npm install" not "npm ci"
+- App serves at root / (no base URL configuration)
+- Use background processes (&) and redirect logs (>> /tmp/app.log 2>&1)
+- Port 80 is for Nginx only - app uses internal port (3000, 5000, 8000, etc.)
+- The workspace_discovery shows you the EXACT file structure
+- Look at manifest_list to see where package.json, requirements.txt, etc. are located
+- If you see ./frontend/package.json, the path is /project/workspace/frontend/
+- If you see ./package.json, the path is /project/workspace/
+
+COMMON PATTERNS:
+
+Single-page app (Vite/React):
+  cd /project/workspace
+  rm -rf dist build .next out node_modules/.vite
+  npm install
+  npm run build
+  npx serve -s dist -l 3000 &
+
+Nested frontend:
+  cd /project/workspace/frontend
+  rm -rf dist build .next out node_modules/.vite
+  npm install
+  npm run build
+  npx serve -s dist -l 3000 &
+
+Client/Server structure (separate folders):
+  # Build client
+  cd /project/workspace/client
+  rm -rf dist build .next out node_modules/.vite
+  npm install
+  npm run build
+  # Copy dist to where server expects it OR update server path
+  # Then start server
+  cd /project/workspace/server
+  npm install
+  PORT=3000 node server.js &
+
+Node.js server:
+  cd /project/workspace
+  npm install
+  PORT=3000 node server.js &
+
+Python Flask:
+  cd /project/workspace
+  pip3 install -r requirements.txt
+  gunicorn -w 4 -b 0.0.0.0:5000 app:app &
+
+IMPORTANT NOTES:
+- ALWAYS clean build artifacts before rebuilding: rm -rf dist build .next out node_modules/.vite
+- Use "npm install" not "npm ci" (package-lock.json may not exist)
+- Serve BUILT output (dist/ or build/) not source files
+- App serves at root / (no base URL configuration needed)
+- Use background processes (&) and redirect logs (>> /tmp/app.log 2>&1)
+
+NGINX CONFIGURATION:
+Your nginx config MUST:
+- Listen on port 80
+- Proxy ALL requests (including assets) to your app port
+- Include proxy headers (Host, X-Real-IP, X-Forwarded-For)
+- Enable gzip compression
+- Add security headers
+
+Example nginx config:
+server {{
+    listen 80;
+    
+    # Gzip
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript;
+    
+    # Security
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    
+    # Proxy everything to app
+    location / {{
+        proxy_pass http://127.0.0.1:APP_PORT;
         proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        access_log off;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+        add_header Pragma "no-cache" always;
+        expires 0;
+    }}
+    
+    # Static assets (also proxied)
+    # Use short cache during development to see updates immediately
+    location ~* \.(js|css|png|jpg|svg|ico|woff|woff2)$ {{
+        proxy_pass http://127.0.0.1:APP_PORT;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        add_header Cache-Control "no-cache, must-revalidate" always;
+        expires 0;
+    }}
+}}
+
+RESPONSE FORMAT:
+{{
+  "thought": "Explain your deployment strategy in 1-2 sentences for the user. Example: 'I see a Vite React app in the frontend folder. I'll build it and serve the dist folder on port 3000.'",
+  "app_port": 3000,
+  "deployment_script": "#!/bin/bash\\nset -e\\n...",
+  "nginx_config": "server {{ ... }}"
+}}
+
+Remember: You're Claude, a highly capable AI. Trust your analysis of the workspace_discovery data and choose the right approach for the specific project structure you see.""".format(available_ports=', '.join(map(str, available_ports)))
+
+    user_content = {
+        'workspace_tree': tree,
+        'manifest_files': manifests,
+        'error_context': error_context,
     }
-"""
-                    # Insert health location before the last closing brace
-                    nginx_config = nginx_config.rstrip()
-                    if nginx_config.endswith('}'):
-                        nginx_config = nginx_config[:-1] + health_location + "\n}"
-                    else:
-                        nginx_config += health_location
 
-                nginx_config = nginx_config.strip()
+    error_history = []  # Track all errors across attempts for pattern detection
+    attempted_strategies = []  # Track deployment strategies to avoid repetition
 
-                # Write and validate config (but don't start nginx yet - it will be started as primary/background process)
-                nginx_conf_path = Path("/etc/nginx/sites-enabled/default")
-                nginx_conf_path.parent.mkdir(parents=True, exist_ok=True)
-                nginx_conf_path.write_text(nginx_config, encoding="utf-8")
-                
-                # Kill any existing nginx processes to avoid port conflicts
-                self.log("🧹", "Cleaning up any existing nginx processes...")
-                subprocess.run(["nginx", "-s", "stop"], capture_output=True, timeout=5)
-                subprocess.run(["pkill", "-9", "nginx"], capture_output=True, timeout=5)
-                
-                # Validate config only (don't start)
-                test_result = subprocess.run(["nginx", "-t"], capture_output=True, text=True)
-                if test_result.returncode == 0:
-                    self.log("✅", "Nginx config validated successfully")
-                else:
-                    self.log("⚠️", f"Nginx config validation failed: {test_result.stderr}")
-            except Exception as e:
-                self.log("⚠️", f"Failed to setup Nginx: {e}")
+    for attempt in range(1, max_retries + 1):
+        if attempt > 1:
+            report(f'🔄 Something didn\'t work as expected. Trying a different approach... (attempt {attempt}/{max_retries})')
 
-        # ── Phase 2: Background processes (non-blocking, wait for signal) ──
-        for proc in background_procs:
-            cmd          = proc.get("command", "")
-            ready_signal = proc.get("ready_signal") or ""
-            name         = proc.get("name", "background")
-
-            self.log("🔀", f"[background] {name}: {cmd}")
-            bg = subprocess.Popen(
-                cmd, shell=True, executable='/bin/bash',
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1,
-            )
-            bg._vibe_name = name
-            background_pids.append(bg)
-
-            # Drainage thread to prevent pipe deadlock
-            def _drain_bg(process, name):
-                try:
-                    for line in iter(process.stdout.readline, ''):
-                        if os.environ.get('POLL_DEBUG'):
-                            print(f"[{name}] {line}", end="", flush=True)
-                finally:
-                    process.stdout.close()
+            # Before retrying, check if we have a repeating pattern — fix code if so
+            if len(error_history) >= 2:
+                workspace_files = read_workspace_files()
+                fixed = _targeted_code_fix(error_history, workspace_files)
+                if fixed:
+                    # Refresh workspace tree after code fix
+                    tree = _discover_workspace()
+                    manifests = _read_manifests()
             
-            Thread(target=_drain_bg, args=(bg, name), daemon=True).start()
-
-            # Wait for ready_signal before continuing
-            if ready_signal:
-                wait_start = time.time()
-                bg_timeout = self.config.bg_ready_timeout
-                self.log("⏳", f"Waiting for [{name}] ready signal (port)...")
-                
-                # Extract port for background process monitoring
-                bg_port = None
-                p_match = re.search(r'(?:--port|PORT=)\s*(\d+)', cmd) or re.search(r':(\d{3,})\b', cmd)
-                if p_match: bg_port = int(p_match.group(1))
-
-                while time.time() - wait_start < bg_timeout:
-                    # Smart check: Port is open
-                    if bg_port and self._check_port_open(bg_port):
-                        self.log("✅", f"[{name}] port {bg_port} is open")
-                        break
+            # ALWAYS refresh workspace discovery before retry
+            log('Performing fresh workspace discovery for retry attempt')
+            tree = _discover_workspace()
+            manifests = _read_manifests()
+            
+            # On ENOENT errors, run diagnostic commands
+            if error_context and 'enoent' in error_context.get('reason', '').lower():
+                log('ENOENT detected - running diagnostic commands')
+                try:
+                    # Find all manifest files
+                    find_result = subprocess.run(
+                        ['find', '.', '-name', 'package.json', '-o', '-name', 'requirements.txt', '-o', '-name', 'index.html'],
+                        cwd=str(WORKSPACE_DIR),
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if find_result.returncode == 0:
+                        log(f'Diagnostic find results:\n{find_result.stdout}')
+                        # Add to error context
+                        if error_context:
+                            error_context['diagnostic_find'] = find_result.stdout
                     
-                    if bg.poll() is not None:
-                        self.log("⚠️", f"[{name}] exited early with code {bg.returncode}")
-                        break
-                    time.sleep(0.5)
+                    # List directory structure
+                    ls_result = subprocess.run(
+                        ['ls', '-R'],
+                        cwd=str(WORKSPACE_DIR),
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if ls_result.returncode == 0:
+                        log(f'Diagnostic ls -R results (first 500 chars):\n{ls_result.stdout[:500]}')
+                        if error_context:
+                            error_context['diagnostic_ls'] = ls_result.stdout[:1000]
+                except Exception as e:
+                    log(f'Diagnostic commands failed: {e}')
 
-        # ── Phase 3: Primary process with self-healing ─────────────────────
-        files_content  = self.scan_project_files()
-        max_attempts   = self.config.max_attempts
-        attempt_count  = 0
+        # Always include full error history so the architect learns from past failures
+        # Refined instruction based on history
+        instruction = 'Generate the deployment strategy based on the complete workspace scan provided.'
+        if error_history:
+            last_err = error_history[-1].get('reason', '').lower()
+            
+            # Check for validation errors (most recent)
+            if 'validation' in last_err or 'adjustments' in last_err:
+                validation_errors = error_history[-1].get('validation_errors', [])
+                script_excerpt = error_history[-1].get('script_excerpt', '')
+                workspace_structure = error_history[-1].get('workspace_structure', {})
+                
+                instruction = (
+                    "Your previous deployment script had some issues. Here's what needs to be fixed:\n\n"
+                    + '\n'.join(f"  • {err}" for err in validation_errors) +
+                    "\n\nYour script excerpt:\n"
+                    f"{script_excerpt}\n\n"
+                    "Workspace structure:\n"
+                    f"Manifests: {workspace_structure.get('manifests', [])}\n"
+                    f"Entry points: {workspace_structure.get('entry_points', [])}\n"
+                    f"Hints: {workspace_structure.get('hints', [])}\n\n"
+                    "Please analyze the workspace structure carefully and generate a corrected deployment strategy. "
+                    "Use the exact paths shown in the manifests list."
+                )
+            elif 'enoent' in last_err or 'no such file' in last_err:
+                instruction = (
+                    "CRITICAL: Previous attempt failed with file not found error. "
+                    "The complete workspace scan is provided below with ALL actual file locations. "
+                    "You MUST use the EXACT paths from the workspace scan. "
+                    "DO NOT assume or guess file locations. "
+                    "If you see a manifest file in the scan, use its exact path."
+                )
+            elif 'port' in last_err or '502' in last_err:
+                instruction = (
+                    "Previous attempt failed with port/connection issues. "
+                    "Generate a DIFFERENT strategy: use a different internal port, "
+                    "verify the app binds to the internal port (not port 80), "
+                    "and ensure the nginx config proxies correctly."
+                )
+            else:
+                instruction = (
+                    "Previous attempt failed. Generate a DIFFERENT strategy from previous attempts "
+                    "based on the error logs and workspace scan below. "
+                    "Do not repeat what failed."
+                )
+        
+        user_content = {
+            'workspace_discovery': tree,  # Now structured data
+            'manifest_files': manifests,  # Now includes metadata
+            'error_context': error_context,
+            'error_history': error_history[-3:] if error_history else [],
+            'attempted_strategies': attempted_strategies[-2:] if attempted_strategies else [],
+            'instruction': instruction,
+        }
 
         try:
-            while self.retry_count < self.config.max_retries and attempt_count < max_attempts:
-                attempt_count += 1
-                self.log("▶️", f"Attempt {attempt_count} (stuck={self.retry_count}/{self.config.max_retries}): {run_command}")
+            raw = call_ai([
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': json.dumps(user_content)},
+            ], temperature=0.05, show_thinking=True)  # Always show deployment thinking
 
-                try:
-                    process = subprocess.Popen(
-                        run_command,
-                        shell=True,
-                        executable='/bin/bash',
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                        bufsize=1,
-                    )
+            raw = re.sub(r'^```[a-z]*\n?', '', raw.strip(), flags=re.MULTILINE)
+            raw = re.sub(r'\n?```$', '', raw.strip(), flags=re.MULTILINE)
+            m = re.search(r'\{.*\}', raw, re.DOTALL)
+            if not m:
+                raise ValueError('No JSON in architect response')
+            strategy = json.loads(m.group(0))
+            
+        except Exception as e:
+            log(f'Architect failed on attempt {attempt}: {e}')
+            time.sleep(3)
+            continue
 
-                    setattr(process, '_vibe_type', 'primary')
-                    output_lines, error_flag = self._monitor_process(process, success_patterns)
+        # Kill any running app processes on non-Nginx ports dynamically
+        # Find all listening ports except 80 (Nginx) and kill them
+        subprocess.run(
+            'ss -tlnp | awk \'NR>1 && $4 !~ /:80$/ {match($4, /:([0-9]+)$/, a); if(a[1]) print a[1]}\' '
+            '| sort -u | xargs -r -I{} fuser -k {}/tcp 2>/dev/null || true',
+            shell=True, capture_output=True
+        )
+        time.sleep(1)
 
-                    if process.poll() is not None or error_flag:
-                        self.log("❌", "Runtime issue detected — invoking AI fix...")
-                        try:
-                            process.terminate()
-                        except Exception:
-                            pass
+        script = strategy.get('deployment_script', '')
+        app_port = strategy.get('app_port', None)
+        log(f'App will use internal port: {app_port}')
 
-                        error_log = "".join(output_lines)
+        if script:
+            # ═══════════════════════════════════════════════════════════════
+            # CRITICAL: Validate deployment script before execution
+            # ═══════════════════════════════════════════════════════════════
+            # ═══════════════════════════════════════════════════════════════
+            # Validation: Only check for critical errors that would break deployment
+            # Trust Claude to use correct paths based on workspace_discovery
+            # ═══════════════════════════════════════════════════════════════
+            validation_errors = []
+            
+            # Check 1: Port 80 binding (critical - conflicts with Nginx)
+            port80_patterns = [
+                r'listen\s+80\b', r'PORT\s*=\s*["\']?80["\']?\b',
+                r'port\s*[=:]\s*["\']?80["\']?\b',
+                r'0\.0\.0\.0:80\b', r'localhost:80\b',
+            ]
+            if any(re.search(p, script, re.IGNORECASE) for p in port80_patterns):
+                validation_errors.append('Script tries to bind to port 80 (reserved for Nginx)')
+            
+            # Check 2: npm ci usage (will fail without package-lock.json)
+            if 'npm ci' in script:
+                validation_errors.append('Script uses "npm ci" which requires package-lock.json - use "npm install" instead')
+            
+            # That's it! Trust Claude for everything else.
+            # Claude can see workspace_discovery and will use correct paths.
+            
+            # If validation fails, provide constructive feedback
+            if validation_errors:
+                log(f'⚠️ Deployment script has issues that need fixing:')
+                for err in validation_errors:
+                    log(f'   ⚠️ {err}')
+                
+                # Build helpful feedback
+                helpful_feedback = {
+                    'reason': 'The deployment script needs adjustments: ' + '; '.join(validation_errors),
+                    'validation_errors': validation_errors,
+                    'script_excerpt': script[:500],
+                    'workspace_structure': {
+                        'manifests': tree.get('manifest_list', []),
+                        'entry_points': tree.get('entry_point_list', []),
+                        'hints': tree.get('deployment_hints', [])
+                    },
+                    'nginx_errors': [],
+                }
+                error_history.append(helpful_feedback)
+                time.sleep(1)
+                continue
 
-                        # ── Fast-path: port already in use — just kill it and retry ──
-                        if 'EADDRINUSE' in error_log or 'address already in use' in error_log.lower():
-                            self.log("🔌", f"Port [PORT] in use — killing and retrying...")
-                            try:
-                                subprocess.run(
-                                    ['sh', '-c', f'lsof -ti:[PORT] | xargs -r kill -9'],
-                                    capture_output=True, timeout=3
-                                )
-                                subprocess.run(
-                                    ['sh', '-c', f'fuser -k [PORT]/tcp'],
-                                    capture_output=True, timeout=3
-                                )
-                            except Exception:
-                                pass
-                            import time as _time; _time.sleep(1)
-                            continue
-                        fix = self.call_ai_for_fix(error_log, project_type, files_content)
-                        success, new_run_cmd = self.apply_fix(fix) if fix else (False, None)
+            report('📦 Installing dependencies and building your app...')
+            script_path = '/tmp/autodeploy.sh'
+            # Wrap script to redirect app stdout/stderr to a log file for diagnostics
+            script_with_logging = (
+                script if script.startswith('#') else '#!/bin/bash\nset -e\n' + script
+            )
+            # Redirect background process output to a log file
+            script_with_logging = script_with_logging.replace(
+                ' &\n', ' >> /tmp/app_stdout.log 2>&1 &\n'
+            )
+            # Clear previous log
+            Path('/tmp/app_stdout.log').write_text('')
+            Path(script_path).write_text(script_with_logging)
+            os.chmod(script_path, 0o755)
+            build_output_lines = []
+            try:
+                proc = subprocess.Popen(
+                    ['bash', script_path],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+                )
+                for line in proc.stdout:
+                    line = line.strip()
+                    if line:
+                        print(f'  📦 {line}', flush=True)
+                        build_output_lines.append(line)
+                proc.wait(timeout=300)
+                log(f'Build script done (exit={proc.returncode})')
 
-                        if success:
-                            if new_run_cmd:
-                                run_command = new_run_cmd
-                                self.log("🔄", "Run command updated for next attempt")
-                            self.log("✅", "Fix applied — retrying...")
-                            files_content = self.scan_project_files()
-                            continue
+                if proc.returncode != 0:
+                    build_output_str = '\n'.join(build_output_lines[-50:])
+                    # Automatically harvest logs (both referenced and dynamic)
+                    extra_logs = _get_combined_logs(build_output_str)
+                    full_error = build_output_str
+                    if extra_logs:
+                        full_error += '\n\n--- AUTO-HARVESTED LOGS ---\n' + extra_logs
+                    
+                    log(f'Build failed with exit code {proc.returncode}')
+                    log(f'Error output length: {len(full_error)} chars')
+                    
+                    # Exit code 127 = command not found (not a syntax error)
+                    if proc.returncode == 127:
+                        log('Exit code 127 detected - command not found error')
+                        log(f'Error output: {full_error[:500]}')
+                        # Don't try to fix as syntax error
+                        diagnostics = _collect_runtime_diagnostics(app_port=app_port, workspace_discovery=tree)
+                        error_context = {
+                            'reason': f'Command not found (exit 127) - likely missing dependency or incorrect command',
+                            'build_output': full_error,
+                            'nginx_errors': [],
+                            'diagnostics': diagnostics,
+                            'workspace_discovery_summary': {
+                                'manifests': [m.get('path') for m in tree.get('manifests', [])],
+                                'tech_indicators': tree.get('tech_indicators', {}),
+                            }
+                        }
+                        error_history.append(error_context)
+                        time.sleep(2)
+                        continue
+                    
+                    log(f'Checking for syntax errors...')
+                    
+                    # ═══════════════════════════════════════════════════════════════
+                    # AUTO-FIX: Detect and fix syntax errors automatically
+                    # ═══════════════════════════════════════════════════════════════
+                    has_syntax_error = 'SyntaxError' in full_error or 'IndentationError' in full_error or 'TabError' in full_error
+                    log(f'Syntax error detected: {has_syntax_error}')
+                    
+                    if has_syntax_error:
+                        log('🔧 Syntax error detected - attempting automatic fix')
+                        report('🔧 I found a syntax error in the code. Let me fix it...')
+                        
+                        fix_result = _auto_fix_syntax_error(full_error, tree)
+                        log(f'Fix result: {fix_result}')
+                        
+                        if fix_result.get('fixed'):
+                            report(f'✅ Fixed syntax error in {fix_result["file"]}. Rebuilding...')
+                            log('Retrying deployment after syntax fix')
+                            time.sleep(2)
+                            continue  # Retry deployment with fixed code
                         else:
-                            self.log("❌", "AI fix could not be applied")
-                            self.retry_count += 1
-                            continue
+                            error_msg = fix_result.get('error', 'Unknown error')
+                            log(f'⚠️ Auto-fix failed: {error_msg}')
+                            report(f'⚠️ I found a syntax error but couldn\'t fix it automatically: {error_msg}')
+                    else:
+                        log('No syntax errors detected in build output')
+                    
+                    # Collect comprehensive diagnostics
+                    diagnostics = _collect_runtime_diagnostics(app_port=app_port, workspace_discovery=tree)
+                    
+                    error_context = {
+                        'reason': f'Build/install failed (exit {proc.returncode})',
+                        'build_output': full_error,
+                        'nginx_errors': [],
+                        'diagnostics': diagnostics,
+                        'workspace_discovery_summary': {
+                            'manifests': [m.get('path') for m in tree.get('manifests', [])],
+                            'tech_indicators': tree.get('tech_indicators', {}),
+                        }
+                    }
+                    error_history.append(error_context)
+                    time.sleep(2)
+                    continue
 
-                    if process.poll() is None:
-                        self.log("✅", "Project is running successfully!")
+            except Exception as e:
+                log(f'Build script error: {e}')
+                diagnostics = _collect_runtime_diagnostics(app_port=app_port, workspace_discovery=tree)
+                error_context = {
+                    'reason': str(e),
+                    'nginx_errors': [],
+                    'diagnostics': diagnostics
+                }
+                error_history.append(error_context)
 
-                        # Keep draining stdout forever — no more blind waiting
-                        # PASS background_pids for monitoring
-                        runtime_lines, runtime_error = self._monitor_runtime(process, success_patterns, background_pids)
+        time.sleep(4)
 
-                        if runtime_error:
-                            self.log("🚨", "Runtime error detected — invoking AI fix...")
-                            try:
-                                process.terminate()
-                            except Exception:
-                                pass
+        nginx_conf = strategy.get('nginx_config', '')
+        if nginx_conf:
+            report('🌐 Setting up the web server...')
+            
+            # ═══════════════════════════════════════════════════════════════
+            # VALIDATE: Check nginx config for common issues before applying
+            # ═══════════════════════════════════════════════════════════════
+            nginx_issues = _validate_nginx_config(nginx_conf, app_port)
+            if nginx_issues:
+                log(f'⚠️ Nginx config has {len(nginx_issues)} potential issues:')
+                for issue in nginx_issues:
+                    log(f'   ⚠️ {issue}')
+                log('🔧 Applying auto-fixes...')
+            
+            write_nginx_config(nginx_conf)
 
-                            error_log = "".join(output_lines + runtime_lines)
+        time.sleep(2)
 
-                            # ── Fast-path: port already in use ──
-                            if 'EADDRINUSE' in error_log or 'address already in use' in error_log.lower():
-                                self.log("🔌", f"Port [PORT] in use — killing and retrying...")
-                                try:
-                                    subprocess.run(
-                                        ['sh', '-c', f'lsof -ti:[PORT] | xargs -r kill -9'],
-                                        capture_output=True, timeout=3
-                                    )
-                                    subprocess.run(
-                                        ['sh', '-c', f'fuser -k [PORT]/tcp'],
-                                        capture_output=True, timeout=3
-                                    )
-                                except Exception:
-                                    pass
-                                import time as _time; _time.sleep(1)
-                                continue
-                            fix = self.call_ai_for_fix(error_log, project_type, files_content)
-                            success, new_run_cmd = self.apply_fix(fix) if fix else (False, None)
+        healthy, msg = _health_check(app_port=app_port)
+        if healthy:
+            report('🎉 Your app is live! The preview should appear any moment now.',
+                   suggestions=[
+                       {'text': 'Make changes', 'action': 'edit', 'icon': '✏️', 'prompt': 'I want to make some changes'},
+                       {'text': 'Add features', 'action': 'add_feature', 'icon': '✨', 'prompt': 'Add a new feature'},
+                       {'text': 'Fix issues', 'action': 'fix', 'icon': '🔧', 'prompt': 'Fix any issues'}
+                   ],
+                   metadata={'status': 'success', 'app_port': app_port, 'deployment_time': time.time()},
+                   summary='App deployed successfully')
+            
+            # If this was an edit with changes, automatically test them
+            if test_changes and changed_files and user_prompt:
+                test_result = _test_changes_automatically(changed_files, user_prompt, app_port)
+                
+                # If fix was applied, redeploy
+                if test_result.get('fix_applied'):
+                    log('Auto-fix applied, redeploying...')
+                    time.sleep(2)
+                    continue  # Retry deployment with the fix
+            
+            return True
 
-                            if success:
-                                if new_run_cmd:
-                                    run_command = new_run_cmd
-                                self.log("✅", "Runtime fix applied — restarting...")
-                                files_content = self.scan_project_files()
-                                continue
-                            else:
-                                self.log("❌", "Runtime fix failed")
-                                self.retry_count += 1
-                                continue
+        nginx_errors = get_nginx_errors()
+        fail_reason = msg
+        if nginx_errors:
+            fail_reason += f' | {nginx_errors[-1]}'
+        log(f'Health check failed on attempt {attempt}: {fail_reason}')
 
-                        return True
+        error_context = {'reason': fail_reason, 'nginx_errors': nginx_errors}
+        error_history.append(error_context)
+        time.sleep(3)
 
-                except KeyboardInterrupt:
-                    raise
-                except Exception as e:
-                    self.log("❌", f"Execution error: {e}")
-                    self.retry_count += 1
+    if error_history:
+        last_failure = error_history[-1]
+        reason = last_failure.get('reason', 'Unknown failure')
+        
+        # Get exact app output for the user
+        diag = last_failure.get('diagnostics', {})
+        app_log = diag.get('app_log', '')
+        
+        msg = f"⚠️ I couldn't get the app running. The exact error was: {reason}"
+        if not app_log:
+             # Try harvesting logs one last time if they are missing
+             app_log = _get_combined_logs('')
+        
+        # Generate contextual suggestions based on error type
+        suggestions = []
+        metadata = {'status': 'failed', 'error_type': 'deployment'}
+        
+        if 'exit 127' in reason.lower() or 'command not found' in reason.lower():
+            suggestions = [
+                {'text': 'Install missing dependencies', 'action': 'install_deps', 'icon': '📦', 'prompt': 'Install the missing dependencies'},
+                {'text': 'Check deployment script', 'action': 'review_script', 'icon': '🔍', 'prompt': 'Review and fix the deployment script'},
+                {'text': 'Show me the full logs', 'action': 'show_logs', 'icon': '📋', 'prompt': 'Show me the detailed error logs'}
+            ]
+            metadata['error_category'] = 'missing_command'
+        elif 'port' in reason.lower() or '502' in reason.lower():
+            suggestions = [
+                {'text': 'Try a different port', 'action': 'change_port', 'icon': '🔌', 'prompt': 'Use a different port for the application'},
+                {'text': 'Check if app is running', 'action': 'check_status', 'icon': '🔍', 'prompt': 'Check the application status'},
+                {'text': 'Restart the deployment', 'action': 'retry', 'icon': '🔄', 'prompt': 'Try deploying again'}
+            ]
+            metadata['error_category'] = 'port_issue'
+        elif 'syntax' in reason.lower():
+            suggestions = [
+                {'text': 'Auto-fix syntax errors', 'action': 'auto_fix', 'icon': '🔧', 'prompt': 'Fix the syntax errors automatically'},
+                {'text': 'Show me the errors', 'action': 'show_errors', 'icon': '📋', 'prompt': 'Show me the syntax errors'},
+                {'text': 'Review the code', 'action': 'review_code', 'icon': '👀', 'prompt': 'Review the code for issues'}
+            ]
+            metadata['error_category'] = 'syntax_error'
+        else:
+            suggestions = [
+                {'text': 'Try again', 'action': 'retry', 'icon': '🔄', 'prompt': 'Try the deployment again'},
+                {'text': 'Show detailed logs', 'action': 'show_logs', 'icon': '📋', 'prompt': 'Show me the detailed logs'},
+                {'text': 'Describe the issue', 'action': 'clarify', 'icon': '💬', 'prompt': None}
+            ]
+            metadata['error_category'] = 'general'
+        
+        report(msg, code=app_log, suggestions=suggestions, metadata=metadata, summary=f"Deployment failed: {reason[:50]}")
+    else:
+        report('⚠️ We ran into some trouble getting your app running. You can try sending your request again.',
+               suggestions=[
+                   {'text': 'Try again', 'action': 'retry', 'icon': '🔄', 'prompt': 'Try the deployment again'},
+                   {'text': 'Start fresh', 'action': 'restart', 'icon': '🆕', 'prompt': 'Start with a new deployment'}
+               ],
+               metadata={'status': 'failed', 'error_type': 'unknown'},
+               summary='Deployment failed')
+        
+    return False
 
-        except KeyboardInterrupt:
-            self.log("🛑", "Interrupted")
-        finally:
-            # ── Cleanup all background processes ──────────────────────────
-            for bg in background_pids:
+
+def _collect_runtime_diagnostics(app_port: int = None, workspace_discovery: dict = None) -> dict:
+    """
+    Collect all available runtime diagnostics:
+    - Nginx error log
+    - App process stdout/stderr (via /tmp/app_stdout.log if the script redirects there)
+    - Port binding status
+    - Recent system errors
+    - Workspace discovery results
+    Returns a dict with all findings.
+    """
+    diag = {}
+
+    # Nginx errors
+    diag['nginx_errors'] = get_nginx_errors()
+
+    # App stdout log (deployment scripts redirect output here)
+    app_log = Path('/tmp/app_stdout.log')
+    if app_log.exists():
+        try:
+            lines = app_log.read_text().strip().splitlines()
+            diag['app_log'] = '\n'.join(lines[-50:])
+        except Exception:
+            pass
+
+    # Check if app port is actually listening
+    if app_port:
+        result = subprocess.run(
+            f'ss -tlnp | grep :{app_port}',
+            shell=True, capture_output=True, text=True
+        )
+        diag['port_listening'] = bool(result.stdout.strip())
+        diag['port_status'] = result.stdout.strip() or f'Port {app_port} not listening'
+
+    # Any Python/Node crash logs
+    for log_path in ['/tmp/app.log', '/tmp/server.log', '/tmp/error.log']:
+        if Path(log_path).exists():
+            try:
+                lines = Path(log_path).read_text().strip().splitlines()
+                diag[f'log_{Path(log_path).name}'] = '\n'.join(lines[-30:])
+            except Exception:
+                pass
+    
+    # Include workspace discovery results
+    if workspace_discovery:
+        diag['workspace_discovery'] = {
+            'manifests_found': len(workspace_discovery.get('manifests', [])),
+            'entry_points_found': len(workspace_discovery.get('entry_points', [])),
+            'tech_indicators': workspace_discovery.get('tech_indicators', {}),
+            'directory_count': len(workspace_discovery.get('directory_structure', {}))
+        }
+
+    return diag
+
+
+def _detect_error_pattern(error_history: list) -> str:
+    """
+    Analyse the last N error contexts to detect a repeating pattern.
+    Returns a plain-English description of the pattern, or empty string if no pattern.
+    """
+    if len(error_history) < 2:
+        return ''
+
+    # Extract key phrases from each error
+    all_reasons = [str(e.get('reason', '')) for e in error_history]
+
+    # Check if the same root cause keeps appearing
+    patterns = {
+        'module not found':    'missing dependency — need to install packages',
+        'cannot find module':  'missing dependency — need to install packages',
+        'enoent':              'missing file or directory',
+        'eaddrinuse':          'port already in use — need to use a different port',
+        'syntax error':        'syntax error in source code — need to fix the code',
+        'typeerror':           'type error in source code — need to fix the code',
+        'permission denied':   'file permission issue',
+        '502':                 'app not starting or crashing immediately after start',
+        'connection refused':  'app not binding to the expected port',
+        'exit code 1':         'build or start script failing',
+        'exit code 2':         'command not found or script error',
+    }
+
+    matched = []
+    for reason in all_reasons[-3:]:
+        reason_lower = reason.lower()
+        for keyword, description in patterns.items():
+            if keyword in reason_lower and description not in matched:
+                matched.append(description)
+
+    if len(matched) >= 2 or (len(error_history) >= 2 and matched):
+        return f"Repeating issue detected: {'; '.join(matched)}"
+    return ''
+
+
+def _targeted_code_fix(error_history: list, workspace_files: dict) -> bool:
+    """
+    When the same error keeps repeating, ask the AI to fix the source code directly
+    rather than just retrying the deployment strategy.
+    Returns True if any files were modified.
+    """
+    if not workspace_files:
+        return False
+
+    pattern = _detect_error_pattern(error_history)
+    if not pattern:
+        return False
+
+    report(f'🔍 Spotted a repeating issue — fixing the source code directly...')
+
+    # Build context
+    file_context = '\n\n'.join(
+        f'// FILE: {path}\n{content[:2000]}'
+        for path, content in list(workspace_files.items())[:15]
+    )
+    error_summary = '\n'.join(
+        f'Attempt {i+1}: {e.get("reason", "")} | Build: {e.get("build_output", "")[-200:]}'
+        for i, e in enumerate(error_history[-3:])
+    )
+
+    fix_prompt = f"""You are debugging a web app that keeps failing to deploy with the same error.
+
+PATTERN: {pattern}
+
+ERROR HISTORY:
+{error_summary}
+
+CURRENT SOURCE FILES:
+{file_context}
+
+Your task: Fix the source code to resolve this repeating error.
+- If it's a missing dependency, add it to package.json or requirements.txt
+- If it's a syntax/type error, fix the code
+- If it's a port conflict, change the app to use a different port (not 80)
+- If it's a missing file, create it
+
+Output ONLY the files that need to change using:
+// FILE: path/to/file.ext
+[complete fixed content]
+
+Or for small changes:
+// PATCH: path/to/file.ext
+<<<SEARCH
+old lines
+>>>
+<<<REPLACE
+new lines
+>>>"""
+
+    try:
+        response = call_ai([
+            {'role': 'system', 'content': 'You are a debugging expert. Fix the code to resolve the repeating deployment error.'},
+            {'role': 'user', 'content': fix_prompt},
+        ], temperature=0.2, show_thinking=True)  # Show code fix thinking
+    except Exception as e:
+        log(f'Code fix AI call failed: {e}')
+        return False
+
+    # Parse and apply the fix
+    file_marker_re = re.compile(
+        r'(?://\s*FILE:\s*|#\s*FILE:\s*)([^\n]+)\n', re.IGNORECASE
+    )
+    patch_marker_re = re.compile(r'//\s*PATCH:\s*([^\n]+)', re.IGNORECASE)
+
+    file_matches  = list(file_marker_re.finditer(response))
+    patch_matches = list(patch_marker_re.finditer(response))
+
+    files_fixed = 0
+    for i, match in enumerate(file_matches):
+        filename = _clean_filename(match.group(1))
+        start = match.end()
+        end = file_matches[i + 1].start() if i + 1 < len(file_matches) else len(response)
+        content = response[start:end].strip()
+        if content:
+            _write_file(WORKSPACE_DIR / filename, content)
+            files_fixed += 1
+
+    patches_fixed = _apply_patches(response, patch_matches)
+
+    total = files_fixed + patches_fixed
+    if total > 0:
+        report(f'✅ Applied {total} fix(es) to the source code. Retrying deployment...')
+        return True
+
+    return False
+
+
+def _discover_workspace() -> dict:
+    """
+    Thoroughly explore and map the complete workspace structure.
+    Returns comprehensive data for AI to understand the project layout.
+    
+    Returns:
+        dict with keys:
+            - full_tree: Complete directory tree with visual structure
+            - files_by_type: Files grouped by extension
+            - manifests: Configuration files with content previews
+            - entry_points: Detected entry point files
+            - tech_stack: Detected technologies
+            - directory_map: Directory structure with file counts
+            - file_sizes: Size information for key files
+            - total_files: Total file count
+            - total_size: Total workspace size
+    """
+    try:
+        if not WORKSPACE_DIR.exists():
+            return {
+                'error': 'workspace does not exist',
+                'full_tree': '',
+                'files_by_type': {},
+                'manifests': [],
+                'entry_points': [],
+                'tech_stack': {},
+                'directory_map': {},
+                'file_sizes': {},
+                'total_files': 0,
+                'total_size': 0
+            }
+        
+        log('🔍 Exploring workspace structure...')
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # STEP 1: Get complete file tree with tree command (visual structure)
+        # ═══════════════════════════════════════════════════════════════════
+        tree_result = subprocess.run(
+            ['tree', '-a', '-L', '10', '--noreport',
+             '-I', 'node_modules|.git|venv|.venv|dist|build|__pycache__|*.pyc'],
+            cwd=str(WORKSPACE_DIR),
+            capture_output=True, text=True, timeout=10
+        )
+        
+        full_tree = tree_result.stdout if tree_result.returncode == 0 else ''
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # STEP 2: Get all files with find (for detailed analysis)
+        # ═══════════════════════════════════════════════════════════════════
+        find_result = subprocess.run(
+            ['find', '.', '-type', 'f',
+             '-not', '-path', '*/node_modules/*',
+             '-not', '-path', '*/.git/*',
+             '-not', '-path', '*/venv/*',
+             '-not', '-path', '*/.venv/*',
+             '-not', '-path', '*/dist/*',
+             '-not', '-path', '*/build/*',
+             '-not', '-path', '*/__pycache__/*',
+             '-not', '-name', '*.pyc'],
+            cwd=str(WORKSPACE_DIR),
+            capture_output=True, text=True, timeout=10
+        )
+        
+        if find_result.returncode != 0:
+            return {
+                'error': 'find command failed',
+                'full_tree': full_tree,
+                'files_by_type': {},
+                'manifests': [],
+                'entry_points': [],
+                'tech_stack': {},
+                'directory_map': {},
+                'file_sizes': {},
+                'total_files': 0,
+                'total_size': 0
+            }
+        
+        all_files = [line.strip() for line in find_result.stdout.splitlines() if line.strip()]
+        log(f'📊 Found {len(all_files)} files in workspace')
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # STEP 3: Group files by extension
+        # ═══════════════════════════════════════════════════════════════════
+        files_by_type = {}
+        total_size = 0
+        file_sizes = {}
+        
+        for file_path in all_files:
+            ext = Path(file_path).suffix.lower() or 'no_extension'
+            if ext not in files_by_type:
+                files_by_type[ext] = []
+            files_by_type[ext].append(file_path)
+            
+            # Get file size
+            try:
+                full_path = WORKSPACE_DIR / file_path.lstrip('./')
+                if full_path.exists():
+                    size = full_path.stat().st_size
+                    total_size += size
+                    file_sizes[file_path] = size
+            except:
+                pass
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # STEP 4: Identify and read manifest files + key server files
+        # ═══════════════════════════════════════════════════════════════════
+        manifest_patterns = {
+            'package.json': 'nodejs',
+            'package-lock.json': 'nodejs',
+            'yarn.lock': 'nodejs',
+            'requirements.txt': 'python',
+            'Pipfile': 'python',
+            'pyproject.toml': 'python',
+            'setup.py': 'python',
+            'Gemfile': 'ruby',
+            'Cargo.toml': 'rust',
+            'go.mod': 'go',
+            'composer.json': 'php',
+            'pom.xml': 'java',
+            'build.gradle': 'java',
+            'Dockerfile': 'docker',
+            'docker-compose.yml': 'docker',
+            '.env': 'config',
+            '.env.example': 'config',
+            'tsconfig.json': 'typescript',
+            'vite.config.js': 'vite',
+            'vite.config.ts': 'vite',
+            'webpack.config.js': 'webpack',
+            'next.config.js': 'nextjs',
+            'nuxt.config.js': 'nuxtjs',
+        }
+        
+        # Also read server files to understand dependencies
+        server_file_patterns = {
+            'server.js': 'nodejs_server',
+            'app.js': 'nodejs_server',
+            'index.js': 'nodejs_server',
+            'main.js': 'nodejs_server',
+            'server.ts': 'nodejs_server',
+            'app.py': 'python_server',
+            'main.py': 'python_server',
+            'wsgi.py': 'python_server',
+        }
+        
+        manifests = []
+        tech_stack = {}
+        server_files_content = {}
+        
+        for file_path in all_files:
+            filename = Path(file_path).name
+            
+            # Check if it's a manifest file
+            if filename in manifest_patterns:
+                depth = len(Path(file_path).parts) - 1
+                tech = manifest_patterns[filename]
+                
+                # Read file content (first 1000 chars for preview)
+                content_preview = ''
                 try:
-                    bg.terminate()
-                except Exception:
+                    full_path = WORKSPACE_DIR / file_path.lstrip('./')
+                    if full_path.exists():
+                        content = full_path.read_text(encoding='utf-8', errors='ignore')
+                        content_preview = content[:1000]
+                except:
                     pass
+                
+                manifests.append({
+                    'path': file_path,
+                    'name': filename,
+                    'depth': depth,
+                    'tech': tech,
+                    'size': file_sizes.get(file_path, 0),
+                    'preview': content_preview
+                })
+                
+                if tech not in tech_stack:
+                    tech_stack[tech] = []
+                tech_stack[tech].append(file_path)
+            
+            # Check if it's a server file - READ FULL CONTENT for analysis
+            if filename in server_file_patterns:
+                try:
+                    full_path = WORKSPACE_DIR / file_path.lstrip('./')
+                    if full_path.exists():
+                        content = full_path.read_text(encoding='utf-8', errors='ignore')
+                        server_files_content[file_path] = content[:3000]  # First 3000 chars
+                        log(f'📖 Read server file: {file_path} ({len(content)} chars)')
+                except Exception as e:
+                    log(f'Failed to read server file {file_path}: {e}')
+        
+        manifests.sort(key=lambda m: m['depth'])
+        
+        # Deduplicate manifests by path (in case of symlinks or duplicates)
+        seen_paths = set()
+        unique_manifests = []
+        for m in manifests:
+            if m['path'] not in seen_paths:
+                seen_paths.add(m['path'])
+                unique_manifests.append(m)
+        manifests = unique_manifests
+        
+        log(f'📦 Found {len(manifests)} manifest files:')
+        for m in manifests:
+            log(f'   - {m["path"]} ({m["tech"]})')
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # STEP 5: Identify entry points
+        # ═══════════════════════════════════════════════════════════════════
+        entry_point_patterns = {
+            'index.html': 'html',
+            'index.htm': 'html',
+            'main.py': 'python',
+            'app.py': 'python',
+            'server.py': 'python',
+            'wsgi.py': 'python',
+            'manage.py': 'django',
+            'index.js': 'javascript',
+            'server.js': 'javascript',
+            'app.js': 'javascript',
+            'main.js': 'javascript',
+            'index.ts': 'typescript',
+            'server.ts': 'typescript',
+            'app.ts': 'typescript',
+            'main.ts': 'typescript',
+            'index.jsx': 'react',
+            'App.jsx': 'react',
+            'index.tsx': 'react',
+            'App.tsx': 'react',
+            'main.go': 'go',
+            'main.rs': 'rust',
+            'Main.java': 'java',
+        }
+        
+        entry_points = []
+        for file_path in all_files:
+            filename = Path(file_path).name
+            if filename in entry_point_patterns:
+                entry_points.append({
+                    'path': file_path,
+                    'name': filename,
+                    'type': entry_point_patterns[filename],
+                    'depth': len(Path(file_path).parts) - 1,
+                    'size': file_sizes.get(file_path, 0)
+                })
+        
+        entry_points.sort(key=lambda e: e['depth'])
+        
+        # Deduplicate entry points by path
+        seen_paths = set()
+        unique_entry_points = []
+        for e in entry_points:
+            if e['path'] not in seen_paths:
+                seen_paths.add(e['path'])
+                unique_entry_points.append(e)
+        entry_points = unique_entry_points
+        
+        log(f'🎯 Found {len(entry_points)} entry points:')
+        for e in entry_points:
+            log(f'   - {e["path"]} ({e["type"]})')
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # STEP 6: Build directory map
+        # ═══════════════════════════════════════════════════════════════════
+        directory_map = {}
+        for file_path in all_files:
+            parts = Path(file_path).parts
+            if len(parts) > 1:
+                dir_path = '/'.join(parts[:-1])
+                if dir_path not in directory_map:
+                    directory_map[dir_path] = {
+                        'file_count': 0,
+                        'files': [],
+                        'depth': len(parts) - 1
+                    }
+                directory_map[dir_path]['file_count'] += 1
+                directory_map[dir_path]['files'].append(parts[-1])
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # STEP 7: Detect tech stack from file extensions and patterns
+        # ═══════════════════════════════════════════════════════════════════
+        if '.html' in files_by_type or '.htm' in files_by_type:
+            if 'nodejs' not in tech_stack and 'python' not in tech_stack:
+                tech_stack['static_html'] = files_by_type.get('.html', []) + files_by_type.get('.htm', [])
+        
+        if '.jsx' in files_by_type or '.tsx' in files_by_type:
+            tech_stack['react'] = files_by_type.get('.jsx', []) + files_by_type.get('.tsx', [])
+        
+        if '.vue' in files_by_type:
+            tech_stack['vue'] = files_by_type.get('.vue', [])
+        
+        if '.svelte' in files_by_type:
+            tech_stack['svelte'] = files_by_type.get('.svelte', [])
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # STEP 8: Create intelligent summary with deployment hints
+        # ═══════════════════════════════════════════════════════════════════
+        
+        # Analyze project structure to provide deployment hints
+        deployment_hints = []
+        
+        # Check for monorepo or multi-project structure
+        root_manifests = [m for m in manifests if m['depth'] == 0]
+        nested_manifests = [m for m in manifests if m['depth'] > 0]
+        
+        if len(nested_manifests) > 0 and len(root_manifests) == 0:
+            deployment_hints.append("Project has nested structure - manifests are in subdirectories")
+            
+            # Group by directory
+            manifest_dirs = {}
+            for m in manifests:
+                dir_path = str(Path(m['path']).parent)
+                if dir_path not in manifest_dirs:
+                    manifest_dirs[dir_path] = []
+                manifest_dirs[dir_path].append(m['name'])
+            
+            deployment_hints.append(f"Manifest locations: {manifest_dirs}")
+        
+        # Detect common patterns
+        has_client_server = any('client' in m['path'].lower() for m in manifests) and any('server' in m['path'].lower() for m in manifests)
+        has_frontend_backend = any('frontend' in m['path'].lower() for m in manifests) and any('backend' in m['path'].lower() for m in manifests)
+        
+        if has_client_server:
+            deployment_hints.append("Detected client/server architecture - build client first, then start server")
+            deployment_hints.append("CRITICAL: Build client with 'cd /project/workspace/client && npm run build', then check server.js for where it expects dist/ folder")
+        elif has_frontend_backend:
+            deployment_hints.append("Detected frontend/backend architecture - deploy both separately")
+        
+        # Check for build tools
+        if 'vite' in tech_stack:
+            deployment_hints.append("Vite detected - use 'npm run build' and serve dist/ folder with try_files for SPA routing")
+        if 'react' in tech_stack and 'vite' not in tech_stack:
+            deployment_hints.append("React detected - check package.json for build script, serve with try_files for SPA routing")
+        
+        # Check for Python frameworks
+        for m in manifests:
+            if m['name'] == 'requirements.txt' and m['preview']:
+                if 'flask' in m['preview'].lower():
+                    deployment_hints.append(f"Flask detected in {m['path']} - use 'python app.py' or 'flask run'")
+                elif 'django' in m['preview'].lower():
+                    deployment_hints.append(f"Django detected in {m['path']} - use 'python manage.py runserver'")
+                elif 'fastapi' in m['preview'].lower():
+                    deployment_hints.append(f"FastAPI detected in {m['path']} - use 'uvicorn' or 'python -m uvicorn'")
+        
+        # Create a clear file listing for AI with full paths
+        manifest_list = [f"{m['path']} ({m['tech']})" for m in manifests]
+        entry_point_list = [f"{e['path']} ({e['type']})" for e in entry_points]
+        
+        # Create directory-based view for AI
+        files_by_directory = {}
+        for file_path in all_files:
+            parts = Path(file_path).parts
+            if len(parts) > 1:
+                dir_path = '/'.join(parts[:-1])
+                filename = parts[-1]
+                if dir_path not in files_by_directory:
+                    files_by_directory[dir_path] = []
+                files_by_directory[dir_path].append(filename)
+        
+        summary = {
+            'full_tree': full_tree,
+            'manifest_list': manifest_list,  # NEW: Clear list with full paths
+            'entry_point_list': entry_point_list,  # NEW: Clear list with full paths
+            'files_by_directory': files_by_directory,  # NEW: Directory-based view
+            'server_files_content': server_files_content,  # NEW: Server file contents for analysis
+            'files_by_type': {k: v[:20] for k, v in files_by_type.items()},
+            'manifests': manifests,  # Detailed manifest data
+            'entry_points': entry_points,  # Detailed entry point data
+            'tech_stack': tech_stack,
+            'directory_map': directory_map,
+            'file_sizes': {k: v for k, v in sorted(file_sizes.items(), key=lambda x: x[1], reverse=True)[:20]},
+            'total_files': len(all_files),
+            'total_size': total_size,
+            'total_size_mb': round(total_size / 1024 / 1024, 2),
+            'deployment_hints': deployment_hints
+        }
+        
+        log(f'✅ Workspace exploration complete: {len(all_files)} files, {summary["total_size_mb"]} MB')
+        log(f'🔧 Tech stack detected: {list(tech_stack.keys())}')
+        if server_files_content:
+            log(f'📖 Read {len(server_files_content)} server files for analysis')
+        if deployment_hints:
+            log(f'💡 Deployment hints: {deployment_hints[0]}')
+        
+        return summary
+        
+    except Exception as e:
+        log(f'❌ Workspace discovery error: {e}')
+        import traceback
+        traceback.print_exc()
+        return {
+            'error': f'discovery failed: {e}',
+            'full_tree': '',
+            'files_by_type': {},
+            'manifests': [],
+            'entry_points': [],
+            'tech_stack': {},
+            'directory_map': {},
+            'file_sizes': {},
+            'total_files': 0,
+            'total_size': 0
+        }
 
-        self.log("❌", f"Failed after {attempt_count} attempts")
+
+def _read_referenced_logs(build_output: str) -> str:
+    """
+    Scan build output for referenced log file paths (e.g. npm debug logs).
+    For each path found, read the most relevant section using tail/head.
+    """
+    # Broader patterns for log files
+    log_path_patterns = [
+        r'A complete log of this run can be found in:\s*([^\n]+)',
+        r'npm error.*?([/\w._-]*\w+\.log)',
+        r'error log.*?([/\w._-]*\w+\.log)',
+        r'see ([/\w._-]*\w+\.log) for details',
+        r'logfile\s*=\s*([/\w._-]*\w+\.log)',
+        r'results in:?\s*([/\w._-]*\w+\.log)',
+    ]
+
+    found_logs = []
+    for pattern in log_path_patterns:
+        for match in re.finditer(pattern, build_output, re.IGNORECASE):
+            path = match.group(1).strip()
+            if not path: continue
+            
+            # Try to resolve relative paths if possible
+            p = Path(path)
+            if not p.is_absolute():
+                # Check relative to root and workspace
+                candidates = [Path('/project/workspace') / path, Path('/root') / path, Path('/') / path]
+                for c in candidates:
+                    if c.exists():
+                        p = c
+                        break
+            
+            if p.exists() and p.is_file():
+                found_logs.append(str(p))
+
+    return found_logs
+
+
+def _harvest_dynamic_logs(window_minutes: int = 5) -> list:
+    """
+    Search for ANY recently modified log files in standard system paths
+    and the workspace. This captures 'silent' errors from background services.
+    """
+    search_paths = ['/var/log', '/root', '/tmp', str(WORKSPACE_DIR)]
+    found = []
+    now = time.time()
+    
+    for base in search_paths:
+        if not os.path.exists(base): continue
+        try:
+            # Look for *.log, *.err, *.out, *-log, *-err
+            for fp in Path(base).rglob('*'):
+                if fp.is_file() and any(ext in fp.name.lower() for ext in ['.log', '.err', '.out', '-log', '-err']):
+                    # Ignore known noise
+                    if any(noise in str(fp) for noise in ['/node_modules/', '/.git/', '/venv/']):
+                        continue
+                        
+                    # Check modification time
+                    mtime = os.path.getmtime(str(fp))
+                    if (now - mtime) < (window_minutes * 60):
+                        found.append(str(fp))
+        except:
+            pass
+            
+    return found
+
+
+def _detect_previous_deployment() -> dict:
+    """
+    Detect if there was a previous successful deployment by checking for:
+    - Running processes (PM2, Gunicorn, Uvicorn, serve, node, python)
+    - Nginx configuration
+    - Built artifacts (dist/, build/, .next/)
+    
+    Returns:
+        dict with:
+            - has_deployment: bool
+            - app_port: int or None
+            - process_info: str
+            - nginx_config: str or None
+            - built_artifacts: list of paths
+    """
+    result = {
+        'has_deployment': False,
+        'app_port': None,
+        'process_info': '',
+        'nginx_config': None,
+        'built_artifacts': []
+    }
+    
+    try:
+        # Check for running app processes
+        ps_result = subprocess.run(
+            ['ps', 'aux'],
+            capture_output=True, text=True, timeout=5
+        )
+        
+        if ps_result.returncode == 0:
+            process_keywords = ['pm2', 'gunicorn', 'uvicorn', 'serve', 'node', 'python', 'flask', 'fastapi']
+            app_processes = []
+            
+            for line in ps_result.stdout.splitlines():
+                line_lower = line.lower()
+                if any(kw in line_lower for kw in process_keywords):
+                    # Skip grep and ps itself
+                    if 'grep' not in line_lower and 'ps aux' not in line_lower:
+                        app_processes.append(line.strip())
+            
+            if app_processes:
+                result['process_info'] = '\n'.join(app_processes[:5])
+                result['has_deployment'] = True
+        
+        # Check for listening ports (app ports)
+        ss_result = subprocess.run(
+            ['ss', '-tlnp'],
+            capture_output=True, text=True, timeout=5
+        )
+        
+        if ss_result.returncode == 0:
+            for line in ss_result.stdout.splitlines():
+                # Look for non-80 ports (app ports)
+                match = re.search(r':(\d+)\s', line)
+                if match:
+                    port = int(match.group(1))
+                    if port != 80 and 3000 <= port <= 9000:
+                        result['app_port'] = port
+                        result['has_deployment'] = True
+                        break
+        
+        # Check nginx config
+        nginx_conf_path = Path('/etc/nginx/sites-available/default')
+        if nginx_conf_path.exists():
+            try:
+                nginx_content = nginx_conf_path.read_text()
+                # Check if it's not just the baseline loading page
+                if 'proxy_pass' in nginx_content:
+                    result['nginx_config'] = nginx_content
+                    result['has_deployment'] = True
+                    
+                    # Extract app port from nginx config
+                    port_match = re.search(r'proxy_pass\s+http://[^:]+:(\d+)', nginx_content)
+                    if port_match and not result['app_port']:
+                        result['app_port'] = int(port_match.group(1))
+            except:
+                pass
+        
+        # Check for built artifacts
+        artifact_dirs = ['dist', 'build', '.next', 'out', 'public']
+        for dir_name in artifact_dirs:
+            artifact_path = WORKSPACE_DIR / dir_name
+            if artifact_path.exists() and artifact_path.is_dir():
+                # Check if it has files
+                try:
+                    files = list(artifact_path.iterdir())
+                    if files:
+                        result['built_artifacts'].append(str(artifact_path.relative_to(PROJECT_DIR)))
+                        result['has_deployment'] = True
+                except:
+                    pass
+        
+        log(f'Previous deployment detection: {result["has_deployment"]}, port: {result["app_port"]}, artifacts: {result["built_artifacts"]}')
+        
+    except Exception as e:
+        log(f'Previous deployment detection error: {e}')
+    
+    return result
+
+
+def _get_combined_logs(build_output: str) -> str:
+    """
+    Combine logs found via reference in output AND logs found via dynamic search.
+    """
+    referenced = _read_referenced_logs(build_output)
+    dynamic    = _harvest_dynamic_logs()
+    
+    all_paths = list(set(referenced + dynamic))
+    if not all_paths:
+        return ''
+        
+    results = []
+    # Cap at 5 most relevant logs to avoid context bloat
+    for log_path in all_paths[:5]:
+        try:
+            p = Path(log_path)
+            if not p.exists(): continue
+            
+            # Read tail of the log
+            res = subprocess.run(['tail', '-n', '60', str(p)], capture_output=True, text=True, timeout=3)
+            content = res.stdout.strip()
+            if content:
+                results.append(f"--- LOG: {log_path} (Last 60 lines) ---\n{content}")
+        except:
+            pass
+            
+    return '\n\n'.join(results)
+
+
+def _read_manifests() -> dict:
+    """
+    Find and read key configuration files with metadata.
+    
+    Returns:
+        dict mapping file paths to dict with:
+            - content: file content (first 4KB)
+            - depth: depth from workspace root
+            - size: file size in bytes
+            - tech: detected tech stack
+    """
+    if not WORKSPACE_DIR.exists():
+        return {}
+    
+    targets = [
+        'package.json', 'package-lock.json', 'yarn.lock',
+        'requirements.txt', 'Pipfile', 'Pipfile.lock', 'pyproject.toml',
+        'main.py', 'app.py', 'server.py', 'wsgi.py',
+        'index.html', 'index.htm',
+        'vite.config.js', 'next.config.js', 'nuxt.config.js',
+        'server.js', 'app.js', 'index.js',
+        'Gemfile', 'Cargo.toml', 'go.mod', 'composer.json',
+        'pom.xml', 'build.gradle', 'Makefile', 'Dockerfile'
+    ]
+    
+    # Tech stack detection mapping
+    tech_map = {
+        'package.json': 'nodejs',
+        'package-lock.json': 'nodejs',
+        'yarn.lock': 'nodejs',
+        'requirements.txt': 'python',
+        'Pipfile': 'python',
+        'pyproject.toml': 'python',
+        'Gemfile': 'ruby',
+        'Cargo.toml': 'rust',
+        'go.mod': 'go',
+        'composer.json': 'php',
+        'pom.xml': 'java',
+        'build.gradle': 'java'
+    }
+    
+    found_files = []
+    
+    # Search recursively without depth limits (but skip heavy directories)
+    try:
+        for fp in WORKSPACE_DIR.rglob('*'):
+            # Skip excluded directories
+            if any(excluded in fp.parts for excluded in ['node_modules', '.git', 'venv', '.venv', 'dist', 'build', '__pycache__']):
+                continue
+            
+            if fp.is_file() and fp.name in targets:
+                found_files.append(fp)
+    except Exception as e:
+        log(f'Manifest search error: {e}')
+    
+    # Build manifest dictionary with metadata
+    manifests = {}
+    for fp in found_files:
+        try:
+            rel_path = str(fp.relative_to(WORKSPACE_DIR))
+            depth = len(Path(rel_path).parts)
+            size = fp.stat().st_size
+            
+            # Read content (first 4KB)
+            content = fp.read_text(encoding='utf-8', errors='replace')[:4000]
+            
+            # Detect tech stack
+            tech = tech_map.get(fp.name, 'unknown')
+            
+            # Special case: detect static HTML
+            if fp.name in ['index.html', 'index.htm']:
+                # Check if there's a package.json nearby
+                has_package_json = (fp.parent / 'package.json').exists()
+                if not has_package_json:
+                    tech = 'static_html'
+            
+            manifests[rel_path] = {
+                'content': content,
+                'depth': depth,
+                'size': size,
+                'tech': tech
+            }
+        except Exception as e:
+            log(f'Error reading manifest {fp}: {e}')
+    
+    # Sort by depth (root-level first) and return
+    sorted_manifests = dict(sorted(manifests.items(), key=lambda item: item[1]['depth']))
+    
+    return sorted_manifests
+
+
+def _health_check(app_port: int = None) -> tuple:
+    """
+    Perform health check on the deployed application.
+    
+    Args:
+        app_port: Internal port the application should be listening on
+    
+    Returns:
+        tuple: (healthy: bool, status_message: str)
+    """
+    try:
+        # Check nginx response (port 80)
+        res = subprocess.run(
+            ['curl', '-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '4', 'http://127.0.0.1'],
+            capture_output=True, text=True
+        )
+        nginx_code = res.stdout.strip()
+        nginx_healthy = nginx_code in ('200', '301', '302', '304')
+        
+        # If app_port is provided, verify app is actually listening on that port
+        if app_port:
+            try:
+                port_check = subprocess.run(
+                    ['ss', '-tlnp'],
+                    capture_output=True, text=True, timeout=3
+                )
+                
+                if port_check.returncode == 0:
+                    # Check if app_port is in the listening ports
+                    app_listening = f':{app_port}' in port_check.stdout
+                    
+                    if not app_listening:
+                        return False, f'Nginx: HTTP {nginx_code}, App: not listening on port {app_port}'
+                    
+                    # Both nginx and app are healthy
+                    if nginx_healthy:
+                        return True, f'Nginx: HTTP {nginx_code}, App: listening on port {app_port}'
+                    else:
+                        return False, f'Nginx: HTTP {nginx_code}, App: listening on port {app_port}'
+                else:
+                    # Can't verify port, fall back to nginx check only
+                    log(f'Port check failed, falling back to nginx-only health check')
+                    if nginx_healthy:
+                        return True, f'HTTP {nginx_code} (port check unavailable)'
+                    return False, f'HTTP {nginx_code}'
+            except Exception as e:
+                log(f'App port verification error: {e}')
+                # Fall back to nginx check only
+                if nginx_healthy:
+                    return True, f'HTTP {nginx_code} (port verification failed)'
+                return False, f'HTTP {nginx_code}'
+        else:
+            # No app_port provided, use nginx check only (backward compatibility)
+            if nginx_healthy:
+                return True, f'HTTP {nginx_code}'
+            return False, f'HTTP {nginx_code}'
+            
+    except Exception as e:
+        return False, str(e)
+
+
+def _test_changes_automatically(changed_files: list, user_prompt: str, app_port: int) -> dict:
+    """
+    Automatically test the changes made to the application.
+    
+    1. Analyze what changed (endpoints, components, features)
+    2. Generate test cases (GET/POST requests with payloads)
+    3. Execute tests against the running app
+    4. Verify responses match expectations
+    5. Auto-fix if tests fail OR ask user if uncertain
+    
+    Args:
+        changed_files: List of files that were modified
+        user_prompt: Original user request
+        app_port: Internal port the app is running on
+    
+    Returns:
+        dict with:
+            - success: bool
+            - tests_passed: int
+            - tests_failed: int
+            - test_results: list of test results
+            - needs_user_input: bool
+            - fix_applied: bool
+    """
+    report('🧪 Testing your changes automatically...')
+    log(f'Changed files: {changed_files}')
+    log(f'User request: {user_prompt}')
+    
+    # Read the changed files to understand what was modified
+    changed_content = {}
+    for filepath in changed_files:
+        try:
+            full_path = WORKSPACE_DIR / filepath
+            if full_path.exists():
+                changed_content[filepath] = full_path.read_text(encoding='utf-8')[:2000]
+        except Exception as e:
+            log(f'Could not read {filepath}: {e}')
+    
+    # Format file context for AI without using backslashes in f-string expression
+    file_list_str = []
+    for path, content in changed_content.items():
+        snippet = content[:500]
+        file_list_str.append(f"// {path}\n{snippet}")
+    formatted_files = "\n\n".join(file_list_str)
+
+    # Ask AI to generate test cases based on the changes
+    test_generation_prompt = f"""You are a QA engineer. Analyze the code changes and generate test cases.
+
+USER REQUEST: {user_prompt}
+
+CHANGED FILES:
+{formatted_files}
+
+YOUR TASK:
+1. Identify what endpoints/features were modified
+2. Generate test cases to verify the changes work correctly
+3. Include both positive and negative test cases
+4. Start with a brief explanation of what you're testing and why (1-2 sentences)
+
+OUTPUT FORMAT (JSON):
+{{
+  "thinking": "I'm testing the new /api/stats endpoint to verify it returns the correct user count and responds with valid JSON.",
+  "endpoints_to_test": [
+    {{
+      "method": "GET",
+      "path": "/api/endpoint",
+      "description": "Test description",
+      "payload": null,
+      "expected_status": 200,
+      "expected_response_contains": ["key1", "key2"]
+    }},
+    {{
+      "method": "POST",
+      "path": "/api/endpoint",
+      "description": "Test description",
+      "payload": {{"key": "value"}},
+      "expected_status": 201,
+      "expected_response_contains": ["success"]
+    }}
+  ],
+  "ui_tests": [
+    {{
+      "description": "Check if button color changed to blue",
+      "selector": "button",
+      "expected_style": {{"background": "blue"}}
+    }}
+  ]
+}}
+
+If no API endpoints were changed, return empty endpoints_to_test array.
+If only UI was changed, focus on ui_tests.
+ALWAYS include "thinking" field explaining what you're testing.
+Output ONLY valid JSON, no explanations."""
+
+    try:
+        response = call_ai([
+            {'role': 'system', 'content': 'You are a QA engineer generating test cases. Output only valid JSON.'},
+            {'role': 'user', 'content': test_generation_prompt},
+        ], temperature=0.1, show_thinking=True)  # Show test generation thinking
+        
+        # Parse JSON response
+        response = re.sub(r'^```[a-z]*\n?', '', response.strip(), flags=re.MULTILINE)
+        response = re.sub(r'\n?```$', '', response.strip(), flags=re.MULTILINE)
+        m = re.search(r'\{.*\}', response, re.DOTALL)
+        if not m:
+            log('⚠️ AI did not return valid JSON for test cases')
+            return {'success': False, 'tests_passed': 0, 'tests_failed': 0, 'test_results': [], 'needs_user_input': False, 'fix_applied': False}
+        
+        test_plan = json.loads(m.group(0))
+        log(f'Generated test plan: {len(test_plan.get("endpoints_to_test", []))} endpoint tests, {len(test_plan.get("ui_tests", []))} UI tests')
+        
+    except Exception as e:
+        log(f'Failed to generate test cases: {e}')
+        return {'success': False, 'tests_passed': 0, 'tests_failed': 0, 'test_results': [], 'needs_user_input': False, 'fix_applied': False}
+    
+    # Execute endpoint tests
+    test_results = []
+    tests_passed = 0
+    tests_failed = 0
+    
+    for test in test_plan.get('endpoints_to_test', []):
+        log(f'🧪 Testing: {test["method"]} {test["path"]}')
+        report(f'🧪 Testing: {test["description"]}')
+        
+        try:
+            url = f'http://127.0.0.1:{app_port}{test["path"]}'
+            method = test['method'].upper()
+            payload = test.get('payload')
+            expected_status = test.get('expected_status', 200)
+            expected_contains = test.get('expected_response_contains', [])
+            
+            # Execute request
+            if method == 'GET':
+                result = subprocess.run(
+                    ['curl', '-s', '-w', '\\n%{http_code}', '-X', 'GET', url],
+                    capture_output=True, text=True, timeout=10
+                )
+            elif method == 'POST':
+                payload_json = json.dumps(payload) if payload else '{}'
+                result = subprocess.run(
+                    ['curl', '-s', '-w', '\\n%{http_code}', '-X', 'POST', '-H', 'Content-Type: application/json', '-d', payload_json, url],
+                    capture_output=True, text=True, timeout=10
+                )
+            else:
+                log(f'⚠️ Unsupported method: {method}')
+                continue
+            
+            if result.returncode != 0:
+                log(f'❌ Request failed: {result.stderr}')
+                tests_failed += 1
+                test_results.append({
+                    'test': test['description'],
+                    'status': 'failed',
+                    'reason': f'Request failed: {result.stderr}'
+                })
+                continue
+            
+            # Parse response
+            output = result.stdout.strip()
+            lines = output.split('\n')
+            status_code = lines[-1] if lines else '000'
+            response_body = '\n'.join(lines[:-1]) if len(lines) > 1 else ''
+            
+            log(f'Response status: {status_code}')
+            log(f'Response body preview: {response_body[:200]}')
+            
+            # Verify status code
+            if status_code != str(expected_status):
+                log(f'❌ Status code mismatch: expected {expected_status}, got {status_code}')
+                tests_failed += 1
+                test_results.append({
+                    'test': test['description'],
+                    'status': 'failed',
+                    'reason': f'Status code mismatch: expected {expected_status}, got {status_code}',
+                    'response': response_body[:500]
+                })
+                continue
+            
+            # Verify response contains expected keys/values
+            all_found = True
+            for expected in expected_contains:
+                if expected not in response_body:
+                    log(f'❌ Expected "{expected}" not found in response')
+                    all_found = False
+            
+            if not all_found:
+                tests_failed += 1
+                test_results.append({
+                    'test': test['description'],
+                    'status': 'failed',
+                    'reason': f'Expected content not found in response',
+                    'response': response_body[:500]
+                })
+                continue
+            
+            # Test passed!
+            log(f'✅ Test passed: {test["description"]}')
+            tests_passed += 1
+            test_results.append({
+                'test': test['description'],
+                'status': 'passed',
+                'response': response_body[:200]
+            })
+            
+        except Exception as e:
+            log(f'❌ Test error: {e}')
+            tests_failed += 1
+            test_results.append({
+                'test': test['description'],
+                'status': 'error',
+                'reason': str(e)
+            })
+    
+    # Report results
+    total_tests = tests_passed + tests_failed
+    if total_tests == 0:
+        report('ℹ️ No API endpoint tests were needed for this change.')
+        return {'success': True, 'tests_passed': 0, 'tests_failed': 0, 'test_results': [], 'needs_user_input': False, 'fix_applied': False}
+    
+    if tests_failed == 0:
+        report(f'✅ All {tests_passed} tests passed! Your changes are working correctly.')
+        return {'success': True, 'tests_passed': tests_passed, 'tests_failed': 0, 'test_results': test_results, 'needs_user_input': False, 'fix_applied': False}
+    
+    # Some tests failed - try to auto-fix
+    report(f'⚠️ {tests_failed} out of {total_tests} tests failed. Analyzing failures...')
+    
+    # Format file context for AI without using backslashes in f-string expression
+    file_list_str = []
+    for path, content in changed_content.items():
+        snippet = content[:500]
+        file_list_str.append(f"// {path}\n{snippet}")
+    formatted_files = "\n\n".join(file_list_str)
+
+    # Ask AI to analyze failures and suggest fixes
+    failure_analysis_prompt = f"""You are debugging test failures. Analyze the failures and suggest fixes.
+
+USER REQUEST: {user_prompt}
+
+CHANGED FILES:
+{formatted_files}
+
+TEST RESULTS:
+{json.dumps([r for r in test_results if r['status'] == 'failed'], indent=2)}
+
+YOUR TASK:
+1. Analyze why the tests failed
+2. Determine if you can fix it automatically OR if you need user input
+3. If fixable: provide the fix using // PATCH: format
+4. If not fixable: explain what you need from the user
+
+OUTPUT FORMAT:
+{{
+  "can_auto_fix": true/false,
+  "analysis": "Explanation of what went wrong",
+  "fix": "// PATCH: file.ext\\n<<<SEARCH\\n...\\n>>>\\n<<<REPLACE\\n...\\n>>>",
+  "user_question": "What should the endpoint return?" (if can_auto_fix is false)
+}}
+
+Output ONLY valid JSON."""
+
+    try:
+        fix_response = call_ai([
+            {'role': 'system', 'content': 'You are a debugging expert. Output only valid JSON.'},
+            {'role': 'user', 'content': failure_analysis_prompt},
+        ], temperature=0.2, show_thinking=True)  # Show debugging thinking
+        
+        # Parse JSON response
+        fix_response = re.sub(r'^```[a-z]*\n?', '', fix_response.strip(), flags=re.MULTILINE)
+        fix_response = re.sub(r'\n?```$', '', fix_response.strip(), flags=re.MULTILINE)
+        m = re.search(r'\{.*\}', fix_response, re.DOTALL)
+        if not m:
+            log('⚠️ AI did not return valid JSON for fix analysis')
+            report(f'⚠️ Tests failed but I need your help. Please check the logs.')
+            return {'success': False, 'tests_passed': tests_passed, 'tests_failed': tests_failed, 'test_results': test_results, 'needs_user_input': True, 'fix_applied': False}
+        
+        fix_plan = json.loads(m.group(0))
+        
+        if fix_plan.get('can_auto_fix'):
+            # Apply the fix
+            report(f'🔧 I found the issue: {fix_plan["analysis"]}')
+            report(f'🔧 Applying automatic fix...')
+            
+            fix_code = fix_plan.get('fix', '')
+            if fix_code:
+                # Parse and apply the fix
+                patch_marker_re = re.compile(r'//\s*PATCH:\s*([^\n]+)', re.IGNORECASE)
+                patch_matches = list(patch_marker_re.finditer(fix_code))
+                
+                if patch_matches:
+                    patches_applied = _apply_patches(fix_code, patch_matches)
+                    if patches_applied > 0:
+                        report(f'✅ Fix applied! Rebuilding to test again...')
+                        return {'success': False, 'tests_passed': tests_passed, 'tests_failed': tests_failed, 'test_results': test_results, 'needs_user_input': False, 'fix_applied': True}
+        
+        # Can't auto-fix - ask user
+        user_question = fix_plan.get('user_question', 'The tests failed. Can you provide more details about what you expected?')
+        
+        suggestions = [
+            {'text': 'Provide more details', 'action': 'clarify', 'icon': '💬', 'prompt': None},
+            {'text': 'Fix it automatically', 'action': 'auto_fix', 'icon': '🤖', 'prompt': 'Fix it based on your best judgment'},
+            {'text': 'Show test results', 'action': 'show_tests', 'icon': '📊', 'prompt': 'Show me the detailed test results'},
+            {'text': 'Skip tests', 'action': 'skip_tests', 'icon': '⏭️', 'prompt': 'Skip the tests and continue'}
+        ]
+        
+        metadata = {
+            'type': 'question',
+            'requires_response': True,
+            'context': 'test_failure',
+            'tests_passed': tests_passed,
+            'tests_failed': tests_failed
+        }
+        
+        report(f'❓ {fix_plan["analysis"]}', 
+               suggestions=suggestions, 
+               metadata=metadata,
+               summary='Tests failed - need your input')
+        report(f'❓ {user_question}',
+               suggestions=suggestions,
+               metadata=metadata,
+               summary=user_question[:100])
+        
+        return {'success': False, 'tests_passed': tests_passed, 'tests_failed': tests_failed, 'test_results': test_results, 'needs_user_input': True, 'fix_applied': False}
+        
+    except Exception as e:
+        log(f'Failed to analyze test failures: {e}')
+        report(f'⚠️ {tests_failed} tests failed. Please review and let me know what to fix.')
+        return {'success': False, 'tests_passed': tests_passed, 'tests_failed': tests_failed, 'test_results': test_results, 'needs_user_input': True, 'fix_applied': False}
+
+
+def _detect_available_ports() -> list:
+    """
+    Detect available internal ports for application binding.
+    
+    Returns:
+        list of available port numbers
+    """
+    candidate_ports = [3000, 5000, 8000, 8080, 4000, 5001, 8001, 3001, 9000]
+    available = []
+    
+    try:
+        # Get list of listening ports
+        result = subprocess.run(
+            ['ss', '-tlnp'],
+            capture_output=True, text=True, timeout=3
+        )
+        
+        if result.returncode == 0:
+            listening_ports = set()
+            for line in result.stdout.splitlines():
+                # Extract port from lines like "LISTEN 0 128 *:3000 *:*"
+                match = re.search(r':(\d+)\s', line)
+                if match:
+                    listening_ports.add(int(match.group(1)))
+            
+            # Filter out ports that are already in use
+            available = [p for p in candidate_ports if p not in listening_ports and p != 80]
+        else:
+            # If ss command fails, return all candidate ports except 80
+            available = [p for p in candidate_ports if p != 80]
+    except Exception as e:
+        log(f'Port detection error: {e}')
+        # Fallback to default ports
+        available = [3000, 5000, 8000, 8080]
+    
+    # Ensure we always have at least some ports available
+    if not available:
+        available = [3000, 5000, 8000]
+    
+    return available
+
+
+def _auto_fix_syntax_error(error_output: str, workspace_discovery: dict) -> dict:
+    """
+    Automatically fix syntax errors in code files.
+    
+    Args:
+        error_output: Build error output containing syntax error details
+        workspace_discovery: Workspace structure data
+    
+    Returns:
+        dict with:
+            - fixed: bool (whether fix was applied)
+            - file: str (file that was fixed)
+            - error: str (error message if failed)
+    """
+    try:
+        # Clean the error output - remove emoji prefixes and extra whitespace
+        cleaned_error = re.sub(r'^[📦🛠️✅⚠️💬🔧]+\s*', '', error_output, flags=re.MULTILINE)
+        
+        log(f'Analyzing syntax error (cleaned output length: {len(cleaned_error)} chars)')
+        log(f'Error preview: {cleaned_error[:300]}')
+        
+        # Extract file path and line number from error
+        # Python: File "/path/to/file.py", line 76
+        # JavaScript: /path/to/file.js:76:10
+        
+        file_match = re.search(r'File "([^"]+)", line (\d+)', cleaned_error)
+        if not file_match:
+            file_match = re.search(r'([^\s]+\.(?:py|js|jsx|ts|tsx)):(\d+):', cleaned_error)
+        
+        if not file_match:
+            log('Could not extract file path from error')
+            log(f'Tried to match in: {cleaned_error[:500]}')
+            return {'fixed': False, 'error': 'Could not parse error location'}
+        
+        error_file = file_match.group(1)
+        error_line = int(file_match.group(2))
+        
+        # Convert to relative path
+        if error_file.startswith('/project/workspace/'):
+            error_file = error_file.replace('/project/workspace/', '')
+        
+        log(f'Syntax error detected in {error_file} at line {error_line}')
+        
+        # Read the problematic file
+        file_path = WORKSPACE_DIR / error_file
+        if not file_path.exists():
+            log(f'File not found: {file_path}')
+            return {'fixed': False, 'error': f'File not found: {error_file}'}
+        
+        file_content = file_path.read_text(encoding='utf-8')
+        lines = file_content.splitlines()
+        
+        # Validate line number
+        if error_line > len(lines):
+            log(f'Error line {error_line} exceeds file length {len(lines)}')
+            error_line = len(lines)
+        
+        # Get context around the error (30 lines before and after for better context)
+        start_line = max(0, error_line - 30)
+        end_line = min(len(lines), error_line + 30)
+        context = '\n'.join(lines[start_line:end_line])
+        
+        # Extract the specific error type from the output
+        error_type = 'SyntaxError'
+        if 'IndentationError' in cleaned_error:
+            error_type = 'IndentationError'
+        elif 'TabError' in cleaned_error:
+            error_type = 'TabError'
+        
+        log(f'Error type: {error_type}')
+        log(f'Providing context: lines {start_line+1} to {end_line}')
+        
+        # Ask AI to fix the syntax error
+        fix_prompt = f"""You are a code repair expert. Fix the {error_type} in this code.
+
+ERROR OUTPUT:
+{cleaned_error[:1500]}
+
+FILE: {error_file}
+ERROR LINE: {error_line}
+ERROR TYPE: {error_type}
+
+CODE CONTEXT (lines {start_line+1} to {end_line}):
+```
+{context}
+```
+
+CRITICAL INSTRUCTIONS:
+1. Identify the exact syntax error at or near line {error_line}
+2. Fix it with minimal changes (only fix the error, don't refactor)
+3. PRESERVE EXACT INDENTATION - copy spaces/tabs exactly as shown
+4. PRESERVE EXACT FORMATTING - copy every character exactly
+5. Include 5-10 lines of context before and after the error line
+6. The SEARCH block must match the file EXACTLY (character-by-character including spaces)
+
+COMMON MISTAKES TO AVOID:
+- Missing leading spaces/indentation
+- Missing colons, quotes, or other punctuation
+- Changing variable names or code structure
+- Not including enough context
+
+OUTPUT FORMAT (use EXACTLY this format):
+// PATCH: {error_file}
+<<<SEARCH
+[EXACT lines from the code above, including ALL indentation and 5-10 lines of context]
+>>>
+<<<REPLACE
+[Same lines with ONLY the syntax error fixed, preserve everything else]
+>>>
+
+Output ONLY the patch, no explanations."""
+
+        log('Calling AI to generate fix...')
+        response = call_ai([
+            {'role': 'system', 'content': 'You are a code repair expert. Fix syntax errors with minimal changes. Always use the PATCH format with SEARCH/REPLACE blocks.'},
+            {'role': 'user', 'content': fix_prompt},
+        ], temperature=0.1, show_thinking=True)
+        
+        log(f'AI response length: {len(response)} chars')
+        log(f'AI response preview: {response[:300]}')
+        
+        # Apply the patch
+        patch_marker_re = re.compile(r'//\s*PATCH:\s*([^\n]+)', re.IGNORECASE)
+        patch_matches = list(patch_marker_re.finditer(response))
+        
+        log(f'Found {len(patch_matches)} PATCH markers')
+        
+        if patch_matches:
+            # First, check if the AI returned identical SEARCH/REPLACE (no actual fix)
+            hunk_re = re.compile(r'<<<SEARCH\n(.*?)\n>>>\n<<<REPLACE\n(.*?)\n>>>', re.DOTALL)
+            hunks = list(hunk_re.finditer(response))
+            
+            if hunks:
+                search_text = hunks[0].group(1)
+                replace_text = hunks[0].group(2)
+                
+                # Check for truncated/corrupted patches
+                search_lines = search_text.splitlines()
+                replace_lines = replace_text.splitlines()
+                
+                # Validation 1: Check for incomplete lines (truncated mid-word)
+                for line in replace_lines:
+                    # Check if line ends with incomplete word (no space, colon, paren, etc.)
+                    stripped = line.rstrip()
+                    if stripped and len(stripped) > 2:
+                        last_chars = stripped[-4:]
+                        # If ends with partial word (letters only, no punctuation)
+                        if last_chars.isalpha() and len(stripped) < 10:
+                            log(f'⚠️ Detected truncated line in REPLACE: "{line}"')
+                            log(f'This looks like an incomplete/corrupted patch')
+                            return {'fixed': False, 'error': 'AI returned truncated/corrupted patch'}
+                
+                # Validation 2: Check if REPLACE is significantly shorter than SEARCH (likely truncated)
+                if len(replace_text) < len(search_text) * 0.5 and len(search_text) > 50:
+                    log(f'⚠️ REPLACE block is much shorter than SEARCH ({len(replace_text)} vs {len(search_text)} chars)')
+                    log(f'This suggests the AI response was truncated')
+                    return {'fixed': False, 'error': 'AI response appears truncated'}
+                
+                # Validation 3: Check for identical blocks
+                if search_text == replace_text:
+                    log('⚠️ AI returned identical SEARCH and REPLACE blocks - no actual fix')
+                    log(f'This means the AI thinks the code is already correct')
+                    log(f'The syntax error might be elsewhere or misidentified')
+                    
+                    # Try to give more context and ask again
+                    log('Attempting second fix with more explicit instructions...')
+                    
+                    retry_prompt = f"""CRITICAL: The previous fix attempt returned identical SEARCH/REPLACE blocks.
+
+The syntax error is REAL and needs to be fixed. Look carefully at line {error_line}.
+
+ERROR OUTPUT:
+{cleaned_error[:1500]}
+
+FILE: {error_file}
+ERROR LINE: {error_line}
+ERROR TYPE: {error_type}
+
+FULL FILE CONTENT:
+```
+{file_content}
+```
+
+The error is at or near line {error_line}. Find the ACTUAL syntax error and fix it.
+
+Common Python syntax errors:
+- Missing colon after if/def/class/for/while
+- Missing closing parenthesis/bracket/brace
+- Incorrect indentation
+- Missing quotes
+
+OUTPUT FORMAT:
+// PATCH: {error_file}
+<<<SEARCH
+[EXACT lines with the error, including context]
+>>>
+<<<REPLACE
+[CORRECTED lines]
+>>>
+
+The SEARCH and REPLACE blocks MUST be DIFFERENT. Output ONLY the patch."""
+
+                    retry_response = call_ai([
+                        {'role': 'system', 'content': 'You are a code repair expert. The SEARCH and REPLACE blocks must be different - you must actually fix something.'},
+                        {'role': 'user', 'content': retry_prompt},
+                    ], temperature=0.2, show_thinking=True)
+                    
+                    # Try to apply the retry response
+                    retry_patch_matches = list(patch_marker_re.finditer(retry_response))
+                    if retry_patch_matches:
+                        patches_applied = _apply_patches(retry_response, retry_patch_matches)
+                        if patches_applied > 0:
+                            log(f'✅ Applied {patches_applied} patches from retry')
+                            return {'fixed': True, 'file': error_file}
+                    
+                    # If retry also failed, continue to fallback
+                    log('Retry also failed, trying fallback...')
+            
+            patches_applied = _apply_patches(response, patch_matches)
+            if patches_applied > 0:
+                log(f'✅ Applied {patches_applied} patches to fix syntax error')
+                return {'fixed': True, 'file': error_file}
+            else:
+                log('⚠️ Patches found but none applied successfully - trying direct fix approach')
+                
+                # FALLBACK: If patch didn't match, try to fix the specific line directly
+                # This handles cases where AI didn't preserve exact formatting
+                try:
+                    # Extract what the AI thinks the fix should be
+                    hunk_re = re.compile(r'<<<SEARCH\n(.*?)\n>>>\n<<<REPLACE\n(.*?)\n>>>', re.DOTALL)
+                    hunks = list(hunk_re.finditer(response))
+                    
+                    if hunks:
+                        search_text = hunks[0].group(1)
+                        replace_text = hunks[0].group(2)
+                        
+                        # Try to identify what changed between search and replace
+                        search_lines = search_text.splitlines()
+                        replace_lines = replace_text.splitlines()
+                        
+                        log(f'Fallback: Analyzing {len(search_lines)} search lines vs {len(replace_lines)} replace lines')
+                        
+                        # Read the actual file
+                        file_content = file_path.read_text(encoding='utf-8')
+                        file_lines = file_content.splitlines()
+                        
+                        # Strategy 1: Find what changed and apply to error line directly
+                        # Compare search vs replace to understand the fix
+                        for i, (s_line, r_line) in enumerate(zip(search_lines, replace_lines)):
+                            if s_line.strip() != r_line.strip():
+                                log(f'Fallback: Found difference at line {i}')
+                                log(f'  Search:  "{s_line.strip()}"')
+                                log(f'  Replace: "{r_line.strip()}"')
+                                
+                                # Python often reports syntax errors on the NEXT line
+                                # So check error_line AND error_line-1
+                                lines_to_check = []
+                                if error_line <= len(file_lines):
+                                    lines_to_check.append((error_line, file_lines[error_line - 1]))
+                                if error_line > 1:
+                                    lines_to_check.append((error_line - 1, file_lines[error_line - 2]))
+                                
+                                for line_num, actual_line in lines_to_check:
+                                    log(f'Fallback: Checking line {line_num}: "{actual_line.strip()}"')
+                                    
+                                    # If the actual line matches the search pattern (stripped), apply the fix
+                                    if actual_line.strip() == s_line.strip():
+                                        log(f'Fallback: Line {line_num} matches search pattern - applying fix')
+                                        original_indent = len(actual_line) - len(actual_line.lstrip())
+                                        fixed_line = ' ' * original_indent + r_line.strip()
+                                        file_lines[line_num - 1] = fixed_line
+                                        
+                                        # Write back
+                                        file_path.write_text('\n'.join(file_lines), encoding='utf-8')
+                                        log(f'✅ Fallback fix applied to line {line_num}')
+                                        return {'fixed': True, 'file': error_file}
+                                
+                                # Strategy 2: Search nearby lines for the pattern
+                                search_start = max(0, error_line - 10)
+                                search_end = min(len(file_lines), error_line + 10)
+                                
+                                log(f'Fallback: Searching lines {search_start+1} to {search_end} for pattern')
+                                for j in range(search_start, search_end):
+                                    if file_lines[j].strip() == s_line.strip():
+                                        log(f'Fallback: Found matching line at file line {j+1}')
+                                        # Preserve the original indentation
+                                        original_indent = len(file_lines[j]) - len(file_lines[j].lstrip())
+                                        fixed_line = ' ' * original_indent + r_line.strip()
+                                        file_lines[j] = fixed_line
+                                        
+                                        # Write back
+                                        file_path.write_text('\n'.join(file_lines), encoding='utf-8')
+                                        log(f'✅ Fallback fix applied to line {j+1}')
+                                        return {'fixed': True, 'file': error_file}
+                                
+                                break  # Only process first difference
+                        
+                        # Strategy 3: If no differences found, maybe it's a simple character addition
+                        # Try to understand what was added/removed
+                        if len(search_lines) == len(replace_lines):
+                            log('Fallback: Trying character-level diff')
+                            for i, (s_line, r_line) in enumerate(zip(search_lines, replace_lines)):
+                                if s_line != r_line:
+                                    # Find what was added
+                                    if r_line.startswith(s_line):
+                                        added = r_line[len(s_line):]
+                                        log(f'Fallback: Detected addition: "{added}"')
+                                    elif s_line in r_line:
+                                        log(f'Fallback: Detected character insertion')
+                                    
+                                    # Apply to error line
+                                    if error_line <= len(file_lines):
+                                        actual_line = file_lines[error_line - 1]
+                                        # Try simple replacement
+                                        if s_line.strip() in actual_line:
+                                            fixed_line = actual_line.replace(s_line.strip(), r_line.strip())
+                                            file_lines[error_line - 1] = fixed_line
+                                            file_path.write_text('\n'.join(file_lines), encoding='utf-8')
+                                            log(f'✅ Fallback fix applied via replacement to line {error_line}')
+                                            return {'fixed': True, 'file': error_file}
+                        
+                        log('⚠️ Fallback: Could not identify the specific line to fix')
+                except Exception as e:
+                    log(f'⚠️ Fallback fix failed: {e}')
+                
+                return {'fixed': False, 'error': 'Patch did not match file content and fallback failed'}
+        
+        log('⚠️ AI did not return valid patch markers')
+        log(f'Response was: {response[:500]}')
+        return {'fixed': False, 'error': 'No valid patch returned'}
+        
+    except Exception as e:
+        log(f'Auto-fix syntax error failed: {e}')
+        import traceback
+        log(f'Traceback: {traceback.format_exc()}')
+        return {'fixed': False, 'error': str(e)}
+
+
+
+
+# ── Agent orchestrator ─────────────────────────────────────────────────────────
+class Agent:
+    """
+    Processes prompts from a queue in a dedicated worker thread.
+    The watchdog enqueues prompts; the worker processes them one at a time.
+    Queue position is reported to the user so they know their request is waiting.
+    """
+
+    def __init__(self):
+        self._queue  = queue.Queue()
+        self._busy   = False
+        self._lock   = threading.Lock()
+        t = threading.Thread(target=self._worker, daemon=True)
+        t.start()
+
+    def enqueue(self, prompt: str):
+        """Add a prompt to the queue and tell the user if they have to wait."""
+        self._queue.put(prompt)
+        queue_size = self._queue.qsize()
+        with self._lock:
+            currently_busy = self._busy
+
+        if currently_busy or queue_size > 1:
+            position = queue_size
+            report(
+                f'📋 Got your request! I\'m still working on the previous one, '
+                f'so yours is #{position} in line. I\'ll get to it as soon as I\'m done — '
+                f'usually just a minute or two.'
+            )
+        log(f'Queued prompt (queue size: {queue_size})')
+
+    def is_idle(self) -> bool:
+        with self._lock:
+            return not self._busy and self._queue.empty()
+
+    def _worker(self):
+        while True:
+            try:
+                prompt = self._queue.get(timeout=1)
+            except queue.Empty:
+                continue
+            with self._lock:
+                self._busy = True
+
+            # Tell the user we're starting their queued request
+            remaining = self._queue.qsize()
+            if remaining > 0:
+                report(f'▶️ Starting your request now! ({remaining} more waiting after this)')
+            else:
+                report(f'▶️ Working on your request now...')
+
+            try:
+                self._handle(prompt)
+            except Exception as e:
+                report(f'⚠️ Something unexpected went wrong. Please try sending your request again.')
+                log(f'Unhandled exception: {e}')
+            finally:
+                with self._lock:
+                    self._busy = False
+                self._queue.task_done()
+
+    def _handle(self, prompt: str):
+        existing    = read_workspace_files()
+        is_empty    = len(existing) == 0
+
+        deploy_only_keywords = [
+            '502', 'fix deployment', 'fix the deployment', 'restart', 'redeploy',
+            'not loading', 'broken', 'fix nginx', 'server error'
+        ]
+        is_deploy_fix = (
+            not is_empty and
+            any(kw in prompt.lower() for kw in deploy_only_keywords)
+        )
+
+        changed_files = []
+        user_prompt = prompt
+        
+        if is_empty or not is_deploy_fix:
+            result = generate_code(prompt, existing_files=existing if not is_empty else None)
+            if not result:
+                return
+            
+            # Check if this was an edit that returned change info
+            if isinstance(result, dict) and result.get('success'):
+                changed_files = result.get('changed_files', [])
+                user_prompt = result.get('user_prompt', prompt)
+
+        # Deploy with testing enabled for edits
+        deploy_result = deploy(
+            error_context={'reason': prompt} if is_deploy_fix else None,
+            test_changes=bool(changed_files),
+            changed_files=changed_files,
+            user_prompt=user_prompt
+        )
+
+
+# ── Watchdog ───────────────────────────────────────────────────────────────────
+def watchdog(agent: Agent):
+    """
+    Runs forever: reads the mailbox for new user prompts and self-heals on errors.
+    Monitors for:
+    - 502 errors (app not responding)
+    - 404 errors on static assets (missing proxy_pass)
+    Never blocks — prompt handling runs in the Agent's worker thread.
+    """
+    log('Watchdog active.')
+    log(f'Mailbox path: {MAILBOX}')
+    last_502_time = 0
+    last_404_fix_time = 0
+    asset_404_count = 0
+    check_count = 0
+
+    while True:
+        try:
+            check_count += 1
+            if check_count % 12 == 0:  # Log every minute (12 * 5 seconds)
+                log(f'Watchdog check #{check_count}: mailbox exists={MAILBOX.exists()}, agent idle={agent.is_idle()}')
+            
+            # ═══════════════════════════════════════════════════════════════
+            # Check mailbox for user prompts
+            # ═══════════════════════════════════════════════════════════════
+            if MAILBOX.exists():
+                try:
+                    prompt = MAILBOX.read_text().strip()
+                    MAILBOX.unlink()
+                    if prompt:
+                        log(f'Mailbox: received prompt ({len(prompt)} chars)')
+                        log(f'Prompt preview: {prompt[:200]}...')
+                        agent.enqueue(prompt)
+                    else:
+                        log('Mailbox: file exists but empty')
+                except Exception as e:
+                    log(f'Mailbox error: {e}')
+
+            if agent.is_idle():
+                # ═══════════════════════════════════════════════════════════
+                # Monitor for 502 errors (app not responding)
+                # ═══════════════════════════════════════════════════════════
+                nginx_errors = get_nginx_errors()
+                now = time.time()
+                if nginx_errors and (now - last_502_time) > 30:
+                    last_502_time = now
+                    report('🔧 Noticed your app stopped responding. Automatically fixing it...')
+                    agent.enqueue('Fix the deployment — the app is returning 502 errors.')
+                
+                # ═══════════════════════════════════════════════════════════
+                # Monitor for 404 errors on static assets (missing proxy_pass)
+                # ═══════════════════════════════════════════════════════════
+                asset_404s = _detect_asset_404_errors()
+                if asset_404s and (now - last_404_fix_time) > 60:
+                    asset_404_count += 1
+                    
+                    # Only auto-fix once, then require manual intervention
+                    if asset_404_count == 1:
+                        log(f'🔍 Detected {len(asset_404s)} 404 errors on static assets')
+                        log(f'   Assets: {", ".join(asset_404s[:5])}')
+                        
+                        # Attempt automatic fix
+                        if _auto_fix_asset_404():
+                            last_404_fix_time = now
+                            report('🔧 Fixed missing asset configuration. Your app should load correctly now.')
+                        else:
+                            log('⚠️ Auto-fix failed - nginx config may need manual review')
+
+        except Exception as e:
+            log(f'Watchdog error: {e}')
+
+        time.sleep(5)
+
+
+def _detect_asset_404_errors() -> list:
+    """
+    Scan nginx access log for 404 errors on static assets (JS, CSS, images).
+    Returns list of asset paths that returned 404.
+    """
+    try:
+        access_log = Path('/var/log/nginx/access.log')
+        if not access_log.exists():
+            return []
+        
+        # Read last 100 lines
+        result = subprocess.run(
+            ['tail', '-n', '100', str(access_log)],
+            capture_output=True, text=True, timeout=3
+        )
+        
+        if result.returncode != 0:
+            return []
+        
+        # Look for 404 errors on asset files
+        asset_extensions = ['.js', '.css', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.woff', '.woff2', '.ttf', '.eot', '.ico']
+        asset_404s = []
+        
+        for line in result.stdout.splitlines():
+            # Nginx log format: ... "GET /path HTTP/1.1" 404 ...
+            if ' 404 ' in line:
+                # Extract path
+                match = re.search(r'"GET\s+([^\s]+)\s+HTTP', line)
+                if match:
+                    path = match.group(1)
+                    # Check if it's an asset file
+                    if any(path.endswith(ext) for ext in asset_extensions):
+                        if path not in asset_404s:
+                            asset_404s.append(path)
+        
+        return asset_404s
+        
+    except Exception as e:
+        log(f'Asset 404 detection error: {e}')
+        return []
+
+
+def _auto_fix_asset_404() -> bool:
+    """
+    Automatically fix nginx configuration when static assets return 404.
+    This happens when location blocks have caching headers but no proxy_pass.
+    
+    Returns True if fix was applied successfully.
+    """
+    try:
+        nginx_conf_path = Path(NGINX_CONF)
+        if not nginx_conf_path.exists():
+            return False
+        
+        # Read current config
+        current_conf = nginx_conf_path.read_text()
+        
+        # Apply auto-fix
+        fixed_conf = _auto_fix_nginx_config(current_conf)
+        
+        # Check if anything changed
+        if fixed_conf == current_conf:
+            log('No nginx fixes needed - config already correct')
+            return False
+        
+        # Write fixed config
+        nginx_conf_path.write_text(fixed_conf)
+        
+        # Reload nginx
+        if nginx_reload():
+            log('✅ Nginx config auto-fixed and reloaded successfully')
+            return True
+        else:
+            log('❌ Nginx reload failed after auto-fix')
+            return False
+            
+    except Exception as e:
+        log(f'Auto-fix error: {e}')
         return False
 
 
-if __name__ == "__main__":
-    agent = AIAgent()
-    sys.exit(0 if agent.run_with_healing() else 1)
+# ── Entry point ────────────────────────────────────────────────────────────────
+if __name__ == '__main__':
+    def _handle_sig(sig, frame):
+        log('Shutdown signal received.')
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _handle_sig)
+    signal.signal(signal.SIGTERM, _handle_sig)
+
+    # 🚀 Start the version supervisor in the background
+    # This enables the 'switch workspace' and 'versioning' features from the host
+    try:
+        sys.path.append('/usr/local/bin')
+        import supervisor
+        t = threading.Thread(target=supervisor.run, daemon=True)
+        t.start()
+        log('Supervisor launched in background.')
+    except Exception as e:
+        log(f'Failed to launch supervisor: {e}')
+
+    agent = Agent()
+
+    report('👋 VibeCoding Agent is online and ready!')
+
+    # Serve a friendly loading page immediately
+    apply_baseline_gateway()
+
+    # If workspace already has files (container restart), redeploy them
+    existing = read_workspace_files()
+    if existing:
+        file_count = len(existing)
+        log(f'Container restart detected - workspace has {file_count} files')
+        
+        # Check if there's a previous deployment we can restore
+        prev_deployment = _detect_previous_deployment()
+        
+        if prev_deployment['has_deployment']:
+            # Previous deployment detected - try to restore it
+            app_port = prev_deployment['app_port']
+            artifacts = prev_deployment['built_artifacts']
+            
+            log(f'Previous deployment found: port={app_port}, artifacts={artifacts}')
+            report(f'🔄 Restoring your app (found previous deployment on port {app_port})...')
+            
+            # Check if app is already healthy
+            if app_port:
+                healthy, msg = _health_check(app_port=app_port)
+                if healthy:
+                    report('✅ Your app is already running and healthy!')
+                    # Skip redeployment, go straight to watchdog
+                    watchdog(agent)
+                    # watchdog runs forever, so we never reach here
+            
+            # App not healthy - attempt redeployment
+            report(f'🔄 Restarting your app ({file_count} files found)...')
+        else:
+            # No previous deployment - fresh deploy
+            log('No previous deployment detected - performing fresh deployment')
+            report(f'🔄 Deploying your app ({file_count} files found)...')
+        
+        # Attempt immediate redeployment without going through the queue
+        try:
+            success = deploy(error_context=None, max_retries=3)
+            if success:
+                report('✅ Your app is back online!')
+            else:
+                report('⚠️ Had trouble restarting the app. You can send me a message to fix it, or I\'ll keep trying automatically.')
+        except Exception as e:
+            log(f'Auto-redeploy on restart failed: {e}')
+            report('⚠️ Had trouble restarting the app. Send me a message if you need help!')
+    else:
+        report('💡 Ready to build! Send me your first message to get started.')
+
+    watchdog(agent)

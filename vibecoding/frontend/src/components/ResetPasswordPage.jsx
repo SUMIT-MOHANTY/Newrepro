@@ -3,7 +3,7 @@ import axios from 'axios';
 import { Zap, Lock, Eye, EyeOff, Check, AlertCircle } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/vibecoding';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/vibecoding';
 
 export default function ResetPasswordPage() {
   const navigate = useNavigate();

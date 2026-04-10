@@ -51,72 +51,130 @@ class UserResponse(BaseModel):
 
 
 # ─── Database Setup ─────────────────────────────────────────────────────────────
-def get_db():
-    """Get a database connection."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+def get_db(robust=True):
+    """
+    Get a database connection with automatic corruption recovery.
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn.row_factory = sqlite3.Row
+        # Attempt to set WAL mode - this often triggers 'malformed' error if DB is corrupt
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.DatabaseError as e:
+            err_msg = str(e).lower()
+            if robust and any(key in err_msg for key in ["malformed", "not a database", "corrupt", "disk i/o error"]):
+                print(f"🚨 DATABASE CORRUPTED! Attempting recovery: {e}")
+                conn.close()
+                _recover_corrupt_db()
+                return get_db(robust=False)
+            raise
+        return conn
+    except sqlite3.DatabaseError as e:
+        err_msg = str(e).lower()
+        if robust and any(key in err_msg for key in ["malformed", "not a database", "corrupt", "disk i/o error"]):
+            print(f"🚨 DATABASE CORRUPTED! Attempting recovery: {e}")
+            _recover_corrupt_db()
+            return get_db(robust=False)
+        raise
+
+
+def _recover_corrupt_db():
+    """Backup corrupted DB and start clean."""
+    import shutil
+    timestamp = int(time.time())
+    corrupt_backup = f"{DB_PATH}.corrupt.{timestamp}"
+    
+    # Close any active connections if possible (though we should be in a crash state here)
+    if os.path.exists(DB_PATH):
+        try:
+            shutil.copy2(DB_PATH, corrupt_backup)
+            print(f"📦 Corrupted database backed up to: {corrupt_backup}")
+        except Exception as e:
+            print(f"⚠️ Failed to backup corrupted DB: {e}")
+            
+        # Clean up all related files
+        for suffix in ["", "-shm", "-wal", "-journal"]:
+            f = f"{DB_PATH}{suffix}"
+            if os.path.exists(f):
+                try:
+                    os.remove(f)
+                except Exception as e:
+                    print(f"⚠️ Failed to remove {f}: {e}")
+    
+    print("✨ Database files cleared. App will recreate schema on next connection.")
 
 
 def init_db():
     """Initialize the database schema."""
-    conn = get_db()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            salt TEXT NOT NULL,
-            full_name TEXT,
-            avatar_color TEXT DEFAULT '#8B5CF6',
-            reset_token TEXT,
-            reset_token_expiry TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS messages (
-            id TEXT PRIMARY KEY,
-            project_id TEXT NOT NULL,
-            container_id TEXT,
-            role TEXT NOT NULL,
-            content TEXT,
-            code TEXT,
-            version_id TEXT,
-            timestamp TEXT NOT NULL,
-            suggestions TEXT,
-            tool_calls TEXT,
-            image_paths TEXT,
-            metadata TEXT,
-            summary TEXT
-        )
-    """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_project_id ON messages(project_id)")
-    conn.commit()
-    
-    # Add reset_token columns if they don't exist (migration for existing databases)
     try:
-        conn.execute("ALTER TABLE users ADD COLUMN reset_token TEXT")
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass  # Column already exists
-    
+        conn = get_db()
+    except Exception as e:
+        print(f"❌ Critical DB failure: {e}")
+        return
+
     try:
-        conn.execute("ALTER TABLE users ADD COLUMN reset_token_expiry TEXT")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                salt TEXT NOT NULL,
+                full_name TEXT,
+                avatar_color TEXT DEFAULT '#8B5CF6',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                reset_token TEXT,
+                reset_token_expiry TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                container_id TEXT,
+                role TEXT NOT NULL,
+                content TEXT,
+                code TEXT,
+                version_id TEXT,
+                timestamp TEXT NOT NULL,
+                suggestions TEXT,
+                tool_calls TEXT,
+                image_paths TEXT,
+                metadata TEXT,
+                summary TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_project_id ON messages(project_id)")
         conn.commit()
-    except sqlite3.OperationalError:
-        pass  # Column already exists
-    
-    try:
-        conn.execute("ALTER TABLE messages ADD COLUMN summary TEXT")
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass  # Column already exists
-    
-    conn.close()
+
+        # Add reset_token columns if they don't exist (migration for existing databases)
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN reset_token TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
+        
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN reset_token_expiry TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
+        
+        try:
+            conn.execute("ALTER TABLE messages ADD COLUMN summary TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
+
+    except Exception as e:
+        print(f"⚠️ Schema initialization error: {e}")
+    finally:
+        try:
+            conn.close()
+        except:
+            pass
 
 
 # Initialize DB on module load

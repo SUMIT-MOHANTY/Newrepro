@@ -65,12 +65,66 @@ TOOL_DEFINITIONS = [
                 "required": ["url"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "patch",
+            "description": "Apply targeted code patches to specific files using the // PATCH: filename block format. Use this for small tweaks, bug fixes, or style updates to existing files.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "patch": {
+                        "type": "string",
+                        "description": "The patch content string following the // PATCH: file\\n<<<SEARCH\\n...\\n<<<REPLACE\\n... format."
+                    }
+                },
+                "required": ["patch"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Create or overwrite a file with complete content. Use this for new files or major rewrites.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "The path to the file (e.g., 'src/components/Button.jsx')."
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The complete content of the file."
+                    }
+                },
+                "required": ["path", "content"]
+            }
+        }
     }
 ]
 
 # ──────────────────────────────────────────────
 # Tool Implementations
 # ──────────────────────────────────────────────
+
+async def patch(patch: str) -> str:
+    """Virtual tool that returns the patch string to the conversation aggregator."""
+    return json.dumps({
+        "status": "success",
+        "message": "Patch received and queued for application.",
+        "patch_content": patch[:100] + "..." if len(patch) > 100 else patch
+    })
+
+async def write_file(path: str, content: str) -> str:
+    """Virtual tool that returns the file content string to the conversation aggregator."""
+    return json.dumps({
+        "status": "success",
+        "message": f"File {path} received and queued for creation.",
+        "content_preview": content[:100] + "..." if len(content) > 100 else content
+    })
 
 def _sync_web_search(query: str, max_results: int = 5) -> list:
     """Run DDGS text search synchronously."""
@@ -238,6 +292,8 @@ async def fetch_page_content(url: str, max_length: int = 8000) -> str:
 TOOL_HANDLERS = {
     "web_search": web_search,
     "fetch_page_content": fetch_page_content,
+    "patch": patch,
+    "write_file": write_file,
 }
 
 
@@ -257,177 +313,149 @@ async def execute_tool_call(tool_name: str, arguments: Dict[str, Any]) -> str:
 # Function Calling Loop (Async)
 # ──────────────────────────────────────────────
 
+async def execute_bash_script(script: str) -> str:
+    """Execute a bash script dynamically inside the AI Agent container and return its output."""
+    from project_manager import project_manager
+    import asyncio
+    import base64
+    
+    try:
+        container = project_manager.agent_container
+        
+        if not container:
+            try:
+                container = project_manager.docker_client.containers.get("vibecoding-ai-agent")
+            except Exception:
+                return "Error: AI Agent container 'vibecoding-ai-agent' is not running. Cannot execute script."
+                
+        def run_script():
+            # Base64 encode the script to avoid quoting injection issues when passing via sh -c
+            encoded_script = base64.b64encode(script.encode('utf-8')).decode('utf-8')
+            
+            # We decode it inside the container and pipe to bash (with a 120s timeout)
+            cmd = f"sh -c 'echo {encoded_script} | base64 -d | timeout 120 bash'"
+            
+            try:
+                exit_code, output = container.exec_run(
+                    cmd,
+                    workdir="/project"
+                )
+                
+                result = output.decode('utf-8', errors='replace')
+                if not result.strip():
+                    result = f"Script executed successfully with exit code {exit_code}."
+                elif exit_code != 0:
+                    result = f"Script returned non-zero exit code {exit_code}.\nOutput:\n{result}"
+                    
+                return result
+            except Exception as inner_e:
+                return f"Container execution error: {str(inner_e)}"
+                
+        return await asyncio.to_thread(run_script)
+    except Exception as e:
+        return f"Script Execution Failed: {str(e)}"
+
+
 async def make_request_with_tools(
     messages: List[Dict[str, Any]],
     max_tool_rounds: int = 10,
     **kwargs
 ) -> Dict[str, Any]:
     """
-    Make an AI API request with tool/function calling support.
-    Runs a loop: if the model returns tool_calls, execute them,
-    feed results back, and let the model continue until it produces
-    a final text response (no more tool_calls).
-
-    For providers that don't support function calling, falls back to
-    ``ai_config.make_async_request()`` — no provider-specific code here.
-
-    Returns the final API response dict with the model's text answer.
+    Make an AI API request with dynamic bash script execution capabilities.
+    Instead of using proprietary OpenAI function calling, this injects instructions
+    telling the LLM to output ```bash blocks to execute commands.
+    This makes the agent universal and compatible with ANY LLM provider.
     """
-    if not ai_config.supports_function_calling:
-        return await ai_config.make_async_request(messages, **kwargs)
+    sys_instructions = (
+        "\n\n[SYSTEM AGENT CAPABILITY]\n"
+        "You act as an autonomous self-healing SWE-Agent inside a secure container.\n"
+        "You have the ability to run shell scripts to gather information, modify files, test code, and configure networking.\n"
+        "To perform any action, you MUST output a shell script block starting with ```bash and ending with ```.\n"
+        "The system will execute your script dynamically and reply with the standard output and exit codes. Wait for the output before proceeding.\n\n"
+        "[DEPLOYMENT & SELF-HEALING PROTOCOL]\n"
+        "1. WRITE CODE: Generate the code for the user's request using your bash scripts to write/patch files.\n"
+        "2. LOAD BALANCER/PROXY: You MUST configure Nginx to reverse proxy port 80 to your app's internal port. Write your conf to `/etc/nginx/sites-available/default`, restart Nginx (`service nginx restart`), and run your app in the background.\n"
+        "3. TEST & VERIFY: You MUST write bash scripts to compile, lint, or syntax-check your code (e.g., `npm run build`, `python3 -m py_compile`).\n"
+        "4. QUEUE & FIX: If your tests fail, treat it as a queue of runtime/syntax errors. Output new bash scripts to dynamically fix them one by one, and re-test continually until successful.\n"
+        "5. Conclude only when tests pass and the proxy is active."
+    )
+    
+    modified_messages = list(messages)
+    found_system = False
+    for msg in modified_messages:
+        if msg.get("role") == "system":
+            msg["content"] = str(msg.get("content", "")) + sys_instructions
+            found_system = True
+            break
+            
+    if not found_system:
+        modified_messages.insert(0, {"role": "system", "content": sys_instructions.strip()})
 
-    headers = ai_config.get_headers()
-
-    # Build payload with tools
-    payload = ai_config.get_payload(messages, **kwargs)
-    payload["tools"] = TOOL_DEFINITIONS
-    payload["tool_choice"] = "auto"
-    # Disable streaming for function calling rounds
-    payload["stream"] = False
-
-    tool_call_log = []  # Track all tool calls for frontend visibility
+    tool_call_log = []
 
     for round_num in range(max_tool_rounds):
-        print(f"\n🤖 AI Request (round {round_num + 1})...")
+        print(f"\n🤖 AI Request (Bash Agent round {round_num + 1})...")
 
-        try:
-            async with httpx.AsyncClient(timeout=300) as client:
-                response = await client.post(
-                    ai_config.base_url,
-                    headers=headers,
-                    json=payload
-                )
-                response.raise_for_status()
-                result = response.json()
-        except httpx.TimeoutException:
-            raise Exception("AI API request timed out after 300 seconds. The generation took too long.")
-        except httpx.HTTPStatusError as e:
-            # Safely read response before accessing .text
-            try:
-                if not getattr(e.response, "_content_read", False):
-                    await e.response.aread()
-                error_body = e.response.text
-            except Exception:
-                error_body = "(Could not read error response)"
-            raise Exception(f"AI API returned error status {e.response.status_code}: {error_body}")
-        except httpx.HTTPError as e:
-            raise Exception(f"AI API networking error: {str(e)}")
+        # Disable streaming for loop rounds
+        kwargs["stream"] = False
+
+        # Make the request using standard text-ompletion mode
+        result = await ai_config.make_async_request(modified_messages, **kwargs)
 
         if "choices" not in result or len(result["choices"]) == 0:
             raise Exception("Invalid response format from AI API")
 
         choice = result["choices"][0]
         message = choice.get("message", {})
-        finish_reason = choice.get("finish_reason", "")
+        content = message.get("content", "")
 
-        # Check if the model wants to call tools
-        tool_calls = message.get("tool_calls")
+        # Check if the model wrote a bash script
+        bash_matches = re.findall(r'```bash\n(.*?)\n```', content, re.DOTALL)
 
-        if not tool_calls or finish_reason == "stop":
-            # No tool calls — model is done, return the final response
+        if not bash_matches:
+            # No bash scripts requested — model is done
             if tool_call_log:
                 result["_tool_calls_log"] = tool_call_log
             print(f"✅ Final response received (round {round_num + 1})")
             return result
 
-        # Process each tool call
-        print(f"🔧 Model requested {len(tool_calls)} tool call(s)")
+        # Process each bash block
+        print(f"🔧 Model generated {len(bash_matches)} bash script(s)")
 
-        # Add the assistant's message (with tool_calls) to conversation
-        messages.append(message)
+        # Add the assistant's message to conversation
+        modified_messages.append(message)
 
-        for tc in tool_calls:
-            func = tc.get("function", {})
-            tool_name = func.get("name", "unknown")
-            tool_id = tc.get("id", "")
+        combined_output = ""
+        for i, script in enumerate(bash_matches):
+            script = script.strip()
+            if not script:
+                continue
+                
+            print(f"  → Executing dynamic script block {i+1}...")
 
-            # Parse arguments
-            try:
-                arguments = json.loads(func.get("arguments", "{}"))
-            except json.JSONDecodeError:
-                arguments = {}
-
-            print(f"  → Calling tool: {tool_name}({json.dumps(arguments, ensure_ascii=False)[:100]})")
-
-            # Execute the tool (async)
-            tool_result = await execute_tool_call(tool_name, arguments)
+            # Execute the script
+            output = await execute_bash_script(script)
+            combined_output += f"Output of script {i+1}:\n```\n{output}\n```\n\n"
 
             # Log for frontend
-            # IMPORTANT:
-            # The frontend expects `result_preview` to be valid/parseable JSON for some tools.
-            # Previously we truncated the raw JSON string which often broke JSON parsing
-            # (leading to "unavailable" UI). Instead, we reduce the JSON to a small,
-            # valid payload per tool so the frontend can render results cleanly.
-            result_preview = tool_result[:300] + "..." if len(tool_result) > 300 else tool_result
-            try:
-                parsed_tool_result = json.loads(tool_result)
-                if isinstance(parsed_tool_result, dict):
-                    if tool_name == "web_search":
-                        reduced = {
-                            "status": parsed_tool_result.get("status"),
-                            "query": parsed_tool_result.get("query"),
-                            "results_count": parsed_tool_result.get("results_count"),
-                            "results": (parsed_tool_result.get("results") or [])[:10],
-                        }
-                        result_preview = json.dumps(reduced, ensure_ascii=False)
-                    elif tool_name == "fetch_page_content":
-                        reduced = {
-                            "status": parsed_tool_result.get("status"),
-                            "url": parsed_tool_result.get("url"),
-                            "title": parsed_tool_result.get("title"),
-                            "description": parsed_tool_result.get("description"),
-                        }
-                        result_preview = json.dumps(reduced, ensure_ascii=False)
-            except Exception:
-                # If tool_result isn't JSON or reduction fails, fall back to truncated string.
-                pass
-
+            result_preview = output[:300] + "..." if len(output) > 300 else output
+            
             tool_call_log.append({
-                "tool": tool_name,
-                "arguments": arguments,
+                "tool": "bash_script",
+                "arguments": {"script": script[:100] + "..."},
                 "result_preview": result_preview,
             })
 
-            # Add tool result to conversation
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_id,
-                "content": tool_result
-            })
+        # Add script result to conversation
+        modified_messages.append({
+            "role": "user",
+            "content": combined_output.strip()
+        })
 
-        # Update payload for next round
-        payload = ai_config.get_payload(messages, **kwargs)
-        payload["tools"] = TOOL_DEFINITIONS
-        payload["tool_choice"] = "auto"
-        payload["stream"] = False
-
-    # If we exhausted all rounds, make one final call without tools
-    print("⚠️ Max tool rounds reached, making final call without tools...")
-    payload = ai_config.get_payload(messages, **kwargs)
-    payload["stream"] = False
-
-    try:
-        async with httpx.AsyncClient(timeout=300) as client:
-            response = await client.post(
-                ai_config.base_url,
-                headers=headers,
-                json=payload
-            )
-            response.raise_for_status()
-            result = response.json()
-        if tool_call_log:
-            result["_tool_calls_log"] = tool_call_log
-        return result
-    except httpx.TimeoutException:
-        raise Exception("AI API final request timed out after 300 seconds.")
-    except httpx.HTTPStatusError as e:
-        # Safely read response before accessing .text
-        try:
-            if not getattr(e.response, "_content_read", False):
-                await e.response.aread()
-            error_body = e.response.text
-        except Exception:
-            error_body = "(Could not read error response)"
-        raise Exception(f"AI API final request returned status {e.response.status_code}: {error_body}")
-    except httpx.HTTPError as e:
-        raise Exception(f"AI API final networking error: {str(e)}")
+    # If we exhausted all rounds, make one final call
+    print("⚠️ Max script rounds reached, making final call...")
+    result = await ai_config.make_async_request(modified_messages, **kwargs)
+    if tool_call_log:
+        result["_tool_calls_log"] = tool_call_log
+    return result

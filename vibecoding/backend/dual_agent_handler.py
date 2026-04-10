@@ -4,7 +4,7 @@ Dual Agent Handler - Integrates Chat Agent and Code Execution Agent
 import logging
 from typing import Dict, List
 from agent_router import AgentRouter
-from ai_agent_manager import get_agent_manager
+from project_manager import project_manager
 from ai_config import ai_config
 from prompts import CHAT_SYSTEM_PROMPT
 
@@ -17,7 +17,6 @@ class DualAgentHandler:
     
     def __init__(self):
         self.router = AgentRouter()
-        self.agent_manager = get_agent_manager()
         self.agent_initialized = False
     
     async def handle_message(self, message: str, history: List[Dict] = None) -> Dict:
@@ -104,7 +103,7 @@ class DualAgentHandler:
                 api_key = ai_config.api_key
                 provider = ai_config.provider
                 
-                agent_url = self.agent_manager.start_agent_container(api_key, provider)
+                agent_url = project_manager.start_agent_container(api_key, provider)
                 
                 if not agent_url:
                     logger.error("Failed to start agent container")
@@ -119,7 +118,7 @@ class DualAgentHandler:
             
             # Send request to code execution agent
             logger.info("📤 Sending request to code execution agent...")
-            result = self.agent_manager.send_request(message)
+            result = project_manager.send_request(message)
             
             if result.get("success"):
                 return {
@@ -135,7 +134,7 @@ class DualAgentHandler:
                 logger.error(f"Code agent failed: {error_msg}")
                 
                 # Get agent logs for debugging
-                logs = self.agent_manager.get_agent_logs()
+                logs = project_manager.get_agent_logs()
                 logger.error(f"Agent logs:\n{logs}")
                 
                 return {
@@ -161,7 +160,7 @@ class DualAgentHandler:
         """Stop the code execution agent container"""
         if self.agent_initialized:
             logger.info("🛑 Stopping AI agent container...")
-            self.agent_manager.stop_agent_container()
+            project_manager.stop_agent_container()
             self.agent_initialized = False
 
 

@@ -5,7 +5,7 @@ import remarkGfm from 'remark-gfm';
 import { Button } from './ui/button';
 import { cn } from '@/lib/utils';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/vibecoding';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/vibecoding';
 
 // Extract functional summary from content (business logic context)
 const extractFunctionalSummary = (content) => {

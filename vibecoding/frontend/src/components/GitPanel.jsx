@@ -17,7 +17,7 @@ import { Button } from './ui/button';
 import Typewriter from './Typewriter';
 import { cn } from '@/lib/utils';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/vibecoding';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/vibecoding';
 
 const GitPanel = ({ 
   darkMode, 

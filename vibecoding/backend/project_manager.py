@@ -8,6 +8,7 @@ import asyncio
 import time
 import requests
 import threading
+import base64
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
@@ -137,6 +138,251 @@ class ProjectManager:
         self._current_user_prompt = ''
         self.running_containers: Dict[str, docker.models.containers.Container] = {}
         self.log_threads: Dict[str, threading.Thread] = {}
+        
+        # Per-project tracking for unified container management
+        self._projects: Dict[str, dict] = {}
+        
+        # Backward-compat single refs (used by main.py for port registration)
+        self.agent_container = None
+        self.agent_url = None
+    
+    # ══════════════════════════════════════════════════════════════════════════
+    # AI AGENT CONTAINER METHODS (merged from ai_agent_manager.py)
+    # ══════════════════════════════════════════════════════════════════════════
+    
+    def _get_project(self, project_id: str) -> dict:
+        """Return the tracking dict for a project, creating it if needed."""
+        if project_id not in self._projects:
+            self._projects[project_id] = {"container": None, "url": None}
+        return self._projects[project_id]
+    
+    def _resolve_port(self, container) -> Optional[str]:
+        """Return the host port bound to container port 80, or None."""
+        try:
+            container.reload()
+            bindings = container.ports.get('80/tcp', [])
+            if bindings and bindings[0].get('HostPort'):
+                return bindings[0]['HostPort']
+        except Exception:
+            pass
+        return None
+    
+    def _wait_for_nginx(self, url: str, timeout: int = 30) -> bool:
+        """Poll until Nginx baseline gateway responds."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                r = requests.get(url, timeout=2)
+                if r.status_code < 500:
+                    return True
+            except Exception:
+                pass
+            time.sleep(1)
+        return False
+    
+    def start_agent_container(
+        self,
+        api_key: str,
+        project_path: str,
+        project_id: str = None,
+    ) -> Optional[str]:
+        """
+        Start or reuse the unified container for a specific project.
+        Returns the container's base URL (http://localhost:{port}) or None on failure.
+        Each project gets its own container named vibecoding_{project_id}.
+        
+        This replaces the old dual-container system (vibecoding-agent-{id} + vibecoding_{id})
+        with a single unified container that handles both AI agent and application serving.
+        """
+        if self.docker_client is None:
+            return None
+
+        workspace_dir = Path(project_path).absolute()
+        project_dir   = workspace_dir.parent
+        pid           = project_id or project_dir.name
+        cname         = f"vibecoding_{pid}"  # Unified naming convention
+        proj          = self._get_project(pid)
+
+        # ── 1. Reuse if already running ───────────────────────────────────────
+        try:
+            existing = self.docker_client.containers.get(cname)
+            if existing.status == "running":
+                port = self._resolve_port(existing)
+                if port:
+                    url = f"http://localhost:{port}"
+                    proj["container"] = existing
+                    proj["url"]       = url
+                    self.agent_container = existing   # backward compat
+                    self.agent_url       = url
+                    self.running_containers[cname] = existing
+                    logger.info(f"♻️ Reusing {cname} at {url}")
+                    return url
+                # Running but no port binding — remove and recreate
+                existing.remove(force=True)
+            elif existing.status in ("exited", "created", "dead"):
+                existing.remove(force=True)
+        except docker.errors.NotFound:
+            pass
+        except Exception as e:
+            logger.warning(f"Container lookup error for {cname}: {e}")
+
+        # ── 2. Create fresh container ─────────────────────────────────────────
+        logger.info(f"🚀 Starting unified container {cname} for project {pid}")
+
+        # Locate the host DB file so the agent can write chat messages
+        db_path = None
+        for cand in [
+            Path(os.getcwd()) / "vibecoding_users.db",
+            Path(os.getcwd()) / "backend" / "vibecoding_users.db",
+            Path(__file__).parent / "vibecoding_users.db",
+        ]:
+            if cand.exists():
+                db_path = str(cand.absolute())
+                break
+
+        env_vars = {
+            "AI_API_KEY":          api_key,
+            "AI_API_URL":          os.environ.get('AI_BASE_URL', os.environ.get('AI_API_URL',
+                                       'https://integrate.api.nvidia.com/v1/chat/completions')),
+            "AI_MODEL":            os.environ.get('AI_MODEL', 'openai/gpt-4.1'),
+            "AI_PROVIDER":         os.environ.get('AI_PROVIDER', 'openai'),
+            "BOURNAI_PLATFORM_ID": os.environ.get('BOURNAI_PLATFORM_ID', 'DSuite'),
+            "PROJECT_DIR":         "/project",
+            "PROJECT_ID":          pid,
+            "PORT":                "80",
+            "PYTHONUNBUFFERED":    "1",
+            "INITIAL_VERSION":     "workspace",
+        }
+
+        volumes = {str(project_dir.absolute()): {'bind': '/project', 'mode': 'rw'}}
+        if db_path:
+            volumes[db_path] = {'bind': '/tmp/vibecoding_users.db', 'mode': 'rw'}
+
+        try:
+            container = self.docker_client.containers.run(
+                "vibecoding-agent-runtime:latest",
+                name=cname,
+                detach=True,
+                remove=False,
+                ports={'80/tcp': None},
+                environment=env_vars,
+                volumes=volumes,
+            )
+        except Exception as e:
+            logger.error(f"❌ Failed to create container {cname}: {e}")
+            return None
+
+        # ── 3. Wait for Docker to assign a host port ──────────────────────────
+        host_port = None
+        for _ in range(15):
+            host_port = self._resolve_port(container)
+            if host_port:
+                break
+            time.sleep(1)
+
+        if not host_port:
+            logger.error(f"❌ No port binding for {cname}")
+            return None
+
+        # Start log streaming in a separate thread
+        log_dir = Path("ai_logs")
+        log_dir.mkdir(exist_ok=True)
+        log_file_path = log_dir / f"{pid}.txt"
+        
+        def stream_logs():
+            try:
+                with open(log_file_path, "a") as log_file:
+                    log_file.write(f"\n--- SESSION START: {datetime.now().isoformat()} ---\n")
+                    for line in container.logs(stream=True, follow=True):
+                        log_file.write(line.decode('utf-8'))
+                        log_file.flush()
+            except Exception as e:
+                logger.error(f"Error streaming logs for {pid}: {e}")
+        threading.Thread(target=stream_logs, daemon=True).start()
+
+        url = f"http://localhost:{host_port}"
+        proj["container"] = container
+        proj["url"]       = url
+        self.agent_container = container   # backward compat
+        self.agent_url       = url
+        self.running_containers[cname] = container
+
+        # ── 4. Wait for Nginx baseline gateway ───────────────────────────────
+        if self._wait_for_nginx(url, timeout=30):
+            logger.info(f"✅ {cname} ONLINE at {url}")
+        else:
+            logger.warning(f"⚠️ {cname} not yet responding — returning URL anyway")
+
+        # Start log streaming in a separate thread
+        log_thread = threading.Thread(
+            target=self._stream_container_logs,
+            args=(container, cname),
+            daemon=True
+        )
+        log_thread.start()
+        self.log_threads[cname] = log_thread
+
+        return url
+    
+    def send_request(self, message: str, project_id: str = None) -> dict:
+        """
+        Drop a prompt into the agent mailbox for a specific project.
+        Falls back to self.agent_container for backward compatibility.
+        """
+        container = None
+        if project_id and project_id in self._projects:
+            container = self._projects[project_id].get("container")
+        if container is None:
+            container = self.agent_container
+
+        if container is None:
+            return {"success": False, "error": "No agent container running for this project"}
+
+        try:
+            encoded = base64.b64encode(message.encode('utf-8')).decode('utf-8')
+            cmd = f'sh -c "echo {encoded} | base64 -d > /tmp/vibe_prompt"'
+            container.exec_run(cmd)
+            logger.info(f"📩 Prompt queued in {container.name}")
+            return {"success": True, "message": "Task queued.", "status": "QUEUED"}
+        except Exception as e:
+            logger.error(f"❌ Mailbox delivery failed: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def get_agent_logs(self, project_id: str = None, lines: int = 50) -> str:
+        """Fetch logs from a project's agent container."""
+        container = self.get_container(project_id) if project_id else self.agent_container
+        if not container:
+            return "No agent container running"
+        try:
+            return container.logs(tail=lines).decode('utf-8', errors='replace')
+        except Exception as e:
+            return f"Failed to get logs: {e}"
+    
+    def stop_agent_container(self, project_id: str = None):
+        """Stop and remove a project's agent container."""
+        if project_id:
+            cname = f"vibecoding_{project_id}"
+            try:
+                c = self.docker_client.containers.get(cname)
+                c.remove(force=True)
+                logger.info(f"🛑 Stopped {cname}")
+            except Exception:
+                pass
+            self._projects.pop(project_id, None)
+            self.running_containers.pop(cname, None)
+        else:
+            # Legacy: stop whatever self.agent_container points to
+            if self.agent_container:
+                try:
+                    self.agent_container.remove(force=True)
+                except Exception:
+                    pass
+                self.agent_container = None
+                self.agent_url = None
+    
+    # ══════════════════════════════════════════════════════════════════════════
+    # END AI AGENT METHODS
+    # ══════════════════════════════════════════════════════════════════════════
     
     @staticmethod
     def _detect_single_file_name(code: str) -> str:
@@ -1932,24 +2178,13 @@ except Exception as e:
             logger.error(f"Failed to save container registry: {e}")
 
     def get_preview_url(self, project_id, direct_port=None):
-        """Construct the preview URL deterministically based on env config"""
-        # If using proxy mode, construct the proxy URL based on the API base
-        use_proxy = os.getenv('USE_PREVIEW_PROXY', 'true').lower() == 'true'
-        if use_proxy:
-            # Use VITE_API_BASE_URL if available as it represents the backend's public endpoint
-            api_base = os.getenv('VITE_API_BASE_URL', '').rstrip('/')
-            if api_base:
-                return f"{api_base}/app/{project_id}/"
-            else:
-                # Fallback to PUBLIC_HOST if VITE_API_BASE_URL is not set
-                public_host = os.getenv('PUBLIC_HOST', 'http://localhost').rstrip('/')
-                # Default backend port if not set
-                backend_port = os.getenv('BACKEND_PORT', '8000')
-                return f"{public_host}:{backend_port}/vibecoding/app/{project_id}/"
-        else:
-            public_host = os.getenv('PUBLIC_HOST', 'http://localhost').rstrip('/')
-            port = direct_port or os.getenv('DEFAULT_CONTAINER_PORT', '80')
-            return f"{public_host}:{port}"
+        """Return a fixed, deterministic preview URL for a project.
+
+        Always returns a relative path: /vibecoding/app/{project_id}/
+        This works behind any reverse proxy and from any client machine.
+        The proxy resolves the container port at request time from .container_registry.json.
+        """
+        return f"/vibecoding/app/{project_id}/"
 
 # Global project manager instance
 project_manager = ProjectManager()

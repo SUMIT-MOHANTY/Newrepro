@@ -25,8 +25,14 @@ from auth import SignupRequest, LoginRequest, signup_user, login_user, get_curre
 from dual_agent_handler import get_dual_agent_handler
 from prompts import MAIN_SYSTEM_PROMPT, APP_NAME
 
+import socket
 import logging
-logging.basicConfig(level=logging.INFO)
+
+# Silence noisy pollers
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("requests").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 load_dotenv()
@@ -197,44 +203,50 @@ def get_warming_up_html():
 async def container_proxy(project_token: str, path: str = "", request: Request = None):
     """
     Generic proxy that routes traffic to the specific Docker container for a project.
-    This allows the frontend to use a single persistent URL while containers use ephemeral ports.
+    The preview URL is fixed per project — the proxy resolves the current container
+    port at request time from .container_registry.json.
     """
-    # Forward query parameters
     query_params = request.scope.get("query_string", b"").decode()
-    
-    # 1. First, check if the container is even ready (has a port)
+
+    # Determine if this is a "main page" request (HTML) or an asset request
+    is_asset = bool(path) and any(
+        path.endswith(ext) for ext in
+        ('.js', '.css', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico',
+         '.woff', '.woff2', '.ttf', '.eot', '.map', '.json', '.webp')
+    )
+
     port = get_container_port(project_token)
     if not port:
-        # If it's a main page request, return Warming Up instead of 404
-        if not path or path.endswith((".html", "/")):
-            logger.info(f"🏘️ Container for {project_token} not registered yet. Returning 'Warming up' HTML.")
-            return HTMLResponse(content=get_warming_up_html())
-        raise HTTPException(status_code=404, detail=f"Container for {project_token} not found or not running.")
+        # Container not registered yet — always return warming-up page (never a JSON error)
+        logger.info(f"🏘️ Container for {project_token} not registered yet. Returning 'Warming up' HTML.")
+        return HTMLResponse(content=get_warming_up_html())
 
+    # Pure transparent proxy: strip the /vibecoding/app/{project_token}/ prefix
+    # and forward the remaining path to the container as-is
     target_base = f"http://127.0.0.1:{port}"
     target_url = f"{target_base}/{path}"
     if query_params:
         target_url += f"?{query_params}"
 
-    # Prepare headers — exclude hop-by-hop and connection-management headers
     excluded_outgoing = ["host", "content-length", "connection", "keep-alive", "proxy-connection", "upgrade"]
     headers = {k: v for k, v in request.headers.items() if k.lower() not in excluded_outgoing}
-    headers["accept-encoding"] = "identity"  # Prefer uncompressed for stable proxying
-    
-    # 1. First, wait for container to be ready (Pre-flight)
+    headers["accept-encoding"] = "identity"
+
+    logger.info(f"🔀 Proxy: {request.method} /vibecoding/app/{project_token}/{path} → {target_url}")
+
+    # Wait for container to be ready
     is_ready = await wait_for_container_ready(target_base, max_attempts=15, initial_delay=1.0)
     if not is_ready:
         print(f"⚠️ Container {target_base} still not responding after 15s. Proceeding anyway.")
 
-    # 2. Proxy request with internal retries to avoid "Connection Reset" JSON in iframe
     max_retries = 5
     last_error = None
-    
+
     for attempt in range(max_retries):
         try:
             session = get_proxy_session()
             body = await request.body()
-            
+
             print(f"🔄 Proxying {request.method} to {target_url} (attempt {attempt + 1})")
             resp = session.request(
                 method=request.method,
@@ -244,16 +256,13 @@ async def container_proxy(project_token: str, path: str = "", request: Request =
                 allow_redirects=False,
                 timeout=(5, 30)
             )
-            
-            # Prepare response headers
-            excluded_response = ["content-encoding", "content-length", "transfer-encoding", "connection", "keep-alive", "x-frame-options", "content-security-policy"]
+
+            excluded_response = ["content-encoding", "content-length", "transfer-encoding", "connection",
+                                  "keep-alive", "x-frame-options", "content-security-policy"]
             response_headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded_response}
-            
-            # Allow iframe embedding
             response_headers["X-Frame-Options"] = "ALLOWALL"
             response_headers["Access-Control-Allow-Origin"] = "*"
 
-            # Handle content
             final_content = resp.content
             encoding = resp.headers.get("content-encoding", "").lower()
             if "gzip" in encoding:
@@ -262,6 +271,55 @@ async def container_proxy(project_token: str, path: str = "", request: Request =
                     final_content = _gzip.decompress(final_content)
                 except Exception:
                     pass
+
+            # Rewrite response content to add proxy prefix to all absolute paths
+            # This makes the container's responses work through the proxy
+            content_type = resp.headers.get("content-type", "").lower()
+            proxy_prefix = f"/vibecoding/app/{project_token}"
+            
+            # Only rewrite text-based content types
+            if final_content and any(ct in content_type for ct in ["text/html", "text/css", "application/javascript", "text/javascript", "application/json"]):
+                try:
+                    text_content = final_content.decode('utf-8', errors='ignore')
+                    
+                    # Rewrite absolute paths to include proxy prefix
+                    # Match: href="/...", src="/...", action="/...", url(/...), "/..." in JSON/JS
+                    # But avoid double-prefixing paths that already have the prefix
+                    
+                    if "text/html" in content_type:
+                        # HTML: Rewrite attributes
+                        text_content = _re.sub(
+                            r'((?:href|src|action|data|content)=")(/(?!vibecoding/app/)[^"]*)"',
+                            rf'\1{proxy_prefix}\2"',
+                            text_content
+                        )
+                        text_content = _re.sub(
+                            r"((?:href|src|action|data|content)=')(/(?!vibecoding/app/)[^']*)'",
+                            rf"\1{proxy_prefix}\2'",
+                            text_content
+                        )
+                    
+                    elif "text/css" in content_type:
+                        # CSS: Rewrite url() references
+                        text_content = _re.sub(
+                            r'url\((["\']?)(/(?!vibecoding/app/)[^)"\'"]+)\1\)',
+                            rf'url(\1{proxy_prefix}\2\1)',
+                            text_content
+                        )
+                    
+                    elif "javascript" in content_type or "json" in content_type:
+                        # JS/JSON: Rewrite string literals with absolute paths
+                        # Match strings like "/api/...", "/assets/...", etc.
+                        text_content = _re.sub(
+                            r'(["\'])(/(?!vibecoding/app/)[a-zA-Z0-9/_.-]+)\1',
+                            rf'\1{proxy_prefix}\2\1',
+                            text_content
+                        )
+                    
+                    final_content = text_content.encode('utf-8')
+                    logger.debug(f"✅ Rewrote paths in {content_type} for {project_token}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to rewrite paths in response: {e}")
 
             response_headers["content-length"] = str(len(final_content))
             media_type = resp.headers.get("content-type", "")
@@ -275,10 +333,9 @@ async def container_proxy(project_token: str, path: str = "", request: Request =
 
         except (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
             last_error = e
-            error_msg = str(e).lower()
             if attempt < max_retries - 1:
                 wait_time = (attempt + 1) * 0.5
-                print(f"⏳ Connection error (attempt {attempt + 1}): {error_msg}. Retrying in {wait_time}s...")
+                print(f"⏳ Connection error (attempt {attempt + 1}): {e}. Retrying in {wait_time}s...")
                 await asyncio.sleep(wait_time)
                 continue
             break
@@ -286,16 +343,9 @@ async def container_proxy(project_token: str, path: str = "", request: Request =
             last_error = e
             break
 
-    # 3. If we're here, all retries failed. 
-    # To avoid showing raw JSON error to user, return a friendly "Warming up" HTML 
-    # ONLY if it's likely a main page request (no path or html-like path)
-    if not path or path.endswith((".html", "/")):
-        logger.info(f"🏘️ Proxy failed. Returning 'Warming up' HTML instead of JSON error.")
-        return HTMLResponse(content=get_warming_up_html(), status_code=200)
-
-    # For assets/API calls that failed, return the 502 as before
-    logger.error(f"❌ Final proxy failure for {target_url}: {last_error}")
-    raise HTTPException(status_code=502, detail=f"Proxy error: {str(last_error)}")
+    # All retries failed — always return warming-up HTML (never a raw error in the iframe)
+    logger.info(f"🏘️ Proxy failed for {project_token}. Returning 'Warming up' HTML.")
+    return HTMLResponse(content=get_warming_up_html(), status_code=200)
 
 
 class Message(BaseModel):
@@ -845,32 +895,25 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
             agent_summary = await summarize_content(ai_response, "")
 
             # Autonomously persist assistant message in discuss mode
-            try:
-                from auth import get_db
-                import uuid
-                import time
-                msg_id = f"msg_{int(time.time())}_{uuid.uuid4().hex[:4]}"
-                project_info = project_manager.get_project_info(project_id)
-                container_id = project_info.get("container_id") if project_info else None
-                
-                conn = get_db()
-                conn.execute(
-                    """INSERT INTO messages 
-                       (id, project_id, container_id, role, content, code, version_id, timestamp, suggestions, tool_calls, image_paths, metadata, summary)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (msg_id, project_id, container_id, "assistant", ai_response, None, None,
-                     datetime.now().isoformat(), 
-                     json.dumps(suggestions) if suggestions else None,
-                     None, None, None, agent_summary)
-                )
-                conn.commit()
-                conn.close()
-                logger.info(f"📁 Persisted AI response {msg_id} (Discuss) for project {project_id}")
-            except Exception as e:
-                logger.error(f"❌ Failed to auto-save discuss message: {e}")
+            msg_id = f"msg_{int(time.time())}_{uuid.uuid4().hex[:4]}"
+            project_info = project_manager.get_project_info(project_id)
+            container_id = project_info.get("container_id") if project_info else None
+            
+            conn = get_db()
+            conn.execute(
+                """INSERT INTO messages 
+                    (id, project_id, container_id, role, content, code, version_id, timestamp, suggestions, tool_calls, image_paths, metadata, summary)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (msg_id, project_id, container_id, "assistant", ai_response, None, None,
+                    datetime.now().isoformat(), 
+                    json.dumps(suggestions) if suggestions else None,
+                    None, None, None, agent_summary)
+            )
+            conn.commit()
+            conn.close()
 
             return GenerateResponse(
-                message=agent_summary,
+                message=ai_response,
                 code=None,
                 project_id=project_id,
                 version_id=None,
@@ -881,259 +924,77 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
                 message_id=msg_id
             )
 
-        # Get existing code in the workspace - Increased limits for better full-stack context
-        workspace_files = project_manager.get_workspace_files(project_id, max_files=100, max_chars_per_file=4000)
-        has_existing_code = len(workspace_files) > 0
+        # ── Autonomous Flow: Delegating to Container-Side Resident Agent ──────
+        logger.info(f"🦾 Triggering Autonomous Orchestrator for Project: {project_id}")
 
-        # Identify "Chat" intent for short/simple prompts or greetings to keep context light
-        simple_chat_words = {'hi', 'hello', 'hey', 'yo', 'sup', 'how are you', 'howdy', 'greeting', 'thanks', 'thank you'}
-        p_clean = request.prompt.strip().lower().strip('?!.')
-        is_simple_intent = p_clean in simple_chat_words or (len(p_clean) < 12 and not any(c in p_clean for c in ['/', '.', '<', '>', '{', '}']))
-        
-        # If simple intent, we skip the heavy file content to avoid "over-engineering" the response,
-        # but we KEEP the project tree/structure so the AI still knows "where" it is.
-        if is_simple_intent:
-            workspace_files = {} # Keep codebase light
-        
-        # Get full project structure (all paths recursively) to help with architectural understanding
-        all_paths = project_manager.get_all_workspace_paths(project_id)
-        project_tree_str = "\n".join([f"- {p}" for p in all_paths]) if all_paths else "No files yet"
-        
-        # Detect architecture/stack
-        project_info = project_manager.get_project_info(project_id) or {}
-        runtime = project_info.get("runtime", "universal")
-        arch_type = f"Architecture Detect: {runtime.upper()} project structure."
-        
-        # Get frozen files list
-        frozen_files = project_manager.get_frozen_files(project_id)
-        frozen_files_str = "\n".join([f"- {path} (READ-ONLY)" for path in frozen_files]) if frozen_files else "None"
+        workspace_dir = project_manager.artifacts_dir / project_id / "workspace"
+        workspace_dir.mkdir(parents=True, exist_ok=True)
 
-        # Inject BRD project context if available
-        brd_context_str = ""
-        project_meta = project_manager.get_project_info(project_id)
-        brd_data = project_meta.get("brd_context") if project_meta else None
-        
-        if brd_data:
-            parts = []
-            if brd_data.get("project_name"):
-                parts.append(f"Project Name: {brd_data['project_name']}")
-            if brd_data.get("classification"):
-                parts.append(f"Governance Classification: {brd_data['classification']}")
-            if brd_data.get("recommendation"):
-                parts.append(f"Governance Recommendation: {brd_data['recommendation']}")
-            if brd_data.get("brd_summary"):
-                parts.append(f"BRD Summary: {brd_data['brd_summary']}")
-            if brd_data.get("agent_analysis"):
-                parts.append(f"Agent Analysis: {brd_data['agent_analysis']}")
-            if parts:
-                brd_context_str = "\n\n📄 PROJECT CONTEXT (from BRD Analyzer):\n" + "\n".join(parts) + "\n"
+        # Ensure project metadata exists so manager knows what it's dealing with
+        if not (workspace_dir / "metadata.json").exists():
+            project_manager._ensure_workspace_metadata(project_id, workspace_dir, "initial")
 
-        # Build conversation history with appropriate system prompt
-        from prompts import get_dynamic_system_prompt
-        
-        # Determine extra directives based on current user prompt intent
-        extra_directives = ""
-        p_lower = request.prompt.lower()
-        if any(word in p_lower for word in ['redesign', 'premium', 'modernize', 'professional', 'ux', 'ui']):
-            extra_directives = "🎯 DESIGN UPGRADE: The user wants a premium, modern, or OS-like redesign. Use deep glassmorphism, subtle micro-animations on hover, and custom layouts that fill the entire screen. Ensure it is RESPONSIVE and mobile-ready."
-        elif any(word in p_lower for word in ['simple', 'clean', 'minimalist']):
-            extra_directives = "🎯 DESIGN DIRECTIVE: Create a clean, minimalist, but high-fidelity 'Apple-style' UI. High contrast, precise typography (Inter), and plenty of whitespace while still feeling complete."
+        # 1. Compute the fixed preview URL for this project BEFORE starting the container.
+        #    The URL is deterministic — it never changes for a given project_id.
+        preview_url = project_manager.get_preview_url(project_id)
 
-        # Pass in all data to the dynamic prompt factory
-        system_prompt = get_dynamic_system_prompt(
-            mode="chat" if (request.discuss_mode or is_simple_intent) else ("edit" if has_existing_code else "generate"),
-            frozen_files=frozen_files_str,
-            file_list=project_tree_str,
-            current_files="".join([f"\n\n// FILE: {path}\n{content}" for path, content in workspace_files.items()]) if (has_existing_code and not is_simple_intent) else "",
-            brd_context=brd_data,
-            extra_directives=f"{arch_type}\n{extra_directives}" if not is_simple_intent else ""
+        # 2. Start or ensure the agent container is alive (volume-mounted to workspace)
+        agent_url = project_manager.start_agent_container(
+            api_key=ai_config.api_key,
+            project_path=str(workspace_dir),
+            project_id=project_id
         )
-        
-        from datetime import datetime
-        now = datetime.now()
-        date_context = f"Current date and time: {now.strftime('%A, %B %d, %Y %H:%M:%S')} (UTC{now.astimezone().strftime('%z')})\n\n"
-        messages = [{"role": "system", "content": date_context + system_prompt}]
-        for msg in request.history:
-            messages.append({"role": msg.role, "content": msg.content})
-        
-        prompt_with_instructions = request.prompt
-        if has_existing_code:
-            prompt_with_instructions = f"{request.prompt}\n\nIMPORTANT: If this is a small change, output ONLY the files that need to be modified. Do NOT regenerate the entire codebase."
-        
-        messages.append(build_vision_message(prompt_with_instructions, request.images))
 
-        # Log AI request
-        log_prompt = f"User Request: {request.prompt}"
-        response = await make_request_with_tools(messages)
-        tool_calls_log = response.pop("_tool_calls_log", None)
-        
-        if "choices" in response and len(response["choices"]) > 0:
-            ai_response = response["choices"][0]["message"].get("content") or ""
-        else:
-            raise Exception("Invalid response format from AI API")
-        
-        # Fallback for empty responses, especially common during safety filtering or confusion with simple greetings
-        if not ai_response.strip() and is_simple_intent:
-            ai_response = "Hello! I'm here to help you build or refine your project. What would you like to work on first?"
-        
-        log_ai_interaction(log_prompt, ai_response, "main_generation")
+        if not agent_url:
+            raise HTTPException(status_code=500, detail="Failed to initialize Autonomous Agent runtime.")
 
-        # Extract code from response OR from tool calls (if AI used the 'patch' tool)
-        import re as _re
-        ai_response = _preprocess_ai_response(ai_response)
-        
-        has_patch_markers = bool(_re.search(r'//\s*PATCH:\s*', ai_response))
-        has_raw_search_replace = (not has_patch_markers and bool(_re.search(r'<<<\s*SEARCH', ai_response)) and bool(_re.search(r'<<<\s*REPLACE', ai_response)))
-        has_markers = bool(_re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', ai_response))
-
-        code = None
-        
-        # 1. Check if code was sent via tool calls first (modern approach)
-        if tool_calls_log:
-            for tc in tool_calls_log:
-                if tc.get("tool") == "patch" and tc.get("arguments", {}).get("patch"):
-                    code = tc["arguments"]["patch"]
-                    logger.info("🔧 Patch extracted from tool call payload")
-                    break
-                elif tc.get("tool") == "write_file":
-                    args = tc.get("arguments", {})
-                    if args.get("path") and args.get("content"):
-                        file_path = args["path"]
-                        file_content = args["content"]
-                        # Convert to // FILE: format for the downstream handler
-                        code = f"// FILE: {file_path}\n{file_content}"
-                        logger.info(f"📝 Full file {file_path} extracted from tool call payload")
-                        break
-
-        # 2. Fallback to response text markers (classic approach)
-        if not code:
-            if has_patch_markers or has_raw_search_replace:
-                code = ai_response
-            elif has_markers:
-                fenced_blocks = _re.findall(r'```[a-zA-Z]*\n?(.*?)```', ai_response, _re.DOTALL)
-                fenced_code = "\n\n".join(b.strip() for b in fenced_blocks).strip() if fenced_blocks else ""
-                if fenced_code and _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', fenced_code):
-                    code = fenced_code
-                else:
-                    cleaned = _re.sub(r'```[a-zA-Z]*\n?', '', ai_response).replace('```', '')
-                    first_marker = _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', cleaned)
-                    code = cleaned[first_marker.start():].strip() if first_marker else cleaned.strip()
-        else:
-            blocks = _re.findall(r'```[a-zA-Z]*\n?(.*?)```', ai_response, _re.DOTALL)
-            if blocks:
-                import re
-                code_match = re.search(r"```(?:\w+)?\n?(.*?)\n?```", ai_response, re.DOTALL)
-                code = code_match.group(1).strip() if code_match else "\n\n".join(blocks).strip()
-            elif '<html' in ai_response.lower() or '<!doctype' in ai_response.lower():
-                code = ai_response.strip()
-
-        # Extract message 
-        message = ai_response
-        if code:
-            if has_patch_markers:
-                message = _re.split(r'//\s*PATCH:\s*', ai_response)[0].strip()
-            elif has_raw_search_replace:
-                message = _re.split(r'<<<\s*SEARCH', ai_response)[0].strip()
-            elif has_markers:
-                parts = ai_response.split("```")
-                preamble = parts[0].strip()
-                epilogue = parts[-1].strip() if len(parts) >= 3 else ""
-                message = f"{preamble}\n\n{epilogue}".strip() if (epilogue and not _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', epilogue)) else preamble
-            else:
-                message = ai_response.split("```")[0].strip()
-        message = message.replace('```', '').strip()
-
-        # Generate summary and suggestions before persistence
-        summary_task = summarize_content(message, code or "")
-        suggestions_task = generate_suggestions(message, code or "", request.prompt)
-        summary, suggestions = await asyncio.gather(summary_task, suggestions_task)
-
-        # ── Persistence: Save AI response to DB ──────────
+        # 3. Register the agent container port in the project registry so the proxy can route to it
         try:
-            from auth import get_db
-            import uuid
-            import json
-            import time
-            msg_id = f"msg_{int(time.time())}_{uuid.uuid4().hex[:4]}"
-            
-            # Get current container ID for logging
-            project_info = project_manager.get_project_info(project_id)
-            container_id = project_info.get("container_id") if project_info else None
-            
-            conn = get_db()
-            conn.execute(
-                """INSERT INTO messages 
-                   (id, project_id, container_id, role, content, code, version_id, timestamp, suggestions, tool_calls, image_paths, metadata, summary)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (msg_id, project_id, container_id, "assistant", message, code, 
-                 None, # version_id will be updated after git commit if needed
-                 datetime.now().isoformat(), 
-                 json.dumps(suggestions) if suggestions else None,
-                 json.dumps(tool_calls_log) if tool_calls_log else None,
-                 None,
-                 None,
-                 summary)
-            )
-            conn.commit()
-            conn.close()
+            project_manager.agent_container.reload()
+            port_bindings = project_manager.agent_container.ports.get('80/tcp', [])
+            if port_bindings and port_bindings[0].get('HostPort'):
+                host_port = port_bindings[0]['HostPort']
+                project_manager._save_container_registry(project_id, host_port)
+                logger.info(f"📋 Registered agent port {host_port} for project {project_id}")
         except Exception as e:
-            logger.error(f"Failed to auto-save AI response: {e}")
+            logger.warning(f"⚠️ Could not register agent port: {e}")
 
-        # Save and Prepare Response
-        version_id = None
-        preview_url = None
-        
-        if code:
-            try:
-                version_id, _ = project_manager.update_workspace_from_code(project_id, code, request.prompt)
-            except ValueError as e:
-                if str(e).startswith("FROZEN_FILES_VIOLATION:"):
-                    frozen_files_str = str(e).split(":", 1)[1]
-                    violation_list = "\n".join([f"  - {f}" for f in list(set(frozen_files_str.split(",")))])
-                    error_message = f"Cannot complete this request. The following files are frozen:\n\n{violation_list}\n\nPlease unfreeze them if you want to make changes."
-                    return GenerateResponse(message=error_message, code=None, project_id=project_id, version_id=None, preview_url=None, tool_calls_log=tool_calls_log, suggestions=None)
-                raise
-            
-            # Save chat history
-            try:
-                status = git_manager.get_status(project_id)
-                current_branch = status.get("branch", "main") if status["status"] == "success" else "main"
-                history = [{"role": msg.role, "content": msg.content} for msg in request.history]
-                history.append({"role": "user", "content": request.prompt})
-                history.append({"role": "assistant", "content": message})
-                await project_manager.save_chat_version(project_id, current_branch, history)
-            except Exception as e:
-                print(f"Failed to save chat history: {e}")
-            
-            # Final Response setup
-            preview_url = project_manager.get_preview_url(project_id)
-            if project_manager.docker_client:
-                project_manager._current_user_prompt = request.prompt
-                background_tasks.add_task(project_manager.create_container_for_code, project_id, "workspace")
-                logger.info(f"🚀 Started container for {project_id} in background")
-                
-                # Kick off verification background task (Currently disabled to prevent duplicate responses and NameErrors)
-                # if code and preview_url:
-                #     background_tasks.add_task(
-                #         verify_generated_preview, 
-                #         project_id, 
-                #         msg_id, 
-                #         preview_url, 
-                #         request.prompt, 
-                #         code
-                #     )
-            else:
-                preview_url = None
-        
-        # Return unified response
+        # 4. Hand off task to the agent mailbox
+        # Only include actual user messages as context (skip the agent's own acknowledgements)
+        handoff_prompt = request.prompt
+        if request.history:
+            user_turns = [m for m in request.history if m.role == "user"]
+            if user_turns:
+                history_summary = "\n".join([f"User: {m.content[:200]}" for m in user_turns[-3:]])
+                handoff_prompt = f"CONTEXT (previous turns):\n{history_summary}\n\nCURRENT REQUEST: {request.prompt}"
+
+        logger.info(f"📤 Sending prompt to container for project {project_id}: {handoff_prompt[:100]}...")
+        result = project_manager.send_request(handoff_prompt, project_id=project_id)
+        logger.info(f"📬 Mailbox delivery result: {result}")
+
+        # 5. Persist the assistant acknowledgement message
+        msg_id = f"msg_{int(time.time())}_{uuid.uuid4().hex[:4]}"
+        delegate_msg = "On it! The agent is now working on your request. The preview will update automatically once deployment is complete."
+        summary = "Handoff to Autonomous Resident Agent completed."
+
+        conn = get_db()
+        conn.execute(
+            """INSERT INTO messages
+                (id, project_id, container_id, role, content, code, timestamp, summary)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (msg_id, project_id, "vibecoding-ai-agent", "assistant", delegate_msg, None,
+             datetime.now().isoformat(), summary)
+        )
+        conn.commit()
+        conn.close()
+
         return GenerateResponse(
-            message=message,
-            code=code,
+            message=delegate_msg,
+            code=None,
             project_id=project_id,
-            version_id=version_id,
+            version_id="workspace",
             preview_url=preview_url,
-            tool_calls_log=tool_calls_log,
-            suggestions=suggestions,
+            suggestions=["Check the preview", "Describe what to change next", "Add more features"],
             summary=summary,
             message_id=msg_id
         )
@@ -1174,45 +1035,35 @@ async def health_check():
 
 @app.get("/vibecoding/api/projects/{project_id}/container-health")
 async def container_health(project_id: str):
-    """Check if a project's container is healthy and serving HTTP requests."""
+    """Check if the project's agent container is healthy and serving traffic."""
+    if project_manager.docker_client is None:
+        return {"healthy": False, "reason": "docker_unavailable"}
+
     port = get_container_port(project_id)
+
+    # If not in registry yet, try to find the per-project agent container directly
     if not port:
-        return {"healthy": False, "reason": "no_container"}
+        try:
+            container = project_manager.docker_client.containers.get(f"vibecoding-agent-{project_id}")
+            container.reload()
+            if container.status == "running":
+                port_bindings = container.ports.get('80/tcp', [])
+                if port_bindings and port_bindings[0].get('HostPort'):
+                    port = port_bindings[0]['HostPort']
+                    project_manager._save_container_registry(project_id, port)
+        except Exception:
+            pass
 
-    # Check Docker container status
-    container_name = f"vibecoding_{project_id}"
-    docker_status = "unknown"
-    try:
-        if project_manager.docker_client:
-            container = project_manager.docker_client.containers.get(container_name)
-            docker_status = container.status
-            if docker_status != "running":
-                return {"healthy": False, "reason": "container_not_running", "docker_status": docker_status}
-    except Exception:
-        return {"healthy": False, "reason": "container_not_found"}
+    if not port:
+        return {"healthy": False, "reason": "port_not_registered"}
 
-    # First, try the dedicated health endpoint on port 9090
     try:
-        health_resp = requests.get(f"http://127.0.0.1:{port}/health", timeout=2)
-        if health_resp.status_code == 200:
-            health_data = health_resp.json()
-            if health_data.get("status") == "healthy":
-                return {"healthy": True, "docker_status": docker_status, "health_check": "passed"}
-            return {"healthy": False, "reason": "health_check_failed", "docker_status": docker_status}
-    except requests.exceptions.RequestException:
-        # Health endpoint not available, fall back to probing the main app port
-        pass
-
-    # Fallback: Probe the actual app port
-    try:
-        resp = requests.get(f"http://127.0.0.1:{port}/", timeout=3)
+        resp = requests.get(f"http://127.0.0.1:{port}", timeout=2)
         if resp.status_code < 500:
-            return {"healthy": True, "docker_status": docker_status, "http_status": resp.status_code}
-        return {"healthy": False, "reason": "http_error", "http_status": resp.status_code}
+            return {"healthy": True, "http_status": resp.status_code}
+        return {"healthy": False, "reason": f"http_{resp.status_code}"}
     except requests.exceptions.ConnectionError:
-        return {"healthy": False, "reason": "connection_refused", "docker_status": docker_status}
-    except requests.exceptions.Timeout:
-        return {"healthy": False, "reason": "timeout", "docker_status": docker_status}
+        return {"healthy": False, "reason": "connection_refused"}
     except Exception as e:
         return {"healthy": False, "reason": str(e)}
 
@@ -1279,6 +1130,59 @@ async def get_project(project_id: str, user: dict = Depends(get_current_user)):
             raise HTTPException(status_code=403, detail="Access denied")
             
         return ProjectResponse(**project_info)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/vibecoding/api/projects/{project_id}/start")
+async def start_project_container(project_id: str, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
+    """
+    Start (or wake up) the agent container for a project when the user opens it.
+    Returns the fixed preview URL immediately — the container boots in the background.
+    No-op if the container is already running.
+    """
+    try:
+        project_info = project_manager.get_project_info(project_id)
+        if not project_info:
+            raise HTTPException(status_code=404, detail="Project not found")
+        if project_info.get("owner_id") is not None and project_info.get("owner_id") != user["id"]:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # Only start if the workspace has files — no point starting an empty container
+        workspace_dir = project_manager.artifacts_dir / project_id / "workspace"
+        has_files = workspace_dir.exists() and any(
+            f for f in workspace_dir.rglob("*")
+            if f.is_file() and f.name != "metadata.json" and ".git" not in f.parts
+        )
+
+        preview_url = project_manager.get_preview_url(project_id)
+
+        if not has_files:
+            return {"preview_url": preview_url, "started": False, "reason": "empty_workspace"}
+
+        # Start container in background so the HTTP response returns immediately
+        async def _start():
+            try:
+                agent_url = project_manager.start_agent_container(
+                    api_key=ai_config.api_key,
+                    project_path=str(workspace_dir),
+                    project_id=project_id
+                )
+                if agent_url and project_manager.agent_container:
+                    project_manager.agent_container.reload()
+                    port_bindings = project_manager.agent_container.ports.get('80/tcp', [])
+                    if port_bindings and port_bindings[0].get('HostPort'):
+                        project_manager._save_container_registry(project_id, port_bindings[0]['HostPort'])
+                        logger.info(f"🚀 Container started for project {project_id} on port {port_bindings[0]['HostPort']}")
+            except Exception as e:
+                logger.warning(f"Background container start failed for {project_id}: {e}")
+
+        background_tasks.add_task(_start)
+
+        return {"preview_url": preview_url, "started": True}
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1859,16 +1763,22 @@ def get_container_port(project_id: str) -> str:
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"], include_in_schema=False)
 async def asset_fallback_proxy(path: str, request: Request):
     """
-    Handles requests for absolute paths (e.g. /assets/foo.js) by using the Referer 
-    header to determine which container the request belongs to.
+    Handles requests for absolute asset paths (e.g. /assets/foo.js) that are loaded
+    by the container app and use the Referer header to identify which project they belong to.
+    React Router paths (/vibecoding/a/*, /vibecoding/login, etc.) are NOT handled here.
     """
-    referer = request.headers.get("referer", "")
-    if not referer:
-        # We don't log here to avoid noise from direct hits, but assets MUST have referer
+    # Ignore React Router frontend paths — these should never reach the backend
+    react_router_prefixes = ("vibecoding/a/", "vibecoding/login", "vibecoding/signup",
+                             "vibecoding/forgot-password", "vibecoding/reset-password",
+                             "vibecoding/", )
+    if not path or path in ("vibecoding", "vibecoding/") or any(path.startswith(p) for p in react_router_prefixes):
         raise HTTPException(status_code=404)
 
-    # Check if referer is one of our app proxy URLs
-    # Matches both /vibecoding/app/{token}/ AND /app/{token}/
+    referer = request.headers.get("referer", "")
+    if not referer:
+        raise HTTPException(status_code=404)
+
+    # Only handle assets whose referer is a container app URL
     match = _re.search(r'/(?:vibecoding/)?app/([a-zA-Z0-9_-]+)/', referer)
     if not match:
         raise HTTPException(status_code=404)

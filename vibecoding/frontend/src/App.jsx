@@ -16,7 +16,7 @@ import ChatPanel from './components/ChatPanel';
 import FileTree from './components/FileTree';
 import CodePreview from './components/CodePreview';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/vibecoding';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/vibecoding';
 
 function App() {
   const { user, isAuthenticated, loading: authLoading, logout } = useAuth();
@@ -84,6 +84,8 @@ function Workspace({ user, logout, isAuthenticated }) {
   const prevProjectIdRef = useRef(null);
   const containerLoadExpectedRef = useRef(false);
   const containerPollIntervalRef = useRef(null);
+  const workspacePollIntervalRef = useRef(null);
+  const lastWorkspaceHashRef = useRef('');
 
   // Determine active project ID from URL
   const params = new URLSearchParams(window.location.search);
@@ -148,6 +150,14 @@ function Workspace({ user, logout, isAuthenticated }) {
     prevProjectIdRef.current = currentProjectId;
   }, [currentProjectId]);
 
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      stopWorkspacePolling();
+      if (containerPollIntervalRef.current) clearTimeout(containerPollIntervalRef.current);
+    };
+  }, []);
+
   // Sync dark mode with document and localStorage
   useEffect(() => {
     localStorage.setItem('vibecoding_dark_mode', JSON.stringify(darkMode));
@@ -199,6 +209,62 @@ function Workspace({ user, logout, isAuthenticated }) {
       return () => clearInterval(interval);
     }
   }, [lastMessageId, verificationStatus, currentProjectId]);
+
+  // --- Autonomous Polling Logic ---
+  const [isAutonomousPolling, setIsAutonomousPolling] = useState(false);
+
+  useEffect(() => {
+    let pollInterval;
+    if (isAutonomousPolling && currentProjectId) {
+      pollInterval = setInterval(async () => {
+        try {
+          const token = localStorage.getItem('vibecoding_token');
+          const response = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/messages`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          
+          if (response.data.messages) {
+             const newMessages = response.data.messages;
+             setMessages(newMessages);
+             
+             // Check if the last message signals completion or a code update
+             const lastMsg = newMessages[newMessages.length - 1];
+             
+             // 1. If we see a code update, refresh the tree
+             if (lastMsg?.content?.includes("[AGENT] CODE_UPDATE")) {
+                await fetchProjectFiles();
+             }
+             
+             // 2. If we see verification or a generic stop signal, end polling
+             if (lastMsg?.content?.includes("[AGENT] VERIFICATION") || !loading) {
+                setIsAutonomousPolling(false);
+                setLoading(false);
+             }
+          }
+        } catch (e) {
+          console.error("Polling error:", e);
+        }
+      }, 3000);
+    }
+    return () => clearInterval(pollInterval);
+  }, [isAutonomousPolling, currentProjectId, loading]);
+
+  const fetchProjectFiles = async () => {
+    if (!currentProjectId) return;
+    try {
+      const filesResp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/workspace/files`);
+      const filesMap = filesResp.data.files || {};
+      let rebuiltCode = '';
+      Object.entries(filesMap).forEach(([filePath, content]) => {
+        rebuiltCode += `// FILE: ${filePath}\n${content}\n\n`;
+      });
+      setFullCode(rebuiltCode);
+      const files = parseCodeToFiles(rebuiltCode);
+      setFileTree(files);
+    } catch (err) {
+      console.error("Tree refresh failed:", err);
+    }
+  };
 
   const fetchMessages = async () => {
     if (!currentProjectId) return;
@@ -273,9 +339,9 @@ function Workspace({ user, logout, isAuthenticated }) {
     }
   };
 
-  // Poll the container-health endpoint until healthy, then show the iframe.
-  // The iframe src is NOT set until the container is confirmed ready, so the user
-  // never sees "Connection was reset" or broken pages.
+  // ── Container health polling ─────────────────────────────────────────────
+  // Polls /container-health until the agent's Nginx gateway responds, then
+  // flips the iframe to visible. Workspace file polling runs independently.
   const startContainerRetry = (url) => {
     if (containerPollIntervalRef.current) {
       clearTimeout(containerPollIntervalRef.current);
@@ -283,17 +349,15 @@ function Workspace({ user, logout, isAuthenticated }) {
     }
 
     containerLoadExpectedRef.current = true;
-
     let attempts = 0;
     const maxAttempts = 60;
-    const pollInterval = 2000;
 
     const poll = async () => {
       attempts++;
       try {
         const resp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/container-health`);
         if (resp.data.healthy) {
-          console.log(`✅ Container healthy after ${attempts} polls — showing preview`);
+          console.log(`✅ Container healthy after ${attempts} polls`);
           containerLoadExpectedRef.current = false;
           setIsContainerLoading(false);
           setIframeKey(prev => prev + 1);
@@ -306,7 +370,7 @@ function Workspace({ user, logout, isAuthenticated }) {
       }
 
       if (attempts < maxAttempts) {
-        containerPollIntervalRef.current = setTimeout(poll, pollInterval);
+        containerPollIntervalRef.current = setTimeout(poll, 2000);
       } else {
         console.log('⏱️ Max health polls reached — showing preview anyway');
         containerLoadExpectedRef.current = false;
@@ -316,8 +380,75 @@ function Workspace({ user, logout, isAuthenticated }) {
       }
     };
 
-    console.log('🚀 Container URL received, starting health polling in 3s:', url);
+    console.log('🚀 Starting health polling in 3s for:', url);
     containerPollIntervalRef.current = setTimeout(poll, 3000);
+  };
+
+  // ── Live workspace file polling ───────────────────────────────────────────
+  // Polls the workspace files every 3s while the agent is active.
+  // Updates the file tree and code view in real-time as the agent writes files.
+  const startWorkspacePolling = (projectId) => {
+    stopWorkspacePolling();
+    lastWorkspaceHashRef.current = '';
+    console.log('📂 Starting live workspace polling for:', projectId);
+
+    const poll = async () => {
+      try {
+        const resp = await axios.get(`${API_BASE_URL}/api/projects/${projectId}/versions/workspace/files`);
+        const filesMap = resp.data.files || {};
+        if (Object.keys(filesMap).length === 0) return;
+
+        // Simple hash: sorted file paths + total char count to detect changes
+        const hash = Object.keys(filesMap).sort().join('|') + ':' +
+          Object.values(filesMap).reduce((acc, c) => acc + c.length, 0);
+
+        if (hash === lastWorkspaceHashRef.current) return; // nothing changed
+        lastWorkspaceHashRef.current = hash;
+
+        console.log('📝 Workspace changed — updating file tree live');
+
+        // Rebuild code string with file markers
+        let rebuiltCode = '';
+        Object.entries(filesMap).forEach(([filePath, content]) => {
+          rebuiltCode += `// FILE: ${filePath}\n${content}\n\n`;
+        });
+        setFullCode(rebuiltCode);
+
+        // Update previewCode with best HTML candidate
+        const indexFile = filesMap['index.html'] || filesMap['index.jsx'] || Object.values(filesMap)[0];
+        setPreviewCode(indexFile || rebuiltCode);
+
+        // Rebuild file tree
+        const files = parseCodeToFiles(rebuiltCode);
+        setFileTree(files);
+
+        // Auto-expand all folders
+        const allFolderPaths = new Set();
+        const collectFolders = (items) => {
+          items.forEach(item => {
+            if (item.type === 'folder') {
+              allFolderPaths.add(item.path);
+              if (item.children) collectFolders(item.children);
+            }
+          });
+        };
+        collectFolders(files);
+        setExpandedFolders(allFolderPaths);
+
+      } catch (err) {
+        // Silently ignore — workspace may not exist yet
+      }
+    };
+
+    workspacePollIntervalRef.current = setInterval(poll, 3000);
+  };
+
+  const stopWorkspacePolling = () => {
+    if (workspacePollIntervalRef.current) {
+      clearInterval(workspacePollIntervalRef.current);
+      workspacePollIntervalRef.current = null;
+      console.log('📂 Stopped live workspace polling');
+    }
   };
 
   // Load branches from backend for the current project
@@ -445,6 +576,27 @@ function Workspace({ user, logout, isAuthenticated }) {
 
           // Clear URL params without reloading
           window.history.replaceState({}, '', `/vibecoding/a/${urlProjectId}`);
+
+          // Start the container in the background immediately so preview warms up
+          // while the user reads their chat history — do NOT switch to preview tab
+          try {
+            const startResp = await axios.post(
+              `${API_BASE_URL}/api/projects/${urlProjectId}/start`,
+              {},
+              { headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` } }
+            );
+            if (startResp.data.started && startResp.data.preview_url) {
+              console.log('🚀 Container starting for project:', urlProjectId);
+              setPreviewUrl(startResp.data.preview_url);
+              // Start health polling silently — preview tab will show spinner only when user switches to it
+              containerLoadExpectedRef.current = true;
+              setIsContainerLoading(true);
+              startContainerRetry(startResp.data.preview_url);
+              startWorkspacePolling(urlProjectId);
+            }
+          } catch (startErr) {
+            console.warn('Container pre-start failed (non-critical):', startErr.message);
+          }
         } catch (error) {
           console.error('Failed to load project from URL:', error);
           // If project doesn't exist (404) or access denied (403), redirect to last opened project or home
@@ -483,6 +635,32 @@ function Workspace({ user, logout, isAuthenticated }) {
       initProject();
     }
   }, [isAuthenticated]);
+
+  // Switch to a project — sets the ID and starts the container in the background
+  const switchToProject = async (newProjectId) => {
+    if (!newProjectId || newProjectId === currentProjectId) return;
+    setCurrentProjectId(newProjectId);
+    navigate(`/vibecoding/a/${newProjectId}`);
+
+    // Start the container silently — don't force preview tab, let user stay on chat/code
+    try {
+      const startResp = await axios.post(
+        `${API_BASE_URL}/api/projects/${newProjectId}/start`,
+        {},
+        { headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` } }
+      );
+      if (startResp.data.started && startResp.data.preview_url) {
+        console.log('🚀 Container starting for switched project:', newProjectId);
+        setPreviewUrl(startResp.data.preview_url);
+        containerLoadExpectedRef.current = true;
+        setIsContainerLoading(true);
+        startContainerRetry(startResp.data.preview_url);
+        startWorkspacePolling(newProjectId);
+      }
+    } catch (err) {
+      console.warn('Container start on project switch failed (non-critical):', err.message);
+    }
+  };
 
   // Switch to a different branch
   const switchToBranch = async (branchName) => {
@@ -692,6 +870,7 @@ function Workspace({ user, logout, isAuthenticated }) {
     setMessages([]);
     setEditMode(false);
     setSelectedElement(null);
+    stopWorkspacePolling();
 
     // Create a new Git branch for this chat session
     try {
@@ -709,6 +888,7 @@ function Workspace({ user, logout, isAuthenticated }) {
 
   // Function to handle new project creation - clears chat and resets state
   const handleCreateProject = (newProjectId) => {
+    stopWorkspacePolling();
     // Clear all chat-related state
     setMessages([]);
     setPreviewCode('');
@@ -854,6 +1034,7 @@ function Workspace({ user, logout, isAuthenticated }) {
     // Protection against double submissions
     if (loading) return;
     setLoading(true);
+    stopWorkspacePolling(); // stop any previous live polling
 
     const userMessage = {
       role: 'user',
@@ -904,7 +1085,11 @@ function Workspace({ user, logout, isAuthenticated }) {
         setCurrentProjectId(project_id);
       }
 
-      setLoading(false);
+      if (!discussMode) {
+        // loading is cleared in finally — no autonomous polling needed
+      } else {
+        setLoading(false);
+      }
 
       if (response.data.code) {
         const fullCodeContent = response.data.code;
@@ -1041,12 +1226,11 @@ function Workspace({ user, logout, isAuthenticated }) {
         containerLoadExpectedRef.current = true;
         setIsContainerLoading(true);
         setPreviewUrl(response.data.preview_url);
-        // Only auto-switch to preview if user is NOT currently in code view
-        if (activeView !== 'code') {
-          setActiveView('preview');
-        }
-        // Start retry loop imperatively — bypasses React batching issues
+        setActiveView('preview');
+        // Start health polling — shows iframe once Nginx gateway is up
         startContainerRetry(response.data.preview_url);
+        // Start live workspace polling — updates file tree as agent writes files
+        startWorkspacePolling(response.data.project_id || currentProjectId);
       } else if (response.data.code) {
         // No container URL, use inline preview
         setPreviewUrl('');
@@ -1070,8 +1254,8 @@ function Workspace({ user, logout, isAuthenticated }) {
       }]);
     } finally {
       setLoading(false);
-    }
-  };
+      setIsAutonomousPolling(false);
+    }  };
 
   const handleDeploy = async () => {
     if (!currentProjectId || loading || isDeploying) return;
@@ -1789,7 +1973,7 @@ Please suggest improvements or modifications for this element.`;
         setShowUserMenu={setShowUserMenu}
         projects={projects}
         currentProjectId={currentProjectId}
-        setCurrentProjectId={setCurrentProjectId}
+        setCurrentProjectId={switchToProject}
         showProjectDropdown={showProjectDropdown}
         setShowProjectDropdown={setShowProjectDropdown}
         onNewChat={handleNewChat}
@@ -2006,7 +2190,7 @@ Please suggest improvements or modifications for this element.`;
           {/* Content Area */}
           <div className={`flex-1 relative overflow-hidden min-h-0 flex flex-col transition-colors ${darkMode ? 'bg-[#0A0A0F]' : 'bg-white'
             }`}>
-            {!previewCode ? (
+            {!previewCode && !previewUrl ? (
               <div className="h-full flex items-center justify-center">
                 <div className="text-center">
                   <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-purple-500/20 to-pink-500/20 flex items-center justify-center mx-auto mb-4">
