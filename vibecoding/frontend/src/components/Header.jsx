@@ -311,7 +311,7 @@ const Header = ({
             )}
           </Button>
 
-          {/* User Avatar + Menu */}
+            {/* User Avatar + Menu */}
           <div className="user-menu-container" style={{ position: 'relative' }}>
             <button
               className={`user-avatar-btn flex items-center gap-2 px-2 py-1 rounded-lg transition-colors ${
@@ -327,29 +327,28 @@ const Header = ({
                 {(user?.full_name || user?.username || 'U').charAt(0).toUpperCase()}
               </div>
               <div className="user-info flex flex-col justify-center text-left hidden sm:block">
-                <div className={`user-name text-xs font-bold leading-none ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                <div className={`text-xs font-bold leading-none ${darkMode ? 'text-white' : 'text-gray-900'}`}>
                   {user?.full_name || user?.username}
                 </div>
                 {user?.email && (
-                  <div className={`user-email text-[10px] leading-tight mt-0.5 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                  <div className={`text-[10px] leading-tight mt-0.5 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                     {user?.email}
                   </div>
                 )}
               </div>
             </button>
             {showUserMenu && (
-              <div className={`user-menu-dropdown absolute top-full right-0 mt-2 w-56 border rounded-xl shadow-2xl z-[100] backdrop-blur-md animate-in fade-in slide-in-from-top-2 duration-200 ${
+              <div className={`user-menu-dropdown absolute top-full right-0 mt-2 w-56 border rounded-xl shadow-2xl z-[100] backdrop-blur-md animate-in fade-in slide-in-from-top-2 duration-200 overflow-hidden ${
                 darkMode ? 'bg-[#1a1a1f] border-white/10' : 'bg-white border-gray-200'
               }`}>
-                <div className="p-3">
-                  <div className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                <div className={`p-3 border-b ${darkMode ? 'border-white/10' : 'border-gray-100'}`}>
+                  <div className={`text-sm font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
                     {user?.full_name || user?.username}
                   </div>
-                  <div className={`text-xs mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                  <div className={`text-xs mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                     {user?.email}
                   </div>
                 </div>
-                <div className={`h-px ${darkMode ? 'bg-white/10' : 'bg-gray-100'}`} />
                 <div className="p-1">
                   <button
                     className={`w-full flex items-center gap-2 px-3 py-2 text-sm rounded-lg transition-colors ${

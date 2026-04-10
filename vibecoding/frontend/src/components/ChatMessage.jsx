@@ -308,16 +308,26 @@ const ChatMessage = ({
     cleaned = cleaned.replace(/<<<SEARCH[\s\S]*?>>>/g, '');
     cleaned = cleaned.replace(/<<<REPLACE[\s\S]*?>>>/g, '');
 
-    // 2. Remove code blocks that look like full file contents
-    // Usually these are inside the // FILE: sections we already split, 
-    // but just in case they aren't, we can do some extra cleaning
+    // 3. Remove task lists (bullet points) since we display them separately
+    const lines = cleaned.split('\n');
+    const nonTaskLines = [];
+    for (const line of lines) {
+      const trimmed = line.trim();
+      // Skip bullet points and numbered lists
+      if (!trimmed.match(/^[•\-\*]\s+/) && !trimmed.match(/^\d+\.\s+/)) {
+        nonTaskLines.push(line);
+      }
+    }
+    cleaned = nonTaskLines.join('\n');
+
+    // 4. Remove code blocks that look like full file contents
     cleaned = cleaned.replace(/```[\s\S]*?```/g, (match) => {
       if (match.split('\n').length > 10) return '';
       if (match.includes('// FILE:')) return '';
       return match;
     });
 
-    // 4. Strip common technical placeholders and generic success messages
+    // 5. Strip common technical placeholders and generic success messages
     cleaned = cleaned.replace(/^(Done|Success|Updated|Changes applied|Implemented|Successfully implemented)[!.]*\s*(Your request has been incorporated|The changes are complete|your requested changes with a focus on functional stability)[!.]*/i, '');
 
     return cleaned.trim();
@@ -399,6 +409,65 @@ const ChatMessage = ({
             {!isUser && message.toolCalls && message.toolCalls.length > 0 && (
               <ToolCallsDisplay toolCalls={message.toolCalls} darkMode={darkMode} />
             )}
+            
+            {/* Task Breakdown Display - for planning/thinking messages */}
+            {!isUser && (() => {
+              // Parse content for task lists
+              const lines = (message.content || '').split('\n');
+              const tasks = [];
+              let introText = '';
+              let foundTasks = false;
+              
+              for (const line of lines) {
+                const trimmed = line.trim();
+                if (trimmed.match(/^[•\-\*]\s+/) || trimmed.match(/^\d+\.\s+/)) {
+                  foundTasks = true;
+                  const taskText = trimmed.replace(/^[•\-\*]\s+/, '').replace(/^\d+\.\s+/, '');
+                  tasks.push(taskText);
+                } else if (trimmed && !foundTasks) {
+                  introText += (introText ? ' ' : '') + trimmed;
+                }
+              }
+              
+              // Only show task breakdown if we have tasks
+              if (tasks.length > 0) {
+                return (
+                  <div className="mb-3">
+                    {introText && (
+                      <p className={cn(
+                        "text-sm mb-3 font-medium",
+                        darkMode ? "text-gray-300" : "text-gray-700"
+                      )}>
+                        {introText}
+                      </p>
+                    )}
+                    <div className={cn(
+                      "rounded-lg border p-3 space-y-2",
+                      darkMode 
+                        ? "bg-purple-500/5 border-purple-500/20" 
+                        : "bg-purple-50 border-purple-200"
+                    )}>
+                      {tasks.map((task, idx) => (
+                        <div key={idx} className="flex items-start gap-2">
+                          <CheckCircle2 className={cn(
+                            "w-4 h-4 mt-0.5 flex-shrink-0",
+                            darkMode ? "text-purple-400" : "text-purple-600"
+                          )} />
+                          <span className={cn(
+                            "text-sm",
+                            darkMode ? "text-gray-200" : "text-gray-800"
+                          )}>
+                            {task}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              }
+              return null;
+            })()}
+            
             {/* Chat Content */}
             {!isUser && aiSummary && !showOriginal && hasCodeOrVersion ? (
               <div className="flex flex-col gap-3 py-1">
