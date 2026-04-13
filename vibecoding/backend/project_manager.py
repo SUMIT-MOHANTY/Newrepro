@@ -241,12 +241,27 @@ class ProjectManager:
                 break
 
         env_vars = {
+            # USE_BRN_LLAMA toggle (DSuite-style)
+            "USE_BRN_LLAMA":       os.environ.get('USE_BRN_LLAMA', 'false'),
+            
+            # OpenAI-compatible settings (NVIDIA, OpenAI, etc.)
             "AI_API_KEY":          api_key,
+            "AI_BASE_URL":         os.environ.get('AI_BASE_URL', os.environ.get('AI_API_URL',
+                                       'https://integrate.api.nvidia.com/v1/chat/completions')),
             "AI_API_URL":          os.environ.get('AI_BASE_URL', os.environ.get('AI_API_URL',
                                        'https://integrate.api.nvidia.com/v1/chat/completions')),
             "AI_MODEL":            os.environ.get('AI_MODEL', 'openai/gpt-4.1'),
             "AI_PROVIDER":         os.environ.get('AI_PROVIDER', 'openai'),
-            "BOURNAI_PLATFORM_ID": os.environ.get('BOURNAI_PLATFORM_ID', 'DSuite'),
+            
+            # BRN Llama settings (used when USE_BRN_LLAMA=true)
+            "BRN_LLAMA_URL":       os.environ.get('BRN_LLAMA_URL', 'https://brn-llama.bourntec.com/api/process'),
+            "BRN_AGENT_ID":        os.environ.get('BRN_AGENT_ID', ''),
+            "BRN_MODEL":           os.environ.get('BRN_MODEL', 'BournAI'),
+            "BRN_PLATFORM_ID":     os.environ.get('BRN_PLATFORM_ID', 'DSuite'),
+            "BRN_MAX_TOKENS":      os.environ.get('BRN_MAX_TOKENS', '50000'),
+            "BRN_TEMPERATURE":     os.environ.get('BRN_TEMPERATURE', '0.7'),
+            
+            # Project settings
             "PROJECT_DIR":         "/project",
             "PROJECT_ID":          pid,
             "PORT":                "80",

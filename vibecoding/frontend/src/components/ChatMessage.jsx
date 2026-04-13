@@ -670,26 +670,37 @@ const ChatMessage = ({
             Try these next:
           </div>
           <div className="flex flex-col gap-2">
-            {message.suggestions.map((suggestion, idx) => (
-              <button
-                key={idx}
-                onClick={() => onSuggestionClick && onSuggestionClick(suggestion)}
-                className={cn(
-                  'text-left px-3 py-2.5 rounded-lg text-xs transition-all border shadow-sm',
-                  darkMode
-                    ? 'bg-white/5 hover:bg-white/10 text-gray-300 border-white/10 hover:border-purple-500/50'
-                    : 'bg-white hover:bg-gray-50 text-gray-900 border-gray-200 hover:border-blue-400'
-                )}
-              >
-                <div className="flex items-center gap-2.5">
-                  <div className={`w-6 h-6 rounded-md flex items-center justify-center ${darkMode ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/10 text-blue-600'
-                    }`}>
-                    <Sparkles className="w-3.5 h-3.5" />
+            {message.suggestions.map((suggestion, idx) => {
+              // Handle both string and object suggestions
+              const suggestionText = typeof suggestion === 'string' ? suggestion : suggestion.text;
+              const suggestionIcon = typeof suggestion === 'object' && suggestion.icon ? suggestion.icon : null;
+              const suggestionPrompt = typeof suggestion === 'object' && suggestion.prompt ? suggestion.prompt : suggestionText;
+              
+              return (
+                <button
+                  key={idx}
+                  onClick={() => onSuggestionClick && onSuggestionClick(suggestionPrompt)}
+                  className={cn(
+                    'text-left px-3 py-2.5 rounded-lg text-xs transition-all border shadow-sm',
+                    darkMode
+                      ? 'bg-white/5 hover:bg-white/10 text-gray-300 border-white/10 hover:border-purple-500/50'
+                      : 'bg-white hover:bg-gray-50 text-gray-900 border-gray-200 hover:border-blue-400'
+                  )}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className={`w-6 h-6 rounded-md flex items-center justify-center ${darkMode ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/10 text-blue-600'
+                      }`}>
+                      {suggestionIcon ? (
+                        <span className="text-sm">{suggestionIcon}</span>
+                      ) : (
+                        <Sparkles className="w-3.5 h-3.5" />
+                      )}
+                    </div>
+                    <span className="leading-relaxed font-medium">{suggestionText}</span>
                   </div>
-                  <span className="leading-relaxed font-medium">{suggestion}</span>
-                </div>
-              </button>
-            ))}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}

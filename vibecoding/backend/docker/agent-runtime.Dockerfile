@@ -2,10 +2,7 @@
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV PORT=8080
-ENV PYTHONUNBUFFERED=1
 
-# Install bare minimum + Node.js 18 for full-stack apps (React/Vue/Svelte frontends) + Nginx for reverse proxy
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
@@ -51,4 +48,3 @@ EXPOSE 80
 
 # Agent is the single entrypoint — it manages Nginx, codegen, and deployment internally
 ENTRYPOINT ["python3", "/usr/local/bin/ai-agent.py"]
-

@@ -11,10 +11,22 @@ from typing import Optional
 
 class CodegenAgent:
     def __init__(self):
-        # AI settings
-        self.api_key = os.environ.get('AI_API_KEY') or os.environ.get('NVIDIA_API_KEY', '')
-        self.api_url = os.environ.get('AI_API_URL', 'https://integrate.api.nvidia.com/v1/chat/completions')
-        self.ai_model = os.environ.get('AI_MODEL', 'openai/gpt-oss-120b')
+        # AI settings with USE_BRN_LLAMA support (DSuite-style)
+        use_brn = os.environ.get('USE_BRN_LLAMA', 'false').lower().strip() in ('true', '1', 'yes')
+        
+        if use_brn:
+            # BRN Llama configuration
+            self.api_key = os.environ.get('BRN_AGENT_ID', '')
+            self.api_url = os.environ.get('BRN_LLAMA_URL', 'https://brn-llama.bourntec.com/api/process')
+            self.ai_model = os.environ.get('BRN_MODEL', 'BournAI')
+            self.ai_provider = 'bournai'
+        else:
+            # OpenAI-compatible configuration (NVIDIA, OpenAI, etc.)
+            self.api_key = os.environ.get('AI_API_KEY') or os.environ.get('NVIDIA_API_KEY', '')
+            self.api_url = os.environ.get('AI_BASE_URL') or os.environ.get('AI_API_URL', 'https://integrate.api.nvidia.com/v1/chat/completions')
+            self.ai_model = os.environ.get('AI_MODEL', 'openai/gpt-oss-120b')
+            self.ai_provider = os.environ.get('AI_PROVIDER', 'openai').lower().strip()
+        
         self.ai_timeout = int(os.environ.get('AI_TIMEOUT', '120'))
         
         # Paths
@@ -30,7 +42,7 @@ class CodegenAgent:
         import requests
         self.log("🤖", "Calling AI for code generation...")
 
-        provider = os.environ.get('AI_PROVIDER', 'openai').lower().strip()
+        provider = self.ai_provider
 
         try:
             if provider == 'bournai':
@@ -38,7 +50,7 @@ class CodegenAgent:
                 payload = {
                     "agent_id": self.api_key,
                     "model": self.ai_model or "BournAI",
-                    "platform_id": os.environ.get('BOURNAI_PLATFORM_ID', 'DSuite'),
+                    "platform_id": os.environ.get('BRN_PLATFORM_ID', 'DSuite'),
                     "stream": True,
                     "prompt": f"You are a senior full-stack developer. You generate complete, production-ready applications as a JSON file tree.\n\n{prompt}",
                 }

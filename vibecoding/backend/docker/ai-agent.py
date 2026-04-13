@@ -33,10 +33,23 @@ DB_PATH       = '/tmp/vibecoding_users.db'
 NGINX_CONF    = '/etc/nginx/sites-available/default'
 PROJECT_ID    = os.environ.get('PROJECT_ID', 'default')
 
-API_KEY     = os.environ.get('AI_API_KEY', '')
-API_URL     = os.environ.get('AI_API_URL', 'https://integrate.api.nvidia.com/v1/chat/completions')
-AI_MODEL    = os.environ.get('AI_MODEL', 'openai/gpt-4.1')
-AI_PROVIDER = os.environ.get('AI_PROVIDER', 'openai').lower().strip()
+# AI Configuration with USE_BRN_LLAMA support (DSuite-style)
+def _is_brn_llama_enabled():
+    use_brn = os.environ.get('USE_BRN_LLAMA', 'false').lower().strip()
+    return use_brn in ('true', '1', 'yes')
+
+if _is_brn_llama_enabled():
+    # BRN Llama configuration
+    API_KEY     = os.environ.get('BRN_AGENT_ID', '')
+    API_URL     = os.environ.get('BRN_LLAMA_URL', 'https://brn-llama.bourntec.com/api/process')
+    AI_MODEL    = os.environ.get('BRN_MODEL', 'BournAI')
+    AI_PROVIDER = 'bournai'
+else:
+    # OpenAI-compatible configuration (NVIDIA, OpenAI, etc.)
+    API_KEY     = os.environ.get('AI_API_KEY', '')
+    API_URL     = os.environ.get('AI_BASE_URL') or os.environ.get('AI_API_URL', 'https://integrate.api.nvidia.com/v1/chat/completions')
+    AI_MODEL    = os.environ.get('AI_MODEL', 'openai/gpt-4.1')
+    AI_PROVIDER = os.environ.get('AI_PROVIDER', 'openai').lower().strip()
 
 NGINX_ERROR_LOG = '/var/log/nginx/error.log'
 MAILBOX         = Path('/tmp/vibe_prompt')
@@ -256,6 +269,138 @@ def _generate_summary(message: str) -> str:
         return summary
     
     return clean[:100]
+
+
+def _generate_task_breakdown(user_prompt: str, existing_files: dict = None) -> str:
+    """
+    Use AI to generate a clear task breakdown of what will be done.
+    Returns a formatted string with bullet points of tasks.
+    """
+    try:
+        is_edit = bool(existing_files)
+        
+        if is_edit:
+            # For edits, analyze what needs to change
+            file_context = "\n".join([f"- {path}" for path in list(existing_files.keys())[:10]])
+            breakdown_prompt = f"""The user wants to modify their existing application.
+
+USER REQUEST: {user_prompt}
+
+EXISTING FILES:
+{file_context}
+
+Generate a concise task breakdown (3-5 bullet points) of what you'll do to fulfill this request.
+Format as bullet points, each starting with an action verb.
+Keep it user-friendly and non-technical.
+
+Example format:
+• Update the color scheme to use blue tones
+• Modify the navigation bar layout
+• Add smooth transitions to buttons
+
+Your breakdown:"""
+        else:
+            # For new projects, outline the structure
+            breakdown_prompt = f"""The user wants to build a new application.
+
+USER REQUEST: {user_prompt}
+
+Generate a concise task breakdown (3-5 bullet points) of what you'll build.
+Format as bullet points, each starting with an action verb.
+Keep it user-friendly and non-technical.
+
+Example format:
+• Create a responsive landing page with hero section
+• Build an interactive calculator with history
+• Add dark mode styling with glassmorphism effects
+
+Your breakdown:"""
+        
+        response = call_ai([
+            {'role': 'system', 'content': 'You are a helpful assistant that creates clear, concise task breakdowns.'},
+            {'role': 'user', 'content': breakdown_prompt}
+        ], temperature=0.3, show_thinking=False)
+        
+        # Clean up the response
+        breakdown = response.strip()
+        
+        # Ensure it's formatted as bullet points
+        if not any(breakdown.startswith(prefix) for prefix in ['•', '-', '*', '1.', '2.']):
+            # Convert to bullet points if not already
+            lines = [line.strip() for line in breakdown.split('\n') if line.strip()]
+            breakdown = '\n'.join([f'• {line}' for line in lines])
+        
+        return breakdown
+    except Exception as e:
+        log(f'Failed to generate task breakdown: {e}')
+        # Fallback to generic message
+        if is_edit:
+            return '• Analyzing your request\n• Updating the necessary files\n• Applying changes to your app'
+        else:
+            return '• Planning the application structure\n• Creating the necessary files\n• Building your app'
+
+
+def _generate_change_summary(user_prompt: str, files_written: list, patches_applied: int, is_edit: bool) -> str:
+    """
+    Use AI to generate a user-friendly summary of what was actually changed.
+    Returns a formatted string describing the changes made.
+    """
+    try:
+        if is_edit:
+            summary_prompt = f"""The user requested: "{user_prompt}"
+
+I just made the following changes:
+- Modified {patches_applied} file(s) with targeted updates
+- Created/updated {len(files_written)} file(s): {', '.join(files_written[:5])}
+
+Generate a concise summary (2-4 bullet points) of what was ACTUALLY changed, written in past tense.
+Focus on the functional/visual changes the user will see, not technical details.
+Keep it user-friendly and celebratory.
+
+Example format:
+• Updated the button colors to match your brand
+• Added smooth hover animations throughout
+• Improved mobile responsiveness
+
+Your summary:"""
+        else:
+            summary_prompt = f"""The user requested: "{user_prompt}"
+
+I just created a new application with {len(files_written)} file(s): {', '.join(files_written[:5])}
+
+Generate a concise summary (2-4 bullet points) of what was built, written in past tense.
+Focus on the features and capabilities, not technical details.
+Keep it user-friendly and exciting.
+
+Example format:
+• Built a responsive landing page with hero section
+• Created an interactive calculator with history tracking
+• Added dark mode styling with glassmorphism effects
+
+Your summary:"""
+        
+        response = call_ai([
+            {'role': 'system', 'content': 'You are a helpful assistant that creates clear, concise summaries of completed work.'},
+            {'role': 'user', 'content': summary_prompt}
+        ], temperature=0.3, show_thinking=False)
+        
+        # Clean up the response
+        summary = response.strip()
+        
+        # Ensure it's formatted as bullet points
+        if not any(summary.startswith(prefix) for prefix in ['•', '-', '*', '1.', '2.']):
+            # Convert to bullet points if not already
+            lines = [line.strip() for line in summary.split('\n') if line.strip()]
+            summary = '\n'.join([f'• {line}' for line in lines])
+        
+        return summary
+    except Exception as e:
+        log(f'Failed to generate change summary: {e}')
+        # Fallback to generic message
+        if is_edit:
+            return f'• Applied {patches_applied} targeted update(s)\n• Modified {len(files_written)} file(s)\n• Your changes are ready'
+        else:
+            return f'• Created {len(files_written)} file(s)\n• Built your application structure\n• Ready for deployment'
 
 
 # ── Nginx helpers ──────────────────────────────────────────────────────────────
@@ -496,7 +641,7 @@ def call_ai(messages: list, temperature: float = 0.2, show_thinking: bool = True
         payload = {
             'agent_id': API_KEY,
             'model': AI_MODEL or 'BournAI',
-            'platform_id': os.environ.get('BOURNAI_PLATFORM_ID', 'DSuite'),
+            'platform_id': os.environ.get('BRN_PLATFORM_ID', 'DSuite'),
             'stream': True,
             'prompt': '\n\n'.join(parts),
         }
@@ -606,9 +751,17 @@ def generate_code(user_prompt: str, existing_files: dict = None) -> bool:
     is_edit = bool(existing_files)
 
     if is_edit:
-        report('✏️ Got your request! Updating the code now...')
+        # Generate task breakdown for edits
+        task_summary = _generate_task_breakdown(user_prompt, existing_files)
+        report(f'✏️ Got your request! Here\'s what I\'ll do:\n\n{task_summary}', 
+               message_type='thinking',
+               summary='Analyzing changes needed')
     else:
-        report('🧠 Thinking about how to build this for you...')
+        # Generate task breakdown for new projects
+        task_summary = _generate_task_breakdown(user_prompt, None)
+        report(f'🧠 Planning your app:\n\n{task_summary}',
+               message_type='thinking', 
+               summary='Planning application structure')
 
     WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -785,13 +938,20 @@ Apply the changes now using ONLY these markers."""
         report('⚠️ The code was generated but couldn\'t be saved. Please try again.')
         return False
 
+    # Generate a summary of what was changed
+    change_summary = _generate_change_summary(user_prompt, files_written, patches_applied, is_edit)
+
     if is_edit:
-        report(f'✅ Changes applied to {total} file(s). Rebuilding your app...')
+        report(f'✅ Changes applied:\n\n{change_summary}',
+               message_type='success',
+               summary=f'Updated {total} file(s)')
         # Store what changed for post-deployment testing
         changed_files = files_written + [_clean_filename(pm.group(1)) for pm in patch_matches]
         return {'success': True, 'changed_files': changed_files, 'user_prompt': user_prompt}
     else:
-        report(f'✅ Code is ready ({total} file(s) created). Starting the build process...')
+        report(f'✅ App created:\n\n{change_summary}',
+               message_type='success',
+               summary=f'Created {total} file(s)')
         return True
 
 
