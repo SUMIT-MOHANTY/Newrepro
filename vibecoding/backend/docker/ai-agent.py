@@ -607,11 +607,36 @@ server {
 
 
 def get_nginx_errors():
+    """Get RECENT nginx errors (from last 10 seconds only) to avoid false positives from old errors."""
     try:
         if not Path(NGINX_ERROR_LOG).exists():
             return []
+        
+        # Only check errors from the last 10 seconds
+        cutoff_time = time.time() - 10
+        recent_errors = []
+        
         lines = Path(NGINX_ERROR_LOG).read_text().strip().split('\n')
-        return [l for l in lines[-30:] if 'connect() failed' in l or '502' in l or 'upstream' in l]
+        for line in lines[-50:]:  # Check last 50 lines
+            if not line or not ('connect() failed' in line or '502' in line or 'upstream' in line):
+                continue
+            
+            # Parse nginx timestamp: 2026/04/13 10:54:26
+            try:
+                # Extract timestamp from nginx log format
+                timestamp_match = re.search(r'(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})', line)
+                if timestamp_match:
+                    timestamp_str = timestamp_match.group(1)
+                    log_time = datetime.strptime(timestamp_str, '%Y/%m/%d %H:%M:%S').timestamp()
+                    
+                    # Only include if error is recent (within last 10 seconds)
+                    if log_time >= cutoff_time:
+                        recent_errors.append(line)
+            except:
+                # If we can't parse timestamp, skip this line
+                continue
+        
+        return recent_errors
     except:
         return []
 
