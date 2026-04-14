@@ -23,7 +23,11 @@ const ChatPanel = ({
   disabled = false,
   discussMode = false,
   onToggleDiscuss,
-  onImageUpload, // New prop for handling image uploads
+  onImageUpload,
+  onExecuteTask,
+  onExecuteAllTasks,
+  onEditTask,
+  executingTaskId,
 }) => {
   const messagesEndRef = useRef(null);
   const [suggestionIndex, setSuggestionIndex] = React.useState(0);
@@ -215,6 +219,10 @@ const ChatPanel = ({
             onCopyMessage={onCopyMessage}
             onRegenerate={onRegenerate}
             onSuggestionClick={setInput}
+            onExecuteTask={onExecuteTask}
+            onExecuteAllTasks={onExecuteAllTasks}
+            onEditTask={onEditTask}
+            executingTaskId={executingTaskId}
           />
         ))}
 

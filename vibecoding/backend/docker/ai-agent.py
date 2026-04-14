@@ -25,6 +25,12 @@ import threading
 import queue
 from pathlib import Path
 from datetime import datetime
+from typing import Dict, Any, List, Optional
+
+# Import task-based development modules
+from task_planner import TaskPlanner, Task
+from task_executor import TaskExecutor
+from task_executor import TaskExecutor
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 PROJECT_DIR   = Path(os.environ.get('PROJECT_DIR', '/project'))
@@ -600,7 +606,7 @@ server {
     server_name _;
     location / {
         default_type text/html;
-        return 200 '<html><body style="background:#0f172a;color:white;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;flex-direction:column;gap:16px"><h2 style="margin:0">🚀 Getting things ready...</h2><p style="margin:0;opacity:.7">Your app is being built. This usually takes about a minute.</p></body></html>';
+        return 200 '<html><body style="background:#0f172a;color:white;display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;flex-direction:column;gap:16px"><h2 style="margin:0">Getting things ready...</h2><p style="margin:0;opacity:.7">Your app is being built. This usually takes about a minute.</p></body></html>';
     }
 }
 """)
@@ -3522,6 +3528,12 @@ class Agent:
         self._queue  = queue.Queue()
         self._busy   = False
         self._lock   = threading.Lock()
+        
+        # Initialize task-based development components
+        self.task_planner = TaskPlanner(str(WORKSPACE_DIR), call_ai)
+        self.task_executor = TaskExecutor(str(WORKSPACE_DIR), call_ai)
+        self.task_mode = False  # Flag to indicate if we're in task-based mode
+        
         t = threading.Thread(target=self._worker, daemon=True)
         t.start()
 
@@ -3572,9 +3584,387 @@ class Agent:
                 self._queue.task_done()
 
     def _handle(self, prompt: str):
-        existing    = read_workspace_files()
-        is_empty    = len(existing) == 0
+        """
+        Main prompt handler with task-based workflow support
+        
+        Workflow:
+        1. Detect if this is a large requirement (triggers task planning)
+        2. If task planning needed: generate task breakdown → ask user to select tasks
+        3. If task execution: execute selected task with full context
+        4. If simple request: use legacy direct generation
+        """
+        existing = read_workspace_files()
+        is_empty = len(existing) == 0
+        
+        # Check if this is a task-related command
+        if prompt.startswith('TASK:'):
+            self._handle_task_command(prompt)
+            return
+        
+        # Check if this is a deployment fix
+        deploy_only_keywords = [
+            '502', 'fix deployment', 'fix the deployment', 'restart', 'redeploy',
+            'not loading', 'broken', 'fix nginx', 'server error'
+        ]
+        is_deploy_fix = (
+            not is_empty and
+            any(kw in prompt.lower() for kw in deploy_only_keywords)
+        )
+        
+        if is_deploy_fix:
+            # Just redeploy without code generation
+            deploy(error_context={'reason': prompt})
+            return
+        
+        # Detect if this is a large/complex requirement
+        is_large_requirement = self._is_large_requirement(prompt)
+        
+        if is_large_requirement and is_empty:
+            # Generate task plan for large new projects
+            self._handle_task_planning(prompt)
+        elif not is_empty and len(existing) > 0:
+            # Existing project - use incremental task-based approach
+            self._handle_incremental_development(prompt, existing)
+        else:
+            # Simple request - use legacy direct generation
+            self._handle_direct_generation(prompt, existing, is_empty)
+    
+    def _is_large_requirement(self, prompt: str) -> bool:
+        """Detect if a requirement is large enough to need task breakdown"""
+        # Heuristics for detecting large requirements
+        indicators = [
+            len(prompt) > 500,  # Long description
+            'platform' in prompt.lower(),
+            'system' in prompt.lower(),
+            'management' in prompt.lower(),
+            'enterprise' in prompt.lower(),
+            'multi-tenant' in prompt.lower(),
+            'full-stack' in prompt.lower(),
+            prompt.count('\n') > 5,  # Multiple sections
+            'module' in prompt.lower() and prompt.count('module') > 2,
+        ]
+        
+        return sum(indicators) >= 2
+    
+    def _handle_task_planning(self, prompt: str):
+        """Generate and present task breakdown to user"""
+        report('🧠 Analyzing your requirement and breaking it down into manageable tasks...',
+               message_type='thinking')
+        
+        try:
+            # Generate task plan
+            plan = self.task_planner.generate_task_plan(prompt)
+            
+            # Present tasks to user
+            self._present_task_plan(plan)
+            
+        except Exception as e:
+            log(f'Task planning failed: {e}')
+            report(f'⚠️ Had trouble breaking down the requirement. Trying direct generation instead...')
+            self._handle_direct_generation(prompt, {}, True)
+    
+    def _present_task_plan(self, plan: Dict[str, Any]):
+        """Present task breakdown to user and automatically start execution"""
+        summary = plan.get('project_summary', '')
+        tasks = plan.get('tasks', [])
+        
+        # Build user-friendly task list for display
+        task_list = []
+        for i, task in enumerate(tasks, 1):
+            task_dict = task if isinstance(task, dict) else task.to_dict()
+            priority_emoji = {'high': '🔴', 'medium': '🟡', 'low': '🟢'}.get(task_dict['priority'], '⚪')
+            task_list.append(
+                f"{i}. {priority_emoji} **{task_dict['title']}**\n"
+                f"   {task_dict['description'][:100]}...\n"
+                f"   Files: {len(task_dict['files_to_create'])} to create, "
+                f"{len(task_dict['files_to_modify'])} to modify"
+            )
+        
+        message = f"""📋 **Task Breakdown Complete!**
 
+{summary}
+
+I've broken this down into **{len(tasks)} tasks**. Starting execution automatically...
+"""
+        
+        # Send task plan with metadata for UI rendering
+        report(
+            message, 
+            message_type='status',
+            metadata={
+                'task_plan': plan,
+                'awaiting_task_selection': False,  # Changed to False since we auto-execute
+                'type': 'task_breakdown'
+            },
+            summary='Task breakdown ready'
+        )
+        
+        # Automatically start task execution after a brief delay
+        # This gives the UI time to render the task breakdown
+        time.sleep(1)
+        log('🚀 Auto-starting task execution...')
+        self._execute_tasks_sequentially()
+    
+    def _handle_task_command(self, prompt: str):
+        """Handle task-related commands"""
+        command = prompt[5:].strip().upper()  # Remove 'TASK:' prefix
+        
+        if command == 'START' or 'start building' in prompt.lower():
+            self._execute_tasks_sequentially()
+        elif command.startswith('EXECUTE:'):
+            task_ids = command[8:].split(',')
+            self._execute_specific_tasks(task_ids)
+        elif command.startswith('SHOW:'):
+            task_id = command[5:].strip()
+            self._show_task_details(task_id)
+        elif command == 'STATUS':
+            self._show_task_status()
+        else:
+            report('❓ Unknown task command. Try: TASK:START, TASK:EXECUTE:1, or TASK:STATUS')
+    
+    def _execute_tasks_sequentially(self):
+        """Execute all pending tasks in order with real-time updates"""
+        # Don't send task_plan here - it was already sent in _present_task_plan
+        report(f'🚀 Starting task execution...',
+               message_type='action',
+               metadata={'type': 'task_execution_start'})
+        
+        while True:
+            executable_tasks = self.task_planner.get_executable_tasks()
+            
+            if not executable_tasks:
+                # Check if all tasks are complete or if we're stuck
+                progress = self.task_planner.get_progress_summary()
+                if progress['completed'] == progress['total_tasks']:
+                    # All tasks complete!
+                    report(f'🎉 All {progress["total_tasks"]} tasks completed! Your application is ready.',
+                           message_type='success',
+                           metadata={
+                               'task_plan': {
+                                   'project_summary': self.task_planner.context.get('project_summary', ''),
+                                   'tasks': [t.to_dict() for t in self.task_planner.tasks],
+                                   'total_tasks': len(self.task_planner.tasks)
+                               },
+                               'type': 'task_execution_complete'
+                           })
+                    # Deploy the completed application
+                    deploy()
+                    break
+                else:
+                    # Some tasks are pending but not executable (dependency issue)
+                    report(f"⚠️ {progress['pending']} tasks remaining but cannot execute (dependency issues).",
+                           message_type='error',
+                           metadata={
+                               'task_plan': {
+                                   'project_summary': self.task_planner.context.get('project_summary', ''),
+                                   'tasks': [t.to_dict() for t in self.task_planner.tasks],
+                                   'total_tasks': len(self.task_planner.tasks)
+                               },
+                               'type': 'task_execution_blocked'
+                           })
+                    break
+            
+            # Execute the next task
+            task = executable_tasks[0]  # Get highest priority task
+            self._execute_single_task(task)
+            
+            # Check if we should continue
+            if task.status == 'failed':
+                # Send final task plan with error state
+                progress = self.task_planner.get_progress_summary()
+                report(f'⚠️ Task {task.task_id} failed. Stopping execution.',
+                       message_type='error',
+                       metadata={
+                           'task_plan': {
+                               'project_summary': self.task_planner.context.get('project_summary', ''),
+                               'tasks': [t.to_dict() for t in self.task_planner.tasks],
+                               'total_tasks': len(self.task_planner.tasks)
+                           },
+                           'type': 'task_execution_failed'
+                       })
+                break
+            
+            # Continue to next iteration to get newly executable tasks
+    
+    def _execute_specific_tasks(self, task_ids: List[str]):
+        """Execute specific tasks by ID"""
+        for task_id_str in task_ids:
+            task_id = f"task_{task_id_str.strip().zfill(3)}"
+            task = self.task_planner.get_task_by_id(task_id)
+            
+            if not task:
+                report(f'❌ Task {task_id} not found')
+                continue
+            
+            if task.status == 'completed':
+                report(f'✅ Task {task_id} already completed')
+                continue
+            
+            # Check dependencies
+            deps_met = all(
+                self.task_planner.get_task_by_id(dep_id).status == 'completed'
+                for dep_id in task.dependencies
+            )
+            
+            if not deps_met:
+                report(f'⚠️ Task {task_id} has unmet dependencies: {", ".join(task.dependencies)}')
+                continue
+            
+            self._execute_single_task(task)
+    
+    def _execute_single_task(self, task: Task):
+        """Execute a single task with full context"""
+        # Mark task as in progress without sending full task plan
+        report(f'▶️ Executing: **{task.title}**',
+               message_type='action',
+               metadata={'executing_task_id': task.task_id, 'type': 'task_execution_start'})
+        
+        # Send thinking log without task plan
+        report(f'💡 Analyzing task requirements and building context...',
+               message_type='thinking',
+               metadata={'type': 'thinking'})
+        
+        task.status = 'in_progress'
+        self.task_planner._save_state()
+        
+        try:
+            # Build project context
+            context = self.task_planner._build_project_context()
+            context['project_summary'] = self.task_planner.context.get('project_summary', '')
+            
+            # Send thinking log without task plan
+            report(f'💡 Generating code for {len(task.files_to_create)} new files and modifying {len(task.files_to_modify)} existing files...',
+                   message_type='thinking',
+                   metadata={'type': 'thinking'})
+            
+            # Execute task
+            result = self.task_executor.execute_task(task, context)
+            
+            if result['success']:
+                task.status = 'completed'
+                task.completed_at = datetime.now().isoformat()
+                self.task_planner._save_state()
+                
+                # Send completion message WITH task plan for UI update
+                progress = self.task_planner.get_progress_summary()
+                report(f'✅ Task completed: {task.title}',
+                       message_type='success',
+                       metadata={
+                           'task_plan': {
+                               'project_summary': self.task_planner.context.get('project_summary', ''),
+                               'tasks': [t.to_dict() for t in self.task_planner.tasks],
+                               'total_tasks': len(self.task_planner.tasks),
+                               'completed_count': progress['completed'],
+                               'pending_count': progress['pending'],
+                               'failed_count': progress['failed']
+                           },
+                           'type': 'task_update',
+                           'completed_task_id': task.task_id
+                       })
+            else:
+                task.status = 'failed'
+                task.error = result['error']
+                self.task_planner._save_state()
+                
+                # Send error message WITH task plan for UI update
+                report(f'❌ Task failed: {task.title}\n   Error: {result["error"]}',
+                       message_type='error',
+                       metadata={
+                           'task_plan': {
+                               'project_summary': self.task_planner.context.get('project_summary', ''),
+                               'tasks': [t.to_dict() for t in self.task_planner.tasks],
+                               'total_tasks': len(self.task_planner.tasks)
+                           },
+                           'type': 'task_update',
+                           'failed_task_id': task.task_id
+                       })
+        
+        except Exception as e:
+            task.status = 'failed'
+            task.error = str(e)
+            self.task_planner._save_state()
+            
+            report(f'❌ Task execution error: {str(e)}', 
+                   message_type='error',
+                   metadata={
+                       'task_plan': {
+                           'project_summary': self.task_planner.context.get('project_summary', ''),
+                           'tasks': [t.to_dict() for t in self.task_planner.tasks],
+                           'total_tasks': len(self.task_planner.tasks)
+                       },
+                       'type': 'task_update',
+                       'failed_task_id': task.task_id
+                   })
+    
+    def _show_task_details(self, task_id: str):
+        """Show detailed information about a task"""
+        task = self.task_planner.get_task_by_id(f"task_{task_id.zfill(3)}")
+        
+        if not task:
+            report(f'❌ Task {task_id} not found')
+            return
+        
+        status_emoji = {
+            'pending': '⏳',
+            'in_progress': '▶️',
+            'completed': '✅',
+            'failed': '❌'
+        }.get(task.status, '❓')
+        
+        message = f"""
+{status_emoji} **Task {task.task_id}: {task.title}**
+
+**Description:**
+{task.description}
+
+**Files to Create:** ({len(task.files_to_create)})
+{chr(10).join(f'  • {f}' for f in task.files_to_create[:10])}
+
+**Files to Modify:** ({len(task.files_to_modify)})
+{chr(10).join(f'  • {f}' for f in task.files_to_modify[:10])}
+
+**Dependencies:** {', '.join(task.dependencies) if task.dependencies else 'None'}
+**Priority:** {task.priority}
+**Status:** {task.status}
+**Estimated Tokens:** {task.estimated_tokens}
+"""
+        
+        report(message)
+    
+    def _show_task_status(self):
+        """Show overall task execution status"""
+        progress = self.task_planner.get_progress_summary()
+        executable = self.task_planner.get_executable_tasks()
+        
+        message = f"""
+📊 **Task Execution Status**
+
+**Progress:** {progress['completed']}/{progress['total_tasks']} tasks completed ({progress['progress_percentage']}%)
+**Pending:** {progress['pending']} tasks
+**Failed:** {progress['failed']} tasks
+
+**Next Executable Tasks:** {len(executable)}
+{chr(10).join(f'  {i+1}. {t.title}' for i, t in enumerate(executable[:5]))}
+
+Use `TASK:START` to continue execution.
+"""
+        
+        report(message)
+    
+    def _handle_incremental_development(self, prompt: str, existing_files: dict):
+        """Handle incremental development on existing project"""
+        # Check if this is a large requirement that needs task breakdown
+        is_large_requirement = self._is_large_requirement(prompt)
+        
+        if is_large_requirement:
+            # Even for existing projects, use task-based approach for large changes
+            self._handle_task_planning(prompt)
+        else:
+            # For small changes, use direct generation
+            self._handle_direct_generation(prompt, existing_files, False)
+    
+    def _handle_direct_generation(self, prompt: str, existing_files: dict, is_empty: bool):
+        """Legacy direct code generation (for simple requests)"""
         deploy_only_keywords = [
             '502', 'fix deployment', 'fix the deployment', 'restart', 'redeploy',
             'not loading', 'broken', 'fix nginx', 'server error'
@@ -3588,7 +3978,7 @@ class Agent:
         user_prompt = prompt
         
         if is_empty or not is_deploy_fix:
-            result = generate_code(prompt, existing_files=existing if not is_empty else None)
+            result = generate_code(prompt, existing_files=existing_files if not is_empty else None)
             if not result:
                 return
             

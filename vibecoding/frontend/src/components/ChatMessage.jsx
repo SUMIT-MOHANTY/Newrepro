@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Button } from './ui/button';
 import { cn } from '@/lib/utils';
+import TaskBreakdown from './TaskBreakdown';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/vibecoding';
 
@@ -232,8 +233,22 @@ const ChatMessage = ({
   onLoadVersion,
   onCopyMessage,
   onRegenerate,
-  onSuggestionClick
+  onSuggestionClick,
+  onExecuteTask,
+  onExecuteAllTasks,
+  onEditTask,
+  executingTaskId
 }) => {
+  // Debug: Log message to see what we're receiving
+  if (!message.role || message.role === 'assistant') {
+    console.log('ChatMessage rendering:', {
+      role: message.role,
+      hasMetadata: !!message.metadata,
+      hasTaskPlan: !!message.metadata?.task_plan,
+      metadataType: message.metadata?.type,
+      content: message.content?.substring(0, 100)
+    });
+  }
   // Dynamic time formatter (e.g., "just now", "5 mins ago")
   const getRelativeTime = (timestamp) => {
     if (!timestamp) return '';
@@ -410,8 +425,52 @@ const ChatMessage = ({
               <ToolCallsDisplay toolCalls={message.toolCalls} darkMode={darkMode} />
             )}
             
+            {/* Live AI Thinking Logs */}
+            {!isUser && message.metadata?.type === 'thinking' && message.content && (
+              <div className={cn(
+                'mb-3 rounded-lg border p-3',
+                darkMode 
+                  ? 'bg-purple-500/5 border-purple-500/20' 
+                  : 'bg-purple-50 border-purple-200'
+              )}>
+                <div className="flex items-center gap-2 mb-2">
+                  <Sparkles className={cn(
+                    'w-4 h-4 animate-pulse',
+                    darkMode ? 'text-purple-400' : 'text-purple-600'
+                  )} />
+                  <span className={cn(
+                    'text-xs font-semibold uppercase tracking-wide',
+                    darkMode ? 'text-purple-400' : 'text-purple-600'
+                  )}>
+                    AI Thinking
+                  </span>
+                </div>
+                <p className={cn(
+                  'text-sm leading-relaxed',
+                  darkMode ? 'text-purple-200' : 'text-purple-900'
+                )}>
+                  {/* {message.content} */}
+                </p>
+              </div>
+            )}
+            
+            {/* Task Breakdown Display */}
+            {!isUser && message.metadata?.task_plan && (
+              <>
+                {console.log('TaskBreakdown metadata:', message.metadata)}
+                <TaskBreakdown
+                  taskPlan={message.metadata.task_plan}
+                  darkMode={darkMode}
+                  onExecuteTask={onExecuteTask}
+                  onExecuteAll={onExecuteAllTasks}
+                  onEditTask={onEditTask}
+                  executingTaskId={executingTaskId}
+                />
+              </>
+            )}
+            
             {/* Task Breakdown Display - for planning/thinking messages */}
-            {!isUser && (() => {
+            {!isUser && !message.metadata?.task_plan && (() => {
               // Parse content for task lists
               const lines = (message.content || '').split('\n');
               const tasks = [];
@@ -469,7 +528,7 @@ const ChatMessage = ({
             })()}
             
             {/* Chat Content */}
-            {!isUser && aiSummary && !showOriginal && hasCodeOrVersion ? (
+            {!isUser && aiSummary && !showOriginal && hasCodeOrVersion && !message.metadata?.task_plan ? (
               <div className="flex flex-col gap-3 py-1">
                 <div className="flex items-center gap-2 text-xs font-semibold text-blue-500/80 uppercase tracking-wider">
                   <Sparkles className="w-3 h-3" />
@@ -648,15 +707,6 @@ const ChatMessage = ({
               </>
             )}
           </div>
-          {message.timestamp && (
-            <div className={cn(
-              'text-xs mt-1',
-              isUser ? 'text-right' : 'text-left',
-              darkMode ? 'text-gray-500' : 'text-gray-400'
-            )}>
-              {relativeTime}
-            </div>
-          )}
         </div>
       </div>
 

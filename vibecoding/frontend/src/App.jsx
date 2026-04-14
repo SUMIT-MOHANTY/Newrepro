@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button';
 import ChatPanel from './components/ChatPanel';
 import FileTree from './components/FileTree';
 import CodePreview from './components/CodePreview';
+import { useTaskHandlers } from './hooks/useTaskHandlers';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/vibecoding';
 
@@ -146,6 +147,15 @@ function Workspace({ user, logout, isAuthenticated }) {
   const [frozenFiles, setFrozenFiles] = useState([]);
   const [freezeLoading, setFreezeLoading] = useState(false);
 
+  // Task execution handlers
+  const { executingTaskId, handleExecuteTask, handleExecuteAllTasks, handleEditTask } = useTaskHandlers(
+    currentProjectId,
+    messages,
+    setMessages,
+    setLoading,
+    setVerificationStatus
+  );
+
   useEffect(() => {
     prevProjectIdRef.current = currentProjectId;
   }, [currentProjectId]);
@@ -212,19 +222,75 @@ function Workspace({ user, logout, isAuthenticated }) {
 
   // --- Autonomous Polling Logic ---
   const [isAutonomousPolling, setIsAutonomousPolling] = useState(false);
+  const [pollCount, setPollCount] = useState(0);
 
   useEffect(() => {
     let pollInterval;
     if (isAutonomousPolling && currentProjectId) {
+      setPollCount(0); // Reset counter
+      
       pollInterval = setInterval(async () => {
         try {
+          setPollCount(prev => prev + 1);
           const token = localStorage.getItem('vibecoding_token');
           const response = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/messages`, {
             headers: { Authorization: `Bearer ${token}` }
           });
           
+          // Also fetch tasks to update their status
+          const tasksResponse = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/tasks`, {
+            headers: { Authorization: `Bearer ${token}` }
+          }).catch(err => {
+            console.warn('Failed to fetch tasks during polling:', err);
+            return { data: { tasks: [], total_tasks: 0 } };
+          });
+          
           if (response.data.messages) {
-             const newMessages = response.data.messages;
+             let newMessages = response.data.messages;
+             
+             // Inject task plan if we have tasks
+             if (tasksResponse.data.tasks && tasksResponse.data.tasks.length > 0) {
+               const taskPlan = {
+                 project_summary: tasksResponse.data.project_summary || 'Task breakdown',
+                 tasks: tasksResponse.data.tasks,
+                 total_tasks: tasksResponse.data.total_tasks,
+                 completed_count: tasksResponse.data.completed_count,
+                 pending_count: tasksResponse.data.pending_count,
+                 failed_count: tasksResponse.data.failed_count
+               };
+               
+               const taskBreakdownMsgIndex = newMessages.findIndex(msg => 
+                 msg.metadata?.type === 'task_breakdown' || 
+                 msg.metadata?.awaiting_task_selection ||
+                 (msg.content && msg.content.includes('Task Breakdown Complete'))
+               );
+               
+               if (taskBreakdownMsgIndex !== -1) {
+                 newMessages[taskBreakdownMsgIndex] = {
+                   ...newMessages[taskBreakdownMsgIndex],
+                   metadata: {
+                     ...newMessages[taskBreakdownMsgIndex].metadata,
+                     task_plan: taskPlan
+                   }
+                 };
+               } else {
+                 // Create task breakdown message if tasks exist but no message found
+                 console.log('📋 Tasks found but no breakdown message - creating one');
+                 const taskBreakdownMsg = {
+                   id: `task_breakdown_${Date.now()}`,
+                   role: 'assistant',
+                   content: `📋 **Task Breakdown Complete!**\n\n${taskPlan.project_summary}\n\nI've broken this down into **${taskPlan.total_tasks} tasks**. You can:\n• Click "Execute All" to start building automatically\n• Click "Execute" on individual tasks to run them one by one\n• Click "Edit" to modify task descriptions before execution\n\nReady to start building?`,
+                   timestamp: new Date().toISOString(),
+                   metadata: {
+                     type: 'task_breakdown',
+                     task_plan: taskPlan,
+                     awaiting_task_selection: true
+                   }
+                 };
+                 newMessages.push(taskBreakdownMsg);
+               }
+             }
+             
              setMessages(newMessages);
              
              // Check if the last message signals completion or a code update
@@ -235,19 +301,58 @@ function Workspace({ user, logout, isAuthenticated }) {
                 await fetchProjectFiles();
              }
              
-             // 2. If we see verification or a generic stop signal, end polling
-             if (lastMsg?.content?.includes("[AGENT] VERIFICATION") || !loading) {
+             // 2. If we see task breakdown, stop polling and loader
+             if (lastMsg?.metadata?.type === 'task_breakdown' || lastMsg?.metadata?.task_plan) {
+                console.log('✅ Task breakdown detected - stopping polling and loader');
                 setIsAutonomousPolling(false);
                 setLoading(false);
+                return;
              }
+             
+             // 3. If we see verification or a generic stop signal, end polling
+             if (lastMsg?.content?.includes("[AGENT] VERIFICATION")) {
+                console.log('✅ Verification detected - stopping polling and loader');
+                setIsAutonomousPolling(false);
+                setLoading(false);
+                return;
+             }
+             
+             // 4. If we've polled at least 5 times (15 seconds) and no tasks found, check if we should stop
+             if (pollCount >= 5) {
+                // If no tasks were created and we have a "Got it!" message, stop polling
+                const hasGotItMessage = newMessages.some(msg => 
+                  msg.role === 'assistant' && 
+                  (msg.content?.includes('Got it!') || msg.content?.includes('On it!'))
+                );
+                
+                if (hasGotItMessage && tasksResponse.data.total_tasks === 0) {
+                  console.log('✅ No tasks detected after 15s with acknowledgment - stopping polling and loader');
+                  setIsAutonomousPolling(false);
+                  setLoading(false);
+                  return;
+                }
+             }
+             
+             // 5. Stop polling after 60 seconds (20 polls * 3 seconds) to prevent infinite polling
+             if (pollCount >= 20) {
+                console.log('⏱️ Polling timeout - stopping after 60 seconds');
+                setIsAutonomousPolling(false);
+                setLoading(false);
+                return;
+             }
+             
+             // Log polling status
+             console.log(`🔄 Poll #${pollCount}: ${newMessages.length} messages, ${tasksResponse.data.total_tasks} tasks, loader still active`);
           }
         } catch (e) {
           console.error("Polling error:", e);
         }
       }, 3000);
     }
-    return () => clearInterval(pollInterval);
-  }, [isAutonomousPolling, currentProjectId, loading]);
+    return () => {
+      if (pollInterval) clearInterval(pollInterval);
+    };
+  }, [isAutonomousPolling, currentProjectId, pollCount]);
 
   const fetchProjectFiles = async () => {
     if (!currentProjectId) return;
@@ -270,11 +375,68 @@ function Workspace({ user, logout, isAuthenticated }) {
     if (!currentProjectId) return;
     try {
       const token = localStorage.getItem('vibecoding_token');
-      const response = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/messages`, {
+      
+      // Fetch messages
+      const messagesResponse = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/messages`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      if (response.data.messages) {
-        setMessages(response.data.messages);
+      
+      // Fetch tasks
+      const tasksResponse = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/tasks`, {
+        headers: { Authorization: `Bearer ${token}` }
+      }).catch(err => {
+        console.warn('Failed to fetch tasks:', err);
+        return { data: { tasks: [], total_tasks: 0 } };
+      });
+      
+      if (messagesResponse.data.messages) {
+        let messages = messagesResponse.data.messages;
+        
+        // If we have tasks, find the task breakdown message and inject the task plan
+        if (tasksResponse.data.tasks && tasksResponse.data.tasks.length > 0) {
+          const taskPlan = {
+            project_summary: tasksResponse.data.project_summary || 'Task breakdown',
+            tasks: tasksResponse.data.tasks,
+            total_tasks: tasksResponse.data.total_tasks,
+            completed_count: tasksResponse.data.completed_count,
+            pending_count: tasksResponse.data.pending_count,
+            failed_count: tasksResponse.data.failed_count
+          };
+          
+          // Find the most recent message with task breakdown metadata or create one
+          const taskBreakdownMsgIndex = messages.findIndex(msg => 
+            msg.metadata?.type === 'task_breakdown' || 
+            msg.metadata?.awaiting_task_selection ||
+            (msg.content && msg.content.includes('Task Breakdown Complete'))
+          );
+          
+          if (taskBreakdownMsgIndex !== -1) {
+            // Update existing message with task plan
+            messages[taskBreakdownMsgIndex] = {
+              ...messages[taskBreakdownMsgIndex],
+              metadata: {
+                ...messages[taskBreakdownMsgIndex].metadata,
+                task_plan: taskPlan
+              }
+            };
+          } else {
+            // Create a new task breakdown message if none exists
+            const taskBreakdownMsg = {
+              id: `task_breakdown_${Date.now()}`,
+              role: 'assistant',
+              content: `📋 **Task Breakdown Complete!**\n\nI've broken this down into **${taskPlan.total_tasks} tasks**. You can:\n• Click "Execute All" to start building automatically\n• Click "Execute" on individual tasks to run them one by one\n• Click "Edit" to modify task descriptions before execution\n\nReady to start building?`,
+              timestamp: new Date().toISOString(),
+              metadata: {
+                type: 'task_breakdown',
+                task_plan: taskPlan,
+                awaiting_task_selection: true
+              }
+            };
+            messages.push(taskBreakdownMsg);
+          }
+        }
+        
+        setMessages(messages);
       }
     } catch (error) {
       console.error('Failed to fetch messages:', error);
@@ -1068,11 +1230,19 @@ function Workspace({ user, logout, isAuthenticated }) {
         summary: response.data.summary,
         toolCalls: response.data.tool_calls_log || null,
         suggestions: response.data.suggestions || null,
+        metadata: response.data.metadata || null,
         timestamp: new Date().toISOString(),
         id: response.data.message_id
       };
 
-      setMessages(prev => [...prev, aiMessage]);
+      // Check if we're awaiting task breakdown - if so, don't add the empty message and keep loader active
+      const awaitingTaskBreakdown = response.data.metadata?.awaiting_task_breakdown;
+      
+      if (!awaitingTaskBreakdown && response.data.message) {
+        // Only add message if it's not empty and we're not awaiting task breakdown
+        setMessages(prev => [...prev, aiMessage]);
+      }
+      
       setLastMessageId(response.data.message_id);
 
       if (response.data.code) {
@@ -1086,8 +1256,16 @@ function Workspace({ user, logout, isAuthenticated }) {
       }
 
       if (!discussMode) {
-        // loading is cleared in finally — no autonomous polling needed
+        // Always start polling in non-discuss mode to check for tasks
+        // Loader will stay active until polling finds tasks or times out
+        console.log('🔄 Starting polling - keeping loader active');
+        console.log('📊 Current state: loading=', loading, 'isAutonomousPolling=', isAutonomousPolling);
+        setIsAutonomousPolling(true);
+        // CRITICAL: Keep loading true - polling will set it to false when done
+        // Don't call setLoading(false) here!
       } else {
+        // In discuss mode, stop loader immediately
+        console.log('💬 Discuss mode - stopping loader');
         setLoading(false);
       }
 
@@ -1252,10 +1430,12 @@ function Workspace({ user, logout, isAuthenticated }) {
         content: `I encountered an error while generating or deploying the preview: ${errorMessage}`,
         timestamp: new Date().toISOString()
       }]);
-    } finally {
+      // On error, stop loading and polling
       setLoading(false);
       setIsAutonomousPolling(false);
-    }  };
+    }
+    // NOTE: No finally block! We want polling to control the loader state
+  };
 
   const handleDeploy = async () => {
     if (!currentProjectId || loading || isDeploying) return;
@@ -2564,6 +2744,10 @@ Please suggest improvements or modifications for this element.`;
           })()}
           discussMode={discussMode}
           onToggleDiscuss={() => setDiscussMode(prev => !prev)}
+          onExecuteTask={handleExecuteTask}
+          onExecuteAllTasks={handleExecuteAllTasks}
+          onEditTask={handleEditTask}
+          executingTaskId={executingTaskId}
         />
       </div>
 

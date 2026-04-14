@@ -852,20 +852,22 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
     
     # Guaranteed User Message Persistence (Atomic)
     user_msg_id = f"msg_{int(time.time())}_{uuid.uuid4().hex[:4]}"
+    user_timestamp = datetime.now().isoformat()
     try:
         conn = get_db()
-        # Use INSERT OR REPLACE to be absolutely certain we don't lose the prompt
+        # Use INSERT OR IGNORE to prevent duplicate messages with same ID
+        # This ensures we never overwrite an existing message
         conn.execute(
-            """INSERT OR REPLACE INTO messages 
+            """INSERT OR IGNORE INTO messages 
                (id, project_id, role, content, code, timestamp, image_paths, suggestions, tool_calls, metadata, summary)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (user_msg_id, project_id, "user", request.prompt, None, datetime.now().isoformat(),
+            (user_msg_id, project_id, "user", request.prompt, None, user_timestamp,
              json.dumps(request.images) if request.images else None, 
              None, None, None, None)
         )
         conn.commit()
         conn.close()
-        logger.info(f"✅ User prompt verified and stored: {user_msg_id} (Project: {project_id})")
+        logger.info(f"✅ User prompt verified and stored: {user_msg_id} at {user_timestamp} (Project: {project_id})")
     except Exception as e:
         logger.error(f"❌ CRITICAL: Failed to save user prompt: {e}")
         # We continue so the user still gets a response, but we've logged the failure
@@ -972,7 +974,86 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
         result = project_manager.send_request(handoff_prompt, project_id=project_id)
         logger.info(f"📬 Mailbox delivery result: {result}")
 
-        # 5. Generate dynamic acknowledgement message and suggestions using AI
+        # Let AI decide if this needs task breakdown or direct generation
+        # This is more accurate than heuristics
+        try:
+            complexity_prompt = f"""Analyze this user request and determine if it needs task breakdown or direct generation.
+
+USER REQUEST: {request.prompt}
+
+Consider:
+- Number of features/modules required
+- Complexity of the application
+- Whether it's a simple change or a full application
+- If it involves multiple interconnected components
+- Estimated number of files needed
+
+Respond with a JSON object:
+{{
+  "complexity": "COMPLEX" or "SIMPLE",
+  "reasoning": "Brief explanation",
+  "estimated_files": number
+}}
+
+Guidelines:
+- SIMPLE: Single feature, small app (1-5 files), or modification to existing code
+- COMPLEX: Multiple modules, full platform (6+ files), or interconnected features
+
+Examples:
+- "Build a todo app" → {{"complexity": "SIMPLE", "reasoning": "Single feature app with basic CRUD", "estimated_files": 3}}
+- "Add dark mode" → {{"complexity": "SIMPLE", "reasoning": "UI modification", "estimated_files": 2}}
+- "Build a Captive Insurance Platform with IAM, policy admin, compliance" → {{"complexity": "COMPLEX", "reasoning": "Multiple modules with authentication, business logic, and compliance", "estimated_files": 25}}
+
+Your analysis:"""
+
+            complexity_response = await ai_config.make_async_request([
+                {"role": "system", "content": "You are an expert at analyzing software requirements complexity. Always respond with valid JSON."},
+                {"role": "user", "content": complexity_prompt}
+            ], temperature=0.1)
+            
+            response_text = complexity_response["choices"][0]["message"].get("content", "").strip() if "choices" in complexity_response else "{}"
+            logger.info(f"🤖 AI raw response: {response_text[:200]}")
+            
+            # Parse JSON response
+            import re
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                analysis = json.loads(json_match.group(0))
+                is_complex_task = analysis.get("complexity", "SIMPLE").upper() == "COMPLEX"
+                reasoning = analysis.get("reasoning", "")
+                estimated_files = analysis.get("estimated_files", 0)
+                
+                logger.info(f"🤖 AI complexity analysis: {analysis.get('complexity')} - {reasoning} (est. {estimated_files} files) → is_complex_task={is_complex_task}")
+            else:
+                # Fallback if JSON parsing fails
+                is_complex_task = "COMPLEX" in response_text.upper()
+                logger.warning(f"Failed to parse JSON, using text match: {response_text[:100]} → is_complex_task={is_complex_task}")
+            
+        except Exception as e:
+            logger.error(f"Failed to get AI complexity decision: {e}", exc_info=True)
+            # Fallback to simple heuristic
+            is_complex_task = len(request.prompt.split()) > 50 or request.prompt.count('\n') > 5
+            logger.info(f"Using fallback heuristic → is_complex_task={is_complex_task}")
+        
+        if is_complex_task:
+            # Don't send acknowledgment - let the agent send task breakdown directly
+            # This keeps the loader active until tasks are ready
+            logger.info("🎯 Complex task detected - skipping immediate acknowledgment, waiting for task breakdown")
+            
+            # Return a minimal response that keeps the loader active
+            return GenerateResponse(
+                message="",  # Empty message keeps loader active
+                code=None,
+                project_id=project_id,
+                version_id="workspace",
+                preview_url=preview_url,
+                suggestions=[],
+                summary="Analyzing requirement and generating task breakdown...",
+                message_id=None,
+                metadata={"awaiting_task_breakdown": True, "keep_loader_active": True}
+            )
+
+        # 5. Generate dynamic acknowledgement message and suggestions using AI (only for simple tasks)
         try:
             # Generate a contextual acknowledgement message
             ack_prompt = f"""The user requested: "{request.prompt}"
@@ -1658,14 +1739,29 @@ async def get_project_messages(project_id: str, background_tasks: BackgroundTask
     from auth import get_db
     conn = get_db()
     try:
+        # Order by ROWID (SQLite's internal row number) which represents insertion order
+        # This is the most reliable way to get messages in the order they were created
+        # regardless of timestamp or ID issues
         rows = conn.execute(
-            "SELECT * FROM messages WHERE project_id = ? ORDER BY timestamp ASC",
+            "SELECT rowid, * FROM messages WHERE project_id = ? ORDER BY rowid ASC",
             (project_id,)
         ).fetchall()
         
         messages = []
+        startup_messages = [
+            '👋 VibeCoding Agent is online and ready!',
+            '💡 Ready to build! Send me your first message to get started.'
+        ]
+        
         for row in rows:
             msg = dict(row)
+            # Remove rowid from the message dict as it's just for ordering
+            msg.pop('rowid', None)
+            
+            # Skip startup messages - they're just informational and shouldn't persist
+            if msg.get('role') == 'assistant' and any(startup_msg in msg.get('content', '') for startup_msg in startup_messages):
+                continue
+            
             # Parse JSON fields
             for field in ["suggestions", "tool_calls", "image_paths", "metadata"]:
                 if msg.get(field):
@@ -1689,6 +1785,51 @@ async def get_project_messages(project_id: str, background_tasks: BackgroundTask
         return {"messages": messages}
     finally:
         conn.close()
+
+
+@app.get("/vibecoding/api/projects/{project_id}/tasks")
+async def get_project_tasks(project_id: str):
+    """Get tasks from the .vibecoding_tasks.json file in the workspace"""
+    try:
+        # Path to the tasks file in the workspace
+        workspace_dir = ARTIFACTS_DIR / project_id / "workspace"
+        tasks_file = workspace_dir / ".vibecoding_tasks.json"
+        context_file = workspace_dir / ".vibecoding_context.json"
+        
+        if not tasks_file.exists():
+            return {"tasks": [], "total_tasks": 0}
+        
+        with open(tasks_file, 'r', encoding='utf-8') as f:
+            tasks = json.load(f)
+        
+        # Try to get project summary from context file
+        project_summary = ""
+        if context_file.exists():
+            try:
+                with open(context_file, 'r', encoding='utf-8') as f:
+                    context = json.load(f)
+                    project_summary = context.get('project_summary', '')
+            except Exception as e:
+                logger.warning(f"Failed to read context file: {e}")
+        
+        # Calculate progress
+        total_tasks = len(tasks)
+        completed_count = sum(1 for task in tasks if task.get('status') == 'completed')
+        pending_count = sum(1 for task in tasks if task.get('status') == 'pending')
+        failed_count = sum(1 for task in tasks if task.get('status') == 'failed')
+        
+        return {
+            "project_summary": project_summary,
+            "tasks": tasks,
+            "total_tasks": total_tasks,
+            "completed_count": completed_count,
+            "pending_count": pending_count,
+            "failed_count": failed_count,
+            "progress_percentage": round((completed_count / total_tasks * 100)) if total_tasks > 0 else 0
+        }
+    except Exception as e:
+        logger.error(f"Error fetching tasks for project {project_id}: {e}")
+        return {"tasks": [], "total_tasks": 0, "error": str(e)}
 
 
 @app.post("/vibecoding/api/chat/new")
