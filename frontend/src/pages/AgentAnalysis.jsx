@@ -968,6 +968,105 @@ export default function AgentAnalysis({
         }
     };
 
+    // ── Helper: render a mermaid code string to a PNG data-URL ──
+    const renderMermaidToPng = async (mermaidCode) => {
+        try {
+            const uniqueId = `pdf-mermaid-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            const { svg } = await mermaid.render(uniqueId, mermaidCode);
+
+            return await new Promise((resolve) => {
+                // Convert SVG to base64 data URL using FileReader to avoid cross-origin issues
+                // This ensures the canvas doesn't get tainted
+                const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+                const reader = new FileReader();
+
+                reader.onload = () => {
+                    const img = new Image();
+                    const dataUrl = reader.result;
+
+                    img.onload = () => {
+                        try {
+                            const scale = 3; // High retina quality for crisp diagrams (increased from 2)
+                            const naturalW = img.naturalWidth || 800;
+                            const naturalH = img.naturalHeight || 400;
+
+                            // Create canvas with exact dimensions
+                            const canvas = document.createElement('canvas');
+                            canvas.width = naturalW * scale;
+                            canvas.height = naturalH * scale;
+
+                            const ctx = canvas.getContext('2d');
+                            if (!ctx) {
+                                resolve(null);
+                                return;
+                            }
+
+                            // Fill with white background
+                            ctx.fillStyle = '#ffffff';
+                            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                            // Enable image smoothing for better quality
+                            ctx.imageSmoothingEnabled = true;
+                            ctx.imageSmoothingQuality = 'high';
+
+                            // Scale and draw
+                            ctx.scale(scale, scale);
+                            ctx.drawImage(img, 0, 0, naturalW, naturalH);
+
+                            // Export as PNG data URL with maximum quality
+                            const pngDataUrl = canvas.toDataURL('image/png', 1.0);
+
+                            resolve({
+                                dataUrl: pngDataUrl,
+                                aspectRatio: naturalH / naturalW,
+                            });
+                        } catch (drawError) {
+                            console.warn('Canvas draw error:', drawError);
+                            resolve(null);
+                        }
+                    };
+
+                    img.onerror = () => {
+                        console.warn('Image load error');
+                        resolve(null);
+                    };
+
+                    // Use base64 data URL directly (no cross-origin issues)
+                    img.src = dataUrl;
+                };
+
+                reader.onerror = () => {
+                    console.warn('FileReader error');
+                    resolve(null);
+                };
+
+                reader.readAsDataURL(svgBlob);
+            });
+        } catch (err) {
+            console.warn('Mermaid→PNG render failed:', err);
+            return null;
+        }
+    };
+
+    // ── Helper: replace Unicode / box-drawing tree chars with ASCII equivalents ──
+    const normalizeTreeChars = (text) =>
+        text
+            .replace(/├──/g, '+--')
+            .replace(/└──/g, '\\--')
+            .replace(/│/g, '|')
+            .replace(/─/g, '-')
+            .replace(/├/g, '+')
+            .replace(/└/g, '\\')
+            .replace(/┌/g, '+')
+            .replace(/┐/g, '+')
+            .replace(/┘/g, '+')
+            .replace(/┼/g, '+')
+            .replace(/┤/g, '+')
+            // Handle the %%% / %ˇ style chars produced by some AI outputs
+            .replace(/%+\s*%+\s*%+\s*/g, '+-- ')
+            .replace(/%+\s+%+\s*%+\s*/g, '|   +-- ')
+            .replace(/^%+\s*/gm, '|   ');
+
     const handleDownloadPDF = async () => {
         if (!result?.analysis) return;
 
@@ -1162,6 +1261,33 @@ export default function AgentAnalysis({
         const rawText = isLikelyHtml(analysisContent) ? stripHtml(analysisContent) : analysisContent;
         const lines = rawText.split('\n');
 
+        // ── Pre-render every mermaid block to PNG so we can embed them ──
+        const mermaidImages = [];
+        const erDiagramImages = [];
+        {
+            const mermaidRegex = /```mermaid\s*([\s\S]*?)```/g;
+            let mMatch;
+            while ((mMatch = mermaidRegex.exec(rawText)) !== null) {
+                const code = mMatch[1].trim();
+                // eslint-disable-next-line no-await-in-loop
+                const imgData = await renderMermaidToPng(code);
+                mermaidImages.push(imgData); // may be null if render failed
+            }
+        }
+        // Also pre-render erDiagram blocks
+        {
+            const erRegex = /```(?:erDiagram|er\s*\n[\s\S]*?)```/gi;
+            let erMatch;
+            while ((erMatch = erRegex.exec(rawText)) !== null) {
+                const code = erMatch[1].trim();
+                // eslint-disable-next-line no-await-in-loop
+                const imgData = await renderMermaidToPng(code);
+                erDiagramImages.push(imgData);
+            }
+        }
+        let mermaidImageIdx = 0;
+        let erDiagramImageIdx = 0;
+
         // Section title
         doc.setFontSize(14);
         doc.setFont('helvetica', 'bold');
@@ -1169,8 +1295,209 @@ export default function AgentAnalysis({
         doc.text('Executive Summary & Agent Analysis', marginLeft, y);
         y += 8;
 
-        for (const line of lines) {
+        let inCodeBlock = false;
+        let codeBlockType = '';
+        let codeBlockContent = [];
+        let skipFolderStructure = false;
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
             const trimmed = line.trim();
+
+            // ── Detect code block start ──
+            if (trimmed.startsWith('```')) {
+                if (!inCodeBlock) {
+                    inCodeBlock = true;
+                    codeBlockType = trimmed.substring(3).trim();
+                    codeBlockContent = [];
+                    continue;
+                } else {
+                    // Code block end
+                    inCodeBlock = false;
+                    
+                    // Handle different code block types
+                    if (codeBlockType === 'mermaid') {
+                        // ── Embed actual rendered PNG image ──
+                        const imgData = mermaidImages[mermaidImageIdx++] || null;
+                        if (imgData && imgData.dataUrl) {
+                            const imgW = contentWidth;
+                            // Calculate height based on aspect ratio, but allow more vertical space
+                            const maxHeight = pageHeight - 60; // Leave room for margins
+                            let imgH = imgW * imgData.aspectRatio;
+                            // If image is taller than page, scale it down
+                            if (imgH > maxHeight) {
+                                imgH = maxHeight;
+                            }
+                            checkPage(imgH + 10);
+                            // light background card
+                            doc.setFillColor(...lightBg);
+                            doc.roundedRect(marginLeft, y, contentWidth, imgH + 6, 2, 2, 'F');
+                            doc.setFillColor(...brandAccent);
+                            doc.rect(marginLeft, y, 2, imgH + 6, 'F');
+                            doc.addImage(imgData.dataUrl, 'PNG', marginLeft + 4, y + 3, imgW - 8, imgH);
+                            y += imgH + 10;
+                        } else {
+                            // Fallback placeholder if render failed
+                            checkPage(25);
+                            doc.setFillColor(...lightBg);
+                            doc.roundedRect(marginLeft, y, contentWidth, 22, 2, 2, 'F');
+                            doc.setFillColor(...brandAccent);
+                            doc.rect(marginLeft, y, 2, 22, 'F');
+                            doc.setFontSize(10);
+                            doc.setFont('helvetica', 'bold');
+                            doc.setTextColor(...darkText);
+                            doc.text('[ARCHITECTURE DIAGRAM]', marginLeft + 8, y + 8);
+                            doc.setFontSize(8);
+                            doc.setFont('helvetica', 'normal');
+                            doc.setTextColor(...mutedText);
+                            doc.text('Visual architecture diagram available in the web interface', marginLeft + 8, y + 15);
+                            y += 26;
+                        }
+                    } else if (codeBlockType === 'erDiagram' || codeBlockType.includes('ER') || codeBlockType.includes('schema')) {
+                        // ── Embed actual rendered ER Diagram PNG image ──
+                        const imgData = erDiagramImages[erDiagramImageIdx++] || null;
+                        if (imgData && imgData.dataUrl) {
+                            const imgW = contentWidth;
+                            // Calculate height based on aspect ratio, allow more vertical space for ER diagrams
+                            const maxHeight = pageHeight - 60; // Leave room for margins
+                            let imgH = imgW * imgData.aspectRatio;
+                            // If image is taller than page, scale it down
+                            if (imgH > maxHeight) {
+                                imgH = maxHeight;
+                            }
+                            checkPage(imgH + 10);
+                            // light background card
+                            doc.setFillColor(...lightBg);
+                            doc.roundedRect(marginLeft, y, contentWidth, imgH + 6, 2, 2, 'F');
+                            doc.setFillColor(...brandAccent);
+                            doc.rect(marginLeft, y, 2, imgH + 6, 'F');
+                            doc.addImage(imgData.dataUrl, 'PNG', marginLeft + 4, y + 3, imgW - 8, imgH);
+                            y += imgH + 10;
+                        } else {
+                            // Fallback placeholder if render failed
+                            checkPage(25);
+                            doc.setFillColor(...lightBg);
+                            doc.roundedRect(marginLeft, y, contentWidth, 22, 2, 2, 'F');
+                            doc.setFillColor(...brandAccent);
+                            doc.rect(marginLeft, y, 2, 22, 'F');
+                            doc.setFontSize(10);
+                            doc.setFont('helvetica', 'bold');
+                            doc.setTextColor(...darkText);
+                            doc.text('[DATABASE SCHEMA DIAGRAM]', marginLeft + 8, y + 8);
+                            doc.setFontSize(8);
+                            doc.setFont('helvetica', 'normal');
+                            doc.setTextColor(...mutedText);
+                            doc.text('Visual database schema diagram available in the web interface', marginLeft + 8, y + 15);
+                            y += 26;
+                        }
+                    } else {
+                        // ── General / file-tree code block ──
+                        // Normalize Unicode / box-drawing tree chars so jsPDF courier can render them
+                        const normalizedContent = codeBlockContent.map(l => normalizeTreeChars(l));
+                        // Calculate height: render all lines (paginated)
+                        const lineH = 3.8;
+                        const paddingV = 6;
+                        const maxBlockH = pageHeight - 44; // nearly a full page at most
+                        const totalCodeH = Math.min(normalizedContent.length * lineH + paddingV * 2, maxBlockH);
+
+                        checkPage(Math.min(totalCodeH, 30));
+                        doc.setFillColor(...lightBg);
+                        doc.roundedRect(marginLeft, y, contentWidth, totalCodeH, 2, 2, 'F');
+                        doc.setFontSize(6.5);
+                        doc.setFont('courier', 'normal');
+                        doc.setTextColor(...darkText);
+
+                        let codeY = y + paddingV;
+                        for (const codeLine of normalizedContent) {
+                            if (codeY + lineH > y + totalCodeH - 2) break;
+                            if (codeY + lineH > pageHeight - 22) {
+                                // spill to next page
+                                addFooter(doc.internal.getNumberOfPages());
+                                doc.addPage();
+                                y = 20;
+                                codeY = y + paddingV;
+                                doc.setFillColor(...lightBg);
+                                doc.roundedRect(marginLeft, y, contentWidth, totalCodeH, 2, 2, 'F');
+                                doc.setFontSize(6.5);
+                                doc.setFont('courier', 'normal');
+                                doc.setTextColor(...darkText);
+                            }
+                            // Clip very long lines
+                            const printLine = codeLine.length > 110 ? codeLine.substring(0, 108) + '..' : codeLine;
+                            doc.text(printLine, marginLeft + 3, codeY);
+                            codeY += lineH;
+                        }
+                        y = codeY + paddingV;
+                    }
+                    
+                    codeBlockType = '';
+                    codeBlockContent = [];
+                    continue;
+                }
+            }
+
+            // ── Skip content inside code blocks ──
+            if (inCodeBlock) {
+                codeBlockContent.push(line);
+                continue;
+            }
+
+            // ── Detect loose folder-structure lines (tree chars that escaped a code block) ──
+            // These are Unicode box-drawing chars (├, │, └, ─) or %% sequences
+            const isTreeLine = /^[│├└─%]/.test(trimmed) || /^[|\\+]--/.test(trimmed);
+            if (isTreeLine) {
+                // Collect the whole tree block, normalize, and render in monospace
+                if (!skipFolderStructure) {
+                    skipFolderStructure = true;
+                    // Collect all consecutive tree lines
+                    const treeLines = [normalizeTreeChars(line)];
+                    let j = i + 1;
+                    while (j < lines.length) {
+                        const nextTrimmed = lines[j].trim();
+                        if (!nextTrimmed) { j++; break; }
+                        if (/^[│├└─%|\\+]/.test(nextTrimmed)) {
+                            treeLines.push(normalizeTreeChars(lines[j]));
+                            j++;
+                        } else {
+                            break;
+                        }
+                    }
+                    i = j - 1; // advance outer loop past consumed lines
+
+                    const lineH = 3.8;
+                    const paddingV = 5;
+                    const blockH = Math.min(treeLines.length * lineH + paddingV * 2, pageHeight - 44);
+                    checkPage(Math.min(blockH, 30));
+                    doc.setFillColor(...lightBg);
+                    doc.roundedRect(marginLeft, y, contentWidth, blockH, 2, 2, 'F');
+                    doc.setFontSize(6.5);
+                    doc.setFont('courier', 'normal');
+                    doc.setTextColor(...darkText);
+                    let codeY = y + paddingV;
+                    for (const tl of treeLines) {
+                        if (codeY + lineH > y + blockH - 2) break;
+                        if (codeY + lineH > pageHeight - 22) {
+                            addFooter(doc.internal.getNumberOfPages());
+                            doc.addPage();
+                            y = 20;
+                            codeY = y + paddingV;
+                            doc.setFillColor(...lightBg);
+                            doc.roundedRect(marginLeft, y, contentWidth, blockH, 2, 2, 'F');
+                            doc.setFontSize(6.5);
+                            doc.setFont('courier', 'normal');
+                            doc.setTextColor(...darkText);
+                        }
+                        const printLine = tl.length > 110 ? tl.substring(0, 108) + '..' : tl;
+                        doc.text(printLine, marginLeft + 3, codeY);
+                        codeY += lineH;
+                    }
+                    y = codeY + paddingV;
+                }
+                continue;
+            } else {
+                skipFolderStructure = false;
+            }
+
             if (!trimmed) {
                 y += 1.5;
                 continue;
@@ -1198,7 +1525,6 @@ export default function AgentAnalysis({
                     doc.text(hl, marginLeft, y);
                     y += fontSize * 0.42 + 1;
                 }
-
 
                 y += 1;
                 continue;
@@ -1647,48 +1973,17 @@ export default function AgentAnalysis({
 
                                                 // Configuration: Set to false to show that type of content
                                                 const hideConfig = {
-                                                    codeBlocks: true,  // Set to false to show code blocks
-                                                    technicalSections: true // Set to false to show all technical sections
+                                                    codeBlocks: false,  // Show code blocks (mermaid diagrams)
+                                                    technicalSections: false // Show all technical sections
                                                 };
 
-                                                // Technical section keywords - comment out to show specific sections
-                                                const technicalHeaders = [
-                                                    'technical architecture',
-                                                    'system architecture',
-                                                    'architecture overview',
-                                                    'technical implementation',
-                                                    'implementation details',
-                                                    'implementation specifications',
-                                                    'core components and modules',
-                                                    'api design',
-                                                    'api endpoints',
-                                                    'database schema',
-                                                    'database design',
-                                                    'data model',
-                                                    'technology stack',
-                                                    'tech stack',
-                                                    'development approach',
-                                                    'technical requirements',
-                                                    'technical specifications',
-                                                    'infrastructure',
-                                                    'deployment',
-                                                    'security implementation',
-                                                    'authentication flow',
-                                                    'code structure',
-                                                    'technical details',
-                                                    'technical considerations',
-                                                    'deliverable mapping',
-                                                    'api specifications',
-                                                    'file creation plan',
-                                                    'dependency and tool research',
-                                                    'implementation phases',
-                                                    'repository structure',
-                                                ];
+                                                // Technical section keywords - show all sections
+                                                const technicalHeaders = [];
 
                                                 // Function to filter content based on configuration
                                                 const hideTechnicalSections = (content) => {
                                                     if (!content) return '';
-                                                    
+
                                                     // If not hiding anything, return original content
                                                     if (!hideConfig.codeBlocks && !hideConfig.technicalSections) {
                                                         return content;
@@ -1696,51 +1991,42 @@ export default function AgentAnalysis({
 
                                                     const lines = content.split('\n');
                                                     const result = [];
-                                                    let skipSection = false;
                                                     let inCodeBlock = false;
+                                                    let codeBlockType = '';
 
                                                     for (const line of lines) {
                                                         const trimmed = line.trim();
 
                                                         // Handle code blocks
                                                         if (trimmed.startsWith('```')) {
-                                                            if (hideConfig.codeBlocks) {
-                                                                inCodeBlock = !inCodeBlock;
-                                                                continue;
-                                                            } else {
-                                                                result.push(line);
-                                                                continue;
-                                                            }
-                                                        }
+                                                            if (!inCodeBlock) {
+                                                                // Start of code block - determine type
+                                                                inCodeBlock = true;
+                                                                codeBlockType = trimmed.substring(3).trim().toLowerCase();
 
-                                                        // Skip content inside code blocks if hiding them
-                                                        if (inCodeBlock && hideConfig.codeBlocks) {
+                                                                // Always keep mermaid and erDiagram code blocks (they will be rendered as images)
+                                                                if (codeBlockType === 'mermaid' || codeBlockType === 'erdiagram' || codeBlockType.includes('er')) {
+                                                                    result.push(line);
+                                                                } else if (hideConfig.codeBlocks) {
+                                                                    // Skip non-mermaid code blocks if hiding
+                                                                    inCodeBlock = false; // Reset to skip the entire block
+                                                                    continue;
+                                                                } else {
+                                                                    result.push(line);
+                                                                }
+                                                            } else {
+                                                                // End of code block
+                                                                inCodeBlock = false;
+                                                                codeBlockType = '';
+                                                                if (!hideConfig.codeBlocks) {
+                                                                    result.push(line);
+                                                                }
+                                                            }
                                                             continue;
                                                         }
 
-                                                        // Check if this is a header (any level)
-                                                        const headerMatch = trimmed.match(/^(#{1,6})\s+(.+)/);
-                                                        
-                                                        if (headerMatch) {
-                                                            if (hideConfig.technicalSections) {
-                                                                const headerText = headerMatch[2].toLowerCase().trim();
-                                                                const isTechnical = technicalHeaders.some(tech => 
-                                                                    headerText.includes(tech)
-                                                                );
-                                                                
-                                                                if (isTechnical) {
-                                                                    skipSection = true;
-                                                                    continue;
-                                                                } else {
-                                                                    skipSection = false;
-                                                                }
-                                                            } else {
-                                                                skipSection = false;
-                                                            }
-                                                        }
-
-                                                        // Skip if in a hidden section
-                                                        if (skipSection) {
+                                                        // Skip content inside code blocks if hiding them (except mermaid/erDiagram)
+                                                        if (inCodeBlock && hideConfig.codeBlocks && codeBlockType !== 'mermaid' && codeBlockType !== 'erdiagram' && !codeBlockType.includes('er')) {
                                                             continue;
                                                         }
 
@@ -1785,16 +2071,42 @@ export default function AgentAnalysis({
                                                             th: ({node, ...props}) => <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider border-b border-gray-200" {...props} />,
                                                             td: ({node, ...props}) => <td className="px-4 py-3 text-sm text-gray-700 border-t border-gray-200" {...props} />,
                                                             code: ({node, inline, className, children, ...props}) => {
-                                                                // Show inline code, hide blocks based on config
+                                                                // Show inline code, show blocks based on config
                                                                 if (inline) {
                                                                     return <code className="bg-gray-100 text-red-600 px-1 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>;
                                                                 }
-                                                                // Code blocks are already filtered by hideTechnicalSections
-                                                                return hideConfig.codeBlocks ? null : <code className="block bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-xs font-mono" {...props}>{children}</code>;
+                                                                // Check if this is a mermaid or erDiagram block
+                                                                const codeContent = String(children || '').trim();
+                                                                const isMermaid = codeContent.startsWith('graph') ||
+                                                                    codeContent.includes('flowchart') ||
+                                                                    codeContent.includes('sequenceDiagram') ||
+                                                                    codeContent.includes('classDiagram') ||
+                                                                    codeContent.includes('stateDiagram');
+
+                                                                const isErDiagram = codeContent.includes('[') &&
+                                                                    (codeContent.includes('||') || codeContent.includes('}o') || codeContent.includes('o{'));
+
+                                                                if (isMermaid) {
+                                                                    return <MermaidDiagram code={codeContent} />;
+                                                                }
+
+                                                                return <code className="block bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-xs font-mono" {...props}>{children}</code>;
                                                             },
                                                             pre: ({node, children, ...props}) => {
-                                                                // Pre blocks are already filtered by hideTechnicalSections
-                                                                return hideConfig.codeBlocks ? null : <pre className="bg-gray-900 rounded-lg my-4" {...props}>{children}</pre>;
+                                                                // Check if pre block contains mermaid
+                                                                const preContent = String(children || '');
+                                                                const codeMatch = preContent.match(/<code[^>]*>([\s\S]*?)<\/code>/);
+                                                                const codeContent = codeMatch ? codeMatch[1] : preContent;
+
+                                                                if (codeContent.includes('graph') ||
+                                                                    codeContent.includes('flowchart') ||
+                                                                    codeContent.includes('sequenceDiagram') ||
+                                                                    codeContent.includes('classDiagram') ||
+                                                                    codeContent.includes('stateDiagram')) {
+                                                                    return <MermaidDiagram code={codeContent} />;
+                                                                }
+
+                                                                return <pre className="bg-gray-900 rounded-lg my-4" {...props}>{children}</pre>;
                                                             },
                                                             blockquote: ({node, ...props}) => <blockquote className="border-l-4 border-blue-500 pl-4 italic text-gray-600 my-4 bg-blue-50 py-2" {...props} />,
                                                             a: ({node, ...props}) => <a className="text-blue-600 hover:text-blue-800 underline font-medium" {...props} />,

@@ -267,6 +267,20 @@ async def call_llm(
 
                 response.raise_for_status()
                 data = response.json()
+                
+                # Print raw response for debugging
+                print("\n" + "="*80)
+                print("RAW LLM RESPONSE (call_llm)")
+                print("="*80)
+                print(f"URL: {url}")
+                print(f"Model: {model_name}")
+                print(f"Status Code: {response.status_code}")
+                print(f"Response Headers: {dict(response.headers)}")
+                print("-"*80)
+                print("Response Body:")
+                print(json.dumps(data, indent=2))  # First 2000 chars
+                print("="*80 + "\n")
+                
                 last_err = None
                 break
             except Exception as e:
@@ -304,6 +318,17 @@ async def call_llm_and_extract(
         **extra,
     )
     content = extract_content_from_response(data)
+    
+    # Print extracted content for debugging
+    print("\n" + "="*80)
+    print("EXTRACTED CONTENT (call_llm_and_extract)")
+    print("="*80)
+    print(f"Content Length: {len(content)} chars")
+    print("-"*80)
+    print("Content Preview:")
+    print(content)  # First 1000 chars
+    print("="*80 + "\n")
+    
     # Strip <think> blocks from models that embed reasoning in content
     content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
     content = re.sub(r'<think>.*', '', content, flags=re.DOTALL).strip()

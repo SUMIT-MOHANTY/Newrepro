@@ -1,0 +1,643 @@
+"""
+AI Service with Intelligent Chunking Strategy
+Maintains the same BRD analysis quality while reducing payload size through multi-stage processing
+"""
+import asyncio
+import json
+import re
+from typing import Dict, Any, Optional, List
+from datetime import datetime
+import logging
+
+import llm_gateway
+from llm_logs import log_llm_interaction_ai_service
+
+logger = logging.getLogger(__name__)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STAGE 1: REQUIREMENTS EXTRACTION (Minimal Payload)
+# ═══════════════════════════════════════════════════════════════════════════
+
+STAGE_1_REQUIREMENTS_PROMPT = """# ROLE
+You are an expert Business Analyst extracting requirements from a BRD document.
+
+## TASK
+Analyze the document and extract:
+
+### 1. Core Product Information
+- Product name and vision (2-3 sentences)
+- Target users and use cases
+- Product category and scale expectations
+
+### 2. Functional Requirements
+List ALL functional requirements (explicit + implicit):
+- User management and authentication needs
+- Core business features
+- Data management requirements
+- Integration requirements
+- Reporting/analytics needs
+
+### 3. Non-Functional Requirements
+- Performance expectations
+- Security requirements
+- Scalability needs
+- Compliance requirements
+- Data integrity rules
+
+### 4. Technical Constraints
+- Specified technologies (if any)
+- Deployment preferences
+- Integration constraints
+- Budget/timeline constraints
+
+### 5. Ambiguities & Questions
+Generate 3-8 clarification questions about:
+- Missing technical details
+- Ambiguous requirements
+- Integration uncertainties
+- Performance targets
+- Security specifications
+
+## OUTPUT FORMAT
+Return ONLY valid JSON (no markdown fences):
+{
+  "product_name": "...",
+  "product_vision": "...",
+  "target_users": "...",
+  "product_category": "...",
+  "scale_expectation": "MVP|Production|Enterprise",
+  "functional_requirements": ["req1", "req2", ...],
+  "non_functional_requirements": ["req1", "req2", ...],
+  "implicit_requirements": ["req1", "req2", ...],
+  "technical_constraints": {
+    "specified_tech": [],
+    "deployment": "...",
+    "integrations": []
+  },
+  "clarification_questions": ["q1", "q2", ...]
+}"""
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STAGE 2: TECHNOLOGY & ARCHITECTURE DESIGN (Focused Payload)
+# ═══════════════════════════════════════════════════════════════════════════
+
+STAGE_2_ARCHITECTURE_PROMPT = """# ROLE
+You are an expert Software Architect designing technical architecture.
+
+## CONTEXT
+You will receive extracted requirements from Stage 1.
+
+## TASK
+Design the technical architecture:
+
+### 1. Technology Stack Selection
+Recommend complete stack with rationale:
+- Frontend framework and UI library
+- Backend framework and language
+- Database (with version)
+- Caching/Queue system
+- Authentication method
+- API documentation tool
+- Containerization approach
+
+Format as table:
+| Layer | Technology | Version | Rationale |
+
+### 2. Architecture Pattern
+- Choose pattern: Monolith / Modular Monolith / Microservices
+- Justify based on requirements
+- Describe component interaction model
+
+### 3. System Architecture Diagram
+Create Mermaid flowchart showing:
+- All system components
+- Data flow between components
+- External integrations
+- Use subgraphs for logical grouping
+
+**CRITICAL Mermaid Rules:**
+1. Every `subgraph` MUST have exactly ONE matching `end`
+2. Place ALL connections AFTER the last `end` keyword
+3. Use alphanumeric IDs with underscores only (no dashes, dots, spaces)
+4. Quote labels with special characters: `subgraph LAYER["Data Layer (JSON)"]`
+5. No HTML tags in labels
+
+### 4. Architecture JSON
+Provide structured architecture data:
+{
+  "nodes": [
+    {"id": "node_id", "label": "Component Name", "layer": "frontend|backend|data|service", "type": "service|database|cache|ui"}
+  ],
+  "edges": [
+    {"from": "source_id", "to": "target_id", "description": "interaction"}
+  ]
+}
+
+## OUTPUT FORMAT
+Return ONLY valid JSON:
+{
+  "tech_stack": [
+    {"layer": "...", "technology": "...", "version": "...", "rationale": "..."}
+  ],
+  "architecture_pattern": "...",
+  "architecture_justification": "...",
+  "component_interaction": "...",
+  "mermaid_flowchart": "flowchart TB\\n...",
+  "architecture": {
+    "nodes": [...],
+    "edges": [...]
+  }
+}"""
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STAGE 3: DATA MODELS & API DESIGN (Focused Payload)
+# ═══════════════════════════════════════════════════════════════════════════
+
+STAGE_3_DATA_API_PROMPT = """# ROLE
+You are an expert Database Architect and API Designer.
+
+## CONTEXT
+You will receive:
+- Requirements from Stage 1
+- Architecture from Stage 2
+
+## TASK
+Design data models and APIs:
+
+### 1. Data Models
+Create Mermaid ER diagram with:
+- All entities and their attributes
+- Relationships (1-to-1, 1-to-many, many-to-many)
+- Key constraints
+
+**ER Diagram Rules:**
+- Use `erDiagram` (no `end` keyword needed)
+- Use proper relationship syntax: ||--o{, }}o--||, etc.
+- Quote attribute names with spaces
+
+### 2. Validation Rules
+List business validation rules:
+- Field validations
+- Business logic constraints
+- Data integrity rules
+
+### 3. API Endpoints
+Create comprehensive endpoint table:
+| Method | Path | Purpose | Auth Required | Request Body | Response |
+
+Group by domain (Auth, Users, Core Features, Admin)
+
+## OUTPUT FORMAT
+Return ONLY valid JSON:
+{
+  "mermaid_er_diagram": "erDiagram\\n...",
+  "validation_rules": ["rule1", "rule2", ...],
+  "api_endpoints": [
+    {"method": "GET", "path": "/api/...", "purpose": "...", "auth": "required|optional|none", "domain": "..."}
+  ]
+}"""
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STAGE 4: IMPLEMENTATION PLAN (Focused Payload)
+# ═══════════════════════════════════════════════════════════════════════════
+
+STAGE_4_IMPLEMENTATION_PROMPT = """# ROLE
+You are an expert Implementation Planner.
+
+## CONTEXT
+You will receive:
+- Requirements from Stage 1
+- Architecture from Stage 2
+- Data/API design from Stage 3
+
+## TASK
+Create implementation plan:
+
+### 1. Repository Structure
+Provide COMPLETE file tree with inline comments.
+Include: backend, frontend, config, tests, docs, CI/CD
+
+### 2. Prerequisites & Credentials
+List ONLY prerequisites derived from BRD features:
+- Credentials (API keys, SMTP, auth tokens)
+- APIs (third-party integrations)
+- Infrastructure (servers, domains, SSL)
+- Databases (connection strings)
+- Cloud services (ONLY if mentioned in BRD)
+
+Format:
+{
+  "name": "...",
+  "description": "...",
+  "category": "credentials|apis|infrastructure|databases|cloud",
+  "priority": "high|medium|low"
+}
+
+### 3. Implementation Phases
+Define ordered phases:
+- Foundation (setup, structure, config)
+- Backend Core (auth, base models, middleware)
+- Backend Features (feature endpoints)
+- Frontend Core (routing, state, auth UI)
+- Frontend Features (feature components)
+- Integration (testing, deployment)
+
+### 4. File Creation Plan
+Table of ALL files to create:
+| File Path | Purpose | Content Type | Priority | Phase |
+
+### 5. Implementation Guidelines
+List 8-12 coding rules:
+- Framework best practices
+- Security standards
+- Error handling patterns
+- Testing requirements
+- Naming conventions
+
+## OUTPUT FORMAT
+Return ONLY valid JSON:
+{
+  "repository_structure": "...",
+  "prerequisites": [...],
+  "implementation_phases": [
+    {"phase": "...", "description": "...", "deliverables": [...]}
+  ],
+  "file_creation_plan": [...],
+  "implementation_guidelines": [...]
+}"""
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STAGE 5: FINAL SYNTHESIS & REPORT GENERATION (Minimal Payload)
+# ═══════════════════════════════════════════════════════════════════════════
+
+STAGE_5_SYNTHESIS_PROMPT = """# ROLE
+You are an expert Technical Writer synthesizing a comprehensive BRD Analysis Report.
+
+## CONTEXT
+You will receive outputs from all previous stages.
+
+## TASK
+Create a comprehensive Markdown report with these sections:
+
+# BRD Analysis Report
+
+## 0.1 Product Understanding
+[Use Stage 1 data]
+
+## 0.2 Background Research
+[Synthesize from Stage 2 tech stack rationale]
+
+## 0.3 Technical Architecture Design
+[Use Stage 2 architecture + Mermaid diagrams]
+
+## 0.4 Implementation Specifications
+### 0.4.1 Core Components
+[Derive from Stage 2 architecture]
+
+### 0.4.2 Data Models and Schemas
+[Use Stage 3 ER diagram]
+
+### 0.4.3 API Specifications
+[Use Stage 3 API endpoints]
+
+## 0.5 Repository Structure Planning
+[Use Stage 4 file tree]
+
+## 0.6 Scope Definition
+[Derive from Stage 1 requirements]
+
+## 0.7 Deliverable Mapping
+[Use Stage 4 file creation plan and phases]
+
+## 0.8 Risks & Gap Analysis
+[Analyze based on all stages]
+
+## 0.9 Clarification Questions
+[Use Stage 1 questions]
+
+## 0.10 Prerequisites & Credentials
+[Use Stage 4 prerequisites]
+
+## 0.11 Execution Patterns
+[Use Stage 4 implementation guidelines]
+
+## 0.12 Go / No-Go Recommendation
+**[GO / NO-GO / PROCEED WITH CAUTION]**
+[Provide recommendation based on analysis]
+
+---
+
+## OUTPUT FORMAT
+Return the complete Markdown report followed by a JSON block:
+
+```json
+{
+  "title": "...",
+  "metrics": {
+    "complexity": "Low|Medium|High",
+    "timeline": "...",
+    "deployment": "...",
+    "resources": "...",
+    "project_type": "greenfield|brownfield|modernization"
+  },
+  "questions": [...],
+  "prerequisites": [...],
+  "user_flow": "...",
+  "implementation_structure": "...",
+  "architecture": {
+    "nodes": [...],
+    "edges": [...]
+  }
+}
+```"""
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MAIN CHUNKED ANALYSIS FUNCTION
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def analyze_document_chunked(
+    document_content: str,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+    governance_context: Optional[Dict[str, Any]] = None,
+    stream: bool = False,
+    user_feedback: Optional[str] = None,
+    image_paths: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Multi-stage chunked analysis that maintains the same output quality
+    while reducing payload size per API call.
+    
+    Strategy:
+    1. Extract requirements (small payload)
+    2. Design architecture (focused on tech decisions)
+    3. Design data models & APIs (focused on data layer)
+    4. Create implementation plan (focused on execution)
+    5. Synthesize final report (combines all stages)
+    """
+    
+    if not llm_gateway.check_api_key(api_key):
+        error = "API key not configured. Please set AI_API_KEY in your environment."
+        return {"status": "error", "error": error}
+    
+    try:
+        # Prepare document content (truncate if too large for Stage 1)
+        max_stage1_content = 8000
+        stage1_content = document_content[:max_stage1_content]
+        if len(document_content) > max_stage1_content:
+            stage1_content += "\n\n[Document truncated for initial analysis - full context will be used in later stages]"
+        
+        # Add governance context if provided
+        governance_text = _format_governance_context(governance_context)
+        if governance_text:
+            stage1_content = f"{stage1_content}\n\n{governance_text}"
+        
+        # Add user feedback if provided
+        if user_feedback:
+            stage1_content = f"USER FEEDBACK/ANSWERS:\n{user_feedback}\n\n{stage1_content}"
+        
+        logger.info("=== STAGE 1: Requirements Extraction ===")
+        stage1_messages = [
+            {"role": "system", "content": STAGE_1_REQUIREMENTS_PROMPT},
+            {"role": "user", "content": f"Extract requirements from this BRD:\n\n{stage1_content}"}
+        ]
+        
+        stage1_result = await llm_gateway.call_llm_and_extract(
+            messages=stage1_messages,
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            timeout=180.0
+        )
+        
+        stage1_data = _extract_json_from_response(stage1_result)
+        logger.info(f"Stage 1 complete: Extracted {len(stage1_data.get('functional_requirements', []))} functional requirements")
+        
+        # ─────────────────────────────────────────────────────────────────
+        # STAGE 2: Architecture Design
+        # ─────────────────────────────────────────────────────────────────
+        logger.info("=== STAGE 2: Architecture Design ===")
+        stage2_messages = [
+            {"role": "system", "content": STAGE_2_ARCHITECTURE_PROMPT},
+            {"role": "user", "content": f"Design architecture for these requirements:\n\n{json.dumps(stage1_data, indent=2)}"}
+        ]
+        
+        stage2_result = await llm_gateway.call_llm_and_extract(
+            messages=stage2_messages,
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            timeout=180.0
+        )
+        
+        stage2_data = _extract_json_from_response(stage2_result)
+        logger.info(f"Stage 2 complete: Architecture pattern = {stage2_data.get('architecture_pattern', 'N/A')}")
+        
+        # ─────────────────────────────────────────────────────────────────
+        # STAGE 3: Data Models & API Design
+        # ─────────────────────────────────────────────────────────────────
+        logger.info("=== STAGE 3: Data Models & API Design ===")
+        stage3_context = {
+            "requirements_summary": {
+                "functional": stage1_data.get("functional_requirements", [])[:10],  # Top 10
+                "non_functional": stage1_data.get("non_functional_requirements", [])
+            },
+            "architecture": {
+                "pattern": stage2_data.get("architecture_pattern"),
+                "tech_stack": stage2_data.get("tech_stack", [])[:5]  # Key technologies
+            }
+        }
+        
+        stage3_messages = [
+            {"role": "system", "content": STAGE_3_DATA_API_PROMPT},
+            {"role": "user", "content": f"Design data models and APIs for:\n\n{json.dumps(stage3_context, indent=2)}"}
+        ]
+        
+        stage3_result = await llm_gateway.call_llm_and_extract(
+            messages=stage3_messages,
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            timeout=180.0
+        )
+        
+        stage3_data = _extract_json_from_response(stage3_result)
+        logger.info(f"Stage 3 complete: Designed {len(stage3_data.get('api_endpoints', []))} API endpoints")
+        
+        # ─────────────────────────────────────────────────────────────────
+        # STAGE 4: Implementation Plan
+        # ─────────────────────────────────────────────────────────────────
+        logger.info("=== STAGE 4: Implementation Planning ===")
+        stage4_context = {
+            "product_name": stage1_data.get("product_name"),
+            "requirements_count": len(stage1_data.get("functional_requirements", [])),
+            "architecture_pattern": stage2_data.get("architecture_pattern"),
+            "tech_stack_summary": [t.get("technology") for t in stage2_data.get("tech_stack", [])[:8]],
+            "api_count": len(stage3_data.get("api_endpoints", []))
+        }
+        
+        stage4_messages = [
+            {"role": "system", "content": STAGE_4_IMPLEMENTATION_PROMPT},
+            {"role": "user", "content": f"Create implementation plan for:\n\n{json.dumps(stage4_context, indent=2)}"}
+        ]
+        
+        stage4_result = await llm_gateway.call_llm_and_extract(
+            messages=stage4_messages,
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            timeout=180.0
+        )
+        
+        stage4_data = _extract_json_from_response(stage4_result)
+        logger.info(f"Stage 4 complete: Created {len(stage4_data.get('file_creation_plan', []))} file specifications")
+        
+        # ─────────────────────────────────────────────────────────────────
+        # STAGE 5: Final Synthesis
+        # ─────────────────────────────────────────────────────────────────
+        logger.info("=== STAGE 5: Final Report Synthesis ===")
+        synthesis_context = {
+            "stage1_requirements": stage1_data,
+            "stage2_architecture": stage2_data,
+            "stage3_data_api": stage3_data,
+            "stage4_implementation": stage4_data
+        }
+        
+        stage5_messages = [
+            {"role": "system", "content": STAGE_5_SYNTHESIS_PROMPT},
+            {"role": "user", "content": f"Synthesize comprehensive BRD Analysis Report from:\n\n{json.dumps(synthesis_context, indent=2)[:6000]}"}
+        ]
+        
+        stage5_result = await llm_gateway.call_llm_and_extract(
+            messages=stage5_messages,
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            timeout=240.0
+        )
+        
+        logger.info("Stage 5 complete: Final report generated")
+        
+        # Extract final JSON from the report
+        final_json = _extract_json_from_response(stage5_result)
+        
+        # Ensure architecture data is included
+        if not final_json.get("architecture"):
+            final_json["architecture"] = stage2_data.get("architecture", {"nodes": [], "edges": []})
+        
+        return {
+            "status": "success",
+            "analysis": stage5_result,
+            "model": model or "chunked-multi-stage",
+            "stages": {
+                "stage1_requirements": stage1_data,
+                "stage2_architecture": stage2_data,
+                "stage3_data_api": stage3_data,
+                "stage4_implementation": stage4_data
+            }
+        }
+    
+    except Exception as e:
+        logger.error(f"Chunked analysis failed: {str(e)}")
+        return {
+            "status": "error",
+            "error": f"Analysis failed: {str(e)}"
+        }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# HELPER FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _extract_json_from_response(text: str) -> dict:
+    """Extract JSON object from LLM response, handling markdown fences and think tags."""
+    if not text or not isinstance(text, str):
+        return {}
+    
+    # Remove think tags
+    text = re.sub(r"ქ.*?ქ", "", text, flags=re.DOTALL)
+    
+    # Try to find JSON in markdown fence
+    fenced_regex = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
+    for match in fenced_regex.finditer(text):
+        candidate = match.group(1).strip()
+        if candidate.startswith("{") and candidate.endswith("}"):
+            try:
+                return json.loads(candidate)
+            except:
+                continue
+    
+    # Try to find trailing JSON object
+    trimmed = text.strip()
+    for i in range(len(trimmed) - 1, -1, -1):
+        if trimmed[i] == "{":
+            candidate = trimmed[i:].strip()
+            try:
+                return json.loads(candidate)
+            except:
+                continue
+    
+    return {}
+
+
+def _format_governance_context(governance_context: Optional[Dict[str, Any]]) -> str:
+    """Convert governance questionnaire context into prompt text."""
+    if not governance_context or not isinstance(governance_context, dict):
+        return ""
+    
+    lines = ["GOVERNANCE CONTEXT (treat as constraints):"]
+    
+    project_name = governance_context.get("project_name")
+    hard_stops = governance_context.get("hard_stops") or []
+    
+    if project_name:
+        lines.append(f"- Project: {project_name}")
+    
+    if hard_stops:
+        lines.append("- Critical Issues:")
+        for stop in hard_stops:
+            lines.append(f"  - {stop}")
+    
+    answers = governance_context.get("answers")
+    if isinstance(answers, list) and answers:
+        lines.append("- Governance Answers:")
+        for answer in answers:
+            if not isinstance(answer, dict):
+                continue
+            question = answer.get("question", "")
+            selected = answer.get("selected_option", "")
+            if question and selected:
+                lines.append(f"  - {question}: {selected}")
+    
+    return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# EXPORT MAIN FUNCTION AS analyze_document FOR DROP-IN REPLACEMENT
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def analyze_document(
+    document_content: str,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+    stream: bool = False,
+    user_feedback: Optional[str] = None,
+    image_paths: Optional[List[str]] = None,
+    governance_context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Drop-in replacement for the original analyze_document function.
+    Uses intelligent chunking to reduce payload size while maintaining output quality.
+    """
+    return await analyze_document_chunked(
+        document_content=document_content,
+        api_url=api_url,
+        api_key=api_key,
+        model=model,
+        governance_context=governance_context,
+        stream=stream,
+        user_feedback=user_feedback,
+        image_paths=image_paths
+    )
