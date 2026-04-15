@@ -1971,67 +1971,98 @@ export default function AgentAnalysis({
                                                 const explicitHtml = result.analysis?.html;
                                                 const htmlToRender = explicitHtml || (isLikelyHtml(analysisContent) ? analysisContent : null);
 
-                                                // Configuration: Set to false to show that type of content
-                                                const hideConfig = {
-                                                    codeBlocks: false,  // Show code blocks (mermaid diagrams)
-                                                    technicalSections: false // Show all technical sections
-                                                };
-
-                                                // Technical section keywords - show all sections
-                                                const technicalHeaders = [];
-
-                                                // Function to filter content based on configuration
-                                                const hideTechnicalSections = (content) => {
+                                                // Function to filter content for frontend display (hide ER diagrams and API sections)
+                                                const filterContentForDisplay = (content) => {
                                                     if (!content) return '';
-
-                                                    // If not hiding anything, return original content
-                                                    if (!hideConfig.codeBlocks && !hideConfig.technicalSections) {
-                                                        return content;
-                                                    }
 
                                                     const lines = content.split('\n');
                                                     const result = [];
                                                     let inCodeBlock = false;
                                                     let codeBlockType = '';
+                                                    let skipSection = false;
+                                                    let sectionLevel = 0;
 
-                                                    for (const line of lines) {
+                                                    for (let i = 0; i < lines.length; i++) {
+                                                        const line = lines[i];
                                                         const trimmed = line.trim();
+
+                                                        // Detect section headers to skip
+                                                        const headerMatch = trimmed.match(/^(#{1,6})\s+(.+)/);
+                                                        if (headerMatch) {
+                                                            const level = headerMatch[1].length;
+                                                            const headerText = headerMatch[2].toLowerCase();
+                                                            
+                                                            // Check if this is a section we want to hide
+                                                            const shouldHide = 
+                                                                headerText.includes('data model') ||
+                                                                headerText.includes('database schema') ||
+                                                                headerText.includes('er diagram') ||
+                                                                headerText.includes('api specification') ||
+                                                                headerText.includes('api endpoint') ||
+                                                                headerText.includes('core api') ||
+                                                                headerText.includes('deliverable mapping') ||
+                                                                headerText.includes('files to create') ||
+                                                                headerText.includes('phase 1:') ||
+                                                                headerText.includes('phase 2:') ||
+                                                                headerText.includes('phase 3:') ||
+                                                                headerText.includes('phase 4:') ||
+                                                                headerText.includes('phase 5:') ||
+                                                                (headerText.match(/^\d+\.\d+/) && (
+                                                                    headerText.includes('data model') ||
+                                                                    headerText.includes('schema') ||
+                                                                    headerText.includes('api') ||
+                                                                    headerText.includes('deliverable')
+                                                                ));
+
+                                                            if (shouldHide) {
+                                                                skipSection = true;
+                                                                sectionLevel = level;
+                                                                continue;
+                                                            } else if (skipSection && level <= sectionLevel) {
+                                                                // End of skipped section - new section at same or higher level
+                                                                skipSection = false;
+                                                                sectionLevel = 0;
+                                                            }
+                                                        }
+
+                                                        // Skip lines if we're in a hidden section
+                                                        if (skipSection) {
+                                                            continue;
+                                                        }
 
                                                         // Handle code blocks
                                                         if (trimmed.startsWith('```')) {
                                                             if (!inCodeBlock) {
-                                                                // Start of code block - determine type
+                                                                // Start of code block
                                                                 inCodeBlock = true;
                                                                 codeBlockType = trimmed.substring(3).trim().toLowerCase();
 
-                                                                // Always keep mermaid and erDiagram code blocks (they will be rendered as images)
-                                                                if (codeBlockType === 'mermaid' || codeBlockType === 'erdiagram' || codeBlockType.includes('er')) {
-                                                                    result.push(line);
-                                                                } else if (hideConfig.codeBlocks) {
-                                                                    // Skip non-mermaid code blocks if hiding
-                                                                    inCodeBlock = false; // Reset to skip the entire block
+                                                                // Hide erDiagram code blocks in frontend
+                                                                if (codeBlockType === 'erdiagram' || codeBlockType.includes('er')) {
+                                                                    // Skip this entire code block
+                                                                    while (i < lines.length - 1) {
+                                                                        i++;
+                                                                        if (lines[i].trim().startsWith('```')) {
+                                                                            break;
+                                                                        }
+                                                                    }
+                                                                    inCodeBlock = false;
+                                                                    codeBlockType = '';
                                                                     continue;
-                                                                } else {
-                                                                    result.push(line);
                                                                 }
+                                                                
+                                                                result.push(line);
                                                             } else {
                                                                 // End of code block
                                                                 inCodeBlock = false;
                                                                 codeBlockType = '';
-                                                                if (!hideConfig.codeBlocks) {
-                                                                    result.push(line);
-                                                                }
+                                                                result.push(line);
                                                             }
                                                             continue;
                                                         }
 
-                                                        // Skip content inside code blocks if hiding them (except mermaid/erDiagram)
-                                                        if (inCodeBlock && hideConfig.codeBlocks && codeBlockType !== 'mermaid' && codeBlockType !== 'erdiagram' && !codeBlockType.includes('er')) {
-                                                            continue;
-                                                        }
-
-                                                        // Skip empty lines or lines with only list markers
-                                                        if (trimmed === '' || trimmed === '-' || trimmed === '*') {
+                                                        // Skip content inside code blocks we're hiding
+                                                        if (inCodeBlock && (codeBlockType === 'erdiagram' || codeBlockType.includes('er'))) {
                                                             continue;
                                                         }
 
@@ -2113,7 +2144,7 @@ export default function AgentAnalysis({
                                                             strong: ({node, ...props}) => <strong className="font-bold text-gray-900" {...props} />,
                                                         }}
                                                     >
-                                                        {hideTechnicalSections(analysisContent)}
+                                                        {filterContentForDisplay(analysisContent)}
                                                     </ReactMarkdown>
                                                 );
                                             })()}
