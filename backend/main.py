@@ -36,6 +36,7 @@ import models
 import schemas
 import ingestion
 import ai_service
+import ai_service_chunked
 import llm_gateway
 import governance_scoring
 import github_service
@@ -417,20 +418,38 @@ async def analyze_document_with_ai(
     - api_key: API key for the service
     - model: Model name to use
     - stream: Set to true for streaming response (Server-Sent Events)
+    
+    Uses chunked multi-stage analysis by default (configurable via USE_CHUNKED_ANALYSIS env var)
+    to reduce payload size and improve reliability.
     """
     if _all_answers_skipped_from_governance_context(request.governance_context):
         raise HTTPException(status_code=403, detail=ALL_SKIPPED_ANALYZE_BLOCK_MESSAGE)
 
-    result = await ai_service.analyze_document(
-        document_content=request.document_content,
-        api_url=request.api_url,
-        api_key=request.api_key,
-        model=request.model,
-        stream=request.stream,
-        user_feedback=request.user_feedback,
-        image_paths=request.image_paths,
-        governance_context=request.governance_context,
-    )
+    # Choose between chunked and original analysis based on configuration
+    if settings.use_chunked_analysis:
+        logger.info("Using chunked multi-stage analysis")
+        result = await ai_service_chunked.analyze_document(
+            document_content=request.document_content,
+            api_url=request.api_url,
+            api_key=request.api_key,
+            model=request.model,
+            stream=request.stream,
+            user_feedback=request.user_feedback,
+            image_paths=request.image_paths,
+            governance_context=request.governance_context,
+        )
+    else:
+        logger.info("Using original single-stage analysis")
+        result = await ai_service.analyze_document(
+            document_content=request.document_content,
+            api_url=request.api_url,
+            api_key=request.api_key,
+            model=request.model,
+            stream=request.stream,
+            user_feedback=request.user_feedback,
+            image_paths=request.image_paths,
+            governance_context=request.governance_context,
+        )
     
     # Handle potential early errors (which return dict)
     if isinstance(result, dict) and result.get("status") == "error":
@@ -2700,11 +2719,19 @@ async def upload_and_analyze_document(
     if extraction_result["status"] == "error":
         raise HTTPException(status_code=500, detail=extraction_result["error"])
     
-    # Analyze with AI
-    analysis_result = await ai_service.analyze_document(
-        document_content=extraction_result["markdown"],
-        image_paths=extraction_result.get("images", [])
-    )
+    # Analyze with AI (using chunked or original based on configuration)
+    if settings.use_chunked_analysis:
+        logger.info("Using chunked multi-stage analysis for uploaded document")
+        analysis_result = await ai_service_chunked.analyze_document(
+            document_content=extraction_result["markdown"],
+            image_paths=extraction_result.get("images", [])
+        )
+    else:
+        logger.info("Using original single-stage analysis for uploaded document")
+        analysis_result = await ai_service.analyze_document(
+            document_content=extraction_result["markdown"],
+            image_paths=extraction_result.get("images", [])
+        )
     
     return {
         "filename": file.filename,
