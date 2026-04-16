@@ -58,6 +58,14 @@ Generate 3-8 clarification questions about:
 - Performance targets
 - Security specifications
 
+## CRITICAL TEXT FORMATTING RULES
+**USE ONLY STANDARD ASCII CHARACTERS:**
+- Use regular hyphen `-` NOT Unicode hyphens (‑, –, —)
+- Use regular space NOT Unicode spaces
+- Use regular apostrophe `'` NOT Unicode quotes (', ')
+- Use `>=` NOT `≥`, use `<=` NOT `≤`
+- NO emoji characters or Unicode symbols
+
 ## OUTPUT FORMAT
 Return ONLY valid JSON (no markdown fences):
 {
@@ -109,18 +117,35 @@ Format as table:
 - Describe component interaction model
 
 ### 3. System Architecture Diagram
-Create Mermaid flowchart showing:
-- All system components
-- Data flow between components
-- External integrations
-- Use subgraphs for logical grouping
+Create a COMPLETE Mermaid `flowchart TB` architecture based on the ACTUAL BRD requirements.
 
-**CRITICAL Mermaid Rules:**
-1. Every `subgraph` MUST have exactly ONE matching `end`
-2. Place ALL connections AFTER the last `end` keyword
-3. Use alphanumeric IDs with underscores only (no dashes, dots, spaces)
-4. Quote labels with special characters: `subgraph LAYER["Data Layer (JSON)"]`
-5. No HTML tags in labels
+The diagram MUST include:
+- client layer
+- API layer
+- auth/security
+- business services
+- data stores
+- async/event systems
+- integrations
+- observability
+- infrastructure
+
+Show:
+- write path
+- read path
+- async/background flow
+- auth flow
+- reporting path
+
+## STRICT Mermaid Safety Rules
+1. Every subgraph must have one matching end
+2. All edges must be placed after final end
+3. NEVER connect to subgraph IDs
+4. Use only node-to-node edges
+5. Quote all labels
+6. Use ASCII characters only
+7. Every edge node must exist
+8. Use architecture JSON as source-of-truth
 
 ### 4. Architecture JSON
 Provide structured architecture data:
@@ -132,6 +157,14 @@ Provide structured architecture data:
     {"from": "source_id", "to": "target_id", "description": "interaction"}
   ]
 }
+
+## CRITICAL TEXT FORMATTING RULES
+**USE ONLY STANDARD ASCII CHARACTERS:**
+- Use regular hyphen `-` NOT Unicode hyphens (‑, –, —)
+- Use regular space NOT Unicode spaces
+- Use regular apostrophe `'` NOT Unicode quotes (', ')
+- Use `>=` NOT `≥`, use `<=` NOT `≤`
+- NO emoji characters or Unicode symbols
 
 ## OUTPUT FORMAT
 Return ONLY valid JSON:
@@ -186,6 +219,14 @@ Create comprehensive endpoint table:
 | Method | Path | Purpose | Auth Required | Request Body | Response |
 
 Group by domain (Auth, Users, Core Features, Admin)
+
+## CRITICAL TEXT FORMATTING RULES
+**USE ONLY STANDARD ASCII CHARACTERS:**
+- Use regular hyphen `-` NOT Unicode hyphens (‑, –, —)
+- Use regular space NOT Unicode spaces
+- Use regular apostrophe `'` NOT Unicode quotes (', ')
+- Use `>=` NOT `≥`, use `<=` NOT `≤`
+- NO emoji characters or Unicode symbols
 
 ## OUTPUT FORMAT
 Return ONLY valid JSON:
@@ -253,6 +294,14 @@ List 8-12 coding rules:
 - Error handling patterns
 - Testing requirements
 - Naming conventions
+
+## CRITICAL TEXT FORMATTING RULES
+**USE ONLY STANDARD ASCII CHARACTERS:**
+- Use regular hyphen `-` NOT Unicode hyphens (‑, –, —)
+- Use regular space NOT Unicode spaces
+- Use regular apostrophe `'` NOT Unicode quotes (', ')
+- Use `>=` NOT `≥`, use `<=` NOT `≤`
+- NO emoji characters or Unicode symbols
 
 ## OUTPUT FORMAT
 Return ONLY valid JSON:
@@ -326,6 +375,40 @@ Create a comprehensive Markdown report with these sections:
 [Provide recommendation based on analysis]
 
 ---
+
+## CRITICAL TEXT FORMATTING RULES
+**YOU MUST FOLLOW THESE FORMATTING RULES TO ENSURE PDF COMPATIBILITY:**
+
+1. **USE ONLY STANDARD ASCII CHARACTERS**: 
+   - Use regular hyphen `-` NOT Unicode hyphens (‑, –, —)
+   - Use regular space ` ` NOT Unicode spaces (  ,  , etc.)
+   - Use regular apostrophe `'` NOT Unicode quotes (', ', ", ")
+   - Use regular numbers `1, 2, 3` NOT emoji numbers (1️⃣, 2️⃣, 3️⃣)
+
+2. **FORBIDDEN UNICODE CHARACTERS**:
+   - NO `\u2011` (non-breaking hyphen) - use `-`
+   - NO `\u2013` (en dash) - use `-`
+   - NO `\u2014` (em dash) - use `--`
+   - NO `\u202f` (narrow no-break space) - use regular space
+   - NO `\u00a0` (non-breaking space) - use regular space
+   - NO `\ufe0f\u20e3` (emoji keycaps) - use plain numbers
+   - NO `\u2265` (greater than or equal) - use `>=`
+   - NO fancy Unicode bullets - use `-` or `*`
+
+3. **TABLE FORMATTING**:
+   - Write all table cell content with normal words and spacing
+   - Example CORRECT: `| Product Name | Pegasus Platform |`
+   - Example WRONG: `| P r o d u c t   N a m e | P e g a s u s |`
+
+4. **LIST FORMATTING**:
+   - Use standard Markdown bullets: `-` or `*`
+   - Use standard numbers: `1.`, `2.`, `3.`
+   - NO emoji bullets or fancy Unicode list markers
+
+5. **EMPHASIS**:
+   - Use `**bold**` for bold text
+   - Use `*italic*` for italic text
+   - NO Unicode bold/italic characters
 
 ## OUTPUT FORMAT
 Return the complete Markdown report followed by a JSON block:
