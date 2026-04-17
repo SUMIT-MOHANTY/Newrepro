@@ -362,7 +362,7 @@ const Dashboard = ({
     const [analyzeWithAi] = useState(true);
     const navigate = useNavigate();
 
-    const [streamResponse] = useState(true);
+    const [streamResponse] = useState(false);
 
     const [history, setHistory] = useState([]);
     const [governanceHistory, setGovernanceHistory] = useState([]);
