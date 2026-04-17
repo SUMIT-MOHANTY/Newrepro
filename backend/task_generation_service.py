@@ -456,13 +456,13 @@ def _generate_bootstrap_checklist(repo_structure: str, project_name: str) -> Lis
 
 
 def _extract_repository_structure(analysis_text: str) -> str:
-    """Extract the repository structure from section 0.5.1 of Agent Action Plan"""
+    """Extract the repository structure from section 0.5.1 or 0.5 of Agent Action Plan"""
     if not analysis_text:
         return ""
     
     import re
     
-    # Look for section 0.5.1 - match just the number, ignore title
+    # Look for section 0.5.1 OR 0.5 - match just the number, ignore title
     patterns = [
         # Match: ## 0.5.1 (with or without title)
         r'##\s*0\.5\.1\s*[^\n]*\n(.*?)(?=\n##|\Z)',
@@ -472,6 +472,10 @@ def _extract_repository_structure(analysis_text: str) -> str:
         r'0\.5\.1\s*[^\n]*\n(.*?)(?=\n##|\n###|\n\d+\.|\Z)',
         # Match: **0.5.1** (bold in markdown)
         r'\*\*0\.5\.1\*\*\s*[^\n]*\n(.*?)(?=\n##|\n###|\n\*\*\d+\.|\Z)',
+        # NEW: Match section 0.5 (without subsection) - for ai_service_chunked.py format
+        r'##\s*0\.5\s+[^\n]*\n(.*?)(?=\n##|\n\d+\.|\Z)',
+        r'###\s*0\.5\s+[^\n]*\n(.*?)(?=\n###|\n\d+\.|\Z)',
+        r'0\.5\s+Repository Structure Planning[^\n]*\n(.*?)(?=\n##|\n###|\n\d+\.|\Z)',
     ]
     
     for pattern in patterns:
@@ -483,15 +487,21 @@ def _extract_repository_structure(analysis_text: str) -> str:
             code_block_match = re.search(r'```(?:text|bash|shell|tree)?\s*(.*?)\s*```', structure, re.DOTALL)
             if code_block_match:
                 extracted = code_block_match.group(1).strip()
-                logger.info(f"Extracted repository structure from section 0.5.1 (from code block, {len(extracted)} chars)")
+                logger.info(f"Extracted repository structure from section 0.5/0.5.1 (from code block, {len(extracted)} chars)")
                 return extracted
             
-            # If no code block, return the raw content
+            # If no code block, the structure might be directly in the text (ai_service_chunked.py format)
+            # Look for lines that look like a directory tree (starting with project name or ├──)
+            if structure and ('├──' in structure or '└──' in structure or structure.strip().endswith('/')):
+                logger.info(f"Extracted repository structure from section 0.5/0.5.1 (raw tree format, {len(structure)} chars)")
+                return structure
+            
+            # If no tree characters but has content, return it anyway
             if structure:
-                logger.info(f"Extracted repository structure from section 0.5.1 (raw content, {len(structure)} chars)")
+                logger.info(f"Extracted repository structure from section 0.5/0.5.1 (raw content, {len(structure)} chars)")
                 return structure
     
-    logger.warning("Could not find section 0.5.1 in BRD analysis")
+    logger.warning("Could not find section 0.5.1 or 0.5 in BRD analysis")
     return ""
 
 def _build_project_context(
