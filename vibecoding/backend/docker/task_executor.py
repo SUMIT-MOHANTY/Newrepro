@@ -197,6 +197,15 @@ Now generate the complete code for this task:
             if next_file_match:
                 file_content = file_content[:next_file_match.start()].strip()
             
+            # CRITICAL: Remove markdown code fences that corrupt files
+            # Remove opening fence: ```json, ```javascript, ```jsx, etc.
+            file_content = re.sub(r'^```[a-z]*\n?', '', file_content, flags=re.MULTILINE)
+            # Remove closing fence: ```
+            file_content = re.sub(r'\n?```\s*$', '', file_content, flags=re.MULTILINE)
+            
+            # Additional cleanup: remove any stray backticks at start/end
+            file_content = file_content.strip('`').strip()
+            
             # Write file
             if file_path and file_content:
                 self._write_file(file_path, file_content)

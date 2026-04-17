@@ -85,6 +85,7 @@ def _get_db(timeout: int = 15):
 def report(msg: str, code: str = None, suggestions: list = None, metadata: dict = None, summary: str = None, message_type: str = None):
     """
     Persist a user-facing message to the host SQLite DB with rich context.
+    Also broadcast via WebSocket for real-time updates.
     
     Args:
         msg: Main message content
@@ -134,6 +135,40 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
     # Generate summary if not provided
     if not summary:
         summary = _generate_summary(clean)
+    
+    # Broadcast via WebSocket for real-time updates
+    try:
+        import requests
+        
+        # Determine the correct backend URL
+        # If running in Docker, use host.docker.internal or the service name
+        backend_host = os.environ.get('BACKEND_HOST', 'host.docker.internal')
+        backend_port = os.environ.get('BACKEND_PORT', '8000')
+        backend_url = f'http://{backend_host}:{backend_port}/vibecoding/api/broadcast/{PROJECT_ID}'
+        
+        ws_payload = {
+            'content': clean,
+            'type': meta.get('type'),
+            'summary': summary,
+            'metadata': meta,
+            'timestamp': datetime.now().isoformat(),
+            'code': code,
+            'suggestions': suggestions
+        }
+        
+        # Non-blocking request with short timeout
+        # This is optional - if it fails, we still write to DB
+        requests.post(backend_url, json=ws_payload, timeout=0.5)
+        
+    except requests.exceptions.ConnectionError:
+        # WebSocket server not available - this is OK, messages still go to DB
+        pass
+    except requests.exceptions.Timeout:
+        # Timeout is OK - don't block the agent
+        pass
+    except Exception as e:
+        # Log other errors but don't fail
+        log(f'WebSocket broadcast failed (non-critical): {e}')
     
     try:
         conn.execute(
@@ -987,6 +1022,14 @@ Apply the changes now using ONLY these markers."""
 
 
 def _write_file(path: Path, content: str):
+    # CRITICAL: Remove markdown code fences that corrupt files
+    # Remove opening fence: ```json, ```javascript, ```jsx, etc.
+    content = re.sub(r'^```[a-z]*\n?', '', content, flags=re.MULTILINE)
+    # Remove closing fence: ```
+    content = re.sub(r'\n?```\s*$', '', content, flags=re.MULTILINE)
+    # Additional cleanup: remove any stray backticks at start/end
+    content = content.strip('`').strip()
+    
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding='utf-8')
     log(f'  📄 {path.relative_to(PROJECT_DIR)}')
@@ -3694,7 +3737,8 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
             metadata={
                 'task_plan': plan,
                 'awaiting_task_selection': False,  # Changed to False since we auto-execute
-                'type': 'task_breakdown'
+                'type': 'task_breakdown',
+                'loading_complete': True  # Signal to stop loader
             },
             summary='Task breakdown ready'
         )
@@ -3740,12 +3784,12 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
                     report(f'🎉 All {progress["total_tasks"]} tasks completed! Your application is ready.',
                            message_type='success',
                            metadata={
-                               'task_plan': {
-                                   'project_summary': self.task_planner.context.get('project_summary', ''),
-                                   'tasks': [t.to_dict() for t in self.task_planner.tasks],
-                                   'total_tasks': len(self.task_planner.tasks)
+                               'type': 'task_execution_complete',
+                               'progress': {
+                                   'completed': progress['completed'],
+                                   'total': progress['total_tasks']
                                },
-                               'type': 'task_execution_complete'
+                               'loading_complete': True  # Signal to stop loader
                            })
                     # Deploy the completed application
                     deploy()
@@ -3755,12 +3799,12 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
                     report(f"⚠️ {progress['pending']} tasks remaining but cannot execute (dependency issues).",
                            message_type='error',
                            metadata={
-                               'task_plan': {
-                                   'project_summary': self.task_planner.context.get('project_summary', ''),
-                                   'tasks': [t.to_dict() for t in self.task_planner.tasks],
-                                   'total_tasks': len(self.task_planner.tasks)
+                               'type': 'task_execution_blocked',
+                               'progress': {
+                                   'pending': progress['pending'],
+                                   'total': progress['total_tasks']
                                },
-                               'type': 'task_execution_blocked'
+                               'loading_complete': True  # Signal to stop loader
                            })
                     break
             
@@ -3770,17 +3814,19 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
             
             # Check if we should continue
             if task.status == 'failed':
-                # Send final task plan with error state
+                # Send final status with error
                 progress = self.task_planner.get_progress_summary()
                 report(f'⚠️ Task {task.task_id} failed. Stopping execution.',
                        message_type='error',
                        metadata={
-                           'task_plan': {
-                               'project_summary': self.task_planner.context.get('project_summary', ''),
-                               'tasks': [t.to_dict() for t in self.task_planner.tasks],
-                               'total_tasks': len(self.task_planner.tasks)
+                           'type': 'task_execution_failed',
+                           'task_id': task.task_id,
+                           'progress': {
+                               'completed': progress['completed'],
+                               'failed': progress['failed'],
+                               'total': progress['total_tasks']
                            },
-                           'type': 'task_execution_failed'
+                           'loading_complete': True  # Signal to stop loader
                        })
                 break
             
@@ -3814,12 +3860,16 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
     
     def _execute_single_task(self, task: Task):
         """Execute a single task with full context"""
-        # Mark task as in progress without sending full task plan
+        # Mark task as in progress - send ONLY status update, not full task plan
         report(f'▶️ Executing: **{task.title}**',
                message_type='action',
-               metadata={'executing_task_id': task.task_id, 'type': 'task_execution_start'})
+               metadata={
+                   'type': 'task_status_update',
+                   'task_id': task.task_id,
+                   'status': 'in_progress'
+               })
         
-        # Send thinking log without task plan
+        # Send thinking log
         report(f'💡 Analyzing task requirements and building context...',
                message_type='thinking',
                metadata={'type': 'thinking'})
@@ -3832,7 +3882,7 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
             context = self.task_planner._build_project_context()
             context['project_summary'] = self.task_planner.context.get('project_summary', '')
             
-            # Send thinking log without task plan
+            # Send thinking log
             report(f'💡 Generating code for {len(task.files_to_create)} new files and modifying {len(task.files_to_modify)} existing files...',
                    message_type='thinking',
                    metadata={'type': 'thinking'})
@@ -3845,38 +3895,34 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
                 task.completed_at = datetime.now().isoformat()
                 self.task_planner._save_state()
                 
-                # Send completion message WITH task plan for UI update
+                # Send completion message - ONLY status update, not full task plan
                 progress = self.task_planner.get_progress_summary()
                 report(f'✅ Task completed: {task.title}',
                        message_type='success',
                        metadata={
-                           'task_plan': {
-                               'project_summary': self.task_planner.context.get('project_summary', ''),
-                               'tasks': [t.to_dict() for t in self.task_planner.tasks],
-                               'total_tasks': len(self.task_planner.tasks),
-                               'completed_count': progress['completed'],
-                               'pending_count': progress['pending'],
-                               'failed_count': progress['failed']
-                           },
-                           'type': 'task_update',
-                           'completed_task_id': task.task_id
+                           'type': 'task_status_update',
+                           'task_id': task.task_id,
+                           'status': 'completed',
+                           'progress': {
+                               'completed': progress['completed'],
+                               'total': progress['total_tasks'],
+                               'pending': progress['pending'],
+                               'failed': progress['failed']
+                           }
                        })
             else:
                 task.status = 'failed'
                 task.error = result['error']
                 self.task_planner._save_state()
                 
-                # Send error message WITH task plan for UI update
+                # Send error message - ONLY status update, not full task plan
                 report(f'❌ Task failed: {task.title}\n   Error: {result["error"]}',
                        message_type='error',
                        metadata={
-                           'task_plan': {
-                               'project_summary': self.task_planner.context.get('project_summary', ''),
-                               'tasks': [t.to_dict() for t in self.task_planner.tasks],
-                               'total_tasks': len(self.task_planner.tasks)
-                           },
-                           'type': 'task_update',
-                           'failed_task_id': task.task_id
+                           'type': 'task_status_update',
+                           'task_id': task.task_id,
+                           'status': 'failed',
+                           'error': result['error']
                        })
         
         except Exception as e:
@@ -3887,13 +3933,10 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
             report(f'❌ Task execution error: {str(e)}', 
                    message_type='error',
                    metadata={
-                       'task_plan': {
-                           'project_summary': self.task_planner.context.get('project_summary', ''),
-                           'tasks': [t.to_dict() for t in self.task_planner.tasks],
-                           'total_tasks': len(self.task_planner.tasks)
-                       },
-                       'type': 'task_update',
-                       'failed_task_id': task.task_id
+                       'type': 'task_status_update',
+                       'task_id': task.task_id,
+                       'status': 'failed',
+                       'error': str(e)
                    })
     
     def _show_task_details(self, task_id: str):

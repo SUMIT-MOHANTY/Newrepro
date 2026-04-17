@@ -9,7 +9,7 @@ from datetime import datetime
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks, Response
+from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -84,6 +84,46 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─── WebSocket Connection Manager ───────────────────────────────────────────────
+class ConnectionManager:
+    """Manage WebSocket connections for real-time updates"""
+    def __init__(self):
+        self.active_connections: Dict[str, List[WebSocket]] = {}
+    
+    async def connect(self, websocket: WebSocket, project_id: str):
+        await websocket.accept()
+        if project_id not in self.active_connections:
+            self.active_connections[project_id] = []
+        self.active_connections[project_id].append(websocket)
+        logger.info(f"WebSocket connected for project {project_id}. Total connections: {len(self.active_connections[project_id])}")
+    
+    def disconnect(self, websocket: WebSocket, project_id: str):
+        if project_id in self.active_connections:
+            try:
+                self.active_connections[project_id].remove(websocket)
+                logger.info(f"WebSocket disconnected for project {project_id}. Remaining: {len(self.active_connections[project_id])}")
+                if not self.active_connections[project_id]:
+                    del self.active_connections[project_id]
+            except ValueError:
+                pass
+    
+    async def broadcast(self, message: dict, project_id: str):
+        """Broadcast message to all connected clients for a project"""
+        if project_id in self.active_connections:
+            disconnected = []
+            for connection in self.active_connections[project_id]:
+                try:
+                    await connection.send_json(message)
+                except Exception as e:
+                    logger.error(f"Failed to send WebSocket message: {e}")
+                    disconnected.append(connection)
+            
+            # Clean up disconnected clients
+            for conn in disconnected:
+                self.disconnect(conn, project_id)
+
+manager = ConnectionManager()
 
 # Create a session with connection pooling and retry logic for proxy requests
 def get_proxy_session():
@@ -673,6 +713,36 @@ async def sso_handoff(request: SSOHandoffRequest):
 @app.get("/vibecoding/api")
 async def root():
     return {"message": f"{APP_NAME} API is running"}
+
+# ─── WebSocket Endpoint ─────────────────────────────────────────────────────────
+@app.websocket("/vibecoding/ws/{project_id}")
+async def websocket_endpoint(websocket: WebSocket, project_id: str):
+    """WebSocket endpoint for real-time project updates"""
+    await manager.connect(websocket, project_id)
+    try:
+        while True:
+            # Keep connection alive and receive any client messages
+            data = await websocket.receive_text()
+            # Echo back for heartbeat
+            await websocket.send_json({"type": "pong", "timestamp": datetime.now().isoformat()})
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, project_id)
+    except Exception as e:
+        logger.error(f"WebSocket error for project {project_id}: {e}")
+        manager.disconnect(websocket, project_id)
+
+@app.post("/vibecoding/api/broadcast/{project_id}")
+async def broadcast_message(project_id: str, request: dict):
+    """
+    Internal endpoint for AI agent to broadcast messages via WebSocket.
+    This is called by the ai-agent.py report() function.
+    """
+    try:
+        await manager.broadcast(request, project_id)
+        return {"status": "broadcasted"}
+    except Exception as e:
+        logger.error(f"Broadcast failed for project {project_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/vibecoding/api/chat/dual-agent")
 async def dual_agent_chat(request: GenerateRequest):

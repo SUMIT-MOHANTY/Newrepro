@@ -16,6 +16,7 @@ import ChatPanel from './components/ChatPanel';
 import FileTree from './components/FileTree';
 import CodePreview from './components/CodePreview';
 import { useTaskHandlers } from './hooks/useTaskHandlers';
+import { useWebSocket } from './hooks/useWebSocket';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/vibecoding';
 
@@ -391,6 +392,21 @@ function Workspace({ user, logout, isAuthenticated }) {
       
       if (messagesResponse.data.messages) {
         let messages = messagesResponse.data.messages;
+        
+        // Check if any message signals loading complete
+        const hasLoadingComplete = messages.some(msg => 
+          msg.metadata?.loading_complete === true ||
+          msg.metadata?.type === 'task_breakdown' ||
+          msg.metadata?.type === 'task_execution_complete' ||
+          msg.metadata?.type === 'task_execution_failed' ||
+          msg.metadata?.type === 'task_execution_blocked'
+        );
+        
+        if (hasLoadingComplete) {
+          console.log('✅ Loading complete signal detected - stopping loader');
+          setLoading(false);
+          setIsAutonomousPolling(false);
+        }
         
         // If we have tasks, find the task breakdown message and inject the task plan
         if (tasksResponse.data.tasks && tasksResponse.data.tasks.length > 0) {

@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm';
 import { Button } from './ui/button';
 import { cn } from '@/lib/utils';
 import TaskBreakdown from './TaskBreakdown';
+import ThinkingBlock from './ThinkingBlock';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/vibecoding';
 
@@ -425,32 +426,16 @@ const ChatMessage = ({
               <ToolCallsDisplay toolCalls={message.toolCalls} darkMode={darkMode} />
             )}
             
-            {/* Live AI Thinking Logs */}
-            {!isUser && message.metadata?.type === 'thinking' && message.content && (
-              <div className={cn(
-                'mb-3 rounded-lg border p-3',
-                darkMode 
-                  ? 'bg-purple-500/5 border-purple-500/20' 
-                  : 'bg-purple-50 border-purple-200'
-              )}>
-                <div className="flex items-center gap-2 mb-2">
-                  <Sparkles className={cn(
-                    'w-4 h-4 animate-pulse',
-                    darkMode ? 'text-purple-400' : 'text-purple-600'
-                  )} />
-                  <span className={cn(
-                    'text-xs font-semibold uppercase tracking-wide',
-                    darkMode ? 'text-purple-400' : 'text-purple-600'
-                  )}>
-                    AI Thinking
-                  </span>
-                </div>
-                <p className={cn(
-                  'text-sm leading-relaxed',
-                  darkMode ? 'text-purple-200' : 'text-purple-900'
-                )}>
-                  {/* {message.content} */}
-                </p>
+            {/* Inline Thinking Block - Shows accumulated thinking logs */}
+            {!isUser && message.thinkingLogs && message.thinkingLogs.length > 0 && (
+              <div className="mb-3">
+                <ThinkingBlock
+                  logs={message.thinkingLogs}
+                  status={message.isThinking ? 'thinking' : 'success'}
+                  title={message.isThinking ? 'Building you app...' : 'Background execution completed'}
+                  darkMode={darkMode}
+                  autoScroll={message.isThinking}
+                />
               </div>
             )}
             
