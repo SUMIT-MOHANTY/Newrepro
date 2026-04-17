@@ -6,7 +6,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import Skeleton, { SkeletonTheme } from 'react-loading-skeleton';
 import 'react-loading-skeleton/dist/skeleton.css';
 
-import { API_ENDPOINTS } from '../config';
+import { API_ENDPOINTS, VIBE_WORKSPACE_URL } from '../config';
 import { getNeutralAgentLabel, getNeutralAgentName } from '../utils/agentNames';
 import AgentChatPanel from './AgentChatPanel';
 import kaktoxLogo from '../assets/Kaktox.png';
@@ -405,6 +405,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
     const isAiAssistMode = processMode === 'ai_assist' || processMode === 'ai_first';
     const isDeveloperOnlyMode = processMode === 'developer_only';
+    const isVibeCodingMode = processMode === 'vibe_coding';
 
     useEffect(() => {
         if (!selectedProjectKey) {
