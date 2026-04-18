@@ -1,4 +1,6 @@
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { ModalProvider } from './contexts/ModalContext';
+import SessionMonitor from './components/SessionMonitor';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import Dashboard from './pages/Dashboard';
@@ -24,8 +26,10 @@ import ResetPassword from './pages/ResetPassword';
 
 function App() {
   return (
-    <Router>
-      <Routes>
+    <ModalProvider>
+      <Router>
+        <SessionMonitor />
+        <Routes>
         {/* Public routes — no sidebar/navbar */}
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
@@ -109,6 +113,7 @@ function App() {
         } />
       </Routes>
     </Router>
+    </ModalProvider>
   );
 }
 

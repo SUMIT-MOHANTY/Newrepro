@@ -52,6 +52,7 @@ class TaskManagementService:
         self._project_info_cache: Dict[str, Any] = {}  # Keys: task_token
         self._sprints_cache: Dict[str, Any] = {}  # Keys: task_token
         self._cache_ttl = 120  # 2 minutes in seconds
+        self._inflight_locks: Dict[str, asyncio.Lock] = {}  # Prevent cache stampede
 
     def _clear_cache(self, task_token: Optional[str] = None):
         """Clear task-related caches."""
@@ -98,18 +99,22 @@ class TaskManagementService:
 
                 return self.access_token
             except httpx.TimeoutException as e:
-                logger.error(f"Task token request timed out: {str(e)}")
+                # External task API timeout - non-critical for deployment success
+                logger.warning(f"Task token request timed out (non-critical): {str(e)}")
                 raise TaskServiceTimeoutError(f"Task token request timed out: {str(e)}")
             except httpx.RequestError as e:
-                logger.error(f"Task token request failed: {str(e)}")
+                # External task API connection error - non-critical for deployment success
+                logger.warning(f"Task token request failed (non-critical): {str(e)}")
                 raise TaskServiceConnectionError(f"Task token service unavailable: {str(e)}")
             except httpx.HTTPStatusError as e:
-                status_code = e.response.status_code if e.response is not None else 502
+                status_code = e.response.status_code
                 response_text = e.response.text if e.response is not None else str(e)
-                logger.error(f"Task token request failed with status {status_code}: {response_text}")
+                # External task API auth failure - non-critical for deployment success
+                logger.warning(f"Task token request failed with status {status_code} (non-critical): {response_text}")
                 raise TaskServiceHTTPError(status_code, f"Task token request failed ({status_code}): {response_text}")
             except httpx.HTTPError as e:
-                logger.error(f"Failed to fetch task management token: {str(e)}")
+                # External task API error - non-critical for deployment success
+                logger.warning(f"Failed to fetch task management token (non-critical): {str(e)}")
                 raise TaskServiceConnectionError(f"Failed to authenticate with Task Management API: {str(e)}")
 
     async def _get_headers(self) -> dict:
@@ -313,19 +318,30 @@ class TaskManagementService:
         """Fetch the list of generated tasks from the external task management API."""
         cache_key = (task_token, page)
         now = time.time()
-        
+
         if cache_key in self._tasks_cache:
             timestamp, data = self._tasks_cache[cache_key]
             if now - timestamp < self._cache_ttl:
                 return data
 
-        endpoint = "/api/agent/tasks-list"
-        if page:
-            endpoint += f"?page={page}"
-        response = await self._make_request("GET", endpoint, task_token=task_token)
-        
-        self._tasks_cache[cache_key] = (now, response)
-        return response
+        # Prevent cache stampede: only one concurrent fetch per (token, page)
+        lock_key = f"tasks:{task_token}:{page}"
+        if lock_key not in self._inflight_locks:
+            self._inflight_locks[lock_key] = asyncio.Lock()
+        async with self._inflight_locks[lock_key]:
+            # Re-check cache after acquiring lock
+            now = time.time()
+            if cache_key in self._tasks_cache:
+                timestamp, data = self._tasks_cache[cache_key]
+                if now - timestamp < self._cache_ttl:
+                    return data
+
+            endpoint = "/api/agent/tasks-list"
+            if page:
+                endpoint += f"?page={page}"
+            response = await self._make_request("GET", endpoint, task_token=task_token)
+            self._tasks_cache[cache_key] = (time.time(), response)
+            return response
 
     async def get_total_tasks(self, page: int = None, task_token: Optional[str] = None) -> dict:
         """Fetch all tasks (unpaginated total list) from the external task management API."""

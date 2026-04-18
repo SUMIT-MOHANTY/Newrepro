@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     # JWT
     secret_key: str = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
     algorithm: str = "HS256"
-    access_token_expire_minutes: int = 30
+    access_token_expire_minutes: int = 480  # 8 hours - increased from 30 minutes to reduce unexpected logouts
     
     # AI API Settings (OpenAI-compatible)
     ai_api_url: str = "https://integrate.api.nvidia.com/v1/chat/completions"
@@ -47,8 +47,10 @@ class Settings(BaseSettings):
     brn_model: str = "BournAI"
     brn_agent_id: str = "uhli23jn3oiuhgo847yyjvdhtrdy3tgfe8gfgoe87rugekuuyjommjferhjgo5go49uoi3uyrp938ry"
     brn_platform_id: str = "DSuite"
-    brn_max_tokens: int = 4000
+    # brn_max_tokens: int = 4000
     brn_temperature: float = 0.7
+    # If true, use chunked multi-stage analysis to reduce payload size and improve reliability
+    use_chunked_analysis: bool = True
 
     # GitHub OAuth
     github_client_id: Optional[str] = None

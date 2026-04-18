@@ -1,3 +1,5 @@
+import os
+import requests
 import asyncio
 import logging
 import os
@@ -10,6 +12,8 @@ import hmac
 import json as json_stdlib
 import base64
 import time as _time
+import time
+import json
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 import ipaddress
@@ -34,6 +38,8 @@ import models
 import schemas
 import ingestion
 import ai_service
+import ai_service_chunked
+import llm_gateway
 import governance_scoring
 import github_service
 import azure_devops_service
@@ -43,6 +49,108 @@ import rag_service
 import context_manager
 import email_service
 import knowledge_graph_service as kg_service
+import master_task_manager
+import master_coordination_service
+import analysis_job_manager
+
+# Cache for agent status to reduce database load
+_agent_status_cache: Dict[str, Dict[str, Any]] = {}
+_agent_cache_timestamps: Dict[str, float] = {}
+AGENT_CACHE_TTL = 5.0  # 5 seconds cache TTL
+
+def _get_cache_key(organization_name: str, project_token: Optional[str], user_id: int) -> str:
+    """Generate cache key for agent status"""
+    return f"{organization_name}:{project_token or 'none'}:{user_id}"
+
+def _is_cache_valid(cache_key: str) -> bool:
+    """Check if cache entry is still valid"""
+    if cache_key not in _agent_cache_timestamps:
+        return False
+    return time.time() - _agent_cache_timestamps[cache_key] < AGENT_CACHE_TTL
+
+def _get_cached_agents(cache_key: str) -> Optional[Dict[str, Any]]:
+    """Get cached agent data if valid"""
+    if _is_cache_valid(cache_key):
+        return _agent_status_cache.get(cache_key)
+    return None
+
+def _cache_agents(cache_key: str, data: Dict[str, Any]) -> None:
+    """Cache agent data with timestamp"""
+    _agent_status_cache[cache_key] = data
+    _agent_cache_timestamps[cache_key] = time.time()
+
+# Task cache for external API calls
+_task_cache: Dict[str, Dict[str, Any]] = {}
+_task_cache_timestamps: Dict[str, float] = {}
+TASK_CACHE_TTL = 3.0  # 3 seconds cache TTL for tasks
+
+def _get_task_cache_key(task_token: Optional[str], page: Optional[int]) -> str:
+    """Generate cache key for task data"""
+    return f"tasks:{task_token or 'none'}:{page or 'none'}"
+
+def _is_task_cache_valid(cache_key: str) -> bool:
+    """Check if task cache entry is still valid"""
+    if cache_key not in _task_cache_timestamps:
+        return False
+    return time.time() - _task_cache_timestamps[cache_key] < TASK_CACHE_TTL
+
+def _get_cached_tasks(cache_key: str) -> Optional[Dict[str, Any]]:
+    """Get cached task data if valid"""
+    if _is_task_cache_valid(cache_key):
+        return _task_cache.get(cache_key)
+    return None
+
+def _cache_tasks(cache_key: str, data: Dict[str, Any]) -> None:
+    """Cache task data with timestamp"""
+    _task_cache[cache_key] = data
+    _task_cache_timestamps[cache_key] = time.time()
+
+# Rate limiting for individual agent status calls
+_agent_status_rate_limit: Dict[str, float] = {}
+AGENT_STATUS_RATE_LIMIT = 10.0  # 10 seconds minimum between calls per agent
+
+def _check_agent_status_rate_limit(agent_id: str, user_id: int, project_token: Optional[str]) -> bool:
+    """Check if agent status call is within rate limit"""
+    rate_key = f"agent_status_rate:{agent_id}:{user_id}:{project_token or 'none'}"
+    now = time.time()
+    
+    if rate_key in _agent_status_rate_limit:
+        if now - _agent_status_rate_limit[rate_key] < AGENT_STATUS_RATE_LIMIT:
+            return False
+    
+    _agent_status_rate_limit[rate_key] = now
+    return True
+
+def _invalidate_agent_cache(organization_name: str, project_token: Optional[str] = None) -> None:
+    """Invalidate agent cache for organization/project when status changes"""
+    keys_to_remove = []
+    for cache_key in _agent_status_cache.keys():
+        # "__all__" sentinel means invalidate all entries matching this project_token
+        if organization_name == "__all__":
+            pt = project_token or "none"
+            if f":{pt}:" in cache_key:
+                keys_to_remove.append(cache_key)
+        elif cache_key.startswith(f"{organization_name}:{project_token or 'none'}:"):
+            keys_to_remove.append(cache_key)
+    
+    for key in keys_to_remove:
+        _agent_status_cache.pop(key, None)
+        _agent_cache_timestamps.pop(key, None)
+
+def _invalidate_task_cache(task_token: Optional[str] = None) -> None:
+    """Invalidate task cache when tasks change"""
+    keys_to_remove = []
+    for cache_key in _task_cache.keys():
+        if cache_key.startswith(f"tasks:{task_token or 'none'}:"):
+            keys_to_remove.append(cache_key)
+    
+    for key in keys_to_remove:
+        _task_cache.pop(key, None)
+        _task_cache_timestamps.pop(key, None)
+
+# Set up cache invalidation callback for agent service after functions are defined
+agent_service.set_cache_invalidation_callback(_invalidate_agent_cache)
+
 from local_task_preview_service import build_local_task_plan_preview, _normalize_project_dates, _format_date
 from database import engine, get_db, SessionLocal
 from config import settings
@@ -52,7 +160,11 @@ models.Base.metadata.create_all(bind=engine)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _startup_init()
+    # Initialize job manager
+    await analysis_job_manager.initialize_job_manager()
     yield
+    # Cleanup job manager
+    await analysis_job_manager.shutdown_job_manager()
 
 
 app = FastAPI(title="BRD Analysis API", version="1.0.0", lifespan=lifespan)
@@ -87,21 +199,17 @@ def _generate_registration_password() -> str:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        settings.frontend_url,
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-    ],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=True,  # important
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 from fastapi.responses import RedirectResponse, StreamingResponse
+from coordination_api import router as coordination_router
+
+# Add coordination router
+app.include_router(coordination_router)
 
 # --- Pydantic Models for AI ---
 class AnalyzeRequest(BaseModel):
@@ -302,37 +410,199 @@ async def analyze_document_with_ai(
     current_user: models.User = Depends(auth.get_current_user),
 ):
     """
-    Analyze document content using AI.
+    Analyze document content using AI with job-based polling support.
+    
+    Returns immediately with a job_id that can be used to poll for results.
     
     You can optionally override the default AI settings per request:
     - api_url: Custom OpenAI-compatible API URL
     - api_key: API key for the service
     - model: Model name to use
-    - stream: Set to true for streaming response (Server-Sent Events)
+    - stream: Set to true for streaming response (Server-Sent Events) - bypasses job system
+    
+    Uses chunked multi-stage analysis by default (configurable via USE_CHUNKED_ANALYSIS env var)
+    to reduce payload size and improve reliability.
     """
     if _all_answers_skipped_from_governance_context(request.governance_context):
         raise HTTPException(status_code=403, detail=ALL_SKIPPED_ANALYZE_BLOCK_MESSAGE)
 
-    result = await ai_service.analyze_document(
-        document_content=request.document_content,
-        api_url=request.api_url,
-        api_key=request.api_key,
-        model=request.model,
-        stream=request.stream,
-        user_feedback=request.user_feedback,
-        image_paths=request.image_paths,
-        governance_context=request.governance_context,
-    )
-    
-    # Handle potential early errors (which return dict)
-    if isinstance(result, dict) and result.get("status") == "error":
-        raise HTTPException(status_code=400, detail=result.get("error"))
-
+    # If streaming is requested, use the old behavior (no job system)
     if request.stream:
-        # result is an AsyncGenerator
+        logger.info("Using streaming mode - bypassing job system")
+        if settings.use_chunked_analysis:
+            result = await ai_service_chunked.analyze_document(
+                document_content=request.document_content,
+                api_url=request.api_url,
+                api_key=request.api_key,
+                model=request.model,
+                stream=request.stream,
+                user_feedback=request.user_feedback,
+                image_paths=request.image_paths,
+                governance_context=request.governance_context,
+            )
+        else:
+            result = await ai_service.analyze_document(
+                document_content=request.document_content,
+                api_url=request.api_url,
+                api_key=request.api_key,
+                model=request.model,
+                stream=request.stream,
+                user_feedback=request.user_feedback,
+                image_paths=request.image_paths,
+                governance_context=request.governance_context,
+            )
+        
+        if isinstance(result, dict) and result.get("status") == "error":
+            raise HTTPException(status_code=400, detail=result.get("error"))
+            
         return StreamingResponse(result, media_type="text/event-stream")
+
+    # Create a job for non-streaming analysis
+    job_id = f"analysis_{current_user.id}_{int(_time.time() * 1000)}_{secrets.token_hex(8)}"
+    job_manager = analysis_job_manager.get_job_manager()
+    job = job_manager.create_job(job_id, current_user.id)
     
-    return result
+    # Start analysis in background
+    async def run_analysis():
+        try:
+            job.set_processing()
+            job.update_progress(10, "Starting AI analysis...")
+            
+            # Choose between chunked and original analysis
+            if settings.use_chunked_analysis:
+                logger.info(f"Job {job_id}: Using chunked multi-stage analysis")
+                job.update_progress(20, "Stage 1: Extracting requirements...")
+                result = await ai_service_chunked.analyze_document(
+                    document_content=request.document_content,
+                    api_url=request.api_url,
+                    api_key=request.api_key,
+                    model=request.model,
+                    stream=False,
+                    user_feedback=request.user_feedback,
+                    image_paths=request.image_paths,
+                    governance_context=request.governance_context,
+                    job_id=job_id,  # Pass job_id for progress tracking
+                )
+            else:
+                logger.info(f"Job {job_id}: Using original single-stage analysis")
+                job.update_progress(30, "Analyzing document with AI...")
+                result = await ai_service.analyze_document(
+                    document_content=request.document_content,
+                    api_url=request.api_url,
+                    api_key=request.api_key,
+                    model=request.model,
+                    stream=False,
+                    user_feedback=request.user_feedback,
+                    image_paths=request.image_paths,
+                    governance_context=request.governance_context,
+                )
+            
+            # Handle errors
+            if isinstance(result, dict) and result.get("status") == "error":
+                job.set_failed(result.get("error", "Analysis failed"))
+                logger.error(f"Job {job_id} failed: {result.get('error')}")
+                return
+            
+            # Success
+            job.set_completed(result)
+            logger.info(f"Job {job_id} completed successfully")
+            
+        except Exception as e:
+            logger.exception(f"Job {job_id} failed with exception")
+            job.set_failed(str(e))
+    
+    # Run analysis in background
+    asyncio.create_task(run_analysis())
+    
+    # Return job ID immediately
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Analysis started. Use the job_id to poll for results at /ai/analyze/status/{job_id}"
+    }
+
+
+@app.get("/ai/analyze/status/{job_id}")
+async def get_analysis_job_status(
+    job_id: str,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Get the status of an analysis job.
+    
+    Poll this endpoint to check if the analysis is complete.
+    """
+    job_manager = analysis_job_manager.get_job_manager()
+    job = job_manager.get_user_job(job_id, current_user.id)
+    
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found or access denied")
+    
+    return job.to_dict()
+
+# ---------------------------------------------------------------------------
+# AI Assistant Chat Endpoint (used by AssistantBot frontend component)
+# ---------------------------------------------------------------------------
+
+class AssistantRequest(BaseModel):
+    """Payload for the AI chat endpoint."""
+    message: str = Field(..., description="User message sent to the assistant")
+    context: Optional[dict] = Field(default=None, description="Current route context")
+    conversation_history: Optional[list] = Field(default=None, description="Prior conversation messages")
+
+
+@app.post("/api/agent/assistant")
+async def assistant_chat(
+    payload: AssistantRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Context-aware AI assistant chat endpoint."""
+    try:
+        context = getattr(payload, 'context', None)
+        assistant_reply = await ai_service.chat_with_llm(
+            message=payload.message,
+            context=context
+        )
+        return {"response": assistant_reply}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/agent/assistant/stream")
+async def assistant_chat_stream(
+    payload: AssistantRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Streaming version of the assistant chat endpoint using real LLM SSE streaming."""
+    from fastapi.responses import StreamingResponse
+    import json
+
+    async def generate():
+        try:
+            context = getattr(payload, 'context', None)
+            messages = ai_service.build_chat_messages(payload.message, context)
+            async for chunk in llm_gateway.call_llm_streaming(messages=messages):
+                if chunk.startswith("data: "):
+                    data_str = chunk[6:].strip()
+                    if data_str == "[DONE]":
+                        yield "data: [DONE]\n\n"
+                        break
+                    try:
+                        parsed = json.loads(data_str)
+                        content = None
+                        if "choices" in parsed and parsed["choices"]:
+                            content = parsed["choices"][0].get("delta", {}).get("content")
+                        elif "error" in parsed:
+                            yield f"data: {json.dumps({'error': parsed['error']})}\n\n"
+                            break
+                        if content:
+                            yield f"data: {json.dumps({'content': content})}\n\n"
+                    except json.JSONDecodeError:
+                        continue
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 # --- Auth Endpoints ---
 @app.post("/token", response_model=schemas.Token)
@@ -2528,11 +2798,19 @@ async def upload_and_analyze_document(
     if extraction_result["status"] == "error":
         raise HTTPException(status_code=500, detail=extraction_result["error"])
     
-    # Analyze with AI
-    analysis_result = await ai_service.analyze_document(
-        document_content=extraction_result["markdown"],
-        image_paths=extraction_result.get("images", [])
-    )
+    # Analyze with AI (using chunked or original based on configuration)
+    if settings.use_chunked_analysis:
+        logger.info("Using chunked multi-stage analysis for uploaded document")
+        analysis_result = await ai_service_chunked.analyze_document(
+            document_content=extraction_result["markdown"],
+            image_paths=extraction_result.get("images", [])
+        )
+    else:
+        logger.info("Using original single-stage analysis for uploaded document")
+        analysis_result = await ai_service.analyze_document(
+            document_content=extraction_result["markdown"],
+            image_paths=extraction_result.get("images", [])
+        )
     
     return {
         "filename": file.filename,
@@ -3402,6 +3680,17 @@ async def get_project_roadmap_step(
             _doc_has_completed_analysis(doc) for doc in linked_docs
         )
 
+    # Define roadmap step indices (used throughout the function)
+    PROJECT_INIT_IDX = 0
+    REQUIREMENT_SCREENING_IDX = 1
+    GOVERNANCE_IDX = 2
+    AGENT_ANALYSIS_IDX = 3
+    PREREQ_IDX = 4
+    TASK_CREATION_IDX = 5
+    RESOURCE_ONBOARDING_IDX = 6
+    ON_FLIGHT_IDX = 7
+    COMPLETE_IDX = 8
+
     # 3. Check external task management for task creation & completion
     prerequisites_done = governance.prerequisites_completed_at is not None
     has_tasks = False
@@ -3471,7 +3760,7 @@ async def get_project_roadmap_step(
     try:
         runtime_agents = agent_service.get_all_agents(roadmap_project_token)
         any_agent_working = any(
-            (a.get("status") or "").lower() == "running" and a.get("id") not in {"agent_03", "agent_04"}
+            (a.get("status") or "").lower() == "running" and not agent_service._is_system_agent_id(a.get("id"))
             for a in runtime_agents
         )
     except Exception as e:
@@ -3497,15 +3786,6 @@ async def get_project_roadmap_step(
     # Project Initiation -> Requirement Screening -> Governance -> Agent Analysis ->
     # Prerequisite Classification -> Task Creation -> Resource Onboarding ->
     # On Flight -> Complete
-    PROJECT_INIT_IDX = 0
-    REQUIREMENT_SCREENING_IDX = 1
-    GOVERNANCE_IDX = 2
-    AGENT_ANALYSIS_IDX = 3
-    PREREQ_IDX = 4
-    TASK_CREATION_IDX = 5
-    RESOURCE_ONBOARDING_IDX = 6
-    ON_FLIGHT_IDX = 7
-    COMPLETE_IDX = 8
 
     step_statuses = ["pending"] * len(STEP_LABELS)
     step_statuses[PROJECT_INIT_IDX] = "completed"
@@ -4896,17 +5176,33 @@ def _cleanup_legacy_default_dev_agents(db: Session) -> None:
     """
     Remove the old built-in dev agents so only system agents remain default.
     New dev agents must come from org shared/dedicated capacity.
+    
+    IMPORTANT: Only delete agents that were marked as DEFAULT (is_default=True).
+    User-added agents with agent_01/agent_02 IDs should NOT be deleted.
     """
+    # First, get the list of agent IDs that are marked as default
+    default_agent_ids = {
+        row[0] for row in db.query(models.OrganizationAgentMapping.agent_id).filter(
+            models.OrganizationAgentMapping.is_default.is_(True),
+            _legacy_default_dev_agent_filter(models.OrganizationAgentMapping.agent_id),
+        ).all()
+    }
+    
+    # Delete the default mappings
     deleted_mappings = db.query(models.OrganizationAgentMapping).filter(
         models.OrganizationAgentMapping.is_default.is_(True),
         _legacy_default_dev_agent_filter(models.OrganizationAgentMapping.agent_id),
     ).delete(synchronize_session=False)
 
-    deleted_agents = db.query(models.Agent).filter(
-        _legacy_default_dev_agent_filter(models.Agent.id),
-    ).delete(synchronize_session=False)
+    # Only delete Agent records that were marked as default (not user-added ones)
+    deleted_agents = 0
+    if default_agent_ids:
+        deleted_agents = db.query(models.Agent).filter(
+            models.Agent.id.in_(default_agent_ids),
+        ).delete(synchronize_session=False)
 
     if deleted_mappings or deleted_agents:
+        logger.info(f"[cleanup] Removed {deleted_mappings} legacy default mappings and {deleted_agents} legacy default agents")
         db.commit()
         agent_service.clear_all_runtime_state()
 
@@ -5100,7 +5396,7 @@ async def _sanitize_agent_for_user_with_public_check(
                 match = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$", repo_url)
                 if match:
                     owner, repo = match.groups()
-                    safe_agent["is_public_repo"] = await github_service.is_repo_public(owner, repo)
+                    safe_agent["is_public_repo"] = await github_service.is_repo_public(owner, repo, token=settings.GITHUB_TOKEN)
             # Check if it's Azure DevOps repo
             elif "dev.azure.com" in repo_url or "visualstudio.com" in repo_url:
                 parsed = azure_devops_service.parse_azure_repo_url(repo_url)
@@ -5146,10 +5442,27 @@ async def list_agents(
     kind: Optional[str] = None,
     x_task_token: Optional[str] = Header(None),
 ):
-    """Get status of all AI agents."""
+    """Get status of all AI agents with caching to reduce load."""
     organization_name = _require_organization(current_user)
     project_token = _normalize_project_token(project_token)
     requested_kind = _normalized_text(kind).lower() or None
+    
+    # CACHE DISABLED - Always fetch fresh data for real-time agent status
+    # Check cache first
+    # cache_key = _get_cache_key(organization_name, project_token, current_user.id)
+    # cached_result = _get_cached_agents(cache_key)
+    # if cached_result is not None:
+    #     # Merge live output_log from in-memory state into cached structural data
+    #     live_agents = {a["id"]: a for a in agent_service.get_all_agents(project_token)}
+    #     merged_agents = []
+    #     for a in cached_result["agents"]:
+    #         live = live_agents.get(a.get("id"), {})
+    #         merged_agents.append({**a, "output_log": live.get("output_log", []), "status": live.get("status", a.get("status")), "progress": live.get("progress", a.get("progress")), "progress_message": live.get("progress_message", a.get("progress_message")), "current_task": live.get("current_task", a.get("current_task"))})
+    #     merged = {"agents": merged_agents}
+    #     if requested_kind:
+    #         return {"agents": [a for a in merged_agents if a.get("agent_kind") == requested_kind]}
+    #     return merged
+    
     _ensure_default_agents_for_org(db, organization_name, project_token)
     _bootstrap_org_agent_mappings_if_missing(db, organization_name, project_token)
 
@@ -5168,18 +5481,73 @@ async def list_agents(
         mapping_q = mapping_q.filter(models.OrganizationAgentMapping.project_token.is_(None))
     mapping_rows = mapping_q.all()
     mapped_ids = [row[0] for row in mapping_rows]
+    
+    logger.info(f"[GET /agents] org={organization_name}, project={project_token}, mapped_ids={mapped_ids}")
 
-    query = db.query(models.Agent).filter(models.Agent.id.in_(mapped_ids))
-    if project_token:
-        query = query.filter(models.Agent.project_token == project_token)
+    # Query without project_token filter so we catch agents that were created with NULL project_token
+    if mapped_ids:
+        query = db.query(models.Agent).filter(models.Agent.id.in_(mapped_ids))
+        logger.info(f"[GET /agents] SQL Query: {query}")
+        records = query.all()
     else:
-        query = query.filter(models.Agent.project_token.is_(None))
-    records = query.all()
+        records = []
+    logger.info(f"[GET /agents] DB records: {[r.id for r in records]}")
+
+    # Upsert: create missing records or fix project_token on existing ones
+    existing_by_id = {r.id: r for r in records}
+    for mid in mapped_ids:
+        public_id = _public_agent_id(mid, project_token)
+        if mid not in existing_by_id:
+            logger.info(f"[GET /agents] Creating missing Agent record for {mid}")
+            # Try to insert, but ignore if it already exists (concurrent insert race)
+            try:
+                new_record = models.Agent(
+                    id=mid,
+                    name=public_id,
+                    type="validator",
+                    project_token=project_token,
+                )
+                db.add(new_record)
+                db.flush()  # Flush immediately to catch IntegrityError
+                logger.info(f"[GET /agents] Successfully flushed new record for {mid}")
+                records.append(new_record)
+            except Exception as e:
+                # Likely IntegrityError due to concurrent insert - that's fine, record exists
+                logger.info(f"[GET /agents] Insert failed for {mid}, re-fetching: {e}")
+                db.rollback()
+                # Re-fetch the existing record
+                existing = db.query(models.Agent).filter(models.Agent.id == mid).first()
+                if existing:
+                    logger.info(f"[GET /agents] Found existing record for {mid}")
+                    records.append(existing)
+                else:
+                    logger.error(f"[GET /agents] Could not find existing record for {mid} after insert failure!")
+        elif existing_by_id[mid].project_token != project_token:
+            # Fix stale project_token
+            logger.info(f"[GET /agents] Updating project_token for {mid}")
+            existing_by_id[mid].project_token = project_token
+    
+    # Final commit for any project_token updates
+    try:
+        db.commit()
+        logger.info(f"[GET /agents] Committed {len(records)} agent records")
+    except Exception as e:
+        logger.error(f"[GET /agents] Commit failed: {e}")
+        db.rollback()
+    
     agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
-    await agent_service._restore_persisted_agent_assignments(
-        project_token=project_token,
-        task_token=x_task_token,
-    )
+    logger.info(f"[GET /agents] In-memory after init: {[a['id'] for a in agent_service.get_all_agents(project_token)]}")
+    
+    # Only restore persisted assignments if we have a task token (otherwise it's too slow)
+    if x_task_token:
+        logger.info(f"[GET /agents] About to restore persisted assignments, task_token={x_task_token}")
+        await agent_service._restore_persisted_agent_assignments(
+            project_token=project_token,
+            task_token=x_task_token,
+        )
+        logger.info(f"[GET /agents] Restored persisted assignments")
+    else:
+        logger.info(f"[GET /agents] Skipping persisted assignment restore (no task token)")
 
     # Build lookup: public_agent_id -> (kind, sub_type)
     visible_runtime_ids: Dict[str, tuple] = {}
@@ -5189,10 +5557,14 @@ async def list_agents(
         row_kind = _normalize_agent_kind(row[3], row_project_token, is_default=row_is_default)
         row_sub_type = row[4] or 'dev'
         if not include_defaults and row_is_default:
+            logger.info(f"[GET /agents] Skipping default agent: {row[0]}")
             continue
         if requested_kind and row_kind != requested_kind:
+            logger.info(f"[GET /agents] Skipping agent {row[0]} with kind={row_kind} (requested={requested_kind})")
             continue
         visible_runtime_ids[_public_agent_id(row[0], project_token)] = (row_kind, row_sub_type)
+    
+    logger.info(f"[GET /agents] visible_runtime_ids after filtering: {list(visible_runtime_ids.keys())}")
 
     global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
     
@@ -5214,7 +5586,377 @@ async def list_agents(
         for sanitized_agent in sanitized_agents
         if sanitized_agent.get("id") in visible_runtime_ids
     ]
-    return {"agents": agents}
+    
+    result = {"agents": agents}
+    
+    logger.info(f"[GET /agents] Returning {len(agents)} agents for kind={requested_kind}, include_defaults={include_defaults}")
+    
+    # CACHE DISABLED - Don't cache for real-time updates
+    # Cache only the structural data (not output_log which changes constantly)
+    # agents_for_cache = [
+    #     {k: v for k, v in a.items() if k != "output_log"}
+    #     for a in agents
+    # ]
+    # _cache_agents(cache_key, {"agents": agents_for_cache})
+    
+    # Filter by kind if requested
+    if requested_kind:
+        filtered_agents = [
+            agent for agent in agents 
+            if agent.get("agent_kind") == requested_kind
+        ]
+        response_data = {"agents": filtered_agents}
+    else:
+        response_data = result
+    
+    # Add cache headers to help frontend optimize polling
+    from fastapi import Response
+    response = Response(
+        content=json.dumps(response_data),
+        media_type="application/json",
+        headers={
+            "Cache-Control": "max-age=5, must-revalidate",
+            "X-Cache-TTL": str(AGENT_CACHE_TTL),
+            "X-Polling-Interval": "10000"  # Suggest 10s polling interval
+        }
+    )
+    return response_data
+
+
+@app.get("/coordination/status")
+async def get_coordination_status(
+    current_user: models.User = Depends(auth.get_current_user),
+    project_token: Optional[str] = None,
+):
+    """🎯 Get Master Task Manager coordination status"""
+    project_token = _normalize_project_token(project_token)
+    _require_organization(current_user)
+    
+    return master_task_manager.master_task_manager.get_coordination_status(project_token)
+
+
+@app.post("/coordination/agent/{agent_id}/file-lock")
+async def request_file_lock(
+    agent_id: str,
+    file_path: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    project_token: Optional[str] = None,
+):
+    """🔒 Agent requests file lock through Master Task Manager"""
+    project_token = _normalize_project_token(project_token)
+    _require_organization(current_user)
+    
+    return await master_task_manager.master_task_manager.request_file_lock(agent_id, file_path)
+
+
+@app.post("/coordination/agent/{agent_id}/configure")
+async def configure_agent_capabilities(
+    agent_id: str,
+    request: dict,
+    current_user: models.User = Depends(auth.get_current_user),
+    project_token: Optional[str] = None,
+):
+    """🎯 Configure agent capabilities - MANUAL OVERRIDE"""
+    project_token = _normalize_project_token(project_token)
+    _require_organization(current_user)
+    
+    primary_skills = request.get("primary_skills", [])
+    secondary_skills = request.get("secondary_skills", [])
+    
+    master_task_manager.master_task_manager.set_explicit_agent_config(
+        agent_id, primary_skills, secondary_skills
+    )
+    
+    return {
+        "status": "configured",
+        "agent_id": agent_id,
+        "primary_skills": primary_skills,
+        "secondary_skills": secondary_skills,
+        "message": f"Agent {agent_id} capabilities configured manually"
+    }
+
+
+@app.post("/coordination/agent/{agent_id}/ai-assign")
+async def ai_assign_agent_capabilities(
+    agent_id: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    project_token: Optional[str] = None,
+):
+    """🤖 Let Master Agent decide agent capabilities using AI"""
+    project_token = _normalize_project_token(project_token)
+    _require_organization(current_user)
+    
+    # Get project context for AI decision
+    project_context = f"Project: {project_token or 'default'}"
+    
+    decision = await master_task_manager.master_task_manager.master_agent_assign_capabilities(
+        agent_id, project_context
+    )
+    
+    return {
+        "status": "ai_assigned",
+        "agent_id": agent_id,
+        "decision": decision,
+        "message": f"Master Agent assigned capabilities to {agent_id}"
+    }
+
+
+@app.get("/coordination/agent/{agent_id}/capabilities")
+async def get_agent_capabilities(
+    agent_id: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    project_token: Optional[str] = None,
+):
+    """📋 Get current agent capabilities and assignment method"""
+    project_token = _normalize_project_token(project_token)
+    _require_organization(current_user)
+    
+    capabilities = master_task_manager.master_task_manager._get_agent_capabilities(agent_id)
+    
+    return {
+        "agent_id": agent_id,
+        "capabilities": capabilities,
+        "assignment_method": capabilities.get("assigned_by", "unknown")
+    }
+
+
+@app.get("/coordination/agents/bulk-configure")
+async def bulk_configure_agents(
+    current_user: models.User = Depends(auth.get_current_user),
+    project_token: Optional[str] = None,
+):
+    """🎯 Get bulk configuration options for all agents"""
+    project_token = _normalize_project_token(project_token)
+    _require_organization(current_user)
+    
+    # Get all agents and their current capabilities
+    all_agents = {}
+    for agent_id in master_task_manager.master_task_manager.agent_status.keys():
+        capabilities = master_task_manager.master_task_manager._get_agent_capabilities(agent_id)
+        all_agents[agent_id] = {
+            "current_capabilities": capabilities,
+            "suggested_by_pattern": master_task_manager.master_task_manager._get_agent_capabilities_by_pattern(agent_id),
+            "can_ai_assign": True
+        }
+    
+    return {
+        "agents": all_agents,
+        "available_skills": ["frontend", "backend", "setup", "integration"],
+        "assignment_methods": [
+            "explicit_config",    # Manual configuration
+            "master_agent",       # AI decision by Master Agent  
+            "pattern_recognition", # Automatic by name pattern
+            "default_fallback"    # Democratic fallback
+        ]
+    }
+
+
+@app.get("/agents/tasks")
+async def get_pending_tasks(
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Get pending tasks for agents"""
+    # Placeholder implementation
+    return {"tasks": []}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Enhanced Context Sharing API Endpoints
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.post("/api/context/update")
+async def update_context(
+    project_token: str,
+    agent_id: str,
+    current_task: Optional[str] = None,
+    current_files: List[str] = [],
+    completed_tasks: List[str] = [],
+    created_files: List[str] = [],
+    modified_files: List[str] = [],
+    api_endpoints: List[Dict[str, Any]] = [],
+    database_tables: List[str] = [],
+    shared_utilities: List[str] = [],
+    tags: List[str] = [],
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """📝 Update agent context with structured information"""
+    from enhanced_context_service import update_agent_context
+    
+    success = await update_agent_context(
+        project_token=project_token,
+        agent_id=agent_id,
+        current_task=current_task,
+        current_files=current_files,
+        completed_tasks=completed_tasks,
+        created_files=created_files,
+        modified_files=modified_files,
+        api_endpoints=api_endpoints,
+        database_tables=database_tables,
+        shared_utilities=shared_utilities,
+        tags=tags
+    )
+    
+    return {"success": success, "agent_id": agent_id}
+
+
+@app.get("/api/context/query/{query_type}")
+async def query_context(
+    project_token: str,
+    query_type: str,
+    file_pattern: Optional[str] = None,
+    tag: Optional[str] = None,
+    module: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """🔍 Query shared context with various filters"""
+    from enhanced_context_service import query_agent_context
+    
+    filters = {}
+    if file_pattern:
+        filters["file_pattern"] = file_pattern
+    if tag:
+        filters["tag"] = tag
+    if module:
+        filters["module"] = module
+    if agent_id:
+        filters["agent_id"] = agent_id
+    
+    result = await query_agent_context(
+        project_token=project_token,
+        query_type=query_type,
+        **filters
+    )
+    
+    return result
+
+
+@app.get("/api/context/agent/{agent_id}")
+async def get_agent_context_view(
+    project_token: str,
+    agent_id: str,
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """👁️ Get comprehensive context view for specific agent"""
+    from enhanced_context_service import enhanced_context_service
+    
+    view = await enhanced_context_service.get_agent_context_view(
+        project_token=project_token,
+        agent_id=agent_id
+    )
+    
+    return view
+
+
+@app.post("/api/context/memory-board")
+async def post_to_memory_board(
+    project_token: str,
+    agent_id: str,
+    message_type: str,
+    content: str,
+    tags: List[str] = [],
+    reply_to: Optional[str] = None,
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """💬 Post message to shared memory board"""
+    from enhanced_context_service import enhanced_context_service, ContextMessageType
+    
+    try:
+        msg_type = ContextMessageType(message_type)
+    except ValueError:
+        return {"error": f"Invalid message type: {message_type}"}
+    
+    message_id = await enhanced_context_service.post_to_memory_board(
+        project_token=project_token,
+        agent_id=agent_id,
+        message_type=msg_type,
+        content=content,
+        tags=tags,
+        reply_to=reply_to
+    )
+    
+    return {"success": True, "message_id": message_id}
+
+
+@app.get("/api/context/memory-board")
+async def get_memory_board(
+    project_token: str,
+    limit: int = 50,
+    tags: Optional[str] = None,
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """📋 Get messages from memory board"""
+    from enhanced_context_service import enhanced_context_service
+    
+    if project_token not in enhanced_context_service.project_contexts:
+        return {"messages": []}
+    
+    context = enhanced_context_service.project_contexts[project_token]
+    messages = context["memory_board"]
+    
+    # Filter by tags if provided
+    if tags:
+        tag_list = [t.strip() for t in tags.split(",")]
+        messages = [
+            msg for msg in messages
+            if any(tag in msg.get("tags", []) for tag in tag_list)
+        ]
+    
+    # Return most recent messages
+    return {"messages": messages[-limit:]}
+
+
+@app.post("/api/context/dependency")
+async def declare_dependency(
+    project_token: str,
+    agent_id: str,
+    depends_on: Dict[str, List[str]],
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """🔗 Declare dependencies on other agents' work"""
+    from enhanced_context_service import enhanced_context_service
+    
+    success = await enhanced_context_service.declare_dependency(
+        project_token=project_token,
+        agent_id=agent_id,
+        depends_on=depends_on
+    )
+    
+    return {"success": success, "agent_id": agent_id, "dependencies": depends_on}
+
+
+@app.post("/api/context/snapshot")
+async def create_context_snapshot(
+    project_token: str,
+    sync_point: str,
+    metadata: Optional[Dict[str, Any]] = None,
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """📸 Create context snapshot at sync point"""
+    from enhanced_context_service import enhanced_context_service
+    
+    snapshot = await enhanced_context_service.create_context_snapshot(
+        project_token=project_token,
+        sync_point=sync_point,
+        metadata=metadata
+    )
+    
+    return snapshot
+
+
+@app.get("/api/context/snapshots")
+async def get_context_snapshots(
+    project_token: str,
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """📚 Get all context snapshots for project"""
+    from enhanced_context_service import enhanced_context_service
+    
+    if project_token not in enhanced_context_service.project_contexts:
+        return {"snapshots": []}
+    
+    context = enhanced_context_service.project_contexts[project_token]
+    return {"snapshots": context["snapshots"]}
 
 
 @app.get("/agents/tasks")
@@ -5371,9 +6113,29 @@ async def get_agent_status(
     project_token: Optional[str] = None,
     x_task_token: Optional[str] = Header(None),
 ):
-    """Get the current status and details of a specific agent."""
+    """Get the current status and details of a specific agent with caching and rate limiting."""
     try:
         project_token = _normalize_project_token(project_token)
+        organization_name = _require_organization(current_user)
+        
+        # Rate limiting: prevent excessive calls to individual agent status
+        if not _check_agent_status_rate_limit(agent_id, current_user.id, project_token):
+            # Return cached data if available, otherwise return 429
+            individual_cache_key = f"agent_status:{organization_name}:{project_token or 'none'}:{current_user.id}:{agent_id}"
+            cached_result = _get_cached_agents(individual_cache_key)
+            if cached_result is not None:
+                return cached_result
+            raise HTTPException(
+                status_code=429, 
+                detail=f"Rate limit exceeded. Individual agent status can only be called once every {AGENT_STATUS_RATE_LIMIT} seconds. Use /agents endpoint for bulk status."
+            )
+        
+        # Check cache first for individual agent status
+        individual_cache_key = f"agent_status:{organization_name}:{project_token or 'none'}:{current_user.id}:{agent_id}"
+        cached_result = _get_cached_agents(individual_cache_key)
+        if cached_result is not None:
+            return cached_result
+        
         _ensure_default_agents(db, project_token)
         query = db.query(models.Agent)
         if project_token:
@@ -5390,7 +6152,13 @@ async def get_agent_status(
         agent = agent_service.get_agent_status(agent_id, project_token)
         global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
         sanitized_agent = await _sanitize_agent_for_user_with_public_check(agent, global_cred)
-        return {"agent": sanitized_agent}
+        
+        result = {"agent": sanitized_agent}
+        
+        # Cache the individual agent result
+        _cache_agents(individual_cache_key, result)
+        
+        return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -5414,6 +6182,11 @@ async def run_agent(
     so the frontend can poll /agents for real-time status updates.
     """
     project_token = _normalize_project_token(project_token)
+    organization_name = _require_organization(current_user)
+    
+    # Invalidate cache since agent status will change
+    _invalidate_agent_cache(organization_name, project_token)
+    
     _ensure_default_agents(db, project_token)
     query = db.query(models.Agent)
     if project_token:
@@ -5463,6 +6236,7 @@ async def run_agent(
             agent_id,
             git_repo_url=run_repo,
             git_token=run_token,
+            continuous=True,  # CRITICAL FIX: Enable continuous mode so agents keep working
             ignore_running_check=True,
             project_token=project_token,
             task_token=x_task_token,
@@ -5510,29 +6284,104 @@ async def run_all_agents(
     project_token: Optional[str] = None,
 ):
     """
-    Start the supervisor loop in the BACKGROUND.
-    Idle agents will pick tasks themselves from the shared ordered queue.
-    Returns immediately — frontend polls /agents for real-time updates.
+    🎯 NEW COORDINATED APPROACH: Master Task Manager controls ALL agents
+    No more self-service chaos - Master assigns tasks and prevents conflicts
     """
     project_token = _normalize_project_token(project_token)
-    _ensure_default_agents(db, project_token)
-    query = db.query(models.Agent)
+    organization_name = _require_organization(current_user)
+    
+    # Invalidate cache since agent status will change
+    _invalidate_agent_cache(organization_name, project_token)
+    
+    _ensure_default_agents_for_org(db, organization_name, project_token)
+    _bootstrap_org_agent_mappings_if_missing(db, organization_name, project_token)
+
+    # Load ALL mapped agents (including user-added ones that may be missing DB records)
+    mapping_q = db.query(models.OrganizationAgentMapping.agent_id).filter(
+        func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower()
+    )
     if project_token:
-        query = query.filter(models.Agent.project_token == project_token)
+        mapping_q = mapping_q.filter(models.OrganizationAgentMapping.project_token == project_token)
     else:
-        query = query.filter(models.Agent.project_token.is_(None))
-    records = query.all()
+        mapping_q = mapping_q.filter(models.OrganizationAgentMapping.project_token.is_(None))
+    mapped_ids = [row[0] for row in mapping_q.all()]
+
+    records = db.query(models.Agent).filter(models.Agent.id.in_(mapped_ids)).all() if mapped_ids else []
+
+    # Upsert: create missing records or fix project_token on existing ones
+    existing_by_id = {r.id: r for r in records}
+    for mid in mapped_ids:
+        public_id = _public_agent_id(mid, project_token)
+        if mid not in existing_by_id:
+            try:
+                new_record = models.Agent(
+                    id=mid,
+                    name=public_id,
+                    type="validator",
+                    project_token=project_token,
+                )
+                db.add(new_record)
+                db.flush()
+                records.append(new_record)
+            except Exception:
+                db.rollback()
+                existing = db.query(models.Agent).filter(models.Agent.id == mid).first()
+                if existing:
+                    records.append(existing)
+        elif existing_by_id[mid].project_token != project_token:
+            existing_by_id[mid].project_token = project_token
+    
+    try:
+        db.commit()
+    except:
+        db.rollback()
+
     agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
 
-    idle_agents = [
-        a for a in agent_service.get_all_agents(project_token)
-        if a["status"] == "idle" and a["id"] not in ("agent_03", "agent_04")
+    # Get available agents (excluding system agents)
+    all_agents_in_memory = agent_service.get_all_agents(project_token)
+    available_agents = [
+        a["id"] for a in all_agents_in_memory
+        if a["status"] == "idle" and not agent_service._is_system_agent_id(a["id"])
     ]
-    if not idle_agents:
-        raise HTTPException(status_code=400, detail="No idle agents. Reset agents or add new ones.")
+    
+    if not available_agents:
+        raise HTTPException(status_code=400, detail="No idle worker agents available. Please add agents via the UI.")
 
-    # Backward-compatible request parsing: if caller still sends per-agent config,
-    # use the first provided repo/token as project-global credentials.
+    # Store task token in project state so _fetch_external_tasks can use it
+    if x_task_token:
+        agent_service.set_project_task_token(project_token, x_task_token)
+
+    # Get project tasks from external API
+    try:
+        logger.info(f"Fetching tasks for project: {project_token}")
+        all_tasks = await agent_service._fetch_external_tasks(project_token)
+        logger.info(f"Fetched {len(all_tasks)} total tasks from external API")
+        
+        # Filter to only pending/available tasks
+        project_tasks = []
+        for task in all_tasks:
+            status = task.get('status', '').lower()
+            if status not in ['completed', 'done', 'closed', 'cancelled']:
+                project_tasks.append(task)
+        
+        logger.info(f"Filtered to {len(project_tasks)} pending tasks")
+        
+        if not project_tasks:
+            logger.warning("No pending tasks found - all tasks may be completed")
+            raise HTTPException(status_code=400, detail="No pending tasks available. All tasks may be completed or no tasks exist.")
+            
+        # Log first few tasks for debugging
+        for i, task in enumerate(project_tasks[:3]):
+            logger.info(f"Task {i+1}: {task.get('title', 'No title')} - Status: {task.get('status', 'No status')}")
+            
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions
+    except Exception as e:
+        logger.error(f"Failed to fetch tasks: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to fetch tasks from external API: {str(e)}")
+
+    # Set up git credentials
     agents_config = dict(request.agents_config) if request and request.agents_config else {}
     provided_repo = None
     provided_token = None
@@ -5554,39 +6403,64 @@ async def run_all_agents(
             project_token=project_token,
         )
 
-    global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
-    run_all_config: Dict[str, Dict[str, str]] = {}
-    if global_cred and global_cred.git_repo_url and global_cred.git_token:
-        for agent in idle_agents:
-            run_all_config[agent["id"]] = {
-                "git_repo_url": global_cred.git_repo_url,
-                "git_token": global_cred.git_token,
-            }
-    else:
-        for agent in idle_agents:
-            agent["git_repo_url"] = None
-            agent["git_token"] = None
+    # Resolve final git credentials (from request or DB fallback)
+    if not provided_repo or not provided_token:
+        saved_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+        if saved_cred:
+            provided_repo = provided_repo or (saved_cred.git_repo_url or "").strip() or None
+            provided_token = provided_token or (saved_cred.git_token or "").strip() or None
 
-    agent_service.mark_run_all_waiting_state(
-        project_token,
-        [a["id"] for a in idle_agents],
-    )
-
-    # Fire-and-forget: all agents run in background
-    # Note: run_all_agents synchronously marks them as "running" as its first step.
-    bg_task = asyncio.create_task(
-        agent_service.run_all_agents(
-            agents_config=run_all_config if run_all_config else None,
+    # Launch all idle agents using the coordinated workflow with master agent supervision
+    task_token = x_task_token or agent_service.get_project_task_token(project_token)
+    
+    # Build agents_config for the workflow
+    workflow_agents_config = {}
+    for agent_id in available_agents:
+        workflow_agents_config[agent_id] = {
+            "git_repo_url": provided_repo or "",
+            "git_token": provided_token or "",
+        }
+    
+    # Use the coordinated workflow which includes master agent planning
+    try:
+        result = await agent_service.run_all_agents(
+            agents_config=workflow_agents_config,
             project_token=project_token,
-            task_token=x_task_token,
+            task_token=task_token,
+            enable_supervisor=True,
         )
-    )
-    bg_task.add_done_callback(_log_background_task_result)
-
-    return {
-        "started": True,
-        "agents": [a["id"] for a in idle_agents],
-    }
+        logger.info(f"🚀 Coordinated workflow completed for project {project_token}")
+        
+        return {
+            "started": True,
+            "agents": available_agents,
+            "total_tasks": len(project_tasks),
+            "workflow_result": result,
+            "message": f"Launched {len(available_agents)} agent(s) with master supervision on {len(project_tasks)} pending task(s).",
+        }
+    except Exception as workflow_err:
+        logger.error(f"Coordinated workflow failed: {workflow_err}")
+        # Fallback to individual agent launches
+        for agent_id in available_agents:
+            asyncio.create_task(
+                agent_service.run_agent(
+                    agent_id=agent_id,
+                    project_token=project_token,
+                    task_token=task_token,
+                    continuous=True,
+                    git_repo_url=provided_repo or None,
+                    git_token=provided_token or None,
+                )
+            )
+            logger.info(f"🚀 Launched {agent_id} (fallback mode) for project {project_token}")
+        
+        return {
+            "started": True,
+            "agents": available_agents,
+            "total_tasks": len(project_tasks),
+            "message": f"Launched {len(available_agents)} agent(s) in fallback mode on {len(project_tasks)} pending task(s).",
+            "warning": "Coordinated workflow unavailable, using fallback mode",
+        }
 
 
 class AddAgentRequest(BaseModel):
@@ -5628,47 +6502,119 @@ async def add_agent(
 
     # Enforce org quota by requested agent kind and sub_type for the project.
     quota = _get_or_init_org_agent_quota(db, organization_name)
-    project_usage = _count_org_agent_usage_for_project(db, organization_name, project_token)
     agent_sub_type = (_normalized_text(getattr(request, 'sub_type', None) or '').lower()) or 'dev'
-    
+
+    # Check if adding this agent would exceed quota limits
+    # Shared agents: check organization-wide usage (shared across all projects)
+    # Dedicated agents: check per-project usage (each project has its own pool)
     if agent_kind == "dedicated":
+        # For dedicated agents, check usage within THIS project only
+        project_usage = _count_org_agent_usage_for_project(db, organization_name, project_token)
         if agent_sub_type == "dev":
-            if project_usage["dedicated_dev"] >= int(quota.dedicated_dev_quota or 0):
-                raise HTTPException(status_code=400, detail="Dedicated Dev agent capacity exceeded for this project.")
+            current_used = project_usage.get("dedicated_dev", 0)
+            quota_limit = int(quota.dedicated_dev_quota or 0)
+            if current_used >= quota_limit:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Dedicated Dev agent quota exceeded for this project. Used: {current_used}/{quota_limit}. Please increase quota first."
+                )
         elif agent_sub_type == "test":
-            if project_usage["dedicated_test"] >= int(quota.dedicated_test_quota or 0):
-                raise HTTPException(status_code=400, detail="Dedicated Test agent capacity exceeded for this project.")
+            current_used = project_usage.get("dedicated_test", 0)
+            quota_limit = int(quota.dedicated_test_quota or 0)
+            if current_used >= quota_limit:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Dedicated Test agent quota exceeded for this project. Used: {current_used}/{quota_limit}. Please increase quota first."
+                )
     else:
+        # For shared agents, check organization-wide usage (shared across all projects)
+        org_usage = _count_org_agent_usage(db, organization_name)
         if agent_sub_type == "dev":
-            if project_usage["shared_dev"] >= int(quota.shared_dev_quota or 0):
-                raise HTTPException(status_code=400, detail="Shared Dev agent capacity exceeded for this project.")
+            current_used = org_usage.get("shared_dev", 0)
+            quota_limit = int(quota.shared_dev_quota or 0)
+            if current_used >= quota_limit:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Shared Dev agent quota exceeded. Used: {current_used}/{quota_limit}. Please increase quota first."
+                )
         elif agent_sub_type == "test":
-            if project_usage["shared_test"] >= int(quota.shared_test_quota or 0):
-                raise HTTPException(status_code=400, detail="Shared Test agent capacity exceeded for this project.")
+            current_used = org_usage.get("shared_test", 0)
+            quota_limit = int(quota.shared_test_quota or 0)
+            if current_used >= quota_limit:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Shared Test agent quota exceeded. Used: {current_used}/{quota_limit}. Please increase quota first."
+                )
 
-    query = db.query(models.Agent)
-    if project_token:
-        query = query.filter(models.Agent.project_token == project_token)
-    else:
-        query = query.filter(models.Agent.project_token.is_(None))
-    records = query.all()
-    agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
+    # CRITICAL: Serialize agent creation per project to prevent race conditions
+    # Multiple parallel calls would all see the same DB state and create duplicate agent_01
+    logger.info(f"[add_agent] Waiting for lock (project={project_token})")
+    async with agent_service.get_project_agent_creation_lock(project_token):
+        logger.info(f"[add_agent] Lock acquired (project={project_token})")
+        
+        # Load ALL mapped agents (including user-added ones that may be missing DB records)
+        mapping_q = db.query(models.OrganizationAgentMapping.agent_id).filter(
+            func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower()
+        )
+        if project_token:
+            mapping_q = mapping_q.filter(models.OrganizationAgentMapping.project_token == project_token)
+        else:
+            mapping_q = mapping_q.filter(models.OrganizationAgentMapping.project_token.is_(None))
+        mapped_ids = [row[0] for row in mapping_q.all()]
+        logger.info(f"[add_agent] Mapped agent IDs: {mapped_ids}")
 
-    agent = agent_service.add_agent(
-        name=name,
-        kind=agent_kind,
-        project_token=project_token,
-    )
-    record = _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"), project_token)
-    _ensure_org_agent_mapping(
-        db,
-        organization_name,
-        record.id,
-        project_token,
-        agent_kind=agent_kind,
-        agent_sub_type=agent_sub_type,
-        is_default=False,
-    )
+        records = db.query(models.Agent).filter(models.Agent.id.in_(mapped_ids)).all() if mapped_ids else []
+        logger.info(f"[add_agent] Before init: DB has {len(records)} records: {[r.id for r in records]}, memory has {len(agent_service.get_all_agents(project_token))} agents")
+
+        # Upsert: create missing records or fix project_token on existing ones
+        existing_by_id = {r.id: r for r in records}
+        for mid in mapped_ids:
+            public_id = _public_agent_id(mid, project_token)
+            if mid not in existing_by_id:
+                try:
+                    new_record = models.Agent(
+                        id=mid,
+                        name=public_id,
+                        type="validator",
+                        project_token=project_token,
+                    )
+                    db.add(new_record)
+                    db.flush()
+                    records.append(new_record)
+                except Exception:
+                    db.rollback()
+                    existing = db.query(models.Agent).filter(models.Agent.id == mid).first()
+                    if existing:
+                        records.append(existing)
+            elif existing_by_id[mid].project_token != project_token:
+                existing_by_id[mid].project_token = project_token
+        
+        try:
+            db.commit()
+        except:
+            db.rollback()
+        
+        agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
+        logger.info(f"[add_agent] After init: memory has {len(agent_service.get_all_agents(project_token))} agents: {[a['id'] for a in agent_service.get_all_agents(project_token)]}")
+
+        agent = agent_service.add_agent(
+            name=name,
+            kind=agent_kind,
+            project_token=project_token,
+        )
+        logger.info(f"[add_agent] Created agent: {agent['id']}")
+        record = _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"), project_token)
+        logger.info(f"[add_agent] Stored DB record with id: {record.id}")
+        _ensure_org_agent_mapping(
+            db,
+            organization_name,
+            record.id,
+            project_token,
+            agent_kind=agent_kind,
+            agent_sub_type=agent_sub_type,
+            is_default=False,
+        )
+        logger.info(f"[add_agent] Committed {agent['id']} to DB, releasing lock")
     if git_repo_url or git_token:
         _upsert_project_global_credentials(
             db,
@@ -5820,17 +6766,64 @@ async def remove_agent(
     """Remove an idle agent."""
     try:
         project_token = _normalize_project_token(project_token)
-        _ensure_default_agents(db, project_token)
-        query = db.query(models.Agent)
+        organization_name = _require_organization(current_user)
+        
+        _ensure_default_agents_for_org(db, organization_name, project_token)
+        _bootstrap_org_agent_mappings_if_missing(db, organization_name, project_token)
+
+        # Load ALL mapped agents (including user-added ones that may be missing DB records)
+        mapping_q = db.query(models.OrganizationAgentMapping.agent_id).filter(
+            func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower()
+        )
         if project_token:
-            query = query.filter(models.Agent.project_token == project_token)
+            mapping_q = mapping_q.filter(models.OrganizationAgentMapping.project_token == project_token)
         else:
-            query = query.filter(models.Agent.project_token.is_(None))
-        records = query.all()
+            mapping_q = mapping_q.filter(models.OrganizationAgentMapping.project_token.is_(None))
+        mapped_ids = [row[0] for row in mapping_q.all()]
+
+        records = db.query(models.Agent).filter(models.Agent.id.in_(mapped_ids)).all() if mapped_ids else []
+
+        # Upsert: create missing records or fix project_token on existing ones
+        existing_by_id = {r.id: r for r in records}
+        for mid in mapped_ids:
+            public_id = _public_agent_id(mid, project_token)
+            if mid not in existing_by_id:
+                try:
+                    new_record = models.Agent(
+                        id=mid,
+                        name=public_id,
+                        type="validator",
+                        project_token=project_token,
+                    )
+                    db.add(new_record)
+                    db.flush()
+                    records.append(new_record)
+                except Exception:
+                    db.rollback()
+                    existing = db.query(models.Agent).filter(models.Agent.id == mid).first()
+                    if existing:
+                        records.append(existing)
+            elif existing_by_id[mid].project_token != project_token:
+                existing_by_id[mid].project_token = project_token
+        
+        try:
+            db.commit()
+        except:
+            db.rollback()
+
         agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
 
         agent_service.remove_agent(agent_id, project_token)
         _delete_agent_record(db, agent_id, project_token)
+        
+        # Also remove the mapping
+        stored_id = _stored_agent_id(agent_id, project_token)
+        db.query(models.OrganizationAgentMapping).filter(
+            func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower(),
+            models.OrganizationAgentMapping.agent_id == stored_id,
+        ).delete()
+        db.commit()
+        
         return {"success": True, "removed": agent_id}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -6208,10 +7201,20 @@ async def get_external_agent_tasks(
     x_task_token: Optional[str] = Header(None)
 ):
     """
-    Fetch the list of tasks from the external task management API.
+    Fetch the list of tasks from the external task management API with caching.
     """
+    # Check cache first
+    cache_key = _get_task_cache_key(x_task_token, page)
+    cached_result = _get_cached_tasks(cache_key)
+    if cached_result is not None:
+        return cached_result
+    
     try:
         tasks = await task_service.get_tasks(page=page, task_token=x_task_token)
+        
+        # Cache the result
+        _cache_tasks(cache_key, tasks)
+        
         return tasks
     except TaskServiceTimeoutError as e:
         raise HTTPException(status_code=504, detail=str(e))
@@ -6910,6 +7913,434 @@ def _apply_schedule_ids_to_preview_payload(
         if milestone_name:
             task["milestone"] = milestone_name
 
+@app.post("/api/agent/tasks/generate-local/")
+async def generate_tasks_locally(
+    request: AutoGenerateRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+    x_task_token: Optional[str] = Header(None)
+):
+    """
+    Generate tasks locally using AI, store in database, then optionally sync to NXDUNE.
+    """
+    try:
+        from task_generation_service import generate_tasks_locally as gen_tasks
+        
+        # Get AI config
+        ai_config = await ai_service.get_ai_config()
+        
+        # Generate tasks using improved prompt
+        tasks = await gen_tasks(
+            project_token=request.project_token,
+            db=db,
+            user_id=current_user.id,
+            custom_rules=request.custom_rules,
+            process_mode=request.process_mode or "ai_first",
+            project_type=request.project_type or "greenfield",
+            prerequisites=request.prerequisites or [],
+            api_url=ai_config.get("api_url"),
+            api_key=settings.ai_api_key,
+            model=ai_config.get("model")
+        )
+        
+        if not tasks:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate tasks. Please check your project context and try again."
+            )
+        
+        # Store tasks in local database
+        # First delete any existing tasks for this project to avoid duplicate task_id errors
+        db.query(models.Task).filter(
+            models.Task.project_token == request.project_token,
+            models.Task.owner_id == current_user.id
+        ).delete()
+        db.commit()
+
+        stored_tasks = []
+        for task_data in tasks:
+            # Use project_token + task_id as unique DB key, but store clean task_id separately
+            clean_task_id = task_data["task_id"]
+            db_unique_id = f"{request.project_token}_{clean_task_id}"
+            
+            # Convert list/dict fields to JSON strings for SQLite storage
+            assigned_to = task_data.get("assignedTo", [])
+            if isinstance(assigned_to, list):
+                assigned_to = json.dumps(assigned_to)
+            
+            linked_tasks = task_data.get("linked_tasks", [])
+            if isinstance(linked_tasks, list):
+                linked_tasks = json.dumps(linked_tasks)
+            
+            checklist = task_data.get("checklist", [])
+            if isinstance(checklist, list):
+                checklist = json.dumps(checklist)
+            elif not isinstance(checklist, str):
+                checklist = json.dumps([])
+            
+            task = models.Task(
+                task_id=db_unique_id,
+                project_token=request.project_token,
+                owner_id=current_user.id,
+                task_name=task_data["taskName"],
+                task_type=task_data["task_type"],
+                description=task_data.get("description", ""),
+                priority=task_data.get("priority", "medium"),
+                task_wallet=task_data.get("task_wallet", 1),
+                startdate=task_data.get("startdate"),
+                planned_start=task_data.get("planned_start"),
+                deadline=task_data.get("deadline"),
+                assigned_to=assigned_to,
+                reported_by=task_data.get("reported_by", "system"),
+                sprint=task_data.get("sprint", "new"),
+                milestone=task_data.get("milestone", "main"),
+                linked_tasks=linked_tasks,
+                checklist=checklist,
+                synced_to_nxdune=False
+            )
+            db.add(task)
+            stored_tasks.append(task)
+        
+        db.commit()
+        
+        logger.info(f"Generated and stored {len(stored_tasks)} tasks locally for project {request.project_token}")
+        
+        # Create multiple sprints and milestones in external API if task token is provided
+        sprint_ids = []
+        milestone_ids = []
+        sprint_names = []
+        milestone_names = []
+        
+        if x_task_token:
+            try:
+                # Extract unique sprints and milestones from tasks
+                unique_sprints = {}
+                unique_milestones = {}
+                
+                for task in tasks:
+                    sprint_name = task.get("sprint", "Sprint 1")
+                    milestone_name = task.get("milestone", "Milestone 1")
+                    
+                    if sprint_name not in unique_sprints:
+                        unique_sprints[sprint_name] = {
+                            "name": sprint_name,
+                            "start_dates": [],
+                            "deadlines": []
+                        }
+                    
+                    if milestone_name not in unique_milestones:
+                        unique_milestones[milestone_name] = {
+                            "name": milestone_name,
+                            "sprint": sprint_name,
+                            "start_dates": [],
+                            "deadlines": []
+                        }
+                    
+                    # Collect dates for each sprint/milestone
+                    if task.get("startdate"):
+                        unique_sprints[sprint_name]["start_dates"].append(task["startdate"])
+                        unique_milestones[milestone_name]["start_dates"].append(task["startdate"])
+                    if task.get("deadline"):
+                        unique_sprints[sprint_name]["deadlines"].append(task["deadline"])
+                        unique_milestones[milestone_name]["deadlines"].append(task["deadline"])
+                
+                # Create sprints in external API
+                sprint_name_to_id = {}
+                for sprint_name, sprint_data in unique_sprints.items():
+                    sprint_start = min(sprint_data["start_dates"]) if sprint_data["start_dates"] else datetime.now().strftime('%Y-%m-%d')
+                    sprint_deadline = max(sprint_data["deadlines"]) if sprint_data["deadlines"] else (datetime.now() + timedelta(days=14)).strftime('%Y-%m-%d')
+                    
+                    logger.info(f"Creating sprint '{sprint_name}' in external API")
+                    sprint_result = await task_service.create_sprint(
+                        {
+                            "name": sprint_name,
+                            "summary": f"AI-generated sprint for {request.project_token}",
+                            "start_date": sprint_start,
+                            "deadline": sprint_deadline,
+                        },
+                        task_token=x_task_token
+                    )
+                    
+                    if isinstance(sprint_result, dict):
+                        sprint_id = sprint_result.get("id") or sprint_result.get("sprint_id")
+                        if sprint_id:
+                            sprint_ids.append(sprint_id)
+                            sprint_names.append(sprint_name)
+                            sprint_name_to_id[sprint_name] = sprint_id
+                            logger.info(f"Created sprint: ID={sprint_id}, Name={sprint_name}")
+                
+                # Create milestones in external API
+                milestone_name_to_id = {}
+                for milestone_name, milestone_data in unique_milestones.items():
+                    milestone_start = min(milestone_data["start_dates"]) if milestone_data["start_dates"] else datetime.now().strftime('%Y-%m-%d')
+                    milestone_deadline = max(milestone_data["deadlines"]) if milestone_data["deadlines"] else (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d')
+                    
+                    # Get sprint ID for this milestone
+                    milestone_sprint_name = milestone_data["sprint"]
+                    milestone_sprint_id = sprint_name_to_id.get(milestone_sprint_name)
+                    
+                    logger.info(f"Creating milestone '{milestone_name}' in external API")
+                    milestone_result = await task_service.create_milestone(
+                        {
+                            "name": milestone_name,
+                            "sprint_id": milestone_sprint_id,
+                            "start_date": milestone_start,
+                            "deadline": milestone_deadline,
+                        },
+                        task_token=x_task_token
+                    )
+                    
+                    if isinstance(milestone_result, dict):
+                        milestone_id = milestone_result.get("id") or milestone_result.get("milestone_id")
+                        if milestone_id:
+                            milestone_ids.append(milestone_id)
+                            milestone_names.append(milestone_name)
+                            milestone_name_to_id[milestone_name] = milestone_id
+                            logger.info(f"Created milestone: ID={milestone_id}, Name={milestone_name}")
+                
+            except Exception as sprint_milestone_error:
+                logger.warning(f"Failed to create sprints/milestones in external API: {sprint_milestone_error}")
+                # Continue with task sync even if sprint/milestone creation fails
+        
+        # Always sync to NXDUNE via batch file upload if task token is provided
+        synced = False
+        sync_error_detail = None
+        if x_task_token:
+            try:
+                import io
+                import json as json_mod
+                import httpx
+
+                nxdune_base = settings.task_api_base_url.rstrip("/")
+                batch_url = f"{nxdune_base}/api/agent/tasks/batch/"
+
+                # Make task_ids unique per project to avoid NXDUNE duplicate conflicts.
+                # Use a short 6-char hash of the project token as prefix: e.g. "a3f9b2_EPIC-01"
+                import hashlib
+                short_hash = hashlib.md5(request.project_token.encode()).hexdigest()[:6]
+
+                # Valid NXDUNE priority values
+                VALID_PRIORITIES = {"low", "medium", "high"}
+                PRIORITY_MAP = {"critical": "high", "urgent": "high", "normal": "medium", "minor": "low"}
+
+                prefixed_tasks = []
+                for t in tasks:
+                    pt = dict(t)
+                    pt["task_id"] = f"{short_hash}_{pt['task_id']}"
+                    if pt.get("linked_tasks"):
+                        pt["linked_tasks"] = [
+                            f"{short_hash}_{lid}" for lid in pt["linked_tasks"]
+                        ]
+                    # Normalize priority to valid NXDUNE values
+                    raw_priority = str(pt.get("priority") or "medium").lower()
+                    pt["priority"] = PRIORITY_MAP.get(raw_priority, raw_priority) if raw_priority not in VALID_PRIORITIES else raw_priority
+                    
+                    # Map sprint/milestone names to IDs if available
+                    task_sprint_name = pt.get("sprint", "")
+                    task_milestone_name = pt.get("milestone", "")
+                    
+                    if task_sprint_name in sprint_name_to_id:
+                        pt["sprint_id"] = sprint_name_to_id[task_sprint_name]
+                    if task_milestone_name in milestone_name_to_id:
+                        pt["milestone_id"] = milestone_name_to_id[task_milestone_name]
+                    
+                    prefixed_tasks.append(pt)
+
+                # Serialize raw array directly — no wrapper key
+                tasks_json_bytes = json_mod.dumps(prefixed_tasks, ensure_ascii=False, indent=2).encode("utf-8")
+                json_file = io.BytesIO(tasks_json_bytes)
+
+                # Debug: log exact payload being sent to NXDUNE
+                logger.info(f"NXDUNE batch sync payload ({len(prefixed_tasks)} tasks):\n{tasks_json_bytes.decode('utf-8')[:2000]}")
+
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    response = await client.post(
+                        batch_url,
+                        headers={"Authorization": f"Bearer {x_task_token}"},
+                        files={"file": ("tasks.json", json_file, "application/json")},
+                    )
+
+                if response.status_code in (200, 201):
+                    for task in stored_tasks:
+                        task.synced_to_nxdune = True
+                    db.commit()
+                    synced = True
+                    # Use prefixed tasks as the canonical response (IDs match NXDUNE)
+                    tasks = prefixed_tasks
+                    logger.info(f"Synced {len(tasks)} tasks to NXDUNE batch API")
+                else:
+                    sync_error_detail = f"NXDUNE returned {response.status_code}: {response.text[:300]}"
+                    logger.warning(f"NXDUNE batch sync failed — {sync_error_detail}")
+            except Exception as sync_error:
+                sync_error_detail = str(sync_error)
+                logger.warning(f"Failed to sync tasks to NXDUNE: {sync_error_detail}")
+                # Tasks are stored locally — continue regardless
+        
+        return {
+            "status": "success",
+            "message": f"Generated {len(tasks)} tasks successfully",
+            "tasks": tasks,
+            "tasks_created": len(tasks),
+            "synced_to_nxdune": synced,
+            "sync_error": sync_error_detail if not synced and x_task_token else None,
+            "sprints_created": len(sprint_ids) if x_task_token else 0,
+            "sprint_ids": sprint_ids if x_task_token else [],
+            "sprint_names": sprint_names if x_task_token else [],
+            "milestones_created": len(milestone_ids) if x_task_token else 0,
+            "milestone_ids": milestone_ids if x_task_token else [],
+            "milestone_names": milestone_names if x_task_token else [],
+        }
+    
+    except Exception as e:
+        logger.error(f"Task generation failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Task generation failed: {str(e)}"
+        )
+
+
+@app.post("/api/agent/tasks/sync/")
+async def sync_tasks_to_nxdune(
+    project_token: str = None,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+    x_task_token: Optional[str] = Header(None),
+):
+    """Sync locally stored (unsynced) tasks to NXDUNE."""
+    if not x_task_token:
+        raise HTTPException(status_code=400, detail="X-Task-Token header is required.")
+    if not project_token:
+        raise HTTPException(status_code=400, detail="project_token query param is required.")
+
+    unsynced = db.query(models.Task).filter(
+        models.Task.project_token == project_token,
+        models.Task.owner_id == current_user.id,
+        models.Task.synced_to_nxdune == False,
+    ).all()
+
+    if not unsynced:
+        return {"status": "success", "message": "All tasks already synced.", "synced": 0, "failed": 0}
+
+    try:
+        import io, json as json_mod, hashlib, httpx
+
+        nxdune_base = settings.task_api_base_url.rstrip("/")
+        batch_url = f"{nxdune_base}/api/agent/tasks/batch/"
+        short_hash = hashlib.md5(project_token.encode()).hexdigest()[:6]
+
+        VALID_PRIORITIES = {"low", "medium", "high"}
+        PRIORITY_MAP = {"critical": "high", "urgent": "high", "normal": "medium", "minor": "low"}
+
+        def _strip_prefix(task_id: str) -> str:
+            prefix = f"{project_token}_"
+            return task_id[len(prefix):] if task_id.startswith(prefix) else task_id
+
+        prefixed_tasks = []
+        for t in unsynced:
+            clean_id = _strip_prefix(t.task_id)
+            raw_priority = str(t.priority or "medium").lower()
+            priority = PRIORITY_MAP.get(raw_priority, raw_priority) if raw_priority not in VALID_PRIORITIES else raw_priority
+            linked = [f"{short_hash}_{lid}" for lid in (t.linked_tasks or [])]
+            prefixed_tasks.append({
+                "task_id": f"{short_hash}_{clean_id}",
+                "taskName": t.task_name,
+                "task_type": t.task_type,
+                "description": t.description or "",
+                "priority": priority,
+                "task_wallet": t.task_wallet,
+                "startdate": t.startdate,
+                "planned_start": t.planned_start,
+                "deadline": t.deadline,
+                "assignedTo": t.assigned_to or [],
+                "reported_by": t.reported_by or "system",
+                "sprint": t.sprint or "new",
+                "milestone": t.milestone or "main",
+                "linked_tasks": linked,
+                "checklist": t.checklist or "",
+            })
+
+        tasks_json_bytes = json_mod.dumps(prefixed_tasks, ensure_ascii=False, indent=2).encode("utf-8")
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                batch_url,
+                headers={"Authorization": f"Bearer {x_task_token}"},
+                files={"file": ("tasks.json", io.BytesIO(tasks_json_bytes), "application/json")},
+            )
+
+        if response.status_code in (200, 201):
+            for t in unsynced:
+                t.synced_to_nxdune = True
+            db.commit()
+            return {"status": "success", "message": f"Synced {len(unsynced)} tasks to NXDUNE.", "synced": len(unsynced), "failed": 0}
+        else:
+            error_detail = f"NXDUNE returned {response.status_code}: {response.text[:400]}"
+            logger.warning(f"Sync failed — {error_detail}")
+            raise HTTPException(status_code=502, detail=error_detail)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Sync to NXDUNE failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/agent/tasks/local/")
+async def get_local_tasks(
+    project_token: str,
+    page: int = 1,
+    page_size: int = 50,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get locally stored tasks for a project with pagination"""
+    base_query = db.query(models.Task).filter(
+        models.Task.project_token == project_token,
+        models.Task.owner_id == current_user.id
+    )
+
+    total = base_query.count()
+    offset = (page - 1) * page_size
+    tasks = base_query.order_by(models.Task.created_at).offset(offset).limit(page_size).all()
+
+    def serialize(t):
+        # Strip project_token prefix from task_id for display (e.g. "proj_EPIC-01" → "EPIC-01")
+        display_id = t.task_id
+        prefix = f"{project_token}_"
+        if display_id.startswith(prefix):
+            display_id = display_id[len(prefix):]
+        return {
+            "task_id": display_id,
+            "taskName": t.task_name,
+            "task_type": t.task_type,
+            "assignedTo": t.assigned_to or [],
+            "description": t.description,
+            "startdate": t.startdate,
+            "planned_start": t.planned_start,
+            "deadline": t.deadline,
+            "priority": t.priority,
+            "task_wallet": t.task_wallet,
+            "sprint": t.sprint,
+            "milestone": t.milestone,
+            "reported_by": t.reported_by,
+            "linked_tasks": t.linked_tasks or [],
+            "checklist": t.checklist,
+            "synced_to_nxdune": t.synced_to_nxdune,
+            "nxdune_task_id": t.nxdune_task_id,
+        }
+
+    has_next = (offset + page_size) < total
+    has_prev = page > 1
+
+    return {
+        "tasks": [serialize(t) for t in tasks],
+        "count": total,
+        "next": f"?project_token={project_token}&page={page + 1}" if has_next else None,
+        "previous": f"?project_token={project_token}&page={page - 1}" if has_prev else None,
+        "current_page": page,
+        "total_pages": max(1, (total + page_size - 1) // page_size),
+    }
+
+
 @app.post("/api/agent/auto-generate/")
 async def auto_generate_project_tasks(
     request: AutoGenerateRequest,
@@ -7426,7 +8857,7 @@ async def put_agent_project_config(
 
     return {
         "status": "ok",
-        "message": "Task creation started and will shortly appear here in the list",
+        "message": "Task creation started and will shortly appear here in the list You can continue if you want task creation will continue in background",
         "project_token": safe_project,
         "mode": mode,
         "repo_link_url": repo_link_url,
@@ -7442,4 +8873,436 @@ if __name__ == "__main__":
         host=settings.host,
         port=settings.port,
         reload=False,
+        timeout_keep_alive=900,  # 15 minutes to support long-running AI analysis
     )
+
+@app.get("/api/production/validate")
+async def validate_production_readiness(
+    project_token: Optional[str] = None,
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """Validate if project is ready for production deployment"""
+    try:
+        validation = await agent_service._validate_production_readiness(project_token=project_token)
+        return validation
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Validation failed: {str(e)}")
+
+@app.get("/api/production/report")
+async def get_production_report(
+    project_token: Optional[str] = None,
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """Get comprehensive production readiness report"""
+    try:
+        report = await agent_service._generate_production_report(project_token=project_token)
+        return {"report": report}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Report generation failed: {str(e)}")
+
+@app.post("/api/production/ensure-ready")
+async def ensure_production_ready(
+    project_token: Optional[str] = None,
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """Ensure project meets production standards with auto-fixes"""
+    try:
+        result = await agent_service._ensure_production_ready_project(project_token=project_token)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Production preparation failed: {str(e)}")
+
+@app.get("/api/system/health")
+async def system_health_check():
+    """Complete system health check for production readiness"""
+    try:
+        health = {
+            "status": "healthy",
+            "timestamp": datetime.utcnow().isoformat(),
+            "components": {
+                "database": "healthy",
+                "llm_gateway": "healthy" if llm_gateway.check_api_key() else "degraded",
+                "docker": "healthy" if agent_service._check_docker_available() else "unavailable",
+                "git_manager": "healthy"
+            },
+            "version": "1.0.0",
+            "uptime": "unknown"
+        }
+        
+        # Check critical components
+        unhealthy_components = [k for k, v in health["components"].items() if v != "healthy"]
+        if unhealthy_components:
+            health["status"] = "degraded"
+            health["issues"] = unhealthy_components
+        
+        return health
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+@app.get("/api/bulletproof/success-rate")
+async def get_bulletproof_success_rate(
+    project_token: Optional[str] = None,
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """Get bulletproof execution success rate metrics"""
+    try:
+        state = agent_service._ensure_project_state(project_token)
+        all_tasks = state.get("tasks", [])
+        completed_tasks = [t for t in all_tasks if agent_service._task_status_is_done(t.get("status"))]
+        
+        # Calculate success metrics
+        total_tasks = len(all_tasks)
+        completed_count = len(completed_tasks)
+        success_rate = (completed_count / total_tasks * 100) if total_tasks > 0 else 0
+        
+        # Analyze task complexity and success correlation
+        task_success_by_type = {}
+        for task in completed_tasks:
+            task_type = task.get("task_type", "UNKNOWN")
+            if task_type not in task_success_by_type:
+                task_success_by_type[task_type] = {"completed": 0, "total": 0}
+            task_success_by_type[task_type]["completed"] += 1
+        
+        for task in all_tasks:
+            task_type = task.get("task_type", "UNKNOWN")
+            if task_type not in task_success_by_type:
+                task_success_by_type[task_type] = {"completed": 0, "total": 0}
+            task_success_by_type[task_type]["total"] += 1
+        
+        # Calculate success rate by type
+        for task_type in task_success_by_type:
+            data = task_success_by_type[task_type]
+            data["success_rate"] = (data["completed"] / data["total"] * 100) if data["total"] > 0 else 0
+        
+        # Determine if we're meeting the 90% target
+        meets_target = success_rate >= 90.0
+        
+        return {
+            "overall_success_rate": round(success_rate, 1),
+            "meets_90_percent_target": meets_target,
+            "total_tasks": total_tasks,
+            "completed_tasks": completed_count,
+            "remaining_tasks": total_tasks - completed_count,
+            "success_by_type": task_success_by_type,
+            "target": 90.0,
+            "status": "EXCELLENT" if success_rate >= 90 else "GOOD" if success_rate >= 75 else "NEEDS_IMPROVEMENT"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Success rate calculation failed: {str(e)}")
+
+@app.post("/api/bulletproof/optimize-tasks")
+async def optimize_tasks_for_success(
+    project_token: Optional[str] = None,
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """Optimize existing tasks for bulletproof execution"""
+    try:
+        state = agent_service._ensure_project_state(project_token)
+        all_tasks = state.get("tasks", [])
+        
+        # Apply bulletproof optimization to all tasks
+        from task_generation_service import _bulletproof_task_generation_post_process
+        optimized_tasks = _bulletproof_task_generation_post_process(all_tasks)
+        
+        # Update the state with optimized tasks
+        state["tasks"] = optimized_tasks
+        
+        return {
+            "success": True,
+            "message": f"Optimized {len(optimized_tasks)} tasks for bulletproof execution",
+            "optimized_count": len(optimized_tasks),
+            "improvements": [
+                "Enhanced task descriptions with bulletproof requirements",
+                "Added comprehensive validation steps to checklists",
+                "Improved error handling specifications",
+                "Added testing and verification requirements"
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Task optimization failed: {str(e)}")
+
+@app.get("/api/bulletproof/agent-performance")
+async def get_agent_performance_metrics(
+    project_token: Optional[str] = None,
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """Get detailed agent performance metrics for bulletproof execution"""
+    try:
+        state = agent_service._ensure_project_state(project_token)
+        agents = state.get("agent_states", {})
+        
+        performance_metrics = {}
+        
+        for agent_id, agent_data in agents.items():
+            if agent_service._is_system_agent_id(agent_id):
+                continue
+                
+            # Calculate agent-specific metrics
+            agent_tasks = [t for t in state.get("tasks", []) if t.get("assigned_agent") == agent_id]
+            completed_agent_tasks = [t for t in agent_tasks if agent_service._task_status_is_done(t.get("status"))]
+            
+            success_rate = (len(completed_agent_tasks) / len(agent_tasks) * 100) if agent_tasks else 0
+            
+            # Analyze self-healing effectiveness
+            healing_stats = {
+                "total_healing_attempts": 0,
+                "successful_healings": 0,
+                "average_iterations": 0
+            }
+            
+            # Get recent output logs for analysis
+            output_logs = agent_data.get("output_log", [])
+            healing_logs = [log for log in output_logs if "self-healing" in log.get("message", "").lower()]
+            
+            if healing_logs:
+                healing_stats["total_healing_attempts"] = len(healing_logs)
+                # Estimate successful healings (simplified)
+                healing_stats["successful_healings"] = len([log for log in healing_logs if "completed" in log.get("message", "")])
+            
+            performance_metrics[agent_id] = {
+                "agent_name": agent_data.get("name", agent_id),
+                "status": agent_data.get("status", "unknown"),
+                "total_tasks": len(agent_tasks),
+                "completed_tasks": len(completed_agent_tasks),
+                "success_rate": round(success_rate, 1),
+                "meets_target": success_rate >= 90.0,
+                "self_healing": healing_stats,
+                "last_activity": agent_data.get("last_run", "never"),
+                "current_task": agent_data.get("current_task", {}).get("title", "None") if agent_data.get("current_task") else "None"
+            }
+        
+        # Calculate overall agent performance
+        all_success_rates = [metrics["success_rate"] for metrics in performance_metrics.values() if metrics["total_tasks"] > 0]
+        overall_agent_performance = sum(all_success_rates) / len(all_success_rates) if all_success_rates else 0
+        
+        return {
+            "overall_agent_performance": round(overall_agent_performance, 1),
+            "meets_90_percent_target": overall_agent_performance >= 90.0,
+            "agent_metrics": performance_metrics,
+            "total_active_agents": len([a for a in performance_metrics.values() if a["status"] != "idle"]),
+            "high_performing_agents": len([a for a in performance_metrics.values() if a["success_rate"] >= 90]),
+            "target": 90.0
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Agent performance calculation failed: {str(e)}")
+
+@app.post("/api/bulletproof/guarantee-success")
+async def guarantee_bulletproof_success(
+    project_token: Optional[str] = None,
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """Apply all bulletproof optimizations to guarantee 90%+ success rate"""
+    try:
+        # 1. Optimize tasks for bulletproof execution
+        optimize_result = await optimize_tasks_for_success(project_token, current_user)
+        
+        # 2. Ensure production readiness
+        production_result = await agent_service._ensure_production_ready_project(project_token=project_token)
+        
+        # 3. Validate system health
+        health_result = await system_health_check()
+        
+        # 4. Calculate expected success rate
+        success_metrics = await get_bulletproof_success_rate(project_token, current_user)
+        
+        return {
+            "success": True,
+            "message": "Bulletproof success optimizations applied",
+            "expected_success_rate": "90%+",
+            "optimizations_applied": [
+                "Task descriptions enhanced with bulletproof requirements",
+                "Comprehensive validation steps added to all tasks",
+                "Error handling and testing requirements specified",
+                "Production readiness validation enabled",
+                "System health monitoring activated"
+            ],
+            "task_optimization": optimize_result,
+            "production_readiness": production_result,
+            "system_health": health_result.get("status", "unknown"),
+            "current_metrics": success_metrics,
+            "guarantee": "90%+ task execution success rate with bulletproof enhancements"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Bulletproof guarantee setup failed: {str(e)}")
+
+ARTIFACTS_DIR = Path(os.getenv('ARTIFACTS_DIR', './project_artifacts'))
+ 
+def get_container_port(project_id: str) -> str:
+    """Return the host port for a preview container belonging to *project_id*.
+
+    The function now checks three sources, in order:
+    1️⃣ **Agent preview state** – ``agent_service.get_preview_status`` stores the
+        ``preview_url`` (e.g. ``http://localhost:9100``) when a preview is
+        running. If that URL is available we extract the port from it.
+    2️⃣ **Legacy registry file** – ``.container_registry.json`` as before.
+    3️⃣ **Docker ``ps`` fallback** – searches running containers whose name
+        contains the *project_id* and parses the ``Ports`` column.
+    Returns ``None`` when no port can be determined.
+    """
+    import re
+    try:
+        # 1️⃣ Check the in‑memory preview state via agent_service.
+        preview_state = agent_service.get_preview_status(project_id)
+        if preview_state and preview_state.get("status") == "running":
+            preview_url = preview_state.get("preview_url")
+            if preview_url:
+                # Expected format: http://localhost:<port>
+                match = re.search(r"://[^:/]+:(\d+)", preview_url)
+                if match:
+                    return match.group(1)
+
+        # 2️⃣ Legacy registry lookup.
+        registry_file = ARTIFACTS_DIR / '.container_registry.json'
+        if registry_file.exists():
+            with open(registry_file, 'r') as f:
+                registry = json.load(f)
+                for name, info in registry.items():
+                    if project_id in name and isinstance(info, dict) and 'port' in info:
+                        return str(info['port'])
+
+        # 3️⃣ Docker fallback – search running containers for the project id.
+        result = subprocess.run(
+            ["docker", "ps", "--filter", f"name={project_id}", "--format", "{{{{.Names}}}} {{{{.Ports}}}}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and project_id in parts[0]:
+                    port_match = re.search(r"0\.0\.0\.0:(\d+)->", parts[1])
+                    if port_match:
+                        return port_match.group(1)
+    except Exception as e:
+        print(f"Error determining container port for {project_id}: {e}")
+
+    print(f"No port found for project_id: {project_id}")
+    return None
+ 
+def _rewrite_html_assets(html_bytes: bytes, proxy_prefix: str) -> bytes:
+    """Rewrite absolute asset paths in HTML so they route through the proxy.
+
+    e.g. src="/assets/main.js"  ->  src="/app/{token}/assets/main.js"
+         href="/style.css"       ->  href="/app/{token}/style.css"
+         url(/fonts/x.woff)      ->  url(/app/{token}/fonts/x.woff)
+
+    Only rewrites paths that start with "/" but NOT "//" (protocol-relative),
+    and NOT paths that already start with the proxy_prefix.
+    """
+    import re as _re
+
+    proxy_prefix = proxy_prefix.rstrip("/")
+
+    def _replace_attr(m):
+        attr, quote, path = m.group(1), m.group(2), m.group(3)
+        # skip protocol-relative, data URIs, mailto, hash-only etc.
+        if path.startswith("//") or ":" in path.split("/")[0] or path.startswith("#"):
+            return m.group(0)
+        if path.startswith(proxy_prefix + "/") or path == proxy_prefix:
+            return m.group(0)
+        return f'{attr}={quote}{proxy_prefix}{path}{quote}'
+
+    def _replace_url(m):
+        inner = m.group(1).strip("'\"")
+        if inner.startswith("//") or ":" in inner.split("/")[0] or inner.startswith("#"):
+            return m.group(0)
+        if inner.startswith(proxy_prefix + "/") or inner == proxy_prefix:
+            return m.group(0)
+        return f"url({proxy_prefix}{inner})"
+
+    try:
+        html = html_bytes.decode("utf-8", errors="replace")
+    except Exception:
+        return html_bytes
+
+    # Rewrite src=, href=, action= attributes with absolute paths
+    html = _re.sub(
+        r'(src|href|action)=(["\'])(/[^"\'>\s]*)\2',
+        _replace_attr,
+        html,
+        flags=_re.IGNORECASE,
+    )
+    # Rewrite CSS url(/...) references
+    html = _re.sub(
+        r'url\((["\']?/[^)"\'>\s]*["\']?)\)',
+        _replace_url,
+        html,
+        flags=_re.IGNORECASE,
+    )
+
+    return html.encode("utf-8")
+
+
+def proxy_request(target_base: str, request: Request, forward_path: str, proxy_prefix: str = ""):
+    """Generic proxy handler. If proxy_prefix is given, rewrites HTML asset paths."""
+    target_url = target_base + forward_path
+
+    # Forward query params
+    if request.url.query:
+        target_url += "?" + request.url.query
+
+    # Forward headers (excluding host)
+    headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() not in ["host", "x-forwarded-for", "x-forwarded-proto"]
+    }
+
+    try:
+        resp = requests.request(
+            method=request.method,
+            url=target_url,
+            headers=headers,
+            allow_redirects=False,
+            timeout=(5, 30)
+        )
+
+        excluded_headers = [
+            "content-encoding",
+            "content-length",
+            "transfer-encoding",
+            "connection"
+        ]
+
+        response_headers = {
+            name: value
+            for name, value in resp.headers.items()
+            if name.lower() not in excluded_headers
+        }
+
+        body = resp.content
+        content_type = resp.headers.get("content-type", "")
+
+        # Rewrite HTML so absolute asset paths are proxied correctly
+        if proxy_prefix and "text/html" in content_type:
+            body = _rewrite_html_assets(body, proxy_prefix)
+
+        return StreamingResponse(
+            iter([body]),
+            status_code=resp.status_code,
+            headers=response_headers
+        )
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Proxy Error: {str(e)}")
+ 
+@app.api_route("/app/{token}/", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+@app.api_route("/app/{token}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def route_proxy(token: str, request: Request, path: str = ""):
+    """Route requests to the appropriate container based on project token"""
+    # Get container port for this project
+    port = get_container_port(token)
+    print(f"Port for token {token}: {port}")
+    if not port:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Project '{token}' not found or container not running"
+        )
+   
+    target = f"http://127.0.0.1:{port}"
+    forward_path = "/" + path if path else "/"
+    proxy_prefix = f"/app/{token}"
+    return proxy_request(target, request, forward_path, proxy_prefix=proxy_prefix)

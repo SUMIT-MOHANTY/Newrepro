@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { customConfirm } from '../utils/modalHelpers';
 import { Database, Search, GitBranch, Loader2, CheckCircle, XCircle, Network, Trash2, RefreshCw } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 
@@ -123,7 +124,8 @@ export default function KnowledgeGraphCard({ selectedProjectKey, token, taskToke
 
     // Delete index
     const handleDelete = async () => {
-        if (!window.confirm('Delete the Knowledge Graph index for this project?')) return;
+        const confirmed = await customConfirm('Delete the Knowledge Graph index for this project?');
+        if (!confirmed) return;
         try {
             await fetch(API_ENDPOINTS.KG_DELETE(selectedProjectKey), {
                 method: 'DELETE',

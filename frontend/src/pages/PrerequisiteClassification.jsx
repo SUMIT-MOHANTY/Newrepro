@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { API_ENDPOINTS, VIBE_WORKSPACE_URL } from '../config';
+import { API_ENDPOINTS } from '../config';
 import {
     KeyRound, CheckCircle2, Circle, AlertCircle, AlertTriangle, ArrowRight,
     ChevronLeft, Database, Globe, Server,
@@ -9,6 +9,7 @@ import {
 
 import { getCachedTaskToken, setCachedTaskToken as cacheTaskToken } from '../utils/tokenCache';
 import { upsertDraftProject } from '../utils/draftProjects';
+import { sanitizeErrorMessage } from '../utils/errorHandling';
 
 /* ─────────────────────────────────────────────────────────
    CATEGORY CONFIG — icon + colour for each prerequisite type
@@ -126,7 +127,7 @@ const PROCESS_MODE_OPTIONS = [
     {
         id: 'vibe_coding',
         title: 'Vibe Coding',
-        description: 'Automatic project creation and redirection to VibeCoding development environment.',
+        description: 'Redirect to VS Code and use N-Mod Extension with Vibe instructions.',
         enabled: true,
     },
     {
@@ -159,8 +160,7 @@ const inferFieldTypeFromRequirement = (name = '', description = '') => {
     return 'text';
 };
 
-
-    const extractPrerequisitesFromAnalysis = (analysisData) => {
+const extractPrerequisitesFromAnalysis = (analysisData) => {
     if (!analysisData) return [];
 
     // Helper: strip HTML tags and clean up whitespace
@@ -183,9 +183,27 @@ const inferFieldTypeFromRequirement = (name = '', description = '') => {
     const items = [];
     let id = 1;
 
-    // If AI already returns structured prerequisites
-    if (analysisData.prerequisites && Array.isArray(analysisData.prerequisites)) {
-        return analysisData.prerequisites.map((p, idx) => {
+    // PRIORITY 1: Check for structured prerequisites from chunked analysis stages
+    if (analysisData.stages?.stage4_implementation?.prerequisites && Array.isArray(analysisData.stages.stage4_implementation.prerequisites)) {
+        console.log('Found structured prerequisites from stage4_implementation:', analysisData.stages.stage4_implementation.prerequisites);
+        return analysisData.stages.stage4_implementation.prerequisites.map((p, idx) => {
+            if (typeof p === 'string') {
+                const cleanString = stripHtml(p);
+                return {
+                    id: idx + 1,
+                    name: cleanString || `Prerequisite ${idx + 1}`,
+                    description: '', 
+                    category: 'other',
+                    priority: 'medium',
+                    fieldType: inferFieldTypeFromRequirement(cleanString, ''),
+                    provided: false,
+                    containsSecret: false,
+                    userValue: '',
+                    userFileName: '',
+                };
+            }
+
+            // Handle structured prerequisite objects
             const name = stripHtml(p.name || p.title || `Prerequisite ${idx + 1}`);
             const description = stripHtml(p.description || p.details || '');
             const fieldType = inferFieldTypeFromRequirement(name, description);
@@ -204,7 +222,52 @@ const inferFieldTypeFromRequirement = (name = '', description = '') => {
         });
     }
 
-    // Smart extraction from analysis text
+    // PRIORITY 2: Check for prerequisites in the main analysis object
+    if (analysisData.prerequisites && Array.isArray(analysisData.prerequisites)) {
+        console.log('Found prerequisites in main analysis:', analysisData.prerequisites);
+        return analysisData.prerequisites.map((p, idx) => {
+            // ==========================================
+            // FIX START: Handle string inputs
+            // ==========================================
+            if (typeof p === 'string') {
+                const cleanString = stripHtml(p);
+                return {
+                    id: idx + 1,
+                    name: cleanString || `Prerequisite ${idx + 1}`,
+                    description: '', // Strings don't have descriptions by default
+                    category: 'other',
+                    priority: 'medium',
+                    fieldType: inferFieldTypeFromRequirement(cleanString, ''),
+                    provided: false,
+                    containsSecret: false,
+                    userValue: '',
+                    userFileName: '',
+                };
+            }
+            // ==========================================
+            // FIX END
+            // ==========================================
+
+            // Existing logic for Objects
+            const name = stripHtml(p.name || p.title || `Prerequisite ${idx + 1}`);
+            const description = stripHtml(p.description || p.details || '');
+            const fieldType = inferFieldTypeFromRequirement(name, description);
+            return {
+                id: idx + 1,
+                name,
+                description,
+                category: p.category || 'other',
+                priority: p.priority || 'medium',
+                fieldType,
+                provided: false,
+                containsSecret: false,
+                userValue: '',
+                userFileName: '',
+            };
+        });
+    }
+
+    // Smart extraction from analysis text (Fallback if structure is missing)
     const rawText = typeof analysisData === 'string'
         ? analysisData
         : (analysisData.analysis || analysisData.report || JSON.stringify(analysisData));
@@ -821,23 +884,30 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 const detectedRepo = extractRepoSuggestionFromAnalysis(analysisObj);
                 const storedRepo = loadStoredProjectRepoSuggestion();
 
-                const finalRepoSuggestion = detectedRepo || storedRepo;
-                setAnalysisRepoSuggestion(finalRepoSuggestion);
-                if (finalRepoSuggestion?.url) {
-                    setGlobalGitRepoUrl((prev) => prev.trim() || finalRepoSuggestion.url);
-                }
-                if (finalRepoSuggestion?.provider === 'azure-devops') {
-                    setRepoProvider('azure-devops');
-                } else if (finalRepoSuggestion?.provider === 'github') {
-                    setRepoProvider('github');
+                // CRITICAL FIX: For NEW projects, only use repo suggestion if it came from explicit user input
+                // Don't auto-populate from BRD text analysis (which might just be mentioning an example repo)
+                const finalRepoSuggestion = storedRepo || (detectedRepo?.source === 'link' ? detectedRepo : null);
+                
+                // Only set repo suggestion if we have a valid one from user input
+                if (finalRepoSuggestion) {
+                    setAnalysisRepoSuggestion(finalRepoSuggestion);
+                    if (finalRepoSuggestion?.url) {
+                        setGlobalGitRepoUrl((prev) => prev.trim() || finalRepoSuggestion.url);
+                    }
+                    if (finalRepoSuggestion?.provider === 'azure-devops') {
+                        setRepoProvider('azure-devops');
+                    } else if (finalRepoSuggestion?.provider === 'github') {
+                        setRepoProvider('github');
+                    }
                 }
 
                 // Use structured prerequisites from AI if available, otherwise fall back to text extraction
                 const extracted = extractPrerequisitesFromAnalysis(analysisObj || projectDoc.analysis_result);
                 setPrerequisites(extracted.map((p, idx) => normalizePrerequisiteItem(p, idx)));
-            } catch (err) {
-                setError('Failed to load analysis data: ' + err.message);
-            } finally {
+                } catch (err) {
+                    console.error('Failed to load analysis data:', err);
+                    setError(sanitizeErrorMessage(err));
+                } finally {
                 setLoading(false);
             }
         };
@@ -931,7 +1001,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 return;
             }
             if (!selectedProjectKey) {
-                throw new Error('No project selected.');
+                throw new Error('Please select a project from the sidebar before proceeding.');
             }
 
             if (!['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)) {
@@ -940,6 +1010,14 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 if (!repo) {
                     throw new Error('Git repository URL is required.');
                 }
+                
+                // Basic URL validation
+                try {
+                    new URL(repo);
+                } catch {
+                    throw new Error('Please enter a valid Git repository URL (e.g., https://github.com/org/repo.git).');
+                }
+                
                 // PAT is optional - no longer required
 
                 // Save global Git config from prerequisites so all agents reuse it.
@@ -949,14 +1027,16 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     headers: { Authorization: `Bearer ${token}` },
                 });
                 if (!agentsRes.ok) {
-                    throw new Error('Failed to load agents for saving global Git config.');
+                    const agentsError = await agentsRes.json().catch(() => ({}));
+                    const errorMsg = agentsError?.detail || 'Failed to load project agents.';
+                    throw new Error(sanitizeErrorMessage(errorMsg));
                 }
                 const agentsData = await agentsRes.json().catch(() => ({}));
                 const agentList = Array.isArray(agentsData?.agents) ? agentsData.agents : [];
                 const targetAgent =
                     agentList.find((a) => a?.id !== 'agent_03' && a?.id !== 'agent_04') || agentList[0];
                 if (!targetAgent?.id) {
-                    throw new Error('No agent available to save global Git config.');
+                    throw new Error('No agents are available for this project. Please contact support.');
                 }
 
                 const updateUrl = new URL(API_ENDPOINTS.AGENT_UPDATE(targetAgent.id));
@@ -972,9 +1052,11 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     },
                     body: JSON.stringify(gitPayload),
                 });
+                
                 if (!updateRes.ok) {
                     const errData = await updateRes.json().catch(() => ({}));
-                    throw new Error(errData?.detail || 'Failed to save  Git config.');
+                    const errorMsg = errData?.detail || 'Failed to save Git configuration.';
+                    throw new Error(sanitizeErrorMessage(errorMsg));
                 }
                 setHasSavedGlobalGitToken(true);
                 setGlobalGitToken('');
@@ -1008,17 +1090,27 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
             );
 
             // Mark prerequisites as completed on the backend
-            await fetch(API_ENDPOINTS.GOVERNANCE_PREREQUISITES_COMPLETE(selectedProjectKey), {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token}`,
-                },
-            });
+            try {
+                await fetch(API_ENDPOINTS.GOVERNANCE_PREREQUISITES_COMPLETE(selectedProjectKey), {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${token}`,
+                    },
+                });
+            } catch (err) {
+                console.warn('Failed to mark prerequisites as completed on backend:', err);
+                // Don't throw here - this is not critical for user flow
+            }
 
             // Refresh roadmap to reflect that prerequisites are done
-            if (fetchRoadmapData && selectedProjectKey) {
-                await fetchRoadmapData(selectedProjectKey);
+            try {
+                if (fetchRoadmapData && selectedProjectKey) {
+                    await fetchRoadmapData(selectedProjectKey);
+                }
+            } catch (err) {
+                console.warn('Failed to refresh roadmap data:', err);
+                // Don't throw here - this is not critical for user flow
             }
 
             // Save selected execution mode
@@ -1031,15 +1123,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 console.error('Task token prefetch failed', prefetchError);
             }
 
-            if (['vibe_coding'].includes(processMode)) {
-                // Show confirmation before redirecting to VibeCoding
-                const vibeCodingUrl = `${VIBE_WORKSPACE_URL}/a/${selectedProjectKey}?name=${encodeURIComponent(projectName)}&mode=vibe_coding`;
-                setRedirectionTarget(vibeCodingUrl);
-                setShowRedirectionConfirmation(true);
-                return;
-            }
-
-            if (['developer_only', 'ai_assist'].includes(processMode)) {
+            if (['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)) {
                 // Redirect immediately without showing the checkmark screen
                 window.location.href = 'vscode:extension/bourntec-Solutions.n-mod-vscode-assistant';
                 return; // Stop execution here so it doesn't clear the submitting state right away
@@ -1070,7 +1154,8 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 });
                 const bootstrapJson = await bootstrapRes.json().catch(() => ({}));
                 if (!bootstrapRes.ok) {
-                    throw new Error(bootstrapJson?.detail || 'Failed to create project during prerequisites.');
+                    const errorMsg = bootstrapJson?.detail || 'Failed to create project during prerequisites.';
+                    throw new Error(sanitizeErrorMessage(errorMsg));
                 }
 
                 // If bootstrap returned external task credentials, persist them into the draft project
@@ -1103,7 +1188,8 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 }, 1500);
             }
         } catch (err) {
-            setError('Failed to save prerequisites: ' + err.message);
+            console.error('Prerequisites submission error:', err);
+            setError(sanitizeErrorMessage(err));
         } finally {
             if (!['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)) {
                 setSubmitting(false);
@@ -1223,7 +1309,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                     <span className="text-lg">ℹ️</span> No PAT Provided
                                 </p>
                                 <p className="leading-snug">
-                                    You haven't entered a Personal Access Token. This is optional for public repositories, but required for private ones.
+                                    You haven't entered a Personal Access Token. This is required for pushing the code.
                                 </p>
                             </div>
                         </div>
@@ -1290,11 +1376,21 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
                 {/* ── ERROR ── */}
                 {error && (
-                    <div className="rounded-xl bg-app-status-errorBg/80 backdrop-blur-sm p-4 border border-red-200/60 text-app-status-error mb-5 flex items-start gap-3 shadow-sm">
-                        <div className="w-8 h-8 rounded-lg bg-app-status-errorBg flex items-center justify-center flex-shrink-0">
-                            <AlertCircle className="w-4 h-4 text-app-status-error" />
+                    <div className="rounded-xl bg-app-status-errorBg/80 backdrop-blur-sm p-4 border border-red-200/60 text-app-status-error mb-5 shadow-sm">
+                        <div className="flex items-start gap-3">
+                            <div className="w-8 h-8 rounded-lg bg-app-status-errorBg flex items-center justify-center flex-shrink-0">
+                                <AlertCircle className="w-4 h-4 text-app-status-error" />
+                            </div>
+                            <div className="flex-1">
+                                <div className="text-sm font-medium mb-2">{error}</div>
+                                <button
+                                    onClick={() => setError('')}
+                                    className="text-xs text-app-status-error hover:text-red-700 font-medium underline"
+                                >
+                                    Dismiss
+                                </button>
+                            </div>
                         </div>
-                        <div className="text-sm font-medium pt-1">{error}</div>
                     </div>
                 )}
 
@@ -1577,7 +1673,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                             <h3 className="text-base font-bold text-app-text-main mb-1">Ready to proceed?</h3>
                             <p className="text-sm text-app-text-muted">
                                 {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)
-                                    ? '🚀 You will be redirected to the VibeCoding development environment.'
+                                    ? '🚀 You will be redirected to VS Code to use N-Mod Extension.'
                                     : allProvided
                                         ? '✅ All prerequisites confirmed. You can proceed to task creation.'
                                         : `${totalItems - providedCount} item${totalItems - providedCount !== 1 ? 's' : ''} still pending. You can still proceed, but ensure all items are addressed before agent execution.`
@@ -1597,46 +1693,12 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                 <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</>
                             ) : (
                                 <>{(allProvided || ['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)) ? <CheckCircle2 className="w-4 h-4" /> : <ArrowRight className="w-4 h-4" />}
-                                    {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode) ? 'Proceed to Workspace' : (allProvided ? 'Confirm & Proceed' : 'Proceed Anyway')}</>
+                                    {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode) ? 'Redirect to VS Code' : (allProvided ? 'Confirm & Proceed' : 'Proceed Anyway')}</>
                             )}
                         </button>
                     </div>
                 </div>
             </div>
-            {/* Redirection Confirmation Modal */}
-            {showRedirectionConfirmation && (
-                <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4">
-                    <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={handleCancelRedirection}></div>
-                    <div className="relative z-10 w-full max-w-md bg-app-bg-card rounded-2xl shadow-2xl border border-app-border p-6 animate-in zoom-in-95 duration-200">
-                        <div className="flex items-center gap-3 mb-4">
-                            <div className="h-12 w-12 rounded-xl bg-app-primary-light flex items-center justify-center text-app-primary">
-                                <Sparkles className="h-6 w-6" />
-                            </div>
-                            <div>
-                                <h3 className="text-lg font-bold text-app-text-main">Redirecting to VibeCoding</h3>
-                                <p className="text-xs text-app-text-light">You're about to leave DSuite.</p>
-                            </div>
-                        </div>
-                        <p className="text-sm text-app-text-label leading-relaxed mb-6">
-                            You have selected <strong>Vibe Coding Mode</strong>. This will redirect you to the VibeCoding application for project implementation. Would you like to proceed?
-                        </p>
-                        <div className="flex items-center gap-3 justify-end">
-                            <button
-                                onClick={handleCancelRedirection}
-                                className="px-4 py-2 text-sm font-medium text-app-text-label hover:text-app-text-main transition-colors"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                onClick={handleConfirmRedirection}
-                                className="px-6 py-2.5 text-sm font-bold text-white bg-app-primary rounded-xl hover:bg-app-primary-hover shadow-lg active:scale-95 transition-all"
-                            >
-                                Proceed to VibeCoding
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
         </div>
     );
 };
