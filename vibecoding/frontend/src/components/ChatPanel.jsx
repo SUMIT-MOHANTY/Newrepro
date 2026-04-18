@@ -23,11 +23,18 @@ const ChatPanel = ({
   disabled = false,
   discussMode = false,
   onToggleDiscuss,
-  onImageUpload, // New prop for handling image uploads
+  onImageUpload,
+  onExecuteTask,
+  onExecuteAllTasks,
+  onEditTask,
+  executingTaskId,
 }) => {
   const messagesEndRef = useRef(null);
+  const messagesContainerRef = useRef(null);
   const [suggestionIndex, setSuggestionIndex] = React.useState(0);
   const rotationTimeoutRef = useRef(null);
+  const [isUserScrolling, setIsUserScrolling] = React.useState(false);
+  const lastMessageCountRef = useRef(0);
 
   const inferredCheckpointCount = React.useMemo(() => {
     const fromCommits = Array.isArray(codeVersions) ? codeVersions.length : 0;
@@ -40,15 +47,70 @@ const ChatPanel = ({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
+  // Detect if user is manually scrolling
+  const handleScroll = React.useCallback(() => {
+    if (!messagesContainerRef.current) return;
+    
+    const { scrollTop, scrollHeight, clientHeight } = messagesContainerRef.current;
+    const isAtBottom = scrollHeight - scrollTop - clientHeight < 50; // 50px threshold
+    
+    setIsUserScrolling(!isAtBottom);
+  }, []);
+
+  // Only auto-scroll when new messages arrive AND user is not manually scrolling
   React.useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+    const messageCount = messages.length;
+    const hasNewMessages = messageCount > lastMessageCountRef.current;
+    
+    if (hasNewMessages && !isUserScrolling) {
+      scrollToBottom();
+    }
+    
+    lastMessageCountRef.current = messageCount;
+  }, [messages, isUserScrolling]);
 
   React.useEffect(() => {
     return () => {
       if (rotationTimeoutRef.current) clearTimeout(rotationTimeoutRef.current);
     };
   }, []);
+
+  // Group messages with their thinking logs
+  const processedMessages = React.useMemo(() => {
+    const result = [];
+    let currentThinkingLogs = [];
+    let lastNonThinkingMessage = null;
+
+    messages.forEach((message, idx) => {
+      if (message.metadata?.type === 'thinking') {
+        // Accumulate thinking logs
+        currentThinkingLogs.push({
+          message: message.content,
+          timestamp: message.timestamp,
+          level: 'info'
+        });
+      } else {
+        // Non-thinking message
+        if (currentThinkingLogs.length > 0 && lastNonThinkingMessage) {
+          // Attach accumulated logs to the last non-thinking message
+          lastNonThinkingMessage.thinkingLogs = currentThinkingLogs;
+          currentThinkingLogs = [];
+        }
+        
+        const processedMsg = { ...message, thinkingLogs: [] };
+        result.push(processedMsg);
+        lastNonThinkingMessage = processedMsg;
+      }
+    });
+
+    // If there are remaining thinking logs and we're loading, attach to last message
+    if (currentThinkingLogs.length > 0 && lastNonThinkingMessage) {
+      lastNonThinkingMessage.thinkingLogs = currentThinkingLogs;
+      lastNonThinkingMessage.isThinking = loading;
+    }
+
+    return result;
+  }, [messages, loading]);
 
   const [width, setWidth] = React.useState(384); // Default 96 tailwind class is 384px
   const isResizing = useRef(false);
@@ -152,8 +214,12 @@ const ChatPanel = ({
       </div>
 
       {/* Messages - Fixed height with scroll */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 custom-scrollbar min-h-0">
-        {messages.length === 0 && suggestions && (
+      <div 
+        ref={messagesContainerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto px-4 py-4 space-y-4 custom-scrollbar min-h-0"
+      >
+        {processedMessages.length === 0 && suggestions && !loading && (
           <div className="space-y-4 ">
             <div className={`text-center py-8 ${darkMode ? 'text-gray-400' : 'text-gray-500'
               }`}>
@@ -204,7 +270,7 @@ const ChatPanel = ({
           </div>
         )}
 
-        {messages.map((message, idx) => (
+        {processedMessages.map((message, idx) => (
           <ChatMessage
             key={idx}
             message={message}
@@ -215,28 +281,13 @@ const ChatPanel = ({
             onCopyMessage={onCopyMessage}
             onRegenerate={onRegenerate}
             onSuggestionClick={setInput}
+            onExecuteTask={onExecuteTask}
+            onExecuteAllTasks={onExecuteAllTasks}
+            onEditTask={onEditTask}
+            executingTaskId={executingTaskId}
           />
         ))}
 
-        {loading && (
-          <div className="flex gap-3">
-            <div className={`flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center ${darkMode ? 'bg-white/5' : 'bg-gray-100'
-              }`}>
-              <Bot className={`w-4 h-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`} />
-            </div>
-            <div className={`px-4 py-3 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100'
-              }`}>
-              <div className="flex gap-1.5">
-                <span className={`w-2 h-2 rounded-full animate-bounce ${darkMode ? 'bg-purple-500' : 'bg-gray-400'
-                  }`} style={{ animationDelay: '0ms' }}></span>
-                <span className={`w-2 h-2 rounded-full animate-bounce ${darkMode ? 'bg-purple-500' : 'bg-gray-400'
-                  }`} style={{ animationDelay: '150ms' }}></span>
-                <span className={`w-2 h-2 rounded-full animate-bounce ${darkMode ? 'bg-purple-500' : 'bg-gray-400'
-                  }`} style={{ animationDelay: '300ms' }}></span>
-              </div>
-            </div>
-          </div>
-        )}
         <div ref={messagesEndRef} />
       </div>
 

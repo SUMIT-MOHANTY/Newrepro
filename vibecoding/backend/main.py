@@ -9,7 +9,7 @@ from datetime import datetime
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks, Response
+from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -25,8 +25,14 @@ from auth import SignupRequest, LoginRequest, signup_user, login_user, get_curre
 from dual_agent_handler import get_dual_agent_handler
 from prompts import MAIN_SYSTEM_PROMPT, APP_NAME
 
+import socket
 import logging
-logging.basicConfig(level=logging.INFO)
+
+# Silence noisy pollers
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("requests").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 load_dotenv()
@@ -78,6 +84,46 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─── WebSocket Connection Manager ───────────────────────────────────────────────
+class ConnectionManager:
+    """Manage WebSocket connections for real-time updates"""
+    def __init__(self):
+        self.active_connections: Dict[str, List[WebSocket]] = {}
+    
+    async def connect(self, websocket: WebSocket, project_id: str):
+        await websocket.accept()
+        if project_id not in self.active_connections:
+            self.active_connections[project_id] = []
+        self.active_connections[project_id].append(websocket)
+        logger.info(f"WebSocket connected for project {project_id}. Total connections: {len(self.active_connections[project_id])}")
+    
+    def disconnect(self, websocket: WebSocket, project_id: str):
+        if project_id in self.active_connections:
+            try:
+                self.active_connections[project_id].remove(websocket)
+                logger.info(f"WebSocket disconnected for project {project_id}. Remaining: {len(self.active_connections[project_id])}")
+                if not self.active_connections[project_id]:
+                    del self.active_connections[project_id]
+            except ValueError:
+                pass
+    
+    async def broadcast(self, message: dict, project_id: str):
+        """Broadcast message to all connected clients for a project"""
+        if project_id in self.active_connections:
+            disconnected = []
+            for connection in self.active_connections[project_id]:
+                try:
+                    await connection.send_json(message)
+                except Exception as e:
+                    logger.error(f"Failed to send WebSocket message: {e}")
+                    disconnected.append(connection)
+            
+            # Clean up disconnected clients
+            for conn in disconnected:
+                self.disconnect(conn, project_id)
+
+manager = ConnectionManager()
 
 # Create a session with connection pooling and retry logic for proxy requests
 def get_proxy_session():
@@ -197,47 +243,50 @@ def get_warming_up_html():
 async def container_proxy(project_token: str, path: str = "", request: Request = None):
     """
     Generic proxy that routes traffic to the specific Docker container for a project.
-    This allows the frontend to use a single persistent URL while containers use ephemeral ports.
+    The preview URL is fixed per project — the proxy resolves the current container
+    port at request time from .container_registry.json.
     """
-    # Forward query parameters
     query_params = request.scope.get("query_string", b"").decode()
-    
-    # 1. First, check if the container is even ready (has a port)
+
+    # Determine if this is a "main page" request (HTML) or an asset request
+    is_asset = bool(path) and any(
+        path.endswith(ext) for ext in
+        ('.js', '.css', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico',
+         '.woff', '.woff2', '.ttf', '.eot', '.map', '.json', '.webp')
+    )
+
     port = get_container_port(project_token)
     if not port:
-        # If it's a main page request, return Warming Up instead of 404
-        if not path or path.endswith((".html", "/")):
-            logger.info(f"🏘️ Container for {project_token} not registered yet. Returning 'Warming up' HTML.")
-            return HTMLResponse(content=get_warming_up_html())
-        logger.error(f"❌ Container port not found for project {project_token}")
-        logger.error(f"   Registry file: {project_manager.artifacts_dir / '.container_registry.json'}")
-        logger.error(f"   Looking for: vibecoding_{project_token}")
-        raise HTTPException(status_code=404, detail=f"Container for {project_token} not found or not running.")
+        # Container not registered yet — always return warming-up page (never a JSON error)
+        logger.info(f"🏘️ Container for {project_token} not registered yet. Returning 'Warming up' HTML.")
+        return HTMLResponse(content=get_warming_up_html())
 
+    # Pure transparent proxy: strip the /vibecoding/app/{project_token}/ prefix
+    # and forward the remaining path to the container as-is
     target_base = f"http://127.0.0.1:{port}"
     target_url = f"{target_base}/{path}"
     if query_params:
         target_url += f"?{query_params}"
 
-    # Prepare headers — exclude hop-by-hop and connection-management headers
     excluded_outgoing = ["host", "content-length", "connection", "keep-alive", "proxy-connection", "upgrade"]
     headers = {k: v for k, v in request.headers.items() if k.lower() not in excluded_outgoing}
-    headers["accept-encoding"] = "identity"  # Prefer uncompressed for stable proxying
-    
-    # 1. First, wait for container to be ready (Pre-flight)
+    headers["accept-encoding"] = "identity"
+
+    logger.info(f"🔀 Proxy: {request.method} /vibecoding/app/{project_token}/{path} → {target_url}")
+
+    # Wait for container to be ready
     is_ready = await wait_for_container_ready(target_base, max_attempts=15, initial_delay=1.0)
     if not is_ready:
         print(f"⚠️ Container {target_base} still not responding after 15s. Proceeding anyway.")
 
-    # 2. Proxy request with internal retries to avoid "Connection Reset" JSON in iframe
     max_retries = 5
     last_error = None
-    
+
     for attempt in range(max_retries):
         try:
             session = get_proxy_session()
             body = await request.body()
-            
+
             print(f"🔄 Proxying {request.method} to {target_url} (attempt {attempt + 1})")
             resp = session.request(
                 method=request.method,
@@ -247,16 +296,13 @@ async def container_proxy(project_token: str, path: str = "", request: Request =
                 allow_redirects=False,
                 timeout=(5, 30)
             )
-            
-            # Prepare response headers
-            excluded_response = ["content-encoding", "content-length", "transfer-encoding", "connection", "keep-alive", "x-frame-options", "content-security-policy"]
+
+            excluded_response = ["content-encoding", "content-length", "transfer-encoding", "connection",
+                                  "keep-alive", "x-frame-options", "content-security-policy"]
             response_headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded_response}
-            
-            # Allow iframe embedding
             response_headers["X-Frame-Options"] = "ALLOWALL"
             response_headers["Access-Control-Allow-Origin"] = "*"
 
-            # Handle content
             final_content = resp.content
             encoding = resp.headers.get("content-encoding", "").lower()
             if "gzip" in encoding:
@@ -265,6 +311,55 @@ async def container_proxy(project_token: str, path: str = "", request: Request =
                     final_content = _gzip.decompress(final_content)
                 except Exception:
                     pass
+
+            # Rewrite response content to add proxy prefix to all absolute paths
+            # This makes the container's responses work through the proxy
+            content_type = resp.headers.get("content-type", "").lower()
+            proxy_prefix = f"/vibecoding/app/{project_token}"
+            
+            # Only rewrite text-based content types
+            if final_content and any(ct in content_type for ct in ["text/html", "text/css", "application/javascript", "text/javascript", "application/json"]):
+                try:
+                    text_content = final_content.decode('utf-8', errors='ignore')
+                    
+                    # Rewrite absolute paths to include proxy prefix
+                    # Match: href="/...", src="/...", action="/...", url(/...), "/..." in JSON/JS
+                    # But avoid double-prefixing paths that already have the prefix
+                    
+                    if "text/html" in content_type:
+                        # HTML: Rewrite attributes
+                        text_content = _re.sub(
+                            r'((?:href|src|action|data|content)=")(/(?!vibecoding/app/)[^"]*)"',
+                            rf'\1{proxy_prefix}\2"',
+                            text_content
+                        )
+                        text_content = _re.sub(
+                            r"((?:href|src|action|data|content)=')(/(?!vibecoding/app/)[^']*)'",
+                            rf"\1{proxy_prefix}\2'",
+                            text_content
+                        )
+                    
+                    elif "text/css" in content_type:
+                        # CSS: Rewrite url() references
+                        text_content = _re.sub(
+                            r'url\((["\']?)(/(?!vibecoding/app/)[^)"\'"]+)\1\)',
+                            rf'url(\1{proxy_prefix}\2\1)',
+                            text_content
+                        )
+                    
+                    elif "javascript" in content_type or "json" in content_type:
+                        # JS/JSON: Rewrite string literals with absolute paths
+                        # Match strings like "/api/...", "/assets/...", etc.
+                        text_content = _re.sub(
+                            r'(["\'])(/(?!vibecoding/app/)[a-zA-Z0-9/_.-]+)\1',
+                            rf'\1{proxy_prefix}\2\1',
+                            text_content
+                        )
+                    
+                    final_content = text_content.encode('utf-8')
+                    logger.debug(f"✅ Rewrote paths in {content_type} for {project_token}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to rewrite paths in response: {e}")
 
             response_headers["content-length"] = str(len(final_content))
             media_type = resp.headers.get("content-type", "")
@@ -278,10 +373,9 @@ async def container_proxy(project_token: str, path: str = "", request: Request =
 
         except (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
             last_error = e
-            error_msg = str(e).lower()
             if attempt < max_retries - 1:
                 wait_time = (attempt + 1) * 0.5
-                print(f"⏳ Connection error (attempt {attempt + 1}): {error_msg}. Retrying in {wait_time}s...")
+                print(f"⏳ Connection error (attempt {attempt + 1}): {e}. Retrying in {wait_time}s...")
                 await asyncio.sleep(wait_time)
                 continue
             break
@@ -289,16 +383,9 @@ async def container_proxy(project_token: str, path: str = "", request: Request =
             last_error = e
             break
 
-    # 3. If we're here, all retries failed. 
-    # To avoid showing raw JSON error to user, return a friendly "Warming up" HTML 
-    # ONLY if it's likely a main page request (no path or html-like path)
-    if not path or path.endswith((".html", "/")):
-        logger.info(f"🏘️ Proxy failed. Returning 'Warming up' HTML instead of JSON error.")
-        return HTMLResponse(content=get_warming_up_html(), status_code=200)
-
-    # For assets/API calls that failed, return the 502 as before
-    logger.error(f"❌ Final proxy failure for {target_url}: {last_error}")
-    raise HTTPException(status_code=502, detail=f"Proxy error: {str(last_error)}")
+    # All retries failed — always return warming-up HTML (never a raw error in the iframe)
+    logger.info(f"🏘️ Proxy failed for {project_token}. Returning 'Warming up' HTML.")
+    return HTMLResponse(content=get_warming_up_html(), status_code=200)
 
 
 class Message(BaseModel):
@@ -627,6 +714,36 @@ async def sso_handoff(request: SSOHandoffRequest):
 async def root():
     return {"message": f"{APP_NAME} API is running"}
 
+# ─── WebSocket Endpoint ─────────────────────────────────────────────────────────
+@app.websocket("/vibecoding/ws/{project_id}")
+async def websocket_endpoint(websocket: WebSocket, project_id: str):
+    """WebSocket endpoint for real-time project updates"""
+    await manager.connect(websocket, project_id)
+    try:
+        while True:
+            # Keep connection alive and receive any client messages
+            data = await websocket.receive_text()
+            # Echo back for heartbeat
+            await websocket.send_json({"type": "pong", "timestamp": datetime.now().isoformat()})
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, project_id)
+    except Exception as e:
+        logger.error(f"WebSocket error for project {project_id}: {e}")
+        manager.disconnect(websocket, project_id)
+
+@app.post("/vibecoding/api/broadcast/{project_id}")
+async def broadcast_message(project_id: str, request: dict):
+    """
+    Internal endpoint for AI agent to broadcast messages via WebSocket.
+    This is called by the ai-agent.py report() function.
+    """
+    try:
+        await manager.broadcast(request, project_id)
+        return {"status": "broadcasted"}
+    except Exception as e:
+        logger.error(f"Broadcast failed for project {project_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/vibecoding/api/chat/dual-agent")
 async def dual_agent_chat(request: GenerateRequest):
     """
@@ -805,20 +922,22 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
     
     # Guaranteed User Message Persistence (Atomic)
     user_msg_id = f"msg_{int(time.time())}_{uuid.uuid4().hex[:4]}"
+    user_timestamp = datetime.now().isoformat()
     try:
         conn = get_db()
-        # Use INSERT OR REPLACE to be absolutely certain we don't lose the prompt
+        # Use INSERT OR IGNORE to prevent duplicate messages with same ID
+        # This ensures we never overwrite an existing message
         conn.execute(
-            """INSERT OR REPLACE INTO messages 
+            """INSERT OR IGNORE INTO messages 
                (id, project_id, role, content, code, timestamp, image_paths, suggestions, tool_calls, metadata, summary)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (user_msg_id, project_id, "user", request.prompt, None, datetime.now().isoformat(),
+            (user_msg_id, project_id, "user", request.prompt, None, user_timestamp,
              json.dumps(request.images) if request.images else None, 
              None, None, None, None)
         )
         conn.commit()
         conn.close()
-        logger.info(f"✅ User prompt verified and stored: {user_msg_id} (Project: {project_id})")
+        logger.info(f"✅ User prompt verified and stored: {user_msg_id} at {user_timestamp} (Project: {project_id})")
     except Exception as e:
         logger.error(f"❌ CRITICAL: Failed to save user prompt: {e}")
         # We continue so the user still gets a response, but we've logged the failure
@@ -848,32 +967,25 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
             agent_summary = await summarize_content(ai_response, "")
 
             # Autonomously persist assistant message in discuss mode
-            try:
-                from auth import get_db
-                import uuid
-                import time
-                msg_id = f"msg_{int(time.time())}_{uuid.uuid4().hex[:4]}"
-                project_info = project_manager.get_project_info(project_id)
-                container_id = project_info.get("container_id") if project_info else None
-                
-                conn = get_db()
-                conn.execute(
-                    """INSERT INTO messages 
-                       (id, project_id, container_id, role, content, code, version_id, timestamp, suggestions, tool_calls, image_paths, metadata, summary)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (msg_id, project_id, container_id, "assistant", ai_response, None, None,
-                     datetime.now().isoformat(), 
-                     json.dumps(suggestions) if suggestions else None,
-                     None, None, None, agent_summary)
-                )
-                conn.commit()
-                conn.close()
-                logger.info(f"📁 Persisted AI response {msg_id} (Discuss) for project {project_id}")
-            except Exception as e:
-                logger.error(f"❌ Failed to auto-save discuss message: {e}")
+            msg_id = f"msg_{int(time.time())}_{uuid.uuid4().hex[:4]}"
+            project_info = project_manager.get_project_info(project_id)
+            container_id = project_info.get("container_id") if project_info else None
+            
+            conn = get_db()
+            conn.execute(
+                """INSERT INTO messages 
+                    (id, project_id, container_id, role, content, code, version_id, timestamp, suggestions, tool_calls, image_paths, metadata, summary)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (msg_id, project_id, container_id, "assistant", ai_response, None, None,
+                    datetime.now().isoformat(), 
+                    json.dumps(suggestions) if suggestions else None,
+                    None, None, None, agent_summary)
+            )
+            conn.commit()
+            conn.close()
 
             return GenerateResponse(
-                message=agent_summary,
+                message=ai_response,
                 code=None,
                 project_id=project_id,
                 version_id=None,
@@ -884,365 +996,242 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
                 message_id=msg_id
             )
 
-        # Get existing code in the workspace - Increased limits for better full-stack context
-        workspace_files = project_manager.get_workspace_files(project_id, max_files=100, max_chars_per_file=4000)
-        has_existing_code = len(workspace_files) > 0
+        # ── Autonomous Flow: Delegating to Container-Side Resident Agent ──────
+        logger.info(f"🦾 Triggering Autonomous Orchestrator for Project: {project_id}")
 
-        # Detect stack from workspace OR from user prompt
-        detected_stack = None
-        if has_existing_code:
-            detected_stack = project_manager.detect_stack_from_workspace(project_id)
-        else:
-            # For new projects, detect from user prompt
-            prompt_lower = request.prompt.lower()
-            if ('react' in prompt_lower or 'vite' in prompt_lower) and ('flask' in prompt_lower or 'python' in prompt_lower or 'backend' in prompt_lower):
-                detected_stack = "react+flask"
-            elif 'react' in prompt_lower or 'vite' in prompt_lower:
-                detected_stack = "react"
-            elif 'flask' in prompt_lower:
-                detected_stack = "flask"
-            elif 'vue' in prompt_lower:
-                detected_stack = "vue"
-            elif 'next' in prompt_lower or 'nextjs' in prompt_lower:
-                detected_stack = "nextjs"
-        
-        # Get container structure if container exists
-        container_structure = None
-        if has_existing_code:
-            container_structure = project_manager.get_container_workspace_structure(project_id)
+        workspace_dir = project_manager.artifacts_dir / project_id / "workspace"
+        workspace_dir.mkdir(parents=True, exist_ok=True)
 
-        # Identify "Chat" intent for short/simple prompts or greetings to keep context light
-        simple_chat_words = {'hi', 'hello', 'hey', 'yo', 'sup', 'how are you', 'howdy', 'greeting', 'thanks', 'thank you'}
-        p_clean = request.prompt.strip().lower().strip('?!.')
-        is_simple_intent = p_clean in simple_chat_words or (len(p_clean) < 12 and not any(c in p_clean for c in ['/', '.', '<', '>', '{', '}']))
-        
-        # If simple intent, we skip the heavy file content to avoid "over-engineering" the response,
-        # but we KEEP the project tree/structure so the AI still knows "where" it is.
-        if is_simple_intent:
-            workspace_files = {} # Keep codebase light
-        
-        # Get full project structure (all paths recursively) to help with architectural understanding
-        all_paths = project_manager.get_all_workspace_paths(project_id)
-        project_tree_str = "\n".join([f"- {p}" for p in all_paths]) if all_paths else "No files yet"
-        
-        # Detect architecture/stack
-        project_info = project_manager.get_project_info(project_id) or {}
-        runtime = project_info.get("runtime", "universal")
-        arch_type = f"Architecture Detect: {runtime.upper()} project structure."
-        
-        # Get frozen files list
-        frozen_files = project_manager.get_frozen_files(project_id)
-        frozen_files_str = "\n".join([f"- {path} (READ-ONLY)" for path in frozen_files]) if frozen_files else "None"
+        # Ensure project metadata exists so manager knows what it's dealing with
+        if not (workspace_dir / "metadata.json").exists():
+            project_manager._ensure_workspace_metadata(project_id, workspace_dir, "initial")
 
-        # Inject BRD project context if available
-        brd_context_str = ""
-        project_meta = project_manager.get_project_info(project_id)
-        brd_data = project_meta.get("brd_context") if project_meta else None
-        
-        if brd_data:
-            parts = []
-            if brd_data.get("project_name"):
-                parts.append(f"Project Name: {brd_data['project_name']}")
-            if brd_data.get("classification"):
-                parts.append(f"Governance Classification: {brd_data['classification']}")
-            if brd_data.get("recommendation"):
-                parts.append(f"Governance Recommendation: {brd_data['recommendation']}")
-            if brd_data.get("brd_summary"):
-                parts.append(f"BRD Summary: {brd_data['brd_summary']}")
-            if brd_data.get("agent_analysis"):
-                parts.append(f"Agent Analysis: {brd_data['agent_analysis']}")
-            if parts:
-                brd_context_str = "\n\n📄 PROJECT CONTEXT (from BRD Analyzer):\n" + "\n".join(parts) + "\n"
+        # 1. Compute the fixed preview URL for this project BEFORE starting the container.
+        #    The URL is deterministic — it never changes for a given project_id.
+        preview_url = project_manager.get_preview_url(project_id)
 
-        # Build conversation history with appropriate system prompt
-        from prompts import get_dynamic_system_prompt
-        
-        # Determine extra directives based on current user prompt intent
-        extra_directives = ""
-        p_lower = request.prompt.lower()
-        if any(word in p_lower for word in ['redesign', 'premium', 'modernize', 'professional', 'ux', 'ui']):
-            extra_directives = "🎯 DESIGN UPGRADE: The user wants a premium, modern, or OS-like redesign. Use deep glassmorphism, subtle micro-animations on hover, and custom layouts that fill the entire screen. Ensure it is RESPONSIVE and mobile-ready."
-        elif any(word in p_lower for word in ['simple', 'clean', 'minimalist']):
-            extra_directives = "🎯 DESIGN DIRECTIVE: Create a clean, minimalist, but high-fidelity 'Apple-style' UI. High contrast, precise typography (Inter), and plenty of whitespace while still feeling complete."
-
-        # Pass in all data to the dynamic prompt factory
-        system_prompt = get_dynamic_system_prompt(
-            mode="chat" if (request.discuss_mode or is_simple_intent) else ("edit" if has_existing_code else "generate"),
-            frozen_files=frozen_files_str,
-            file_list=project_tree_str,
-            current_files="".join([f"\n\n// FILE: {path}\n{content}" for path, content in workspace_files.items()]) if (has_existing_code and not is_simple_intent) else "",
-            brd_context=brd_data,
-            extra_directives=f"{arch_type}\n{extra_directives}" if not is_simple_intent else "",
-            detected_stack=detected_stack,
-            container_structure=container_structure
+        # 2. Start or ensure the agent container is alive (volume-mounted to workspace)
+        agent_url = project_manager.start_agent_container(
+            api_key=ai_config.api_key,
+            project_path=str(workspace_dir),
+            project_id=project_id
         )
-        
-        from datetime import datetime
-        now = datetime.now()
-        date_context = f"Current date and time: {now.strftime('%A, %B %d, %Y %H:%M:%S')} (UTC{now.astimezone().strftime('%z')})\n\n"
-        
-        # Add project context for container tools
-        project_context = f"Project ID: {project_id}\n"
-        if detected_stack:
-            project_context += f"Detected Stack: {detected_stack}\n"
-        project_context += "\n"
-        
-        messages = [{"role": "system", "content": date_context + project_context + system_prompt}]
-        for msg in request.history:
-            messages.append({"role": msg.role, "content": msg.content})
-        
-        prompt_with_instructions = request.prompt
-        if has_existing_code:
-            prompt_with_instructions = f"{request.prompt}\n\nIMPORTANT: If this is a small change, output ONLY the files that need to be modified. Do NOT regenerate the entire codebase."
-        
-        messages.append(build_vision_message(prompt_with_instructions, request.images))
 
-        # Log AI request
-        log_prompt = f"User Request: {request.prompt}"
-        response = await make_request_with_tools(messages)
-        tool_calls_log = response.pop("_tool_calls_log", None)
-        
-        if "choices" in response and len(response["choices"]) > 0:
-            ai_response = response["choices"][0]["message"].get("content") or ""
-        else:
-            raise Exception("Invalid response format from AI API")
-        
-        # Check if AI returned empty response
-        if not ai_response or not ai_response.strip():
-            logger.error(f"❌ AI returned empty response for prompt: {request.prompt[:100]}")
-            logger.error(f"   Response object: {response}")
-            raise Exception("AI returned an empty response. This may be due to content filtering or an API issue. Please try rephrasing your request or try again.")
-        
-        # Fallback for empty responses, especially common during safety filtering or confusion with simple greetings
-        if not ai_response.strip() and is_simple_intent:
-            ai_response = "Hello! I'm here to help you build or refine your project. What would you like to work on first?"
-        
-        log_ai_interaction(log_prompt, ai_response, "main_generation")
+        if not agent_url:
+            raise HTTPException(status_code=500, detail="Failed to initialize Autonomous Agent runtime.")
 
-        # Extract code from response OR from tool calls (if AI used the 'patch' tool)
-        import re as _re
-        ai_response = _preprocess_ai_response(ai_response)
-        
-        has_patch_markers = bool(_re.search(r'//\s*PATCH:\s*', ai_response))
-        has_raw_search_replace = (not has_patch_markers and bool(_re.search(r'<<<\s*SEARCH', ai_response)) and bool(_re.search(r'<<<\s*REPLACE', ai_response)))
-        has_markers = bool(_re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', ai_response))
-
-        # Detect if AI is regenerating too many files (potential issue)
-        if has_markers and has_existing_code:
-            file_marker_regex = r'(?i)(?://|#|<!--)\s*FILE:\s*([^\n]+)'
-            generated_files = _re.findall(file_marker_regex, ai_response)
-            existing_file_count = len(workspace_files)
-            
-            # If AI is regenerating more than 50% of existing files, it might be a mistake
-            if len(generated_files) > max(3, existing_file_count * 0.5):
-                logger.warning(f"⚠️ AI is regenerating {len(generated_files)} files when only {existing_file_count} exist. This might be unintended.")
-                logger.warning(f"Generated files: {[f.strip() for f in generated_files[:5]]}")
-                
-                # Check if user only asked for one file
-                user_prompt_lower = request.prompt.lower()
-                single_file_keywords = ['create package.json', 'add package.json', 'create vite.config', 'add requirements.txt']
-                if any(keyword in user_prompt_lower for keyword in single_file_keywords):
-                    logger.warning(f"⚠️ User asked for a single file but AI regenerated {len(generated_files)} files!")
-                    # Filter to only the requested file
-                    requested_file = None
-                    if 'package.json' in user_prompt_lower:
-                        requested_file = 'package.json'
-                    elif 'vite.config' in user_prompt_lower:
-                        requested_file = 'vite.config.js'
-                    elif 'requirements.txt' in user_prompt_lower:
-                        requested_file = 'requirements.txt'
-                    
-                    if requested_file:
-                        # Extract only the requested file from the response
-                        logger.info(f"🔧 Filtering to only {requested_file}")
-                        pattern = rf'(?i)(?://|#|<!--)\s*FILE:\s*[^\n]*{re.escape(requested_file)}[^\n]*\n(.*?)(?=(?://|#|<!--)\s*FILE:|$)'
-                        match = _re.search(pattern, ai_response, _re.DOTALL)
-                        if match:
-                            file_path_match = _re.search(rf'(?i)(?://|#|<!--)\s*FILE:\s*([^\n]*{re.escape(requested_file)}[^\n]*)', ai_response)
-                            if file_path_match:
-                                file_path = file_path_match.group(1).strip()
-                                file_content = match.group(1).strip()
-                                ai_response = f"// FILE: {file_path}\n{file_content}"
-                                logger.info(f"✅ Filtered to single file: {file_path}")
-
-        code = None
-        
-        # 1. Check if code was sent via tool calls first (modern approach)
-        if tool_calls_log:
-            for tc in tool_calls_log:
-                if tc.get("tool") == "patch" and tc.get("arguments", {}).get("patch"):
-                    code = tc["arguments"]["patch"]
-                    logger.info("🔧 Patch extracted from tool call payload")
-                    break
-                elif tc.get("tool") == "write_file":
-                    args = tc.get("arguments", {})
-                    if args.get("path") and args.get("content"):
-                        file_path = args["path"]
-                        file_content = args["content"]
-                        # Convert to // FILE: format for the downstream handler
-                        code = f"// FILE: {file_path}\n{file_content}"
-                        logger.info(f"📝 Full file {file_path} extracted from tool call payload")
-                        break
-
-        # 2. Fallback to response text markers (classic approach)
-        if not code:
-            if has_patch_markers or has_raw_search_replace:
-                code = ai_response
-            elif has_markers:
-                fenced_blocks = _re.findall(r'```[a-zA-Z]*\n?(.*?)```', ai_response, _re.DOTALL)
-                fenced_code = "\n\n".join(b.strip() for b in fenced_blocks).strip() if fenced_blocks else ""
-                if fenced_code and _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', fenced_code):
-                    code = fenced_code
-                else:
-                    cleaned = _re.sub(r'```[a-zA-Z]*\n?', '', ai_response).replace('```', '')
-                    first_marker = _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', cleaned)
-                    code = cleaned[first_marker.start():].strip() if first_marker else cleaned.strip()
-        else:
-            blocks = _re.findall(r'```[a-zA-Z]*\n?(.*?)```', ai_response, _re.DOTALL)
-            if blocks:
-                import re
-                code_match = re.search(r"```(?:\w+)?\n?(.*?)\n?```", ai_response, re.DOTALL)
-                code = code_match.group(1).strip() if code_match else "\n\n".join(blocks).strip()
-            elif '<html' in ai_response.lower() or '<!doctype' in ai_response.lower():
-                code = ai_response.strip()
-
-        # Extract message - Filter out raw code/patches from chat display
-        message = ai_response
-        if code:
-            if has_patch_markers:
-                # Extract only the conversational part before patches
-                message = _re.split(r'//\s*PATCH:\s*', ai_response)[0].strip()
-            elif has_raw_search_replace:
-                # Extract only the conversational part before search/replace blocks
-                message = _re.split(r'<<<\s*SEARCH', ai_response)[0].strip()
-            elif has_markers:
-                # Extract only the conversational part, not the file contents
-                parts = ai_response.split("```")
-                preamble = parts[0].strip()
-                epilogue = parts[-1].strip() if len(parts) >= 3 else ""
-                message = f"{preamble}\n\n{epilogue}".strip() if (epilogue and not _re.search(r'(?i)(?://|#|<!--)\s*FILE:\s*', epilogue)) else preamble
-            else:
-                message = ai_response.split("```")[0].strip()
-        
-        # Clean up any remaining code markers or JSON artifacts
-        message = message.replace('```', '').strip()
-        message = _re.sub(r'\{[\s\n]*"patches"[\s\n]*:.*?\}', '', message, flags=_re.DOTALL).strip()
-        message = _re.sub(r'\{[\s\n]*"file_writes"[\s\n]*:.*?\}', '', message, flags=_re.DOTALL).strip()
-        
-        # If message is too short or contains only technical artifacts, create a user-friendly message
-        if len(message) < 20 or message.startswith('{') or message.startswith('['):
-            # Create a friendly message based on what was done
-            if has_patch_markers:
-                patch_count = len(_re.findall(r'//\s*PATCH:\s*', ai_response))
-                files_patched = _re.findall(r'//\s*PATCH:\s*([^\n]+)', ai_response)
-                if files_patched:
-                    file_list = ", ".join([f.strip() for f in files_patched[:3]])
-                    message = f"✅ Applied changes to {file_list}"
-                else:
-                    message = f"✅ Applied {patch_count} patch(es) to your project"
-            elif has_markers:
-                file_count = len(_re.findall(r'(?i)(?://|#|<!--)\s*FILE:\s*', ai_response))
-                files_created = _re.findall(r'(?i)(?://|#|<!--)\s*FILE:\s*([^\n]+)', ai_response)
-                if files_created:
-                    file_list = ", ".join([f.strip() for f in files_created[:3]])
-                    if file_count > 3:
-                        file_list += f" and {file_count - 3} more"
-                    message = f"✅ Created/updated {file_list}"
-                else:
-                    message = f"✅ Created/updated {file_count} file(s)"
-            else:
-                message = f"✅ Applied your requested changes"
-
-        # Generate summary and suggestions before persistence
-        summary_task = summarize_content(message, code or "")
-        suggestions_task = generate_suggestions(message, code or "", request.prompt)
-        summary, suggestions = await asyncio.gather(summary_task, suggestions_task)
-
-        # ── Persistence: Save AI response to DB ──────────
+        # 3. Register the agent container port in the project registry so the proxy can route to it
         try:
-            from auth import get_db
-            import uuid
-            import json
-            import time
-            msg_id = f"msg_{int(time.time())}_{uuid.uuid4().hex[:4]}"
-            
-            # Get current container ID for logging
-            project_info = project_manager.get_project_info(project_id)
-            container_id = project_info.get("container_id") if project_info else None
-            
-            conn = get_db()
-            conn.execute(
-                """INSERT INTO messages 
-                   (id, project_id, container_id, role, content, code, version_id, timestamp, suggestions, tool_calls, image_paths, metadata, summary)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (msg_id, project_id, container_id, "assistant", message, code, 
-                 None, # version_id will be updated after git commit if needed
-                 datetime.now().isoformat(), 
-                 json.dumps(suggestions) if suggestions else None,
-                 json.dumps(tool_calls_log) if tool_calls_log else None,
-                 None,
-                 None,
-                 summary)
-            )
-            conn.commit()
-            conn.close()
+            project_manager.agent_container.reload()
+            port_bindings = project_manager.agent_container.ports.get('80/tcp', [])
+            if port_bindings and port_bindings[0].get('HostPort'):
+                host_port = port_bindings[0]['HostPort']
+                project_manager._save_container_registry(project_id, host_port)
+                logger.info(f"📋 Registered agent port {host_port} for project {project_id}")
         except Exception as e:
-            logger.error(f"Failed to auto-save AI response: {e}")
+            logger.warning(f"⚠️ Could not register agent port: {e}")
 
-        # Save and Prepare Response
-        version_id = None
-        preview_url = None
-        
-        if code:
-            try:
-                version_id, _ = project_manager.update_workspace_from_code(project_id, code, request.prompt)
-            except ValueError as e:
-                if str(e).startswith("FROZEN_FILES_VIOLATION:"):
-                    frozen_files_str = str(e).split(":", 1)[1]
-                    violation_list = "\n".join([f"  - {f}" for f in list(set(frozen_files_str.split(",")))])
-                    error_message = f"Cannot complete this request. The following files are frozen:\n\n{violation_list}\n\nPlease unfreeze them if you want to make changes."
-                    return GenerateResponse(message=error_message, code=None, project_id=project_id, version_id=None, preview_url=None, tool_calls_log=tool_calls_log, suggestions=None)
-                raise
+        # 4. Hand off task to the agent mailbox
+        # Only include actual user messages as context (skip the agent's own acknowledgements)
+        handoff_prompt = request.prompt
+        if request.history:
+            user_turns = [m for m in request.history if m.role == "user"]
+            if user_turns:
+                history_summary = "\n".join([f"User: {m.content[:200]}" for m in user_turns[-3:]])
+                handoff_prompt = f"CONTEXT (previous turns):\n{history_summary}\n\nCURRENT REQUEST: {request.prompt}"
+
+        logger.info(f"📤 Sending prompt to container for project {project_id}: {handoff_prompt[:100]}...")
+        result = project_manager.send_request(handoff_prompt, project_id=project_id)
+        logger.info(f"📬 Mailbox delivery result: {result}")
+
+        # Let AI decide if this needs task breakdown or direct generation
+        # This is more accurate than heuristics
+        try:
+            complexity_prompt = f"""Analyze this user request and determine if it needs task breakdown or direct generation.
+
+USER REQUEST: {request.prompt}
+
+Consider:
+- Number of features/modules required
+- Complexity of the application
+- Whether it's a simple change or a full application
+- If it involves multiple interconnected components
+- Estimated number of files needed
+
+Respond with a JSON object:
+{{
+  "complexity": "COMPLEX" or "SIMPLE",
+  "reasoning": "Brief explanation",
+  "estimated_files": number
+}}
+
+Guidelines:
+- SIMPLE: Single feature, small app (1-5 files), or modification to existing code
+- COMPLEX: Multiple modules, full platform (6+ files), or interconnected features
+
+Examples:
+- "Build a todo app" → {{"complexity": "SIMPLE", "reasoning": "Single feature app with basic CRUD", "estimated_files": 3}}
+- "Add dark mode" → {{"complexity": "SIMPLE", "reasoning": "UI modification", "estimated_files": 2}}
+- "Build a Captive Insurance Platform with IAM, policy admin, compliance" → {{"complexity": "COMPLEX", "reasoning": "Multiple modules with authentication, business logic, and compliance", "estimated_files": 25}}
+
+Your analysis:"""
+
+            complexity_response = await ai_config.make_async_request([
+                {"role": "system", "content": "You are an expert at analyzing software requirements complexity. Always respond with valid JSON."},
+                {"role": "user", "content": complexity_prompt}
+            ], temperature=0.1)
             
-            # Save chat history
-            try:
-                status = git_manager.get_status(project_id)
-                current_branch = status.get("branch", "main") if status["status"] == "success" else "main"
-                history = [{"role": msg.role, "content": msg.content} for msg in request.history]
-                history.append({"role": "user", "content": request.prompt})
-                history.append({"role": "assistant", "content": message})
-                await project_manager.save_chat_version(project_id, current_branch, history)
-            except Exception as e:
-                print(f"Failed to save chat history: {e}")
+            response_text = complexity_response["choices"][0]["message"].get("content", "").strip() if "choices" in complexity_response else "{}"
+            logger.info(f"🤖 AI raw response: {response_text[:200]}")
             
-            # Final Response setup
-            preview_url = project_manager.get_preview_url(project_id)
-            if project_manager.docker_client:
-                project_manager._current_user_prompt = request.prompt
-                background_tasks.add_task(project_manager.create_container_for_code, project_id, "workspace")
-                logger.info(f"🚀 Started container for {project_id} in background")
+            # Parse JSON response
+            import re
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                analysis = json.loads(json_match.group(0))
+                is_complex_task = analysis.get("complexity", "SIMPLE").upper() == "COMPLEX"
+                reasoning = analysis.get("reasoning", "")
+                estimated_files = analysis.get("estimated_files", 0)
                 
-                # Kick off verification background task (Currently disabled to prevent duplicate responses and NameErrors)
-                # if code and preview_url:
-                #     background_tasks.add_task(
-                #         verify_generated_preview, 
-                #         project_id, 
-                #         msg_id, 
-                #         preview_url, 
-                #         request.prompt, 
-                #         code
-                #     )
+                logger.info(f"🤖 AI complexity analysis: {analysis.get('complexity')} - {reasoning} (est. {estimated_files} files) → is_complex_task={is_complex_task}")
             else:
-                preview_url = None
+                # Fallback if JSON parsing fails
+                is_complex_task = "COMPLEX" in response_text.upper()
+                logger.warning(f"Failed to parse JSON, using text match: {response_text[:100]} → is_complex_task={is_complex_task}")
+            
+        except Exception as e:
+            logger.error(f"Failed to get AI complexity decision: {e}", exc_info=True)
+            # Fallback to simple heuristic
+            is_complex_task = len(request.prompt.split()) > 50 or request.prompt.count('\n') > 5
+            logger.info(f"Using fallback heuristic → is_complex_task={is_complex_task}")
         
-        # Return unified response
+        if is_complex_task:
+            # Don't send acknowledgment - let the agent send task breakdown directly
+            # This keeps the loader active until tasks are ready
+            logger.info("🎯 Complex task detected - skipping immediate acknowledgment, waiting for task breakdown")
+            
+            # Return a minimal response that keeps the loader active
+            return GenerateResponse(
+                message="",  # Empty message keeps loader active
+                code=None,
+                project_id=project_id,
+                version_id="workspace",
+                preview_url=preview_url,
+                suggestions=[],
+                summary="Analyzing requirement and generating task breakdown...",
+                message_id=None,
+                metadata={"awaiting_task_breakdown": True, "keep_loader_active": True}
+            )
+
+        # 5. Generate dynamic acknowledgement message and suggestions using AI (only for simple tasks)
+        try:
+            # Generate a contextual acknowledgement message
+            ack_prompt = f"""The user requested: "{request.prompt}"
+
+I'm handing this task off to an autonomous agent that will work on it in the background.
+
+Generate a brief, friendly acknowledgement message (1-2 sentences) that:
+- Confirms we're working on their request
+- Mentions what the agent will be doing (be specific based on their request)
+- Reassures them the preview will update automatically
+
+Keep it conversational and encouraging. Don't use technical jargon.
+
+Example for "add a contact form":
+"Got it! I'm building a contact form with validation and styling. The preview will update automatically once it's ready."
+
+Example for "change colors to blue":
+"On it! I'm updating the color scheme to blue throughout your app. You'll see the changes in the preview shortly."
+
+Your message:"""
+
+            ack_response = await ai_config.make_async_request([
+                {"role": "system", "content": "You are a helpful assistant that writes brief, friendly acknowledgement messages."},
+                {"role": "user", "content": ack_prompt}
+            ])
+            delegate_msg = ack_response["choices"][0]["message"].get("content", "").strip() if "choices" in ack_response else None
+            
+            # Fallback if AI fails
+            if not delegate_msg or len(delegate_msg) < 10:
+                delegate_msg = "On it! The agent is now working on your request. The preview will update automatically once deployment is complete."
+            
+            # Generate contextual suggestions
+            suggestions_prompt = f"""The user just requested: "{request.prompt}"
+
+An autonomous agent is now working on this in the background.
+
+Generate 3 short, actionable suggestions (each under 50 characters) for what the user might want to do next.
+These should be natural follow-ups or related enhancements.
+
+Format: One suggestion per line, no numbering, no bullets.
+
+Example for "add a contact form":
+Check the preview once it's ready
+Add email validation
+Style the submit button
+
+Example for "change colors to blue":
+Preview the new color scheme
+Adjust the shade of blue
+Add gradient effects
+
+Your suggestions:"""
+
+            sugg_response = await ai_config.make_async_request([
+                {"role": "system", "content": "You are a helpful assistant that generates concise, actionable suggestions."},
+                {"role": "user", "content": suggestions_prompt}
+            ], temperature=0.7)
+            
+            suggestions_text = sugg_response["choices"][0]["message"].get("content", "") if "choices" in sugg_response else ""
+            suggestions = [s.strip() for s in suggestions_text.strip().split('\n') if s.strip()][:3]
+            
+            # Fallback suggestions
+            if len(suggestions) < 3:
+                suggestions = ["Check the preview", "Describe what to change next", "Add more features"]
+            
+            # Generate summary
+            summary_prompt = f"""Summarize this handoff in one professional sentence for a business stakeholder:
+
+User requested: "{request.prompt}"
+Action: Delegated to autonomous agent for implementation
+
+Summary:"""
+
+            summary_response = await ai_config.make_async_request([
+                {"role": "system", "content": "You are a professional business analyst writing executive summaries."},
+                {"role": "user", "content": summary_prompt}
+            ], temperature=0.3)
+            
+            summary = summary_response["choices"][0]["message"].get("content", "").strip() if "choices" in summary_response else None
+            if not summary or len(summary) < 10:
+                summary = "Handoff to Autonomous Resident Agent completed."
+                
+        except Exception as e:
+            logger.warning(f"Failed to generate dynamic messages: {e}")
+            # Fallback to static messages
+            delegate_msg = "On it! The agent is now working on your request. The preview will update automatically once deployment is complete."
+            suggestions = ["Check the preview", "Describe what to change next", "Add more features"]
+            summary = "Handoff to Autonomous Resident Agent completed."
+
+        # 6. Persist the assistant acknowledgement message
+        msg_id = f"msg_{int(time.time())}_{uuid.uuid4().hex[:4]}"
+        conn = get_db()
+        conn.execute(
+            """INSERT INTO messages
+                (id, project_id, container_id, role, content, code, timestamp, suggestions, summary)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (msg_id, project_id, "vibecoding-ai-agent", "assistant", delegate_msg, None,
+             datetime.now().isoformat(), json.dumps(suggestions), summary)
+        )
+        conn.commit()
+        conn.close()
+
         return GenerateResponse(
-            message=message,
-            code=code,
+            message=delegate_msg,
+            code=None,
             project_id=project_id,
-            version_id=version_id,
+            version_id="workspace",
             preview_url=preview_url,
-            tool_calls_log=tool_calls_log,
             suggestions=suggestions,
             summary=summary,
             message_id=msg_id
@@ -1282,101 +1271,37 @@ async def health_check():
         "public_host": public_host
     }
 
-@app.get("/vibecoding/api/debug/containers")
-async def debug_containers():
-    """Debug endpoint to check container registry"""
-    try:
-        registry_file = project_manager.artifacts_dir / '.container_registry.json'
-        if registry_file.exists():
-            with open(registry_file, 'r') as f:
-                registry = json.load(f)
-            return {
-                "registry_file": str(registry_file.absolute()),
-                "exists": True,
-                "containers": registry
-            }
-        else:
-            return {
-                "registry_file": str(registry_file.absolute()),
-                "exists": False,
-                "containers": {}
-            }
-    except Exception as e:
-        return {
-            "error": str(e),
-            "registry_file": str(project_manager.artifacts_dir / '.container_registry.json')
-        }
-
-@app.get("/vibecoding/api/debug/project/{project_id}")
-async def debug_project(project_id: str):
-    """Debug endpoint to check project status"""
-    try:
-        port = get_container_port(project_id)
-        container_name = f"vibecoding_{project_id}"
-        
-        # Check if container exists in Docker
-        docker_status = "unknown"
-        if project_manager.docker_client:
-            try:
-                container = project_manager.docker_client.containers.get(container_name)
-                docker_status = container.status
-            except:
-                docker_status = "not_found"
-        
-        return {
-            "project_id": project_id,
-            "container_name": container_name,
-            "port": port,
-            "docker_status": docker_status,
-            "preview_url": project_manager.get_preview_url(project_id, port) if port else None
-        }
-    except Exception as e:
-        return {
-            "error": str(e),
-            "project_id": project_id
-        }
-
 @app.get("/vibecoding/api/projects/{project_id}/container-health")
 async def container_health(project_id: str):
-    """Check if a project's container is healthy and serving HTTP requests."""
+    """Check if the project's agent container is healthy and serving traffic."""
+    if project_manager.docker_client is None:
+        return {"healthy": False, "reason": "docker_unavailable"}
+
     port = get_container_port(project_id)
+
+    # If not in registry yet, try to find the per-project agent container directly
     if not port:
-        return {"healthy": False, "reason": "no_container"}
+        try:
+            container = project_manager.docker_client.containers.get(f"vibecoding-agent-{project_id}")
+            container.reload()
+            if container.status == "running":
+                port_bindings = container.ports.get('80/tcp', [])
+                if port_bindings and port_bindings[0].get('HostPort'):
+                    port = port_bindings[0]['HostPort']
+                    project_manager._save_container_registry(project_id, port)
+        except Exception:
+            pass
 
-    # Check Docker container status
-    container_name = f"vibecoding_{project_id}"
-    docker_status = "unknown"
-    try:
-        if project_manager.docker_client:
-            container = project_manager.docker_client.containers.get(container_name)
-            docker_status = container.status
-            if docker_status != "running":
-                return {"healthy": False, "reason": "container_not_running", "docker_status": docker_status}
-    except Exception:
-        return {"healthy": False, "reason": "container_not_found"}
+    if not port:
+        return {"healthy": False, "reason": "port_not_registered"}
 
-    # First, try the dedicated health endpoint on port 9090
     try:
-        health_resp = requests.get(f"http://127.0.0.1:{port}/health", timeout=2)
-        if health_resp.status_code == 200:
-            health_data = health_resp.json()
-            if health_data.get("status") == "healthy":
-                return {"healthy": True, "docker_status": docker_status, "health_check": "passed"}
-            return {"healthy": False, "reason": "health_check_failed", "docker_status": docker_status}
-    except requests.exceptions.RequestException:
-        # Health endpoint not available, fall back to probing the main app port
-        pass
-
-    # Fallback: Probe the actual app port
-    try:
-        resp = requests.get(f"http://127.0.0.1:{port}/", timeout=3)
+        resp = requests.get(f"http://127.0.0.1:{port}", timeout=2)
         if resp.status_code < 500:
-            return {"healthy": True, "docker_status": docker_status, "http_status": resp.status_code}
-        return {"healthy": False, "reason": "http_error", "http_status": resp.status_code}
+            return {"healthy": True, "http_status": resp.status_code}
+        return {"healthy": False, "reason": f"http_{resp.status_code}"}
     except requests.exceptions.ConnectionError:
-        return {"healthy": False, "reason": "connection_refused", "docker_status": docker_status}
-    except requests.exceptions.Timeout:
-        return {"healthy": False, "reason": "timeout", "docker_status": docker_status}
+        return {"healthy": False, "reason": "connection_refused"}
     except Exception as e:
         return {"healthy": False, "reason": str(e)}
 
@@ -1443,6 +1368,59 @@ async def get_project(project_id: str, user: dict = Depends(get_current_user)):
             raise HTTPException(status_code=403, detail="Access denied")
             
         return ProjectResponse(**project_info)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/vibecoding/api/projects/{project_id}/start")
+async def start_project_container(project_id: str, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
+    """
+    Start (or wake up) the agent container for a project when the user opens it.
+    Returns the fixed preview URL immediately — the container boots in the background.
+    No-op if the container is already running.
+    """
+    try:
+        project_info = project_manager.get_project_info(project_id)
+        if not project_info:
+            raise HTTPException(status_code=404, detail="Project not found")
+        if project_info.get("owner_id") is not None and project_info.get("owner_id") != user["id"]:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # Only start if the workspace has files — no point starting an empty container
+        workspace_dir = project_manager.artifacts_dir / project_id / "workspace"
+        has_files = workspace_dir.exists() and any(
+            f for f in workspace_dir.rglob("*")
+            if f.is_file() and f.name != "metadata.json" and ".git" not in f.parts
+        )
+
+        preview_url = project_manager.get_preview_url(project_id)
+
+        if not has_files:
+            return {"preview_url": preview_url, "started": False, "reason": "empty_workspace"}
+
+        # Start container in background so the HTTP response returns immediately
+        async def _start():
+            try:
+                agent_url = project_manager.start_agent_container(
+                    api_key=ai_config.api_key,
+                    project_path=str(workspace_dir),
+                    project_id=project_id
+                )
+                if agent_url and project_manager.agent_container:
+                    project_manager.agent_container.reload()
+                    port_bindings = project_manager.agent_container.ports.get('80/tcp', [])
+                    if port_bindings and port_bindings[0].get('HostPort'):
+                        project_manager._save_container_registry(project_id, port_bindings[0]['HostPort'])
+                        logger.info(f"🚀 Container started for project {project_id} on port {port_bindings[0]['HostPort']}")
+            except Exception as e:
+                logger.warning(f"Background container start failed for {project_id}: {e}")
+
+        background_tasks.add_task(_start)
+
+        return {"preview_url": preview_url, "started": True}
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1831,14 +1809,29 @@ async def get_project_messages(project_id: str, background_tasks: BackgroundTask
     from auth import get_db
     conn = get_db()
     try:
+        # Order by ROWID (SQLite's internal row number) which represents insertion order
+        # This is the most reliable way to get messages in the order they were created
+        # regardless of timestamp or ID issues
         rows = conn.execute(
-            "SELECT * FROM messages WHERE project_id = ? ORDER BY timestamp ASC",
+            "SELECT rowid, * FROM messages WHERE project_id = ? ORDER BY rowid ASC",
             (project_id,)
         ).fetchall()
         
         messages = []
+        startup_messages = [
+            '👋 VibeCoding Agent is online and ready!',
+            '💡 Ready to build! Send me your first message to get started.'
+        ]
+        
         for row in rows:
             msg = dict(row)
+            # Remove rowid from the message dict as it's just for ordering
+            msg.pop('rowid', None)
+            
+            # Skip startup messages - they're just informational and shouldn't persist
+            if msg.get('role') == 'assistant' and any(startup_msg in msg.get('content', '') for startup_msg in startup_messages):
+                continue
+            
             # Parse JSON fields
             for field in ["suggestions", "tool_calls", "image_paths", "metadata"]:
                 if msg.get(field):
@@ -1862,6 +1855,51 @@ async def get_project_messages(project_id: str, background_tasks: BackgroundTask
         return {"messages": messages}
     finally:
         conn.close()
+
+
+@app.get("/vibecoding/api/projects/{project_id}/tasks")
+async def get_project_tasks(project_id: str):
+    """Get tasks from the .vibecoding_tasks.json file in the workspace"""
+    try:
+        # Path to the tasks file in the workspace
+        workspace_dir = ARTIFACTS_DIR / project_id / "workspace"
+        tasks_file = workspace_dir / ".vibecoding_tasks.json"
+        context_file = workspace_dir / ".vibecoding_context.json"
+        
+        if not tasks_file.exists():
+            return {"tasks": [], "total_tasks": 0}
+        
+        with open(tasks_file, 'r', encoding='utf-8') as f:
+            tasks = json.load(f)
+        
+        # Try to get project summary from context file
+        project_summary = ""
+        if context_file.exists():
+            try:
+                with open(context_file, 'r', encoding='utf-8') as f:
+                    context = json.load(f)
+                    project_summary = context.get('project_summary', '')
+            except Exception as e:
+                logger.warning(f"Failed to read context file: {e}")
+        
+        # Calculate progress
+        total_tasks = len(tasks)
+        completed_count = sum(1 for task in tasks if task.get('status') == 'completed')
+        pending_count = sum(1 for task in tasks if task.get('status') == 'pending')
+        failed_count = sum(1 for task in tasks if task.get('status') == 'failed')
+        
+        return {
+            "project_summary": project_summary,
+            "tasks": tasks,
+            "total_tasks": total_tasks,
+            "completed_count": completed_count,
+            "pending_count": pending_count,
+            "failed_count": failed_count,
+            "progress_percentage": round((completed_count / total_tasks * 100)) if total_tasks > 0 else 0
+        }
+    except Exception as e:
+        logger.error(f"Error fetching tasks for project {project_id}: {e}")
+        return {"tasks": [], "total_tasks": 0, "error": str(e)}
 
 
 @app.post("/vibecoding/api/chat/new")
@@ -2032,16 +2070,22 @@ def get_container_port(project_id: str) -> str:
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"], include_in_schema=False)
 async def asset_fallback_proxy(path: str, request: Request):
     """
-    Handles requests for absolute paths (e.g. /assets/foo.js) by using the Referer 
-    header to determine which container the request belongs to.
+    Handles requests for absolute asset paths (e.g. /assets/foo.js) that are loaded
+    by the container app and use the Referer header to identify which project they belong to.
+    React Router paths (/vibecoding/a/*, /vibecoding/login, etc.) are NOT handled here.
     """
-    referer = request.headers.get("referer", "")
-    if not referer:
-        # We don't log here to avoid noise from direct hits, but assets MUST have referer
+    # Ignore React Router frontend paths — these should never reach the backend
+    react_router_prefixes = ("vibecoding/a/", "vibecoding/login", "vibecoding/signup",
+                             "vibecoding/forgot-password", "vibecoding/reset-password",
+                             "vibecoding/", )
+    if not path or path in ("vibecoding", "vibecoding/") or any(path.startswith(p) for p in react_router_prefixes):
         raise HTTPException(status_code=404)
 
-    # Check if referer is one of our app proxy URLs
-    # Matches both /vibecoding/app/{token}/ AND /app/{token}/
+    referer = request.headers.get("referer", "")
+    if not referer:
+        raise HTTPException(status_code=404)
+
+    # Only handle assets whose referer is a container app URL
     match = _re.search(r'/(?:vibecoding/)?app/([a-zA-Z0-9_-]+)/', referer)
     if not match:
         raise HTTPException(status_code=404)

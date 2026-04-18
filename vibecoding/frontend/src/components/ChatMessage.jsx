@@ -4,8 +4,10 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Button } from './ui/button';
 import { cn } from '@/lib/utils';
+import TaskBreakdown from './TaskBreakdown';
+import ThinkingBlock from './ThinkingBlock';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/vibecoding';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/vibecoding';
 
 // Extract functional summary from content (business logic context)
 const extractFunctionalSummary = (content) => {
@@ -232,8 +234,22 @@ const ChatMessage = ({
   onLoadVersion,
   onCopyMessage,
   onRegenerate,
-  onSuggestionClick
+  onSuggestionClick,
+  onExecuteTask,
+  onExecuteAllTasks,
+  onEditTask,
+  executingTaskId
 }) => {
+  // Debug: Log message to see what we're receiving
+  if (!message.role || message.role === 'assistant') {
+    console.log('ChatMessage rendering:', {
+      role: message.role,
+      hasMetadata: !!message.metadata,
+      hasTaskPlan: !!message.metadata?.task_plan,
+      metadataType: message.metadata?.type,
+      content: message.content?.substring(0, 100)
+    });
+  }
   // Dynamic time formatter (e.g., "just now", "5 mins ago")
   const getRelativeTime = (timestamp) => {
     if (!timestamp) return '';
@@ -308,16 +324,26 @@ const ChatMessage = ({
     cleaned = cleaned.replace(/<<<SEARCH[\s\S]*?>>>/g, '');
     cleaned = cleaned.replace(/<<<REPLACE[\s\S]*?>>>/g, '');
 
-    // 2. Remove code blocks that look like full file contents
-    // Usually these are inside the // FILE: sections we already split, 
-    // but just in case they aren't, we can do some extra cleaning
+    // 3. Remove task lists (bullet points) since we display them separately
+    const lines = cleaned.split('\n');
+    const nonTaskLines = [];
+    for (const line of lines) {
+      const trimmed = line.trim();
+      // Skip bullet points and numbered lists
+      if (!trimmed.match(/^[•\-\*]\s+/) && !trimmed.match(/^\d+\.\s+/)) {
+        nonTaskLines.push(line);
+      }
+    }
+    cleaned = nonTaskLines.join('\n');
+
+    // 4. Remove code blocks that look like full file contents
     cleaned = cleaned.replace(/```[\s\S]*?```/g, (match) => {
       if (match.split('\n').length > 10) return '';
       if (match.includes('// FILE:')) return '';
       return match;
     });
 
-    // 4. Strip common technical placeholders and generic success messages
+    // 5. Strip common technical placeholders and generic success messages
     cleaned = cleaned.replace(/^(Done|Success|Updated|Changes applied|Implemented|Successfully implemented)[!.]*\s*(Your request has been incorporated|The changes are complete|your requested changes with a focus on functional stability)[!.]*/i, '');
 
     return cleaned.trim();
@@ -399,8 +425,95 @@ const ChatMessage = ({
             {!isUser && message.toolCalls && message.toolCalls.length > 0 && (
               <ToolCallsDisplay toolCalls={message.toolCalls} darkMode={darkMode} />
             )}
+            
+            {/* Inline Thinking Block - Shows accumulated thinking logs */}
+            {!isUser && message.thinkingLogs && message.thinkingLogs.length > 0 && (
+              <div className="mb-3">
+                <ThinkingBlock
+                  logs={message.thinkingLogs}
+                  status={message.isThinking ? 'thinking' : 'success'}
+                  title={message.isThinking ? 'Building you app...' : 'Background execution completed'}
+                  darkMode={darkMode}
+                  autoScroll={message.isThinking}
+                />
+              </div>
+            )}
+            
+            {/* Task Breakdown Display */}
+            {!isUser && message.metadata?.task_plan && (
+              <>
+                {console.log('TaskBreakdown metadata:', message.metadata)}
+                <TaskBreakdown
+                  taskPlan={message.metadata.task_plan}
+                  darkMode={darkMode}
+                  onExecuteTask={onExecuteTask}
+                  onExecuteAll={onExecuteAllTasks}
+                  onEditTask={onEditTask}
+                  executingTaskId={executingTaskId}
+                />
+              </>
+            )}
+            
+            {/* Task Breakdown Display - for planning/thinking messages */}
+            {!isUser && !message.metadata?.task_plan && (() => {
+              // Parse content for task lists
+              const lines = (message.content || '').split('\n');
+              const tasks = [];
+              let introText = '';
+              let foundTasks = false;
+              
+              for (const line of lines) {
+                const trimmed = line.trim();
+                if (trimmed.match(/^[•\-\*]\s+/) || trimmed.match(/^\d+\.\s+/)) {
+                  foundTasks = true;
+                  const taskText = trimmed.replace(/^[•\-\*]\s+/, '').replace(/^\d+\.\s+/, '');
+                  tasks.push(taskText);
+                } else if (trimmed && !foundTasks) {
+                  introText += (introText ? ' ' : '') + trimmed;
+                }
+              }
+              
+              // Only show task breakdown if we have tasks
+              if (tasks.length > 0) {
+                return (
+                  <div className="mb-3">
+                    {introText && (
+                      <p className={cn(
+                        "text-sm mb-3 font-medium",
+                        darkMode ? "text-gray-300" : "text-gray-700"
+                      )}>
+                        {introText}
+                      </p>
+                    )}
+                    <div className={cn(
+                      "rounded-lg border p-3 space-y-2",
+                      darkMode 
+                        ? "bg-purple-500/5 border-purple-500/20" 
+                        : "bg-purple-50 border-purple-200"
+                    )}>
+                      {tasks.map((task, idx) => (
+                        <div key={idx} className="flex items-start gap-2">
+                          <CheckCircle2 className={cn(
+                            "w-4 h-4 mt-0.5 flex-shrink-0",
+                            darkMode ? "text-purple-400" : "text-purple-600"
+                          )} />
+                          <span className={cn(
+                            "text-sm",
+                            darkMode ? "text-gray-200" : "text-gray-800"
+                          )}>
+                            {task}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              }
+              return null;
+            })()}
+            
             {/* Chat Content */}
-            {!isUser && aiSummary && !showOriginal && hasCodeOrVersion ? (
+            {!isUser && aiSummary && !showOriginal && hasCodeOrVersion && !message.metadata?.task_plan ? (
               <div className="flex flex-col gap-3 py-1">
                 <div className="flex items-center gap-2 text-xs font-semibold text-blue-500/80 uppercase tracking-wider">
                   <Sparkles className="w-3 h-3" />
@@ -579,15 +692,6 @@ const ChatMessage = ({
               </>
             )}
           </div>
-          {message.timestamp && (
-            <div className={cn(
-              'text-xs mt-1',
-              isUser ? 'text-right' : 'text-left',
-              darkMode ? 'text-gray-500' : 'text-gray-400'
-            )}>
-              {relativeTime}
-            </div>
-          )}
         </div>
       </div>
 
@@ -601,26 +705,37 @@ const ChatMessage = ({
             Try these next:
           </div>
           <div className="flex flex-col gap-2">
-            {message.suggestions.map((suggestion, idx) => (
-              <button
-                key={idx}
-                onClick={() => onSuggestionClick && onSuggestionClick(suggestion)}
-                className={cn(
-                  'text-left px-3 py-2.5 rounded-lg text-xs transition-all border shadow-sm',
-                  darkMode
-                    ? 'bg-white/5 hover:bg-white/10 text-gray-300 border-white/10 hover:border-purple-500/50'
-                    : 'bg-white hover:bg-gray-50 text-gray-900 border-gray-200 hover:border-blue-400'
-                )}
-              >
-                <div className="flex items-center gap-2.5">
-                  <div className={`w-6 h-6 rounded-md flex items-center justify-center ${darkMode ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/10 text-blue-600'
-                    }`}>
-                    <Sparkles className="w-3.5 h-3.5" />
+            {message.suggestions.map((suggestion, idx) => {
+              // Handle both string and object suggestions
+              const suggestionText = typeof suggestion === 'string' ? suggestion : suggestion.text;
+              const suggestionIcon = typeof suggestion === 'object' && suggestion.icon ? suggestion.icon : null;
+              const suggestionPrompt = typeof suggestion === 'object' && suggestion.prompt ? suggestion.prompt : suggestionText;
+              
+              return (
+                <button
+                  key={idx}
+                  onClick={() => onSuggestionClick && onSuggestionClick(suggestionPrompt)}
+                  className={cn(
+                    'text-left px-3 py-2.5 rounded-lg text-xs transition-all border shadow-sm',
+                    darkMode
+                      ? 'bg-white/5 hover:bg-white/10 text-gray-300 border-white/10 hover:border-purple-500/50'
+                      : 'bg-white hover:bg-gray-50 text-gray-900 border-gray-200 hover:border-blue-400'
+                  )}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className={`w-6 h-6 rounded-md flex items-center justify-center ${darkMode ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/10 text-blue-600'
+                      }`}>
+                      {suggestionIcon ? (
+                        <span className="text-sm">{suggestionIcon}</span>
+                      ) : (
+                        <Sparkles className="w-3.5 h-3.5" />
+                      )}
+                    </div>
+                    <span className="leading-relaxed font-medium">{suggestionText}</span>
                   </div>
-                  <span className="leading-relaxed font-medium">{suggestion}</span>
-                </div>
-              </button>
-            ))}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}

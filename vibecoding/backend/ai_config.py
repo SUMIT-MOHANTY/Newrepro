@@ -324,14 +324,14 @@ class BournAIProvider(BaseProvider):
     supports_function_calling = False
 
     def __init__(self):
-        self.base_url = os.getenv(
-            "BOURNAI_API_URL", "https://brn-llama.bourntec.com/api/process"
-        )
-        self.api_key = os.getenv("BOURNAI_AGENT_ID", "")
+        self.base_url = os.getenv("BRN_LLAMA_URL", "https://brn-llama.bourntec.com/api/process")
+        self.api_key = os.getenv("BRN_AGENT_ID", "")
         if not self.api_key:
-            raise ValueError("BOURNAI_AGENT_ID is required for bournai provider")
-        self.model = os.getenv("BOURNAI_MODEL", "BournAI")
-        self.platform_id = os.getenv("BOURNAI_PLATFORM_ID", "DSuite")
+            raise ValueError("BRN_AGENT_ID is required for bournai provider")
+        self.model = os.getenv("BRN_MODEL", "BournAI")
+        self.platform_id = os.getenv("BRN_PLATFORM_ID", "DSuite")
+        self.max_tokens = int(os.getenv("BRN_MAX_TOKENS", "50000"))
+        self.temperature = float(os.getenv("BRN_TEMPERATURE", "0.7"))
         self.stream = True
 
     def get_headers(self):
@@ -418,7 +418,19 @@ PROVIDER_REGISTRY: Dict[str, type] = {
 }
 
 
+def _is_brn_llama_enabled() -> bool:
+    """Check if BRN Llama mode is active from environment."""
+    use_brn = os.getenv("USE_BRN_LLAMA", "false").lower().strip()
+    return use_brn in ("true", "1", "yes")
+
+
 def _create_provider() -> BaseProvider:
+    # Check USE_BRN_LLAMA flag first (DSuite-style)
+    if _is_brn_llama_enabled():
+        logger.info("🤖 AI Provider: bournai (via USE_BRN_LLAMA=true)")
+        return BournAIProvider()
+    
+    # Fallback to AI_PROVIDER for backward compatibility
     name = os.getenv("AI_PROVIDER", "openai").lower().strip()
     cls = PROVIDER_REGISTRY.get(name)
     if not cls:

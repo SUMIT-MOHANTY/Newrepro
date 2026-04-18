@@ -15,8 +15,10 @@ import { Button } from '@/components/ui/button';
 import ChatPanel from './components/ChatPanel';
 import FileTree from './components/FileTree';
 import CodePreview from './components/CodePreview';
+import { useTaskHandlers } from './hooks/useTaskHandlers';
+import { useWebSocket } from './hooks/useWebSocket';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/vibecoding';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/vibecoding';
 
 function App() {
   const { user, isAuthenticated, loading: authLoading, logout } = useAuth();
@@ -84,6 +86,8 @@ function Workspace({ user, logout, isAuthenticated }) {
   const prevProjectIdRef = useRef(null);
   const containerLoadExpectedRef = useRef(false);
   const containerPollIntervalRef = useRef(null);
+  const workspacePollIntervalRef = useRef(null);
+  const lastWorkspaceHashRef = useRef('');
 
   // Determine active project ID from URL
   const params = new URLSearchParams(window.location.search);
@@ -144,9 +148,26 @@ function Workspace({ user, logout, isAuthenticated }) {
   const [frozenFiles, setFrozenFiles] = useState([]);
   const [freezeLoading, setFreezeLoading] = useState(false);
 
+  // Task execution handlers
+  const { executingTaskId, handleExecuteTask, handleExecuteAllTasks, handleEditTask } = useTaskHandlers(
+    currentProjectId,
+    messages,
+    setMessages,
+    setLoading,
+    setVerificationStatus
+  );
+
   useEffect(() => {
     prevProjectIdRef.current = currentProjectId;
   }, [currentProjectId]);
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      stopWorkspacePolling();
+      if (containerPollIntervalRef.current) clearTimeout(containerPollIntervalRef.current);
+    };
+  }, []);
 
   // Sync dark mode with document and localStorage
   useEffect(() => {
@@ -200,15 +221,238 @@ function Workspace({ user, logout, isAuthenticated }) {
     }
   }, [lastMessageId, verificationStatus, currentProjectId]);
 
+  // --- Autonomous Polling Logic ---
+  const [isAutonomousPolling, setIsAutonomousPolling] = useState(false);
+  const [pollCount, setPollCount] = useState(0);
+
+  useEffect(() => {
+    let pollInterval;
+    if (isAutonomousPolling && currentProjectId) {
+      setPollCount(0); // Reset counter
+      
+      pollInterval = setInterval(async () => {
+        try {
+          setPollCount(prev => prev + 1);
+          const token = localStorage.getItem('vibecoding_token');
+          const response = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/messages`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          
+          // Also fetch tasks to update their status
+          const tasksResponse = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/tasks`, {
+            headers: { Authorization: `Bearer ${token}` }
+          }).catch(err => {
+            console.warn('Failed to fetch tasks during polling:', err);
+            return { data: { tasks: [], total_tasks: 0 } };
+          });
+          
+          if (response.data.messages) {
+             let newMessages = response.data.messages;
+             
+             // Inject task plan if we have tasks
+             if (tasksResponse.data.tasks && tasksResponse.data.tasks.length > 0) {
+               const taskPlan = {
+                 project_summary: tasksResponse.data.project_summary || 'Task breakdown',
+                 tasks: tasksResponse.data.tasks,
+                 total_tasks: tasksResponse.data.total_tasks,
+                 completed_count: tasksResponse.data.completed_count,
+                 pending_count: tasksResponse.data.pending_count,
+                 failed_count: tasksResponse.data.failed_count
+               };
+               
+               const taskBreakdownMsgIndex = newMessages.findIndex(msg => 
+                 msg.metadata?.type === 'task_breakdown' || 
+                 msg.metadata?.awaiting_task_selection ||
+                 (msg.content && msg.content.includes('Task Breakdown Complete'))
+               );
+               
+               if (taskBreakdownMsgIndex !== -1) {
+                 newMessages[taskBreakdownMsgIndex] = {
+                   ...newMessages[taskBreakdownMsgIndex],
+                   metadata: {
+                     ...newMessages[taskBreakdownMsgIndex].metadata,
+                     task_plan: taskPlan
+                   }
+                 };
+               } else {
+                 // Create task breakdown message if tasks exist but no message found
+                 console.log('📋 Tasks found but no breakdown message - creating one');
+                 const taskBreakdownMsg = {
+                   id: `task_breakdown_${Date.now()}`,
+                   role: 'assistant',
+                   content: `📋 **Task Breakdown Complete!**\n\n${taskPlan.project_summary}\n\nI've broken this down into **${taskPlan.total_tasks} tasks**. You can:\n• Click "Execute All" to start building automatically\n• Click "Execute" on individual tasks to run them one by one\n• Click "Edit" to modify task descriptions before execution\n\nReady to start building?`,
+                   timestamp: new Date().toISOString(),
+                   metadata: {
+                     type: 'task_breakdown',
+                     task_plan: taskPlan,
+                     awaiting_task_selection: true
+                   }
+                 };
+                 newMessages.push(taskBreakdownMsg);
+               }
+             }
+             
+             setMessages(newMessages);
+             
+             // Check if the last message signals completion or a code update
+             const lastMsg = newMessages[newMessages.length - 1];
+             
+             // 1. If we see a code update, refresh the tree
+             if (lastMsg?.content?.includes("[AGENT] CODE_UPDATE")) {
+                await fetchProjectFiles();
+             }
+             
+             // 2. If we see task breakdown, stop polling and loader
+             if (lastMsg?.metadata?.type === 'task_breakdown' || lastMsg?.metadata?.task_plan) {
+                console.log('✅ Task breakdown detected - stopping polling and loader');
+                setIsAutonomousPolling(false);
+                setLoading(false);
+                return;
+             }
+             
+             // 3. If we see verification or a generic stop signal, end polling
+             if (lastMsg?.content?.includes("[AGENT] VERIFICATION")) {
+                console.log('✅ Verification detected - stopping polling and loader');
+                setIsAutonomousPolling(false);
+                setLoading(false);
+                return;
+             }
+             
+             // 4. If we've polled at least 5 times (15 seconds) and no tasks found, check if we should stop
+             if (pollCount >= 5) {
+                // If no tasks were created and we have a "Got it!" message, stop polling
+                const hasGotItMessage = newMessages.some(msg => 
+                  msg.role === 'assistant' && 
+                  (msg.content?.includes('Got it!') || msg.content?.includes('On it!'))
+                );
+                
+                if (hasGotItMessage && tasksResponse.data.total_tasks === 0) {
+                  console.log('✅ No tasks detected after 15s with acknowledgment - stopping polling and loader');
+                  setIsAutonomousPolling(false);
+                  setLoading(false);
+                  return;
+                }
+             }
+             
+             // 5. Stop polling after 60 seconds (20 polls * 3 seconds) to prevent infinite polling
+             if (pollCount >= 20) {
+                console.log('⏱️ Polling timeout - stopping after 60 seconds');
+                setIsAutonomousPolling(false);
+                setLoading(false);
+                return;
+             }
+             
+             // Log polling status
+             console.log(`🔄 Poll #${pollCount}: ${newMessages.length} messages, ${tasksResponse.data.total_tasks} tasks, loader still active`);
+          }
+        } catch (e) {
+          console.error("Polling error:", e);
+        }
+      }, 3000);
+    }
+    return () => {
+      if (pollInterval) clearInterval(pollInterval);
+    };
+  }, [isAutonomousPolling, currentProjectId, pollCount]);
+
+  const fetchProjectFiles = async () => {
+    if (!currentProjectId) return;
+    try {
+      const filesResp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/versions/workspace/files`);
+      const filesMap = filesResp.data.files || {};
+      let rebuiltCode = '';
+      Object.entries(filesMap).forEach(([filePath, content]) => {
+        rebuiltCode += `// FILE: ${filePath}\n${content}\n\n`;
+      });
+      setFullCode(rebuiltCode);
+      const files = parseCodeToFiles(rebuiltCode);
+      setFileTree(files);
+    } catch (err) {
+      console.error("Tree refresh failed:", err);
+    }
+  };
+
   const fetchMessages = async () => {
     if (!currentProjectId) return;
     try {
       const token = localStorage.getItem('vibecoding_token');
-      const response = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/messages`, {
+      
+      // Fetch messages
+      const messagesResponse = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/messages`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      if (response.data.messages) {
-        setMessages(response.data.messages);
+      
+      // Fetch tasks
+      const tasksResponse = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/tasks`, {
+        headers: { Authorization: `Bearer ${token}` }
+      }).catch(err => {
+        console.warn('Failed to fetch tasks:', err);
+        return { data: { tasks: [], total_tasks: 0 } };
+      });
+      
+      if (messagesResponse.data.messages) {
+        let messages = messagesResponse.data.messages;
+        
+        // Check if any message signals loading complete
+        const hasLoadingComplete = messages.some(msg => 
+          msg.metadata?.loading_complete === true ||
+          msg.metadata?.type === 'task_breakdown' ||
+          msg.metadata?.type === 'task_execution_complete' ||
+          msg.metadata?.type === 'task_execution_failed' ||
+          msg.metadata?.type === 'task_execution_blocked'
+        );
+        
+        if (hasLoadingComplete) {
+          console.log('✅ Loading complete signal detected - stopping loader');
+          setLoading(false);
+          setIsAutonomousPolling(false);
+        }
+        
+        // If we have tasks, find the task breakdown message and inject the task plan
+        if (tasksResponse.data.tasks && tasksResponse.data.tasks.length > 0) {
+          const taskPlan = {
+            project_summary: tasksResponse.data.project_summary || 'Task breakdown',
+            tasks: tasksResponse.data.tasks,
+            total_tasks: tasksResponse.data.total_tasks,
+            completed_count: tasksResponse.data.completed_count,
+            pending_count: tasksResponse.data.pending_count,
+            failed_count: tasksResponse.data.failed_count
+          };
+          
+          // Find the most recent message with task breakdown metadata or create one
+          const taskBreakdownMsgIndex = messages.findIndex(msg => 
+            msg.metadata?.type === 'task_breakdown' || 
+            msg.metadata?.awaiting_task_selection ||
+            (msg.content && msg.content.includes('Task Breakdown Complete'))
+          );
+          
+          if (taskBreakdownMsgIndex !== -1) {
+            // Update existing message with task plan
+            messages[taskBreakdownMsgIndex] = {
+              ...messages[taskBreakdownMsgIndex],
+              metadata: {
+                ...messages[taskBreakdownMsgIndex].metadata,
+                task_plan: taskPlan
+              }
+            };
+          } else {
+            // Create a new task breakdown message if none exists
+            const taskBreakdownMsg = {
+              id: `task_breakdown_${Date.now()}`,
+              role: 'assistant',
+              content: `📋 **Task Breakdown Complete!**\n\nI've broken this down into **${taskPlan.total_tasks} tasks**. You can:\n• Click "Execute All" to start building automatically\n• Click "Execute" on individual tasks to run them one by one\n• Click "Edit" to modify task descriptions before execution\n\nReady to start building?`,
+              timestamp: new Date().toISOString(),
+              metadata: {
+                type: 'task_breakdown',
+                task_plan: taskPlan,
+                awaiting_task_selection: true
+              }
+            };
+            messages.push(taskBreakdownMsg);
+          }
+        }
+        
+        setMessages(messages);
       }
     } catch (error) {
       console.error('Failed to fetch messages:', error);
@@ -273,9 +517,9 @@ function Workspace({ user, logout, isAuthenticated }) {
     }
   };
 
-  // Poll the container-health endpoint until healthy, then show the iframe.
-  // The iframe src is NOT set until the container is confirmed ready, so the user
-  // never sees "Connection was reset" or broken pages.
+  // ── Container health polling ─────────────────────────────────────────────
+  // Polls /container-health until the agent's Nginx gateway responds, then
+  // flips the iframe to visible. Workspace file polling runs independently.
   const startContainerRetry = (url) => {
     if (containerPollIntervalRef.current) {
       clearTimeout(containerPollIntervalRef.current);
@@ -283,17 +527,15 @@ function Workspace({ user, logout, isAuthenticated }) {
     }
 
     containerLoadExpectedRef.current = true;
-
     let attempts = 0;
     const maxAttempts = 60;
-    const pollInterval = 2000;
 
     const poll = async () => {
       attempts++;
       try {
         const resp = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/container-health`);
         if (resp.data.healthy) {
-          console.log(`✅ Container healthy after ${attempts} polls — showing preview`);
+          console.log(`✅ Container healthy after ${attempts} polls`);
           containerLoadExpectedRef.current = false;
           setIsContainerLoading(false);
           setIframeKey(prev => prev + 1);
@@ -306,7 +548,7 @@ function Workspace({ user, logout, isAuthenticated }) {
       }
 
       if (attempts < maxAttempts) {
-        containerPollIntervalRef.current = setTimeout(poll, pollInterval);
+        containerPollIntervalRef.current = setTimeout(poll, 2000);
       } else {
         console.log('⏱️ Max health polls reached — showing preview anyway');
         containerLoadExpectedRef.current = false;
@@ -316,8 +558,75 @@ function Workspace({ user, logout, isAuthenticated }) {
       }
     };
 
-    console.log('🚀 Container URL received, starting health polling in 3s:', url);
+    console.log('🚀 Starting health polling in 3s for:', url);
     containerPollIntervalRef.current = setTimeout(poll, 3000);
+  };
+
+  // ── Live workspace file polling ───────────────────────────────────────────
+  // Polls the workspace files every 3s while the agent is active.
+  // Updates the file tree and code view in real-time as the agent writes files.
+  const startWorkspacePolling = (projectId) => {
+    stopWorkspacePolling();
+    lastWorkspaceHashRef.current = '';
+    console.log('📂 Starting live workspace polling for:', projectId);
+
+    const poll = async () => {
+      try {
+        const resp = await axios.get(`${API_BASE_URL}/api/projects/${projectId}/versions/workspace/files`);
+        const filesMap = resp.data.files || {};
+        if (Object.keys(filesMap).length === 0) return;
+
+        // Simple hash: sorted file paths + total char count to detect changes
+        const hash = Object.keys(filesMap).sort().join('|') + ':' +
+          Object.values(filesMap).reduce((acc, c) => acc + c.length, 0);
+
+        if (hash === lastWorkspaceHashRef.current) return; // nothing changed
+        lastWorkspaceHashRef.current = hash;
+
+        console.log('📝 Workspace changed — updating file tree live');
+
+        // Rebuild code string with file markers
+        let rebuiltCode = '';
+        Object.entries(filesMap).forEach(([filePath, content]) => {
+          rebuiltCode += `// FILE: ${filePath}\n${content}\n\n`;
+        });
+        setFullCode(rebuiltCode);
+
+        // Update previewCode with best HTML candidate
+        const indexFile = filesMap['index.html'] || filesMap['index.jsx'] || Object.values(filesMap)[0];
+        setPreviewCode(indexFile || rebuiltCode);
+
+        // Rebuild file tree
+        const files = parseCodeToFiles(rebuiltCode);
+        setFileTree(files);
+
+        // Auto-expand all folders
+        const allFolderPaths = new Set();
+        const collectFolders = (items) => {
+          items.forEach(item => {
+            if (item.type === 'folder') {
+              allFolderPaths.add(item.path);
+              if (item.children) collectFolders(item.children);
+            }
+          });
+        };
+        collectFolders(files);
+        setExpandedFolders(allFolderPaths);
+
+      } catch (err) {
+        // Silently ignore — workspace may not exist yet
+      }
+    };
+
+    workspacePollIntervalRef.current = setInterval(poll, 3000);
+  };
+
+  const stopWorkspacePolling = () => {
+    if (workspacePollIntervalRef.current) {
+      clearInterval(workspacePollIntervalRef.current);
+      workspacePollIntervalRef.current = null;
+      console.log('📂 Stopped live workspace polling');
+    }
   };
 
   // Load branches from backend for the current project
@@ -445,6 +754,27 @@ function Workspace({ user, logout, isAuthenticated }) {
 
           // Clear URL params without reloading
           window.history.replaceState({}, '', `/vibecoding/a/${urlProjectId}`);
+
+          // Start the container in the background immediately so preview warms up
+          // while the user reads their chat history — do NOT switch to preview tab
+          try {
+            const startResp = await axios.post(
+              `${API_BASE_URL}/api/projects/${urlProjectId}/start`,
+              {},
+              { headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` } }
+            );
+            if (startResp.data.started && startResp.data.preview_url) {
+              console.log('🚀 Container starting for project:', urlProjectId);
+              setPreviewUrl(startResp.data.preview_url);
+              // Start health polling silently — preview tab will show spinner only when user switches to it
+              containerLoadExpectedRef.current = true;
+              setIsContainerLoading(true);
+              startContainerRetry(startResp.data.preview_url);
+              startWorkspacePolling(urlProjectId);
+            }
+          } catch (startErr) {
+            console.warn('Container pre-start failed (non-critical):', startErr.message);
+          }
         } catch (error) {
           console.error('Failed to load project from URL:', error);
           // If project doesn't exist (404) or access denied (403), redirect to last opened project or home
@@ -483,6 +813,32 @@ function Workspace({ user, logout, isAuthenticated }) {
       initProject();
     }
   }, [isAuthenticated]);
+
+  // Switch to a project — sets the ID and starts the container in the background
+  const switchToProject = async (newProjectId) => {
+    if (!newProjectId || newProjectId === currentProjectId) return;
+    setCurrentProjectId(newProjectId);
+    navigate(`/vibecoding/a/${newProjectId}`);
+
+    // Start the container silently — don't force preview tab, let user stay on chat/code
+    try {
+      const startResp = await axios.post(
+        `${API_BASE_URL}/api/projects/${newProjectId}/start`,
+        {},
+        { headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` } }
+      );
+      if (startResp.data.started && startResp.data.preview_url) {
+        console.log('🚀 Container starting for switched project:', newProjectId);
+        setPreviewUrl(startResp.data.preview_url);
+        containerLoadExpectedRef.current = true;
+        setIsContainerLoading(true);
+        startContainerRetry(startResp.data.preview_url);
+        startWorkspacePolling(newProjectId);
+      }
+    } catch (err) {
+      console.warn('Container start on project switch failed (non-critical):', err.message);
+    }
+  };
 
   // Switch to a different branch
   const switchToBranch = async (branchName) => {
@@ -692,6 +1048,7 @@ function Workspace({ user, logout, isAuthenticated }) {
     setMessages([]);
     setEditMode(false);
     setSelectedElement(null);
+    stopWorkspacePolling();
 
     // Create a new Git branch for this chat session
     try {
@@ -709,6 +1066,7 @@ function Workspace({ user, logout, isAuthenticated }) {
 
   // Function to handle new project creation - clears chat and resets state
   const handleCreateProject = (newProjectId) => {
+    stopWorkspacePolling();
     // Clear all chat-related state
     setMessages([]);
     setPreviewCode('');
@@ -854,6 +1212,7 @@ function Workspace({ user, logout, isAuthenticated }) {
     // Protection against double submissions
     if (loading) return;
     setLoading(true);
+    stopWorkspacePolling(); // stop any previous live polling
 
     const userMessage = {
       role: 'user',
@@ -887,11 +1246,19 @@ function Workspace({ user, logout, isAuthenticated }) {
         summary: response.data.summary,
         toolCalls: response.data.tool_calls_log || null,
         suggestions: response.data.suggestions || null,
+        metadata: response.data.metadata || null,
         timestamp: new Date().toISOString(),
         id: response.data.message_id
       };
 
-      setMessages(prev => [...prev, aiMessage]);
+      // Check if we're awaiting task breakdown - if so, don't add the empty message and keep loader active
+      const awaitingTaskBreakdown = response.data.metadata?.awaiting_task_breakdown;
+      
+      if (!awaitingTaskBreakdown && response.data.message) {
+        // Only add message if it's not empty and we're not awaiting task breakdown
+        setMessages(prev => [...prev, aiMessage]);
+      }
+      
       setLastMessageId(response.data.message_id);
 
       if (response.data.code) {
@@ -904,7 +1271,19 @@ function Workspace({ user, logout, isAuthenticated }) {
         setCurrentProjectId(project_id);
       }
 
-      setLoading(false);
+      if (!discussMode) {
+        // Always start polling in non-discuss mode to check for tasks
+        // Loader will stay active until polling finds tasks or times out
+        console.log('🔄 Starting polling - keeping loader active');
+        console.log('📊 Current state: loading=', loading, 'isAutonomousPolling=', isAutonomousPolling);
+        setIsAutonomousPolling(true);
+        // CRITICAL: Keep loading true - polling will set it to false when done
+        // Don't call setLoading(false) here!
+      } else {
+        // In discuss mode, stop loader immediately
+        console.log('💬 Discuss mode - stopping loader');
+        setLoading(false);
+      }
 
       if (response.data.code) {
         const fullCodeContent = response.data.code;
@@ -1041,12 +1420,11 @@ function Workspace({ user, logout, isAuthenticated }) {
         containerLoadExpectedRef.current = true;
         setIsContainerLoading(true);
         setPreviewUrl(response.data.preview_url);
-        // Only auto-switch to preview if user is NOT currently in code view
-        if (activeView !== 'code') {
-          setActiveView('preview');
-        }
-        // Start retry loop imperatively — bypasses React batching issues
+        setActiveView('preview');
+        // Start health polling — shows iframe once Nginx gateway is up
         startContainerRetry(response.data.preview_url);
+        // Start live workspace polling — updates file tree as agent writes files
+        startWorkspacePolling(response.data.project_id || currentProjectId);
       } else if (response.data.code) {
         // No container URL, use inline preview
         setPreviewUrl('');
@@ -1068,9 +1446,11 @@ function Workspace({ user, logout, isAuthenticated }) {
         content: `I encountered an error while generating or deploying the preview: ${errorMessage}`,
         timestamp: new Date().toISOString()
       }]);
-    } finally {
+      // On error, stop loading and polling
       setLoading(false);
+      setIsAutonomousPolling(false);
     }
+    // NOTE: No finally block! We want polling to control the loader state
   };
 
   const handleDeploy = async () => {
@@ -1789,7 +2169,7 @@ Please suggest improvements or modifications for this element.`;
         setShowUserMenu={setShowUserMenu}
         projects={projects}
         currentProjectId={currentProjectId}
-        setCurrentProjectId={setCurrentProjectId}
+        setCurrentProjectId={switchToProject}
         showProjectDropdown={showProjectDropdown}
         setShowProjectDropdown={setShowProjectDropdown}
         onNewChat={handleNewChat}
@@ -2006,7 +2386,7 @@ Please suggest improvements or modifications for this element.`;
           {/* Content Area */}
           <div className={`flex-1 relative overflow-hidden min-h-0 flex flex-col transition-colors ${darkMode ? 'bg-[#0A0A0F]' : 'bg-white'
             }`}>
-            {!previewCode ? (
+            {!previewCode && !previewUrl ? (
               <div className="h-full flex items-center justify-center">
                 <div className="text-center">
                   <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-purple-500/20 to-pink-500/20 flex items-center justify-center mx-auto mb-4">
@@ -2380,6 +2760,10 @@ Please suggest improvements or modifications for this element.`;
           })()}
           discussMode={discussMode}
           onToggleDiscuss={() => setDiscussMode(prev => !prev)}
+          onExecuteTask={handleExecuteTask}
+          onExecuteAllTasks={handleExecuteAllTasks}
+          onEditTask={handleEditTask}
+          executingTaskId={executingTaskId}
         />
       </div>
 

@@ -32,3 +32,5 @@ vibecoding/backend/project_artifacts/
 vibecoding/frontend/.vite/
 vibecoding/backend/vibecoding_users.db
 vibecoding/frontend/vite.config.js
+backend/bootstrap_fox.md
+*.md

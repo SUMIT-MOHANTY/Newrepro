@@ -3,7 +3,7 @@ import axios from 'axios';
 
 // Vibecoding backend routes are mounted under `/vibecoding/api/*`
 // (can be overridden via VITE_API_BASE_URL)
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/vibecoding';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/vibecoding';
 
 const AuthContext = createContext(null);
 
@@ -66,6 +66,9 @@ export function AuthProvider({ children }) {
     const params = new URLSearchParams(window.location.search);
     if (params.has('handoff_token')) return;
 
+    // Safety timeout — never leave the app stuck on the loading screen
+    const safetyTimer = setTimeout(() => setLoading(false), 6000);
+
     const verifyToken = async () => {
       if (!token) {
         setLoading(false);
@@ -74,19 +77,23 @@ export function AuthProvider({ children }) {
 
       try {
         const response = await axios.get(`${API_BASE_URL}/api/auth/verify`, {
-          headers: { Authorization: `Bearer ${token}` }
+          headers: { Authorization: `Bearer ${token}` },
+          timeout: 8000,
         });
         setUser(response.data.user);
       } catch (error) {
+        // Token invalid, expired, or backend unreachable — clear and continue
         localStorage.removeItem('vibecoding_token');
         setToken(null);
         setUser(null);
       } finally {
+        clearTimeout(safetyTimer);
         setLoading(false);
       }
     };
 
     verifyToken();
+    return () => clearTimeout(safetyTimer);
   }, []);
 
   const login = useCallback(async (email, password) => {

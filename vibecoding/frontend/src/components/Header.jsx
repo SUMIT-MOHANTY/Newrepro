@@ -6,7 +6,7 @@ import bourntecLogo from '../../assets/bourntec_logo.png';
 import bourntecLogoLight from '../../assets/bourntec_logo_l.png';
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/vibecoding';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/vibecoding';
 
 const Header = ({
   chatVersion,
@@ -311,7 +311,7 @@ const Header = ({
             )}
           </Button>
 
-          {/* User Avatar + Menu */}
+            {/* User Avatar + Menu */}
           <div className="user-menu-container" style={{ position: 'relative' }}>
             <button
               className={`user-avatar-btn flex items-center gap-2 px-2 py-1 rounded-lg transition-colors ${
