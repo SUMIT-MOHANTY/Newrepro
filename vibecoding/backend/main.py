@@ -80,11 +80,13 @@ app = FastAPI(title=f"{APP_NAME} API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5174"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+ARTIFACTS_DIR = Path(os.getenv('ARTIFACTS_DIR', './project_artifacts'))
 
 # ─── WebSocket Connection Manager ───────────────────────────────────────────────
 class ConnectionManager:
