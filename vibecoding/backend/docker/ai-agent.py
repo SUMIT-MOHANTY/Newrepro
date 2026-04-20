@@ -1261,6 +1261,11 @@ def deploy(error_context: dict = None, max_retries: int = 3, test_changes: bool 
     
     # Detect available ports
     available_ports = _detect_available_ports()
+    
+    # Track fix attempts to prevent infinite loops
+    syntax_fix_attempts = 0
+    code_fix_attempts = 0
+    MAX_FIX_ATTEMPTS = 5
 
     system_prompt = """You are a senior DevOps engineer deploying applications in a Docker container.
 
@@ -1513,6 +1518,19 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
 
             # Before retrying, check if we have a repeating pattern — fix code if so
             if len(error_history) >= 2:
+                code_fix_attempts += 1
+                
+                if code_fix_attempts >= MAX_FIX_ATTEMPTS:
+                    report(f'⚠️ I\'ve attempted {MAX_FIX_ATTEMPTS} code fixes but the issue persists. The deployment may require manual intervention.',
+                           suggestions=[
+                               {'text': 'Show me the errors', 'action': 'show_errors', 'icon': '📋', 'prompt': 'Show me all the error details'},
+                               {'text': 'Try different approach', 'action': 'different_approach', 'icon': '🔄', 'prompt': 'Try a completely different deployment approach'},
+                               {'text': 'Start over', 'action': 'restart', 'icon': '🆕', 'prompt': 'Clear everything and rebuild from scratch'}
+                           ],
+                           metadata={'status': 'failed', 'error_type': 'max_code_fixes_exceeded'},
+                           summary='Maximum code fix attempts reached')
+                    return False
+                
                 workspace_files = read_workspace_files()
                 fixed = _targeted_code_fix(error_history, workspace_files)
                 if fixed:
@@ -1756,8 +1774,21 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
                     log(f'Syntax error detected: {has_syntax_error}')
                     
                     if has_syntax_error:
-                        log('🔧 Syntax error detected - attempting automatic fix')
-                        report('🔧 I found a syntax error in the code. Let me fix it...')
+                        syntax_fix_attempts += 1
+                        
+                        if syntax_fix_attempts >= MAX_FIX_ATTEMPTS:
+                            report(f'⚠️ I\'ve attempted {MAX_FIX_ATTEMPTS} syntax fixes but the issue persists. The code may need manual review.',
+                                   suggestions=[
+                                       {'text': 'Show me the syntax error', 'action': 'show_error', 'icon': '📋', 'prompt': 'Show me the exact syntax error'},
+                                       {'text': 'Review the code', 'action': 'review_code', 'icon': '👀', 'prompt': 'Let me review the problematic code'},
+                                       {'text': 'Rewrite from scratch', 'action': 'rewrite', 'icon': '🔄', 'prompt': 'Rewrite the problematic file from scratch'}
+                                   ],
+                                   metadata={'status': 'failed', 'error_type': 'max_syntax_fixes_exceeded'},
+                                   summary='Maximum syntax fix attempts reached')
+                            return False
+                        
+                        log(f'🔧 Syntax error detected - attempting automatic fix (attempt {syntax_fix_attempts}/{MAX_FIX_ATTEMPTS})')
+                        report(f'🔧 I found a syntax error in the code. Let me fix it... (attempt {syntax_fix_attempts}/{MAX_FIX_ATTEMPTS})')
                         
                         fix_result = _auto_fix_syntax_error(full_error, tree)
                         log(f'Fix result: {fix_result}')
@@ -1836,8 +1867,19 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
             if test_changes and changed_files and user_prompt:
                 test_result = _test_changes_automatically(changed_files, user_prompt, app_port)
                 
-                # If fix was applied, redeploy
+                # If fix was applied, redeploy (but check attempt limit)
                 if test_result.get('fix_applied'):
+                    if attempt >= max_retries:
+                        report(f'⚠️ Maximum retry attempts ({max_retries}) reached. The app is deployed but may have issues.',
+                               suggestions=[
+                                   {'text': 'Test manually', 'action': 'test', 'icon': '🧪', 'prompt': 'Let me test the app manually'},
+                                   {'text': 'Review changes', 'action': 'review', 'icon': '👀', 'prompt': 'Review what was changed'},
+                                   {'text': 'Rollback', 'action': 'rollback', 'icon': '↩️', 'prompt': 'Rollback to previous version'}
+                               ],
+                               metadata={'status': 'warning', 'error_type': 'max_retries_reached'},
+                               summary='Deployment completed with warnings')
+                        return True  # Return success but with warnings
+                    
                     log('Auto-fix applied, redeploying...')
                     time.sleep(2)
                     continue  # Retry deployment with the fix
@@ -4161,6 +4203,8 @@ def watchdog(agent: Agent):
     last_404_fix_time = 0
     asset_404_count = 0
     check_count = 0
+    consecutive_502_failures = 0
+    MAX_AUTO_FIXES = 5
 
     while True:
         try:
@@ -4191,9 +4235,27 @@ def watchdog(agent: Agent):
                 nginx_errors = get_nginx_errors()
                 now = time.time()
                 if nginx_errors and (now - last_502_time) > 30:
-                    last_502_time = now
-                    report('🔧 Noticed your app stopped responding. Automatically fixing it...')
-                    agent.enqueue('Fix the deployment — the app is returning 502 errors.')
+                    consecutive_502_failures += 1
+                    
+                    if consecutive_502_failures >= MAX_AUTO_FIXES:
+                        report(f'⚠️ I\'ve tried fixing the deployment {MAX_AUTO_FIXES} times but the issue persists. Please review the error logs or send me specific instructions to resolve this.',
+                               suggestions=[
+                                   {'text': 'Show me the logs', 'action': 'show_logs', 'icon': '📋', 'prompt': 'Show me the detailed error logs'},
+                                   {'text': 'Start fresh', 'action': 'restart', 'icon': '🆕', 'prompt': 'Clear everything and start with a new deployment'},
+                                   {'text': 'Manual fix', 'action': 'manual', 'icon': '🔧', 'prompt': None}
+                               ],
+                               metadata={'status': 'failed', 'error_type': 'max_retries_exceeded'},
+                               summary='Maximum auto-fix attempts reached')
+                        consecutive_502_failures = 0  # Reset counter
+                        last_502_time = now + 300  # Wait 5 minutes before trying again
+                    else:
+                        last_502_time = now
+                        report(f'🔧 Noticed your app stopped responding. Automatically fixing it... (attempt {consecutive_502_failures}/{MAX_AUTO_FIXES})')
+                        agent.enqueue('Fix the deployment — the app is returning 502 errors.')
+                else:
+                    # Reset counter if no errors detected
+                    if not nginx_errors:
+                        consecutive_502_failures = 0
                 
                 # ═══════════════════════════════════════════════════════════
                 # Monitor for 404 errors on static assets (missing proxy_pass)
