@@ -8321,6 +8321,156 @@ def _run_git_command_with_retry(container_name: str, command: List[str],
                                         stderr=getattr(last_error, 'stderr', str(last_error)))
 
 
+def _validate_and_fix_json_files(container_name: str) -> Dict[str, Any]:
+    """
+    Validate all JSON files in the workspace and attempt to auto-fix common errors.
+    Returns: {"success": bool, "errors": List[str], "fixed": List[str]}
+    """
+    result = {"success": True, "errors": [], "fixed": []}
+    
+    try:
+        # Find all JSON files
+        find_json = subprocess.run(
+            ["docker", "exec", "-w", "/workspace", container_name,
+             "find", ".", "-type", "f", "-name", "*.json",
+             "-not", "-path", "*/node_modules/*",
+             "-not", "-path", "*/.git/*"],
+            capture_output=True, text=True, timeout=30,
+        )
+        
+        if find_json.returncode != 0 or not find_json.stdout.strip():
+            # No JSON files found or error - not a failure
+            return result
+        
+        json_files = [f.strip() for f in find_json.stdout.splitlines() if f.strip()]
+        
+        for json_file in json_files:
+            # Read the file content first to check if empty
+            read_file = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "cat", json_file],
+                capture_output=True, text=True, timeout=10,
+            )
+            
+            if read_file.returncode != 0:
+                result["errors"].append(f"{json_file}: Cannot read file")
+                result["success"] = False
+                continue
+            
+            content = read_file.stdout.strip()
+            
+            # CRITICAL FIX: Handle empty JSON files (created by touch)
+            if not content or len(content) == 0:
+                # Determine appropriate empty JSON based on filename
+                if "package.json" in json_file:
+                    # Create minimal valid package.json
+                    content = '{\n  "name": "project",\n  "version": "1.0.0"\n}\n'
+                elif "tsconfig.json" in json_file:
+                    # Create minimal valid tsconfig.json
+                    content = '{\n  "compilerOptions": {}\n}\n'
+                else:
+                    # Generic empty JSON object
+                    content = '{}\n'
+                
+                # Write the minimal valid JSON
+                write_cmd = f"cat > {json_file} << 'JSONEOF'\n{content}JSONEOF"
+                write_file = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "sh", "-c", write_cmd],
+                    capture_output=True, text=True, timeout=10,
+                )
+                
+                if write_file.returncode != 0:
+                    result["errors"].append(f"{json_file}: Cannot write minimal JSON")
+                    result["success"] = False
+                    continue
+                
+                result["fixed"].append(json_file)
+                logger.info(f"✅ Fixed empty JSON file: {json_file}")
+                continue
+            
+            # Validate JSON syntax
+            validate = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "python3", "-m", "json.tool", json_file],
+                capture_output=True, text=True, timeout=10,
+            )
+            
+            if validate.returncode != 0:
+                # JSON is invalid - attempt auto-fix
+                logger.warning(f"Invalid JSON detected: {json_file}")
+                
+                original_content = content
+                fixed = False
+                
+                # Auto-fix attempt 1: Remove trailing commas before } or ]
+                import re
+                content_fixed = re.sub(r',(\s*[}\]])', r'\1', content)
+                if content_fixed != content:
+                    content = content_fixed
+                    fixed = True
+                
+                # Auto-fix attempt 2: Add missing closing braces/brackets
+                # Count opening and closing braces
+                open_braces = content.count('{')
+                close_braces = content.count('}')
+                open_brackets = content.count('[')
+                close_brackets = content.count(']')
+                
+                if open_braces > close_braces:
+                    content += '\n' + '}' * (open_braces - close_braces)
+                    fixed = True
+                
+                if open_brackets > close_brackets:
+                    content += '\n' + ']' * (open_brackets - close_brackets)
+                    fixed = True
+                
+                # Auto-fix attempt 3: Ensure file ends with newline
+                if not content.endswith('\n'):
+                    content += '\n'
+                    fixed = True
+                
+                if fixed:
+                    # Write fixed content back
+                    write_cmd = f"cat > {json_file} << 'JSONEOF'\n{content}\nJSONEOF"
+                    write_file = subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "sh", "-c", write_cmd],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    
+                    if write_file.returncode != 0:
+                        result["errors"].append(f"{json_file}: Cannot write fixed content")
+                        result["success"] = False
+                        continue
+                    
+                    # Validate again
+                    validate_fixed = subprocess.run(
+                        ["docker", "exec", "-w", "/workspace", container_name,
+                         "python3", "-m", "json.tool", json_file],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    
+                    if validate_fixed.returncode == 0:
+                        result["fixed"].append(json_file)
+                        logger.info(f"✅ Auto-fixed JSON: {json_file}")
+                    else:
+                        result["errors"].append(f"{json_file}: Auto-fix failed - {validate_fixed.stderr[:200]}")
+                        result["success"] = False
+                        logger.error(f"❌ Auto-fix failed for {json_file}: {validate_fixed.stderr[:200]}")
+                else:
+                    result["errors"].append(f"{json_file}: Invalid JSON, no auto-fix available - {validate.stderr[:200]}")
+                    result["success"] = False
+                    logger.error(f"❌ Cannot auto-fix {json_file}: {validate.stderr[:200]}")
+    
+    except Exception as e:
+        result["errors"].append(f"JSON validation exception: {str(e)}")
+        result["success"] = False
+        logger.error(f"JSON validation exception: {e}")
+    
+    return result
+
+
 def _commit_and_push(container_name: str, task_title: str, branch_name: str) -> Dict[str, Any]:
     """Stage all changes, commit with task title, and push to the remote branch."""
     try:
@@ -8334,6 +8484,35 @@ def _commit_and_push(container_name: str, task_title: str, branch_name: str) -> 
                  "git cherry-pick --abort >/dev/null 2>&1 || true"],
                 capture_output=True, text=True, timeout=20,
             )
+        
+        # ═════════════════════════════════════════════════════════
+        # JSON VALIDATION - CRITICAL FOR BOOTSTRAP TASKS
+        # ═════════════════════════════════════════════════════════
+        # Validate and auto-fix JSON files BEFORE git add
+        # This prevents invalid package.json from being committed
+        json_validation = _validate_and_fix_json_files(container_name)
+        
+        if not json_validation["success"]:
+            error_details = "; ".join(json_validation["errors"][:3])
+            logger.error(f"JSON validation failed before commit: {error_details}")
+            return {
+                "success": False,
+                "error": f"JSON validation failed: {error_details}",
+                "json_errors": json_validation["errors"],
+                "json_fixed": json_validation["fixed"],
+            }
+        
+        if json_validation["fixed"]:
+            fixed_files = ", ".join(json_validation["fixed"][:5])
+            logger.info(f"✅ Auto-fixed JSON files: {fixed_files}")
+        
+        logger.info("✅ JSON validation passed - all JSON files are valid")
+        
+        # Store JSON validation results to include in all return statements
+        json_info = {
+            "json_fixed": json_validation["fixed"],
+            "json_errors": json_validation["errors"],
+        }
 
         # Optional structural guard: if a canonical backend/ project exists,
         # prevent agents from introducing competing Django roots at repo root.
@@ -8453,8 +8632,8 @@ yarn-error.log
         )
         if commit.returncode != 0:
             if "nothing to commit" in (commit.stdout + commit.stderr):
-                return {"success": True, "message": "Nothing to commit", "pushed": False}
-            return {"success": False, "error": f"git commit failed: {commit.stderr}"}
+                return {"success": True, "message": "Nothing to commit", "pushed": False, **json_info}
+            return {"success": False, "error": f"git commit failed: {commit.stderr}", **json_info}
 
         # Push
         push = subprocess.run(
@@ -8479,7 +8658,7 @@ yarn-error.log
                         capture_output=True, text=True, timeout=60,
                     )
                     if push_retry.returncode == 0:
-                        return {"success": True, "pushed": True, "branch": branch_name, "rebased": True}
+                        return {"success": True, "pushed": True, "branch": branch_name, "rebased": True, **json_info}
                 else:
                     _abort_pending_git_ops()
 
@@ -8515,6 +8694,7 @@ yarn-error.log
                                 f"{(checkout_retry.stderr or checkout_retry.stdout).strip()} "
                                 f"| prior rebase error: {pull_err[:400]}"
                             ),
+                            **json_info
                         }
 
                 # Retry push until it succeeds
@@ -8526,11 +8706,11 @@ yarn-error.log
                     operation="push"
                 )
                 if push2.returncode == 0:
-                    return {"success": True, "pushed": True, "branch": new_branch, "renamed": True}
-                return {"success": False, "error": f"git push failed: {push2.stderr}"}
-            return {"success": False, "error": f"git push failed: {err}"}
+                    return {"success": True, "pushed": True, "branch": new_branch, "renamed": True, **json_info}
+                return {"success": False, "error": f"git push failed: {push2.stderr}", **json_info}
+            return {"success": False, "error": f"git push failed: {err}", **json_info}
 
-        return {"success": True, "pushed": True, "branch": branch_name}
+        return {"success": True, "pushed": True, "branch": branch_name, **json_info}
 
     except subprocess.TimeoutExpired:
         return {"success": False, "error": "Git push timed out"}
@@ -18669,6 +18849,24 @@ Agent {agent_id} will proceed to next available task.
                     lt_commit = await asyncio.to_thread(
                         _commit_and_push, container_name, lt_title, lt_branch
                     )
+                    
+                    # Log JSON validation results if present
+                    if "json_fixed" in lt_commit and lt_commit["json_fixed"]:
+                        fixed_files = ", ".join(lt_commit["json_fixed"][:5])
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"{'  ' * depth}✅ Auto-fixed JSON files: {fixed_files}"
+                        })
+                    
+                    if "json_errors" in lt_commit and lt_commit["json_errors"]:
+                        error_summary = "; ".join(lt_commit["json_errors"][:3])
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "error",
+                            "message": f"{'  ' * depth}❌ JSON validation failed: {error_summary}"
+                        })
+                    
                     lt_commit_success = lt_commit.get("success", False)
                     if lt_commit_success:
                         effective_lt_branch = lt_commit.get("branch", lt_branch)
@@ -18824,6 +19022,24 @@ Agent {agent_id} will proceed to next available task.
                 commit_result = await asyncio.to_thread(
                     _commit_and_push, container_name, task["title"], branch_name
                 )
+                
+                # Log JSON validation results if present
+                if "json_fixed" in commit_result and commit_result["json_fixed"]:
+                    fixed_files = ", ".join(commit_result["json_fixed"][:5])
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"✅ Auto-fixed JSON files: {fixed_files}"
+                    })
+                
+                if "json_errors" in commit_result and commit_result["json_errors"]:
+                    error_summary = "; ".join(commit_result["json_errors"][:3])
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "error",
+                        "message": f"❌ JSON validation failed: {error_summary}"
+                    })
+                
                 if commit_result["success"]:
                     git_success = True
                     effective_branch = commit_result.get("branch", branch_name)

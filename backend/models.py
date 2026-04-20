@@ -401,3 +401,16 @@ class AgentMessage(Base):
     resolved_at = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class HandoffToken(Base):
+    """Store VibeCoding handoff tokens with full payload to avoid URL length limits"""
+    __tablename__ = "handoff_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    token_id = Column(String, unique=True, index=True, nullable=False)
+    payload = Column(Text, nullable=False)  # JSON string of the full handoff data
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    used_at = Column(DateTime, nullable=True)  # Track when token was used

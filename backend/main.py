@@ -51,6 +51,7 @@ import email_service
 import knowledge_graph_service as kg_service
 import master_task_manager
 import master_coordination_service
+import analysis_job_manager
 
 # Cache for agent status to reduce database load
 _agent_status_cache: Dict[str, Dict[str, Any]] = {}
@@ -159,7 +160,11 @@ models.Base.metadata.create_all(bind=engine)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _startup_init()
+    # Initialize job manager
+    await analysis_job_manager.initialize_job_manager()
     yield
+    # Cleanup job manager
+    await analysis_job_manager.shutdown_job_manager()
 
 
 app = FastAPI(title="BRD Analysis API", version="1.0.0", lifespan=lifespan)
@@ -405,13 +410,15 @@ async def analyze_document_with_ai(
     current_user: models.User = Depends(auth.get_current_user),
 ):
     """
-    Analyze document content using AI.
+    Analyze document content using AI with job-based polling support.
+    
+    Returns immediately with a job_id that can be used to poll for results.
     
     You can optionally override the default AI settings per request:
     - api_url: Custom OpenAI-compatible API URL
     - api_key: API key for the service
     - model: Model name to use
-    - stream: Set to true for streaming response (Server-Sent Events)
+    - stream: Set to true for streaming response (Server-Sent Events) - bypasses job system
     
     Uses chunked multi-stage analysis by default (configurable via USE_CHUNKED_ANALYSIS env var)
     to reduce payload size and improve reliability.
@@ -419,41 +426,119 @@ async def analyze_document_with_ai(
     if _all_answers_skipped_from_governance_context(request.governance_context):
         raise HTTPException(status_code=403, detail=ALL_SKIPPED_ANALYZE_BLOCK_MESSAGE)
 
-    # Choose between chunked and original analysis based on configuration
-    if settings.use_chunked_analysis:
-        logger.info("Using chunked multi-stage analysis")
-        result = await ai_service_chunked.analyze_document(
-            document_content=request.document_content,
-            api_url=request.api_url,
-            api_key=request.api_key,
-            model=request.model,
-            stream=request.stream,
-            user_feedback=request.user_feedback,
-            image_paths=request.image_paths,
-            governance_context=request.governance_context,
-        )
-    else:
-        logger.info("Using original single-stage analysis")
-        result = await ai_service.analyze_document(
-            document_content=request.document_content,
-            api_url=request.api_url,
-            api_key=request.api_key,
-            model=request.model,
-            stream=request.stream,
-            user_feedback=request.user_feedback,
-            image_paths=request.image_paths,
-            governance_context=request.governance_context,
-        )
-    
-    # Handle potential early errors (which return dict)
-    if isinstance(result, dict) and result.get("status") == "error":
-        raise HTTPException(status_code=400, detail=result.get("error"))
-
+    # If streaming is requested, use the old behavior (no job system)
     if request.stream:
-        # result is an AsyncGenerator
+        logger.info("Using streaming mode - bypassing job system")
+        if settings.use_chunked_analysis:
+            result = await ai_service_chunked.analyze_document(
+                document_content=request.document_content,
+                api_url=request.api_url,
+                api_key=request.api_key,
+                model=request.model,
+                stream=request.stream,
+                user_feedback=request.user_feedback,
+                image_paths=request.image_paths,
+                governance_context=request.governance_context,
+            )
+        else:
+            result = await ai_service.analyze_document(
+                document_content=request.document_content,
+                api_url=request.api_url,
+                api_key=request.api_key,
+                model=request.model,
+                stream=request.stream,
+                user_feedback=request.user_feedback,
+                image_paths=request.image_paths,
+                governance_context=request.governance_context,
+            )
+        
+        if isinstance(result, dict) and result.get("status") == "error":
+            raise HTTPException(status_code=400, detail=result.get("error"))
+            
         return StreamingResponse(result, media_type="text/event-stream")
+
+    # Create a job for non-streaming analysis
+    job_id = f"analysis_{current_user.id}_{int(_time.time() * 1000)}_{secrets.token_hex(8)}"
+    job_manager = analysis_job_manager.get_job_manager()
+    job = job_manager.create_job(job_id, current_user.id)
     
-    return result
+    # Start analysis in background
+    async def run_analysis():
+        try:
+            job.set_processing()
+            job.update_progress(10, "Starting AI analysis...")
+            
+            # Choose between chunked and original analysis
+            if settings.use_chunked_analysis:
+                logger.info(f"Job {job_id}: Using chunked multi-stage analysis")
+                job.update_progress(20, "Stage 1: Extracting requirements...")
+                result = await ai_service_chunked.analyze_document(
+                    document_content=request.document_content,
+                    api_url=request.api_url,
+                    api_key=request.api_key,
+                    model=request.model,
+                    stream=False,
+                    user_feedback=request.user_feedback,
+                    image_paths=request.image_paths,
+                    governance_context=request.governance_context,
+                    job_id=job_id,  # Pass job_id for progress tracking
+                )
+            else:
+                logger.info(f"Job {job_id}: Using original single-stage analysis")
+                job.update_progress(30, "Analyzing document with AI...")
+                result = await ai_service.analyze_document(
+                    document_content=request.document_content,
+                    api_url=request.api_url,
+                    api_key=request.api_key,
+                    model=request.model,
+                    stream=False,
+                    user_feedback=request.user_feedback,
+                    image_paths=request.image_paths,
+                    governance_context=request.governance_context,
+                )
+            
+            # Handle errors
+            if isinstance(result, dict) and result.get("status") == "error":
+                job.set_failed(result.get("error", "Analysis failed"))
+                logger.error(f"Job {job_id} failed: {result.get('error')}")
+                return
+            
+            # Success
+            job.set_completed(result)
+            logger.info(f"Job {job_id} completed successfully")
+            
+        except Exception as e:
+            logger.exception(f"Job {job_id} failed with exception")
+            job.set_failed(str(e))
+    
+    # Run analysis in background
+    asyncio.create_task(run_analysis())
+    
+    # Return job ID immediately
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Analysis started. Use the job_id to poll for results at /ai/analyze/status/{job_id}"
+    }
+
+
+@app.get("/ai/analyze/status/{job_id}")
+async def get_analysis_job_status(
+    job_id: str,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Get the status of an analysis job.
+    
+    Poll this endpoint to check if the analysis is complete.
+    """
+    job_manager = analysis_job_manager.get_job_manager()
+    job = job_manager.get_user_job(job_id, current_user.id)
+    
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found or access denied")
+    
+    return job.to_dict()
 
 # ---------------------------------------------------------------------------
 # AI Assistant Chat Endpoint (used by AssistantBot frontend component)
@@ -3192,17 +3277,34 @@ async def get_governance_result(
 HANDOFF_SECRET = os.getenv("HANDOFF_SECRET", "dsuite-vibecoding-handoff-secret-local-dev")
 
 def _create_handoff_token(payload: dict) -> str:
-    """Create an HMAC-signed handoff token with 5-minute expiry."""
-    payload["exp"] = int(_time.time()) + 300
+    """
+    Create a short handoff token ID instead of embedding all data in the token.
+    The full payload is stored in the database and retrieved by VibeCoding.
+    """
+    # Generate a short, unique token ID
+    token_id = secrets.token_urlsafe(32)  # Short, URL-safe token
+    
+    # Add expiry and issued-at timestamps
+    payload["exp"] = int(_time.time()) + 300  # 5 minutes
     payload["iat"] = int(_time.time())
-    payload_bytes = json_stdlib.dumps(payload, separators=(",", ":")).encode("utf-8")
-    payload_b64 = base64.urlsafe_b64encode(payload_bytes).rstrip(b"=").decode()
-    sig = hmac.new(HANDOFF_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
-    return f"{payload_b64}.{sig}"
+    payload["token_id"] = token_id
+    
+    # Create HMAC signature for the token ID only
+    sig = hmac.new(HANDOFF_SECRET.encode(), token_id.encode(), hashlib.sha256).hexdigest()
+    
+    # Return short token: tokenId.signature
+    return f"{token_id}.{sig}"
 
 
 class VibeCodingHandoffRequest(BaseModel):
     project_token: str
+    project_name: Optional[str] = None
+    brd_text: Optional[str] = None
+    analysis_data: Optional[dict] = None
+    prerequisites: Optional[list] = None
+    custom_rules: Optional[str] = None
+    process_mode: Optional[str] = "vibe_coding"
+    governance_context: Optional[dict] = None
 
 
 @app.post("/api/vibecoding/handoff-token")
@@ -3214,6 +3316,11 @@ async def create_vibecoding_handoff_token(
     """
     Generate a short-lived handoff token so that VibeCoding can auto-login the
     user and receive project context without a separate sign-in.
+    
+    Uses a two-step approach to avoid URL length limits:
+    1. Store full payload in database with a short token ID
+    2. Return short token ID in URL
+    3. VibeCoding retrieves full payload using token ID
     """
     gov = db.query(models.GovernanceResponse).filter(
         models.GovernanceResponse.project_token == request.project_token,
@@ -3270,9 +3377,147 @@ async def create_vibecoding_handoff_token(
         "last_name": current_user.last_name or "",
         "project_token": request.project_token,
         "project_context": project_context,
+        # Add new fields from the request
+        "project_name": request.project_name or project_context.get("project_name", ""),
+        "brd_text": request.brd_text or "",
+        "analysis_data": request.analysis_data or brd_doc or {},
+        "prerequisites": request.prerequisites or [],
+        "custom_rules": request.custom_rules or "",
+        "process_mode": request.process_mode or "vibe_coding",
+        "governance_context": request.governance_context or {},
     }
+    
+    # Generate short token
     token = _create_handoff_token(payload)
+    
+    # Store payload in database with token ID
+    # Extract token_id from token (format: tokenId.signature)
+    token_id = token.split('.')[0]
+    
+    # Store in database (using a simple key-value approach with expiry)
+    # We'll use the existing database session to store this
+    try:
+        # Create a handoff token record
+        handoff_record = models.HandoffToken(
+            token_id=token_id,
+            payload=json_stdlib.dumps(payload),
+            created_at=datetime.utcnow(),
+            expires_at=datetime.utcnow() + timedelta(minutes=5),
+            user_id=current_user.id
+        )
+        db.add(handoff_record)
+        db.commit()
+    except Exception as e:
+        logger.error(f"Failed to store handoff token: {e}")
+        # If database storage fails, fall back to the old method (embed in token)
+        # This ensures backward compatibility
+        payload["exp"] = int(_time.time()) + 300
+        payload["iat"] = int(_time.time())
+        payload_bytes = json_stdlib.dumps(payload, separators=(",", ":")).encode("utf-8")
+        payload_b64 = base64.urlsafe_b64encode(payload_bytes).rstrip(b"=").decode()
+        sig = hmac.new(HANDOFF_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+        token = f"{payload_b64}.{sig}"
+    
     return {"handoff_token": token}
+
+
+@app.get("/api/vibecoding/handoff-payload/{token_id}")
+async def get_vibecoding_handoff_payload(
+    token_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Retrieve the handoff payload for a given token ID.
+    This endpoint is called by VibeCoding backend to get the full handoff data.
+    No authentication required as the token itself is the authentication.
+    """
+    # Find the handoff token in database
+    handoff_token = db.query(models.HandoffToken).filter(
+        models.HandoffToken.token_id == token_id
+    ).first()
+    
+    if not handoff_token:
+        raise HTTPException(status_code=404, detail="Handoff token not found")
+    
+    # Check if token has expired
+    if handoff_token.expires_at < datetime.utcnow():
+        # Clean up expired token
+        db.delete(handoff_token)
+        db.commit()
+        raise HTTPException(status_code=404, detail="Handoff token expired")
+    
+    # Mark token as used
+    if not handoff_token.used_at:
+        handoff_token.used_at = datetime.utcnow()
+        db.commit()
+    
+    # Return the payload
+    try:
+        payload = json_stdlib.loads(handoff_token.payload)
+        return payload
+    except Exception as e:
+        logger.error(f"Failed to parse handoff payload: {e}")
+        raise HTTPException(status_code=500, detail="Invalid handoff payload")
+
+
+@app.get("/vibecoding/api/projects/{project_id}/brd-context")
+async def get_vibecoding_brd_context(
+    project_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    API endpoint for the AI agent inside the container to fetch BRD context.
+    This is called by the agent when it receives the trigger prompt.
+    No authentication required since it's called from within the container.
+    
+    This endpoint retrieves the handoff data from the database using the project_id.
+    """
+    try:
+        # Find the handoff token for this project
+        handoff_token = db.query(models.HandoffToken).filter(
+            models.HandoffToken.project_token == project_id
+        ).order_by(models.HandoffToken.created_at.desc()).first()
+        
+        if not handoff_token:
+            return {
+                "has_brd": False,
+                "message": "No handoff data found for this project"
+            }
+        
+        # Parse the payload
+        try:
+            payload = json_stdlib.loads(handoff_token.payload)
+        except Exception as e:
+            logger.error(f"Failed to parse handoff payload: {e}")
+            return {
+                "has_brd": False,
+                "message": "Invalid handoff payload"
+            }
+        
+        # Extract BRD information from payload
+        project_context = payload.get("project_context", {})
+        brd_text = payload.get("brd_text", "")
+        analysis_data = payload.get("analysis_data", {})
+        prerequisites = payload.get("prerequisites", [])
+        custom_rules = payload.get("custom_rules", "")
+        project_name = payload.get("project_name") or project_context.get("project_name", "Unnamed Project")
+        
+        # Return the BRD context
+        return {
+            "has_brd": True,
+            "project_name": project_name,
+            "project_id": project_id,
+            "brd_text": brd_text,
+            "analysis_data": analysis_data,
+            "prerequisites": prerequisites,
+            "custom_rules": custom_rules,
+            "governance_context": payload.get("governance_context", {}),
+            "handoff_timestamp": handoff_token.created_at.isoformat() if handoff_token.created_at else "",
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching BRD context for project {project_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.delete("/governance/{identifier}")

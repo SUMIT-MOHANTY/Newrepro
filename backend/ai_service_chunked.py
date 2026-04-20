@@ -5,7 +5,7 @@ Maintains the same BRD analysis quality while reducing payload size through mult
 import asyncio
 import json
 import re
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple  # Added Tuple for type hinting
 from datetime import datetime
 import logging
 
@@ -13,6 +13,38 @@ import llm_gateway
 from llm_logs import log_llm_interaction_ai_service
 
 logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PREREQUISITES CONFIGURATION & HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+PREREQUISITE_CATEGORIES: List[Tuple[str, str]] = [
+    ("credentials", "API keys, authentication tokens, SMTP credentials"),
+    ("apis", "Third-party API integrations"),
+    ("infrastructure", "Servers, domains, SSL certificates"),
+    ("databases", "Database credentials, connection strings"),
+    ("cloud", "Cloud accounts, CDN (only if specified in BRD)"),
+    ("dependencies", "Private package registries, licensed libraries"),
+]
+
+def _build_prerequisite_instruction_text() -> str:
+    """Construct the prerequisite description block dynamically for the prompt."""
+    lines = [
+        "### 2. Prerequisites & Credentials",
+        "List **only** the prerequisites that are explicitly derived from the BRD features. "
+        "Do NOT invent requirements. If the BRD does not mention a specific service (e.g., SMS, Cloud Storage), do not list it as a prerequisite.",
+        "Use the following logic:",
+        "- If BRD mentions 'Email/Notification', add SMTP or Notification Service credentials.",
+        "- If BRD mentions 'Payment', add Payment Gateway credentials.",
+        "- If BRD mentions 'User Login', add Authentication credentials/keys.",
+        "",
+        "Categories:"
+    ]
+    for cat, desc in PREREQUISITE_CATEGORIES:
+        lines.append(f"- **{cat}**: {desc}")
+    lines.append("\nList each prerequisite with its category and priority.")
+    return "\n".join(lines)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # STAGE 1: REQUIREMENTS EXTRACTION (Minimal Payload)
@@ -242,7 +274,7 @@ Return ONLY valid JSON:
 # STAGE 4: IMPLEMENTATION PLAN (Focused Payload)
 # ═══════════════════════════════════════════════════════════════════════════
 
-STAGE_4_IMPLEMENTATION_PROMPT = """# ROLE
+STAGE_4_IMPLEMENTATION_PROMPT = f"""# ROLE
 You are an expert Implementation Planner.
 
 ## CONTEXT
@@ -258,21 +290,7 @@ Create implementation plan:
 Provide COMPLETE file tree with inline comments.
 Include: backend, frontend, config, tests, docs, CI/CD
 
-### 2. Prerequisites & Credentials
-List ONLY prerequisites derived from BRD features:
-- Credentials (API keys, SMTP, auth tokens)
-- APIs (third-party integrations)
-- Infrastructure (servers, domains, SSL)
-- Databases (connection strings)
-- Cloud services (ONLY if mentioned in BRD)
-
-Format:
-{
-  "name": "...",
-  "description": "...",
-  "category": "credentials|apis|infrastructure|databases|cloud",
-  "priority": "high|medium|low"
-}
+{_build_prerequisite_instruction_text()}
 
 ### 3. Implementation Phases
 Define ordered phases:
@@ -305,15 +323,22 @@ List 8-12 coding rules:
 
 ## OUTPUT FORMAT
 Return ONLY valid JSON:
-{
+{{
   "repository_structure": "...",
-  "prerequisites": [...],
+  "prerequisites": [
+     {{
+       "name": "Specific Prerequisite Name",
+       "description": "Why this is needed based on BRD functional requirements.",
+       "category": "credentials | apis | infrastructure | databases | cloud | dependencies",
+       "priority": "high | medium | low"
+     }}
+  ],
   "implementation_phases": [
-    {"phase": "...", "description": "...", "deliverables": [...]}
+    {{"phase": "...", "description": "...", "deliverables": [...]}}
   ],
   "file_creation_plan": [...],
   "implementation_guidelines": [...]
-}"""
+}}"""
 
 # ═══════════════════════════════════════════════════════════════════════════
 # STAGE 5: FINAL SYNTHESIS & REPORT GENERATION (Minimal Payload)
@@ -365,7 +390,7 @@ Create a comprehensive Markdown report with these sections:
 [Use Stage 1 questions]
 
 ## 0.10 Prerequisites & Credentials
-[Use Stage 4 prerequisites]
+[Use Stage 4 prerequisites. Group them logically by category (credentials, apis, infrastructure, databases, cloud, dependencies). List each with name, description, and priority.]
 
 ## 0.11 Execution Patterns
 [Use Stage 4 implementation guidelines]
@@ -386,13 +411,13 @@ Create a comprehensive Markdown report with these sections:
    - Use regular numbers `1, 2, 3` NOT emoji numbers (1️⃣, 2️⃣, 3️⃣)
 
 2. **FORBIDDEN UNICODE CHARACTERS**:
-   - NO `\u2011` (non-breaking hyphen) - use `-`
-   - NO `\u2013` (en dash) - use `-`
-   - NO `\u2014` (em dash) - use `--`
-   - NO `\u202f` (narrow no-break space) - use regular space
-   - NO `\u00a0` (non-breaking space) - use regular space
-   - NO `\ufe0f\u20e3` (emoji keycaps) - use plain numbers
-   - NO `\u2265` (greater than or equal) - use `>=`
+   - NO `\\u2011` (non-breaking hyphen) - use `-`
+   - NO `\\u2013` (en dash) - use `-`
+   - NO `\\u2014` (em dash) - use `--`
+   - NO `\\u202f` (narrow no-break space) - use regular space
+   - NO `\\u00a0` (non-breaking space) - use regular space
+   - NO `\\ufe0f\\u20e3` (emoji keycaps) - use plain numbers
+   - NO `\\u2265` (greater than or equal) - use `>=`
    - NO fancy Unicode bullets - use `-` or `*`
 
 3. **TABLE FORMATTING**:
@@ -414,24 +439,24 @@ Create a comprehensive Markdown report with these sections:
 Return the complete Markdown report followed by a JSON block:
 
 ```json
-{
+{{
   "title": "...",
-  "metrics": {
+  "metrics": {{
     "complexity": "Low|Medium|High",
     "timeline": "...",
     "deployment": "...",
     "resources": "...",
     "project_type": "greenfield|brownfield|modernization"
-  },
+  }},
   "questions": [...],
   "prerequisites": [...],
   "user_flow": "...",
   "implementation_structure": "...",
-  "architecture": {
+  "architecture": {{
     "nodes": [...],
     "edges": [...]
-  }
-}
+  }}
+}}
 ```"""
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -447,6 +472,7 @@ async def analyze_document_chunked(
     stream: bool = False,
     user_feedback: Optional[str] = None,
     image_paths: Optional[List[str]] = None,
+    job_id: Optional[str] = None,  # NEW: Optional job ID for progress tracking
 ) -> Dict[str, Any]:
     """
     Multi-stage chunked analysis that maintains the same output quality
@@ -458,13 +484,30 @@ async def analyze_document_chunked(
     3. Design data models & APIs (focused on data layer)
     4. Create implementation plan (focused on execution)
     5. Synthesize final report (combines all stages)
+    
+    Args:
+        job_id: Optional job ID for progress tracking via job manager
     """
+    
+    # Helper to update job progress if job_id is provided
+    def update_job_progress(progress: int, message: str):
+        if job_id:
+            try:
+                from analysis_job_manager import get_job_manager
+                job_manager = get_job_manager()
+                job = job_manager.get_job(job_id)
+                if job:
+                    job.update_progress(progress, message)
+            except Exception as e:
+                logger.warning(f"Failed to update job progress: {e}")
     
     if not llm_gateway.check_api_key(api_key):
         error = "API key not configured. Please set AI_API_KEY in your environment."
         return {"status": "error", "error": error}
     
     try:
+        update_job_progress(15, "Preparing document content...")
+        
         # Prepare document content (truncate if too large for Stage 1)
         max_stage1_content = 8000
         stage1_content = document_content[:max_stage1_content]
@@ -480,6 +523,7 @@ async def analyze_document_chunked(
         if user_feedback:
             stage1_content = f"USER FEEDBACK/ANSWERS:\n{user_feedback}\n\n{stage1_content}"
         
+        update_job_progress(20, "Stage 1: Extracting requirements...")
         logger.info("=== STAGE 1: Requirements Extraction ===")
         stage1_messages = [
             {"role": "system", "content": STAGE_1_REQUIREMENTS_PROMPT},
@@ -500,6 +544,7 @@ async def analyze_document_chunked(
         # ─────────────────────────────────────────────────────────────────
         # STAGE 2: Architecture Design
         # ─────────────────────────────────────────────────────────────────
+        update_job_progress(35, "Stage 2: Designing architecture...")
         logger.info("=== STAGE 2: Architecture Design ===")
         stage2_messages = [
             {"role": "system", "content": STAGE_2_ARCHITECTURE_PROMPT},
@@ -520,6 +565,7 @@ async def analyze_document_chunked(
         # ─────────────────────────────────────────────────────────────────
         # STAGE 3: Data Models & API Design
         # ─────────────────────────────────────────────────────────────────
+        update_job_progress(55, "Stage 3: Designing data models and APIs...")
         logger.info("=== STAGE 3: Data Models & API Design ===")
         stage3_context = {
             "requirements_summary": {
@@ -551,6 +597,7 @@ async def analyze_document_chunked(
         # ─────────────────────────────────────────────────────────────────
         # STAGE 4: Implementation Plan
         # ─────────────────────────────────────────────────────────────────
+        update_job_progress(70, "Stage 4: Creating implementation plan...")
         logger.info("=== STAGE 4: Implementation Planning ===")
         stage4_context = {
             "product_name": stage1_data.get("product_name"),
@@ -579,6 +626,7 @@ async def analyze_document_chunked(
         # ─────────────────────────────────────────────────────────────────
         # STAGE 5: Final Synthesis
         # ─────────────────────────────────────────────────────────────────
+        update_job_progress(85, "Stage 5: Synthesizing final report...")
         logger.info("=== STAGE 5: Final Report Synthesis ===")
         synthesis_context = {
             "stage1_requirements": stage1_data,
@@ -601,6 +649,7 @@ async def analyze_document_chunked(
         )
         
         logger.info("Stage 5 complete: Final report generated")
+        update_job_progress(95, "Finalizing analysis...")
         
         # Extract final JSON from the report
         final_json = _extract_json_from_response(stage5_result)
@@ -608,6 +657,8 @@ async def analyze_document_chunked(
         # Ensure architecture data is included
         if not final_json.get("architecture"):
             final_json["architecture"] = stage2_data.get("architecture", {"nodes": [], "edges": []})
+        
+        update_job_progress(100, "Analysis complete!")
         
         return {
             "status": "success",
@@ -709,10 +760,14 @@ async def analyze_document(
     user_feedback: Optional[str] = None,
     image_paths: Optional[List[str]] = None,
     governance_context: Optional[Dict[str, Any]] = None,
+    job_id: Optional[str] = None,  # NEW: Optional job ID for progress tracking
 ) -> Dict[str, Any]:
     """
     Drop-in replacement for the original analyze_document function.
     Uses intelligent chunking to reduce payload size while maintaining output quality.
+    
+    Args:
+        job_id: Optional job ID for progress tracking via job manager
     """
     return await analyze_document_chunked(
         document_content=document_content,
@@ -722,5 +777,6 @@ async def analyze_document(
         governance_context=governance_context,
         stream=stream,
         user_feedback=user_feedback,
-        image_paths=image_paths
+        image_paths=image_paths,
+        job_id=job_id,
     )

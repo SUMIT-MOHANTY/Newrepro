@@ -389,25 +389,22 @@ export default function AgentAnalysis({
         analysisOptions = {}
     ) => {
         try {
-            const response = await fetch(API_ENDPOINTS.AI_ANALYZE, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
+            // Import polling utilities
+            const { startAndPollAnalysis } = await import('../utils/analysisPolling');
+            
+            // Start analysis with polling
+            const data = await startAndPollAnalysis(
+                payload,
+                token,
+                (progress, message) => {
+                    // Update progress in UI
+                    setProgress(progress);
+                    setProgressMessage(message);
                 },
-                body: JSON.stringify(payload)
-            });
-
-            if (response.status === 401) {
-                return;
-            }
-
-            if (!response.ok) {
-                const errData = await response.json();
-                throw new Error(errData.detail || 'Analysis failed');
-            }
-
-            const data = await response.json();
+                2000, // Poll every 2 seconds
+                300   // Max 10 minutes (300 * 2s = 600s)
+            );
+            
             const { report, questions, metrics, title, prerequisites, architecture } = parseAIResponse(data.analysis || '');
             if (questions.length > 0) setAiQuestions(questions);
 
@@ -436,7 +433,9 @@ export default function AgentAnalysis({
             setProgressMessage('Analysis complete!');
             await saveToHistory(finalResult, selectedProjectKey, effectiveRepoContext);
         } catch (err) {
-            setError(`Start Error: ${err.message}`);
+            setError(`Analysis Error: ${err.message}`);
+            setProgress(0);
+            setProgressMessage('');
         }
     }, [governanceContext, repoContext, userAnswers, userFeedback, result, selectedProjectKey, saveToHistory]);
 
