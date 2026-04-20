@@ -199,7 +199,7 @@ def _generate_registration_password() -> str:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["*"],
     allow_credentials=True,  # important
     allow_methods=["*"],
     allow_headers=["*"],
