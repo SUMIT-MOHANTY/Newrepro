@@ -11,12 +11,13 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
+from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 import httpx
 from dotenv import load_dotenv
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ai_config import ai_config
 from project_manager import project_manager
