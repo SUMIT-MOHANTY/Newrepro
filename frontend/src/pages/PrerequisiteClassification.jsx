@@ -1225,6 +1225,12 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         vibeUrl.searchParams.set('project_token', selectedProjectKey);
                         vibeUrl.searchParams.set('auto_execute', 'true');  // Signal to auto-trigger execution
                         
+                        // Save current route to return to after VibeCoding
+                        const returnPath = location.pathname + location.search;
+                        sessionStorage.setItem('dsuite_return_path', returnPath);
+                        sessionStorage.setItem('dsuite_return_project', selectedProjectKey);
+                        console.log('💾 Saved return path for D-Suite:', returnPath);
+                        
                         // Open VibeCoding in new window
                         const vibeWindow = window.open(vibeUrl.toString(), '_blank');
                         

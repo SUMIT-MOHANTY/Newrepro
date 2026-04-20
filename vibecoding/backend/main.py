@@ -834,6 +834,16 @@ async def trigger_handoff_execution(
         if project_info.get("handoff_source") != "dsuite":
             raise HTTPException(status_code=400, detail="This project was not created via D-Suite handoff")
         
+        # Check if execution has already been started
+        if project_info.get("execution_started"):
+            logger.info(f"⚠️ Execution already started for project {project_id} at {project_info.get('execution_start_time')}")
+            return {
+                "status": "already_started",
+                "message": "Execution has already been triggered for this project",
+                "project_id": project_id,
+                "execution_start_time": project_info.get("execution_start_time"),
+            }
+        
         # Get BRD text and analysis data
         brd_text = project_info.get("brd_text", "")
         analysis_data = project_info.get("analysis_data", {})

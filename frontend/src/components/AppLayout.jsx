@@ -240,7 +240,30 @@ export default function AppLayout({ children }) {
                 if (!res.ok) throw new Error('Unauthorized');
                 return res.json();
             })
-            .then(data => setUser(data))
+            .then(data => {
+                setUser(data);
+                
+                // Check if user is returning from VibeCoding
+                const returnPath = sessionStorage.getItem('dsuite_return_path');
+                const returnProject = sessionStorage.getItem('dsuite_return_project');
+                
+                if (returnPath && returnPath !== '/dashboard' && returnPath !== '/') {
+                    console.log('🔙 Returning from VibeCoding, restoring path:', returnPath);
+                    
+                    // Restore project selection if available
+                    if (returnProject) {
+                        setSelectedProjectKey(returnProject);
+                        localStorage.setItem(PROJECT_STORAGE_KEY, returnProject);
+                    }
+                    
+                    // Clear the flags
+                    sessionStorage.removeItem('dsuite_return_path');
+                    sessionStorage.removeItem('dsuite_return_project');
+                    
+                    // Navigate to the saved path
+                    navigate(returnPath, { replace: true });
+                }
+            })
             .catch(() => handleLogout());
     }, [handleLogout, navigate]);
 
