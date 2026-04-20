@@ -121,7 +121,7 @@ const PROCESS_MODE_OPTIONS = [
     {
         id: 'ai_assist',
         title: 'AI Assist',
-        description: 'Redirect to VS Code and use N-Mod Extension with AI assistance.',
+        description: 'Redirect to VibeCoding with AI assistance for guided development.',
         enabled: true,
     },
     {
@@ -1367,11 +1367,9 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
                         <div className="flex items-center justify-center gap-2 text-sm text-app-text-light">
                             <div className="w-4 h-4 border-2 border-app-border border-t-emerald-500 rounded-full animate-spin" />
-                            {processMode === 'vibe_coding' 
+                            {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode) 
                                 ? 'VibeCoding workspace is ready…' 
-                                : ['developer_only', 'ai_assist'].includes(processMode) 
-                                    ? 'Redirecting to VS Code Extension…' 
-                                    : 'Redirecting to Task Creation…'
+                                : 'Redirecting to Task Creation…'
                             }
                         </div>
                     </div>
@@ -1572,7 +1570,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         <p className="text-sm font-semibold text-app-primary-dark mb-0.5">How this works</p>
                         <p className="text-xs text-app-text-main leading-relaxed">
                             {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)
-                                ? `In ${processMode === 'vibe_coding' ? 'Vibe Coding' : processMode === 'ai_assist' ? 'AI Assist' : 'Developer Only'} mode, prerequisite classification is not required. You can proceed directly to VS Code where you will work in the designated workflow.`
+                                ? `In ${processMode === 'vibe_coding' ? 'Vibe Coding' : processMode === 'ai_assist' ? 'AI Assist' : 'Developer Only'} mode, prerequisite classification is not required. You can proceed directly to VibeCoding workspace where you will work in the designated workflow.`
                                 : 'Our AI has analyzed your BRD and identified the services, credentials, and infrastructure you\'ll need. Each prerequisite asks for the expected answer type (text, URL, or file upload).'
                             }
                         </p>
@@ -1592,8 +1590,8 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                             {processMode === 'vibe_coding'
                                 ? <>Prerequisite classification is bypassed for <strong>Vibe Coding</strong> mode. You will be redirected to the VibeCoding web workspace where the AI will automatically analyze your BRD and start building your application.</>
                                 : processMode === 'ai_assist'
-                                    ? <>Prerequisite classification is bypassed for <strong>AI Assist</strong> mode. You will be redirected to VS Code with N-Mod Extension.</>
-                                    : <>Prerequisite classification is bypassed for <strong>Developer Only</strong> mode. You will be redirected to VS Code.</>
+                                    ? <>Prerequisite classification is bypassed for <strong>AI Assist</strong> mode. You will be redirected to VibeCoding workspace with AI guidance for development.</>
+                                    : <>Prerequisite classification is bypassed for <strong>Developer Only</strong> mode. You will be redirected to VibeCoding workspace for manual development.</>
                             }
                         </p>
                     </div>
@@ -1844,7 +1842,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                             <h3 className="text-base font-bold text-app-text-main mb-1">Ready to proceed?</h3>
                             <p className="text-sm text-app-text-muted">
                                 {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)
-                                    ? '🚀 You will be redirected to VS Code to use N-Mod Extension.'
+                                    ? '🚀 You will be redirected to VibeCoding workspace to start development.'
                                     : allProvided
                                         ? '✅ All prerequisites confirmed. You can proceed to task creation.'
                                         : `${totalItems - providedCount} item${totalItems - providedCount !== 1 ? 's' : ''} still pending. You can still proceed, but ensure all items are addressed before agent execution.`
@@ -1864,7 +1862,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                 <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</>
                             ) : (
                                 <>{(allProvided || ['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)) ? <CheckCircle2 className="w-4 h-4" /> : <ArrowRight className="w-4 h-4" />}
-                                    {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode) ? 'Redirect to VS Code' : (allProvided ? 'Confirm & Proceed' : 'Proceed Anyway')}</>
+                                    {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode) ? 'Open VibeCoding' : (allProvided ? 'Confirm & Proceed' : 'Proceed Anyway')}</>
                             )}
                         </button>
                     </div>

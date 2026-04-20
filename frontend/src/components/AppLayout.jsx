@@ -539,11 +539,38 @@ export default function AppLayout({ children }) {
         // 1. We're on a project URL (/a/{token}) - redirect to step page
         // 2. We're not on the correct step page already
         // 3. We're not on special pages like /agents
+        // 4. IMPORTANT: Don't navigate away from current step if we're already on a valid step page
         const isOnProjectUrl = location.pathname.startsWith('/a/');
         const isOnTargetRoute = location.pathname.startsWith(targetRoute);
         const isOnSpecialPage = ['/agents', '/organization-admin', '/plugins'].includes(location.pathname);
-
-        if ((isOnProjectUrl || !isOnTargetRoute) && !isOnSpecialPage) {
+        
+        // Don't navigate away from status-dashboard if we're in On Flight or Complete mode
+        const isOnStatusDashboard = location.pathname === '/status-dashboard';
+        const isOnFlightOrComplete = stepLabel === 'On Flight' || stepLabel === 'Complete';
+        if (isOnStatusDashboard && isOnFlightOrComplete) {
+            return; // Stay on status dashboard, don't navigate away
+        }
+        
+        // Don't navigate away from any valid step page unless we're on a project URL
+        const validStepPages = [
+            '/new-project',
+            '/dashboard',
+            '/new-project/governance',
+            '/agent-analysis',
+            '/prerequisites',
+            '/task-creation',
+            '/resource-onboarding',
+            '/status-dashboard',
+        ];
+        const isOnValidStepPage = validStepPages.some(page => location.pathname.startsWith(page));
+        
+        // Only navigate if we're on a project URL or not on the target route
+        // Don't navigate if we're already on a valid step page (prevents unwanted redirects on refresh)
+        if ((isOnProjectUrl || !isOnTargetRoute) && !isOnSpecialPage && !isOnValidStepPage) {
+            lastNavigatedProjectRef.current = selectedProjectKey;
+            navigate(targetRoute);
+        } else if (isOnProjectUrl) {
+            // If we're on a project URL, always navigate to the correct step
             lastNavigatedProjectRef.current = selectedProjectKey;
             navigate(targetRoute);
         }

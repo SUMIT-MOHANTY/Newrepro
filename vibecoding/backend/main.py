@@ -674,8 +674,12 @@ async def sso_handoff(request: SSOHandoffRequest):
     project_context = payload.get("project_context", {})
 
     from auth import get_db as get_auth_db, create_jwt_token, hash_password, generate_avatar_color, generate_random_password
+    from email_service import email_service
 
     conn = get_auth_db()
+    is_new_user = False
+    generated_password = None
+    
     try:
         user = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
         if user:
@@ -689,8 +693,10 @@ async def sso_handoff(request: SSOHandoffRequest):
                 "created_at": user["created_at"],
             }
         else:
-            password = generate_random_password()
-            password_hash, salt = hash_password(password)
+            # New user - generate password and mark for email notification
+            is_new_user = True
+            generated_password = generate_random_password()
+            password_hash, salt = hash_password(generated_password)
             avatar_color = generate_avatar_color(email)
             now = datetime.utcnow().isoformat()
             base_username = username
@@ -713,6 +719,22 @@ async def sso_handoff(request: SSOHandoffRequest):
                 "avatar_color": avatar_color,
                 "created_at": now,
             }
+            
+            # Send welcome email with credentials to new user
+            try:
+                logger.info(f"📧 Sending welcome email to new user: {email}")
+                email_sent = email_service.send_welcome_email(
+                    email,
+                    username,
+                    generated_password
+                )
+                if email_sent:
+                    logger.info(f"✅ Welcome email sent successfully to {email}")
+                else:
+                    logger.warning(f"⚠️ Failed to send welcome email to {email}")
+            except Exception as e:
+                logger.error(f"❌ Error sending welcome email to {email}: {e}")
+                # Don't fail the handoff if email fails - user can still login
 
         token = create_jwt_token({"user_id": user_id, "email": email, "username": username})
     finally:
@@ -767,12 +789,19 @@ async def sso_handoff(request: SSOHandoffRequest):
             project_manager.create_project_directory(project_token, metadata=project_metadata)
             project_info = project_manager.get_project_info(project_token)
 
+    # Prepare response message
+    message = "SSO login successful"
+    if is_new_user:
+        message = "Welcome! Your account has been created. Check your email for login credentials."
+    
     return {
         "token": token,
         "user": user_data,
         "project": project_info,
-        "message": "SSO login successful",
+        "message": message,
         "auto_execute": project_info.get("auto_execute", False) if project_info else False,
+        "is_new_user": is_new_user,
+        "email_sent": is_new_user and generated_password is not None,
     }
 
 
