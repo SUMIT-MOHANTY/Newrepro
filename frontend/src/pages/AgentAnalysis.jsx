@@ -401,8 +401,8 @@ export default function AgentAnalysis({
                     setProgress(progress);
                     setProgressMessage(message);
                 },
-                2000, // Poll every 2 seconds
-                300   // Max 10 minutes (300 * 2s = 600s)
+                30000, // Poll every 30 seconds
+                120    // Max 60 minutes (120 * 30s = 3600s)
             );
             
             const { report, questions, metrics, title, prerequisites, architecture } = parseAIResponse(data.analysis || '');

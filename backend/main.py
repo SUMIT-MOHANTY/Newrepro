@@ -536,7 +536,12 @@ async def get_analysis_job_status(
     job = job_manager.get_user_job(job_id, current_user.id)
     
     if not job:
-        raise HTTPException(status_code=404, detail="Job not found or access denied")
+        # Log for debugging
+        logger.warning(f"Job {job_id} not found for user {current_user.id}. Available jobs: {list(job_manager._jobs.keys())}")
+        raise HTTPException(
+            status_code=404, 
+            detail="Analysis job not found. It may have expired or been completed and cleaned up. Please start a new analysis."
+        )
     
     return job.to_dict()
 
