@@ -798,6 +798,49 @@ function Workspace({ user, logout, isAuthenticated }) {
       // Load branches from the backend (this will also restore preview URL)
       await loadBranchesFromBackend(projectIdToLoad);
 
+      // Check for auto-execution flag from D-Suite handoff
+      const autoExecuteProjectId = sessionStorage.getItem('vibe_auto_execute_project');
+      const autoExecuteToken = sessionStorage.getItem('vibe_auto_execute_token');
+      
+      if (autoExecuteProjectId && autoExecuteToken && autoExecuteProjectId === projectIdToLoad) {
+        console.log('🚀 Auto-execution triggered for project:', autoExecuteProjectId);
+        
+        // Clear the flags
+        sessionStorage.removeItem('vibe_auto_execute_project');
+        sessionStorage.removeItem('vibe_auto_execute_token');
+        
+        // Trigger execution
+        try {
+          const triggerResp = await axios.post(
+            `${API_BASE_URL}/api/projects/${autoExecuteProjectId}/trigger-handoff-execution`,
+            {},
+            { headers: { Authorization: `Bearer ${autoExecuteToken}` } }
+          );
+          
+          if (triggerResp.data.status === 'triggered') {
+            console.log('✅ Auto-execution triggered successfully');
+            
+            // Show a message to the user
+            setMessages(prev => [...prev, {
+              role: 'assistant',
+              content: '🚀 **Auto-execution started!**\n\nI\'m analyzing your BRD from D-Suite and creating the application. This may take a few minutes.\n\nYou can watch the progress in real-time below.',
+              timestamp: new Date().toISOString(),
+            }]);
+            
+            // Start polling for updates
+            setIsContainerLoading(true);
+            containerLoadExpectedRef.current = true;
+          }
+        } catch (err) {
+          console.error('Failed to trigger auto-execution:', err);
+          setMessages(prev => [...prev, {
+            role: 'assistant',
+            content: '⚠️ **Auto-execution failed**\n\nThere was an error starting automatic execution. You can manually start by sending a message.',
+            timestamp: new Date().toISOString(),
+          }]);
+        }
+      }
+
       // Load chat history for the current version
       try {
         const chatResp = await axios.get(`${API_BASE_URL}/api/projects/${projectIdToLoad}/chat/v${chatVersion}`);

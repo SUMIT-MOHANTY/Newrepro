@@ -199,7 +199,7 @@ def _generate_registration_password() -> str:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173"],
     allow_credentials=True,  # important
     allow_methods=["*"],
     allow_headers=["*"],
@@ -3277,17 +3277,34 @@ async def get_governance_result(
 HANDOFF_SECRET = os.getenv("HANDOFF_SECRET", "dsuite-vibecoding-handoff-secret-local-dev")
 
 def _create_handoff_token(payload: dict) -> str:
-    """Create an HMAC-signed handoff token with 5-minute expiry."""
-    payload["exp"] = int(_time.time()) + 300
+    """
+    Create a short handoff token ID instead of embedding all data in the token.
+    The full payload is stored in the database and retrieved by VibeCoding.
+    """
+    # Generate a short, unique token ID
+    token_id = secrets.token_urlsafe(32)  # Short, URL-safe token
+    
+    # Add expiry and issued-at timestamps
+    payload["exp"] = int(_time.time()) + 300  # 5 minutes
     payload["iat"] = int(_time.time())
-    payload_bytes = json_stdlib.dumps(payload, separators=(",", ":")).encode("utf-8")
-    payload_b64 = base64.urlsafe_b64encode(payload_bytes).rstrip(b"=").decode()
-    sig = hmac.new(HANDOFF_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
-    return f"{payload_b64}.{sig}"
+    payload["token_id"] = token_id
+    
+    # Create HMAC signature for the token ID only
+    sig = hmac.new(HANDOFF_SECRET.encode(), token_id.encode(), hashlib.sha256).hexdigest()
+    
+    # Return short token: tokenId.signature
+    return f"{token_id}.{sig}"
 
 
 class VibeCodingHandoffRequest(BaseModel):
     project_token: str
+    project_name: Optional[str] = None
+    brd_text: Optional[str] = None
+    analysis_data: Optional[dict] = None
+    prerequisites: Optional[list] = None
+    custom_rules: Optional[str] = None
+    process_mode: Optional[str] = "vibe_coding"
+    governance_context: Optional[dict] = None
 
 
 @app.post("/api/vibecoding/handoff-token")
@@ -3299,6 +3316,11 @@ async def create_vibecoding_handoff_token(
     """
     Generate a short-lived handoff token so that VibeCoding can auto-login the
     user and receive project context without a separate sign-in.
+    
+    Uses a two-step approach to avoid URL length limits:
+    1. Store full payload in database with a short token ID
+    2. Return short token ID in URL
+    3. VibeCoding retrieves full payload using token ID
     """
     gov = db.query(models.GovernanceResponse).filter(
         models.GovernanceResponse.project_token == request.project_token,
@@ -3355,9 +3377,147 @@ async def create_vibecoding_handoff_token(
         "last_name": current_user.last_name or "",
         "project_token": request.project_token,
         "project_context": project_context,
+        # Add new fields from the request
+        "project_name": request.project_name or project_context.get("project_name", ""),
+        "brd_text": request.brd_text or "",
+        "analysis_data": request.analysis_data or brd_doc or {},
+        "prerequisites": request.prerequisites or [],
+        "custom_rules": request.custom_rules or "",
+        "process_mode": request.process_mode or "vibe_coding",
+        "governance_context": request.governance_context or {},
     }
+    
+    # Generate short token
     token = _create_handoff_token(payload)
+    
+    # Store payload in database with token ID
+    # Extract token_id from token (format: tokenId.signature)
+    token_id = token.split('.')[0]
+    
+    # Store in database (using a simple key-value approach with expiry)
+    # We'll use the existing database session to store this
+    try:
+        # Create a handoff token record
+        handoff_record = models.HandoffToken(
+            token_id=token_id,
+            payload=json_stdlib.dumps(payload),
+            created_at=datetime.utcnow(),
+            expires_at=datetime.utcnow() + timedelta(minutes=5),
+            user_id=current_user.id
+        )
+        db.add(handoff_record)
+        db.commit()
+    except Exception as e:
+        logger.error(f"Failed to store handoff token: {e}")
+        # If database storage fails, fall back to the old method (embed in token)
+        # This ensures backward compatibility
+        payload["exp"] = int(_time.time()) + 300
+        payload["iat"] = int(_time.time())
+        payload_bytes = json_stdlib.dumps(payload, separators=(",", ":")).encode("utf-8")
+        payload_b64 = base64.urlsafe_b64encode(payload_bytes).rstrip(b"=").decode()
+        sig = hmac.new(HANDOFF_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+        token = f"{payload_b64}.{sig}"
+    
     return {"handoff_token": token}
+
+
+@app.get("/api/vibecoding/handoff-payload/{token_id}")
+async def get_vibecoding_handoff_payload(
+    token_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Retrieve the handoff payload for a given token ID.
+    This endpoint is called by VibeCoding backend to get the full handoff data.
+    No authentication required as the token itself is the authentication.
+    """
+    # Find the handoff token in database
+    handoff_token = db.query(models.HandoffToken).filter(
+        models.HandoffToken.token_id == token_id
+    ).first()
+    
+    if not handoff_token:
+        raise HTTPException(status_code=404, detail="Handoff token not found")
+    
+    # Check if token has expired
+    if handoff_token.expires_at < datetime.utcnow():
+        # Clean up expired token
+        db.delete(handoff_token)
+        db.commit()
+        raise HTTPException(status_code=404, detail="Handoff token expired")
+    
+    # Mark token as used
+    if not handoff_token.used_at:
+        handoff_token.used_at = datetime.utcnow()
+        db.commit()
+    
+    # Return the payload
+    try:
+        payload = json_stdlib.loads(handoff_token.payload)
+        return payload
+    except Exception as e:
+        logger.error(f"Failed to parse handoff payload: {e}")
+        raise HTTPException(status_code=500, detail="Invalid handoff payload")
+
+
+@app.get("/vibecoding/api/projects/{project_id}/brd-context")
+async def get_vibecoding_brd_context(
+    project_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    API endpoint for the AI agent inside the container to fetch BRD context.
+    This is called by the agent when it receives the trigger prompt.
+    No authentication required since it's called from within the container.
+    
+    This endpoint retrieves the handoff data from the database using the project_id.
+    """
+    try:
+        # Find the handoff token for this project
+        handoff_token = db.query(models.HandoffToken).filter(
+            models.HandoffToken.project_token == project_id
+        ).order_by(models.HandoffToken.created_at.desc()).first()
+        
+        if not handoff_token:
+            return {
+                "has_brd": False,
+                "message": "No handoff data found for this project"
+            }
+        
+        # Parse the payload
+        try:
+            payload = json_stdlib.loads(handoff_token.payload)
+        except Exception as e:
+            logger.error(f"Failed to parse handoff payload: {e}")
+            return {
+                "has_brd": False,
+                "message": "Invalid handoff payload"
+            }
+        
+        # Extract BRD information from payload
+        project_context = payload.get("project_context", {})
+        brd_text = payload.get("brd_text", "")
+        analysis_data = payload.get("analysis_data", {})
+        prerequisites = payload.get("prerequisites", [])
+        custom_rules = payload.get("custom_rules", "")
+        project_name = payload.get("project_name") or project_context.get("project_name", "Unnamed Project")
+        
+        # Return the BRD context
+        return {
+            "has_brd": True,
+            "project_name": project_name,
+            "project_id": project_id,
+            "brd_text": brd_text,
+            "analysis_data": analysis_data,
+            "prerequisites": prerequisites,
+            "custom_rules": custom_rules,
+            "governance_context": payload.get("governance_context", {}),
+            "handoff_timestamp": handoff_token.created_at.isoformat() if handoff_token.created_at else "",
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching BRD context for project {project_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.delete("/governance/{identifier}")

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "Starting Bourtec VibeCoding..."
+echo "Starting bourntec VibeCoding..."
 echo ""
 
 echo "Starting Backend on port 8001..."

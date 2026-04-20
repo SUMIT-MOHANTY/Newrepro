@@ -127,10 +127,27 @@ Most tasks should be 3-5 wallet points. If you have many 2-point tasks, you're s
 
 ## File Ownership Rules
 
-- Each task description MUST state: "This agent owns: [folders/modules]"
+- Each task description MUST state: "This agent owns: [exact file paths from section 0.5]"
+- Each task description MUST state: "This agent must create: [list of specific files with full paths]"
 - Each task description MUST state: "This agent must NOT modify: [other folders]"
 - Define clear boundaries so parallel tasks don't conflict
 - Shared/common code should be created early so other tasks can depend on it
+
+**Example of GOOD task description:**
+```
+This agent owns: backend/api/auth.py, backend/models/user.py, backend/middleware/auth_middleware.py
+This agent must create:
+  - backend/api/auth.py (authentication endpoints)
+  - backend/models/user.py (user data model)
+  - backend/middleware/auth_middleware.py (JWT validation)
+This agent must NOT modify: frontend/, backend/api/products.py, backend/models/product.py
+```
+
+**Example of BAD task description (too vague):**
+```
+This agent owns: backend/
+Create authentication module
+```
 
 ---
 
@@ -407,6 +424,7 @@ def _generate_bootstrap_checklist(repo_structure: str, project_name: str) -> Lis
     if files:
         # Group files by type
         config_files = [f for f in files if any(x in f.lower() for x in ['.env', '.json', '.yml', '.yaml', '.toml', '.ini', '.config'])]
+        json_files = [f for f in files if f.endswith('.json')]
         code_files = [f for f in files if any(f.endswith(ext) for ext in ['.py', '.js', '.ts', '.jsx', '.tsx'])]
         doc_files = [f for f in files if any(f.endswith(ext) for ext in ['.md', '.txt', '.rst'])]
         
@@ -416,6 +434,14 @@ def _generate_bootstrap_checklist(repo_structure: str, project_name: str) -> Lis
                     "text": f"Create config file: touch {project_name}/{config_file}",
                     "completed": False
                 })
+        
+        # NEW: Add JSON validation step
+        if json_files:
+            json_paths = ' '.join([f'{project_name}/{f}' for f in json_files[:10]])
+            checklist.append({
+                "text": f"Validate JSON syntax for all JSON files: for f in {json_paths}; do python3 -m json.tool \"$f\" > /dev/null || echo \"Invalid JSON: $f\"; done",
+                "completed": False
+            })
         
         if doc_files:
             checklist.append({
@@ -463,6 +489,7 @@ def _extract_repository_structure(analysis_text: str) -> str:
     import re
     
     # Look for section 0.5.1 OR 0.5 - match just the number, ignore title
+    # UPDATED: Added more patterns to handle ai_service_chunked.py format
     patterns = [
         # Match: ## 0.5.1 (with or without title)
         r'##\s*0\.5\.1\s*[^\n]*\n(.*?)(?=\n##|\Z)',
@@ -473,9 +500,12 @@ def _extract_repository_structure(analysis_text: str) -> str:
         # Match: **0.5.1** (bold in markdown)
         r'\*\*0\.5\.1\*\*\s*[^\n]*\n(.*?)(?=\n##|\n###|\n\*\*\d+\.|\Z)',
         # NEW: Match section 0.5 (without subsection) - for ai_service_chunked.py format
-        r'##\s*0\.5\s+[^\n]*\n(.*?)(?=\n##|\n\d+\.|\Z)',
-        r'###\s*0\.5\s+[^\n]*\n(.*?)(?=\n###|\n\d+\.|\Z)',
-        r'0\.5\s+Repository Structure Planning[^\n]*\n(.*?)(?=\n##|\n###|\n\d+\.|\Z)',
+        r'##\s*0\.5\s+Repository Structure Planning[^\n]*\n(.*?)(?=\n##|\n\d+\.|\Z)',
+        r'###\s*0\.5\s+Repository Structure Planning[^\n]*\n(.*?)(?=\n###|\n\d+\.|\Z)',
+        r'##\s*0\.5\s+[Rr]epository\s+[Ss]tructure[^\n]*\n(.*?)(?=\n##|\n\d+\.|\Z)',
+        r'###\s*0\.5\s+[Rr]epository\s+[Ss]tructure[^\n]*\n(.*?)(?=\n###|\n\d+\.|\Z)',
+        # Fallback: Just "0.5" followed by repository-related keywords
+        r'0\.5\s+[Rr]epository[^\n]*\n(.*?)(?=\n##|\n###|\n\d+\.|\Z)',
     ]
     
     for pattern in patterns:
@@ -487,21 +517,21 @@ def _extract_repository_structure(analysis_text: str) -> str:
             code_block_match = re.search(r'```(?:text|bash|shell|tree)?\s*(.*?)\s*```', structure, re.DOTALL)
             if code_block_match:
                 extracted = code_block_match.group(1).strip()
-                logger.info(f"Extracted repository structure from section 0.5/0.5.1 (from code block, {len(extracted)} chars)")
+                logger.info(f"✅ Extracted repository structure from section 0.5/0.5.1 (from code block, {len(extracted)} chars)")
                 return extracted
             
             # If no code block, the structure might be directly in the text (ai_service_chunked.py format)
             # Look for lines that look like a directory tree (starting with project name or ├──)
             if structure and ('├──' in structure or '└──' in structure or structure.strip().endswith('/')):
-                logger.info(f"Extracted repository structure from section 0.5/0.5.1 (raw tree format, {len(structure)} chars)")
+                logger.info(f"✅ Extracted repository structure from section 0.5/0.5.1 (raw tree format, {len(structure)} chars)")
                 return structure
             
             # If no tree characters but has content, return it anyway
-            if structure:
-                logger.info(f"Extracted repository structure from section 0.5/0.5.1 (raw content, {len(structure)} chars)")
+            if structure and len(structure) > 50:  # Minimum length check
+                logger.info(f"✅ Extracted repository structure from section 0.5/0.5.1 (raw content, {len(structure)} chars)")
                 return structure
     
-    logger.warning("Could not find section 0.5.1 or 0.5 in BRD analysis")
+    logger.error("❌ Could not find section 0.5.1 or 0.5 in BRD analysis - agents will have no structure guidance!")
     return ""
 
 def _build_project_context(
@@ -764,7 +794,26 @@ Generate tasks now:
                         task["checklist"] = detailed_checklist
                         logger.info(f"Generated {len(detailed_checklist)} detailed checklist items for TASK-00")
                     
-                    logger.info(f"Injected repository structure into TASK-00 ({len(repo_structure)} chars)")
+                    logger.info(f"✅ Injected repository structure into TASK-00 ({len(repo_structure)} chars)")
+                
+                # FIX #2: Inject repository structure into ALL non-bootstrap tasks
+                elif task.get("task_id") != "TASK-00" and context.get("repository_structure"):
+                    repo_structure = context["repository_structure"]
+                    
+                    # Add structure reference to description
+                    current_desc = task.get("description", "")
+                    structure_reference = f"\n\n===CANONICAL_REPOSITORY_STRUCTURE===\n{repo_structure}\n===END_STRUCTURE===\n\n"
+                    structure_instruction = (
+                        "⚠️ CRITICAL FILE PATH RULES:\n"
+                        "1. You MUST use ONLY file paths from the CANONICAL_REPOSITORY_STRUCTURE above\n"
+                        "2. Do NOT invent new file paths or directory structures\n"
+                        "3. If your task mentions 'backend/auth', find the exact auth files in the structure above\n"
+                        "4. If a file path is not in the structure, ask for clarification - do NOT create it\n"
+                        "5. Validate every file path against the canonical structure before creating it\n\n"
+                    )
+                    
+                    task["description"] = current_desc + structure_reference + structure_instruction
+                    logger.info(f"✅ Injected repository structure into {task.get('task_id')} ({len(repo_structure)} chars)")
                 
                 valid_tasks.append(task)
         

@@ -113,7 +113,7 @@ export default function ResetPasswordPage() {
             </p>
           </div>
           <div className="auth-branding-footer">
-            <span>© 2026 Bourtec Solutions</span>
+            <span>© 2026 bourntec Solutions</span>
           </div>
         </div>
 
