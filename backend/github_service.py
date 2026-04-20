@@ -338,47 +338,41 @@ async def build_repo_context(
     }
 
 
+import time
+
+_repo_public_cache: Dict[str, Tuple[bool, float]] = {}
+_REPO_PUBLIC_CACHE_TTL = 300  # 5 minutes — repo visibility rarely changes
+
 async def is_repo_public(
     owner: str,
     repo: str,
     branch: str = "main",
+    token: Optional[str] = None,  # ← accept a token
 ) -> bool:
-    """Check if a GitHub repository is accessible without authentication (public)."""
+    """Check if a GitHub repository is accessible (optionally authenticated)."""
     owner, repo = normalize_repo_identity(owner, repo)
-    headers = _build_github_headers("application/vnd.github+json", token=None)
-    
+    cache_key = f"{owner}/{repo}"
+
+    # Return cached result if fresh
+    if cache_key in _repo_public_cache:
+        result, ts = _repo_public_cache[cache_key]
+        if time.time() - ts < _REPO_PUBLIC_CACHE_TTL:
+            return result
+
+    # Use token if provided, otherwise fall back to unauthenticated
+    headers = _build_github_headers("application/vnd.github+json", token=token)
+
     async with httpx.AsyncClient() as client:
-        # Try to access the repo metadata without auth
         resp = await client.get(
             f"{GITHUB_API_BASE}/repos/{owner}/{repo}",
             headers=headers,
         )
-        # If we get 200, it's public. 404 or 401/403 means private or doesn't exist.
-        return resp.status_code == 200
+        result = resp.status_code == 200
+
+    _repo_public_cache[cache_key] = (result, time.time())
+    return result
 
 
-async def build_repo_context_from_zip(
-    owner: str,
-    repo: str,
-    branch: str = "main",
-) -> Dict[str, str]:
-    """Build repo context by downloading public zip archive (no auth required)."""
-    owner, repo = normalize_repo_identity(owner, repo)
-    
-    # First try to get the default branch if not provided
-    branch_to_use = branch or "main"
-    try:
-        default_branch = await _get_default_branch_from_repo_page(owner, repo)
-        if default_branch:
-            branch_to_use = default_branch
-    except Exception:
-        pass  # Use provided branch as fallback
-    
-    try:
-        zip_content = await _download_repo_zip(owner, repo, branch_to_use)
-        return _build_repo_context_from_zip_bytes(zip_content, owner, repo, branch_to_use)
-    except Exception as e:
-        raise ValueError(f"Failed to fetch public repository: {e}")
 
 
 async def _get_default_branch_from_repo_page(owner: str, repo: str) -> Optional[str]:

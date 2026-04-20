@@ -517,10 +517,10 @@ export default function OrganizationAdmin({ user }) {
                                                     onChange={(e) => setSelectedRoleId(e.target.value ? Number(e.target.value) : null)}
                                                     className="mt-1 w-full px-3 py-2.5 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-app-primary-light focus:border-indigo-400 text-sm"
                                                 >
-                                                    <option value="">(Creating new role)</option>
+                                                    <option value="">Creating new role</option>
                                                     {roles.map((r) => (
                                                         <option key={r.id} value={r.id}>
-                                                            {r.name}{r.is_system ? ' (system)' : ''}
+                                                            {r.name}{r.is_system ? ' system' : ''}
                                                         </option>
                                                     ))}
                                                 </select>

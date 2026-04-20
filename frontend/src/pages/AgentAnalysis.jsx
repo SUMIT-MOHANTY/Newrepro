@@ -9,6 +9,71 @@ import bourntecLogo from '../assets/bourntec_logo.png';
 import ReactFlow, { Background, Controls } from 'reactflow';
 import 'reactflow/dist/style.css';
 import dagre from 'dagre';
+import mermaid from 'mermaid';
+
+// Initialize mermaid with configuration
+mermaid.initialize({
+    startOnLoad: false,
+    theme: 'default',
+    securityLevel: 'loose',
+    fontFamily: 'inherit',
+});
+
+// Mermaid Diagram Component
+const MermaidDiagram = ({ code }) => {
+    const containerRef = useRef(null);
+    const [svg, setSvg] = useState('');
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        const renderDiagram = async () => {
+            try {
+                const id = `mermaid-${Math.random().toString(36).substr(2, 9)}`;
+                const { svg: renderedSvg } = await mermaid.render(id, code);
+                if (!cancelled) {
+                    setSvg(renderedSvg);
+                    setError(null);
+                }
+            } catch (err) {
+                console.warn('Mermaid render error:', err);
+                if (!cancelled) {
+                    setError(err.message || 'Failed to render diagram');
+                    setSvg('');
+                }
+            }
+        };
+        renderDiagram();
+        return () => { cancelled = true; };
+    }, [code]);
+
+    if (error) {
+        return (
+            <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm font-mono my-4">
+                <code>{code}</code>
+            </pre>
+        );
+    }
+
+    if (!svg) {
+        return (
+            <div className="flex items-center justify-center py-8 my-4 bg-gray-50 rounded-lg border border-gray-200">
+                <Loader2 className="w-5 h-5 text-gray-400 animate-spin mr-2" />
+                <span className="text-sm text-gray-500">Rendering diagram...</span>
+            </div>
+        );
+    }
+
+    return (
+        <div className="my-6 p-4 bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+            <div
+                ref={containerRef}
+                className="flex justify-center [&>svg]:max-w-full"
+                dangerouslySetInnerHTML={{ __html: svg }}
+            />
+        </div>
+    );
+};
 
 const parseStoredDocumentAnalysis = (doc) => {
     try {
@@ -29,7 +94,7 @@ const hasCompletedStoredAnalysis = (analysis) => {
 };
 
 // Utility: layout architecture graph with dagre so nodes don't overlap
-const layoutArchitectureGraph = (nodes, edges, direction = 'LR') => {
+const layoutArchitectureGraph = (nodes, edges, direction = 'TB') => {
     const g = new dagre.graphlib.Graph();
     g.setGraph({ rankdir: direction, nodesep: 80, ranksep: 120 });
     g.setDefaultEdgeLabel(() => ({}));
@@ -196,8 +261,8 @@ const isLikelyHtml = (str) => {
 
 const sanitizeHtml = (html) => {
     return DOMPurify.sanitize(html, {
-        ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'u', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote', 'code', 'pre', 'a', 'table', 'thead', 'tbody', 'tr', 'th', 'td'],
-        ALLOWED_ATTR: ['href', 'target', 'class'],
+        ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'u', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote', 'code', 'pre', 'a', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'div', 'span'],
+        ALLOWED_ATTR: ['href', 'target', 'class', 'style'],
     });
 };
 
@@ -223,6 +288,7 @@ export default function AgentAnalysis({
     const [governanceContext, setGovernanceContext] = useState(null);
     const [repoContext, setRepoContext] = useState(null);
     const [isArchModalOpen, setIsArchModalOpen] = useState(false);
+    const [isSidebarOpen, setIsSidebarOpen] = useState(false); // Start closed by default
 
     const selectedProject = projects.find((p) => p.key === selectedProjectKey) || null;
     const hasGovernanceAssessment = Boolean(selectedProject?.governanceResultId || governanceContext?.result_id);
@@ -323,25 +389,22 @@ export default function AgentAnalysis({
         analysisOptions = {}
     ) => {
         try {
-            const response = await fetch(API_ENDPOINTS.AI_ANALYZE, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
+            // Import polling utilities
+            const { startAndPollAnalysis } = await import('../utils/analysisPolling');
+            
+            // Start analysis with polling
+            const data = await startAndPollAnalysis(
+                payload,
+                token,
+                (progress, message) => {
+                    // Update progress in UI
+                    setProgress(progress);
+                    setProgressMessage(message);
                 },
-                body: JSON.stringify(payload)
-            });
-
-            if (response.status === 401) {
-                return;
-            }
-
-            if (!response.ok) {
-                const errData = await response.json();
-                throw new Error(errData.detail || 'Analysis failed');
-            }
-
-            const data = await response.json();
+                2000, // Poll every 2 seconds
+                300   // Max 10 minutes (300 * 2s = 600s)
+            );
+            
             const { report, questions, metrics, title, prerequisites, architecture } = parseAIResponse(data.analysis || '');
             if (questions.length > 0) setAiQuestions(questions);
 
@@ -370,7 +433,9 @@ export default function AgentAnalysis({
             setProgressMessage('Analysis complete!');
             await saveToHistory(finalResult, selectedProjectKey, effectiveRepoContext);
         } catch (err) {
-            setError(`Start Error: ${err.message}`);
+            setError(`Analysis Error: ${err.message}`);
+            setProgress(0);
+            setProgressMessage('');
         }
     }, [governanceContext, repoContext, userAnswers, userFeedback, result, selectedProjectKey, saveToHistory]);
 
@@ -406,7 +471,7 @@ export default function AgentAnalysis({
             let buffer = '';
 
             setProgress(85);
-            setProgressMessage('Generating  analysis report...');
+            setProgressMessage('Generating comprehensive Agent Action Plan... This may take up to 10 minutes.');
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -574,7 +639,7 @@ export default function AgentAnalysis({
                 });
             } else {
                 setProgress(85);
-                setProgressMessage('Generating repository analysis report...');
+                setProgressMessage('Generating repository Agent Action Plan... This may take up to 10 minutes.');
                 await fetchAnalysisRef.current(aiPayload, token, initialResult, {
                     repoContext: repoContext,
                     governanceContext: governanceContext,
@@ -650,7 +715,7 @@ export default function AgentAnalysis({
                 });
             } else {
                 setProgress(85);
-                setProgressMessage('Generating analysis report...');
+                setProgressMessage('Generating comprehensive Agent Action Plan... This may take up to 10 minutes.');
                 await fetchAnalysisRef.current(aiPayload, token, initialResult, {
                     repoContext: pendingRepoContext,
                     governanceContext: effectiveGovernanceContext,
@@ -889,7 +954,7 @@ export default function AgentAnalysis({
                 });
             } else {
                 setProgress(70);
-                setProgressMessage('Generating refined analysis report...');
+                setProgressMessage('Generating refined Agent Action Plan... This may take up to 10 minutes.');
                 await fetchAnalysisRef.current(aiPayload, token, result, {
                     repoContext: repoContext,
                     governanceContext: governanceContext,
@@ -901,6 +966,105 @@ export default function AgentAnalysis({
             setProcessing(false);
         }
     };
+
+    // ── Helper: render a mermaid code string to a PNG data-URL ──
+    const renderMermaidToPng = async (mermaidCode) => {
+        try {
+            const uniqueId = `pdf-mermaid-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            const { svg } = await mermaid.render(uniqueId, mermaidCode);
+
+            return await new Promise((resolve) => {
+                // Convert SVG to base64 data URL using FileReader to avoid cross-origin issues
+                // This ensures the canvas doesn't get tainted
+                const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+                const reader = new FileReader();
+
+                reader.onload = () => {
+                    const img = new Image();
+                    const dataUrl = reader.result;
+
+                    img.onload = () => {
+                        try {
+                            const scale = 3; // High retina quality for crisp diagrams (increased from 2)
+                            const naturalW = img.naturalWidth || 800;
+                            const naturalH = img.naturalHeight || 400;
+
+                            // Create canvas with exact dimensions
+                            const canvas = document.createElement('canvas');
+                            canvas.width = naturalW * scale;
+                            canvas.height = naturalH * scale;
+
+                            const ctx = canvas.getContext('2d');
+                            if (!ctx) {
+                                resolve(null);
+                                return;
+                            }
+
+                            // Fill with white background
+                            ctx.fillStyle = '#ffffff';
+                            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                            // Enable image smoothing for better quality
+                            ctx.imageSmoothingEnabled = true;
+                            ctx.imageSmoothingQuality = 'high';
+
+                            // Scale and draw
+                            ctx.scale(scale, scale);
+                            ctx.drawImage(img, 0, 0, naturalW, naturalH);
+
+                            // Export as PNG data URL with maximum quality
+                            const pngDataUrl = canvas.toDataURL('image/png', 1.0);
+
+                            resolve({
+                                dataUrl: pngDataUrl,
+                                aspectRatio: naturalH / naturalW,
+                            });
+                        } catch (drawError) {
+                            console.warn('Canvas draw error:', drawError);
+                            resolve(null);
+                        }
+                    };
+
+                    img.onerror = () => {
+                        console.warn('Image load error');
+                        resolve(null);
+                    };
+
+                    // Use base64 data URL directly (no cross-origin issues)
+                    img.src = dataUrl;
+                };
+
+                reader.onerror = () => {
+                    console.warn('FileReader error');
+                    resolve(null);
+                };
+
+                reader.readAsDataURL(svgBlob);
+            });
+        } catch (err) {
+            console.warn('Mermaid→PNG render failed:', err);
+            return null;
+        }
+    };
+
+    // ── Helper: replace Unicode / box-drawing tree chars with ASCII equivalents ──
+    const normalizeTreeChars = (text) =>
+        text
+            .replace(/├──/g, '+--')
+            .replace(/└──/g, '\\--')
+            .replace(/│/g, '|')
+            .replace(/─/g, '-')
+            .replace(/├/g, '+')
+            .replace(/└/g, '\\')
+            .replace(/┌/g, '+')
+            .replace(/┐/g, '+')
+            .replace(/┘/g, '+')
+            .replace(/┼/g, '+')
+            .replace(/┤/g, '+')
+            // Handle the %%% / %ˇ style chars produced by some AI outputs
+            .replace(/%+\s*%+\s*%+\s*/g, '+-- ')
+            .replace(/%+\s+%+\s*%+\s*/g, '|   +-- ')
+            .replace(/^%+\s*/gm, '|   ');
 
     const handleDownloadPDF = async () => {
         if (!result?.analysis) return;
@@ -1096,6 +1260,33 @@ export default function AgentAnalysis({
         const rawText = isLikelyHtml(analysisContent) ? stripHtml(analysisContent) : analysisContent;
         const lines = rawText.split('\n');
 
+        // ── Pre-render every mermaid block to PNG so we can embed them ──
+        const mermaidImages = [];
+        const erDiagramImages = [];
+        {
+            const mermaidRegex = /```mermaid\s*([\s\S]*?)```/g;
+            let mMatch;
+            while ((mMatch = mermaidRegex.exec(rawText)) !== null) {
+                const code = mMatch[1].trim();
+                // eslint-disable-next-line no-await-in-loop
+                const imgData = await renderMermaidToPng(code);
+                mermaidImages.push(imgData); // may be null if render failed
+            }
+        }
+        // Also pre-render erDiagram blocks
+        {
+            const erRegex = /```(?:erDiagram|er\s*\n[\s\S]*?)```/gi;
+            let erMatch;
+            while ((erMatch = erRegex.exec(rawText)) !== null) {
+                const code = erMatch[1].trim();
+                // eslint-disable-next-line no-await-in-loop
+                const imgData = await renderMermaidToPng(code);
+                erDiagramImages.push(imgData);
+            }
+        }
+        let mermaidImageIdx = 0;
+        let erDiagramImageIdx = 0;
+
         // Section title
         doc.setFontSize(14);
         doc.setFont('helvetica', 'bold');
@@ -1103,8 +1294,209 @@ export default function AgentAnalysis({
         doc.text('Executive Summary & Agent Analysis', marginLeft, y);
         y += 8;
 
-        for (const line of lines) {
+        let inCodeBlock = false;
+        let codeBlockType = '';
+        let codeBlockContent = [];
+        let skipFolderStructure = false;
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
             const trimmed = line.trim();
+
+            // ── Detect code block start ──
+            if (trimmed.startsWith('```')) {
+                if (!inCodeBlock) {
+                    inCodeBlock = true;
+                    codeBlockType = trimmed.substring(3).trim();
+                    codeBlockContent = [];
+                    continue;
+                } else {
+                    // Code block end
+                    inCodeBlock = false;
+                    
+                    // Handle different code block types
+                    if (codeBlockType === 'mermaid') {
+                        // ── Embed actual rendered PNG image ──
+                        const imgData = mermaidImages[mermaidImageIdx++] || null;
+                        if (imgData && imgData.dataUrl) {
+                            const imgW = contentWidth;
+                            // Calculate height based on aspect ratio, but allow more vertical space
+                            const maxHeight = pageHeight - 60; // Leave room for margins
+                            let imgH = imgW * imgData.aspectRatio;
+                            // If image is taller than page, scale it down
+                            if (imgH > maxHeight) {
+                                imgH = maxHeight;
+                            }
+                            checkPage(imgH + 10);
+                            // light background card
+                            doc.setFillColor(...lightBg);
+                            doc.roundedRect(marginLeft, y, contentWidth, imgH + 6, 2, 2, 'F');
+                            doc.setFillColor(...brandAccent);
+                            doc.rect(marginLeft, y, 2, imgH + 6, 'F');
+                            doc.addImage(imgData.dataUrl, 'PNG', marginLeft + 4, y + 3, imgW - 8, imgH);
+                            y += imgH + 10;
+                        } else {
+                            // Fallback placeholder if render failed
+                            checkPage(25);
+                            doc.setFillColor(...lightBg);
+                            doc.roundedRect(marginLeft, y, contentWidth, 22, 2, 2, 'F');
+                            doc.setFillColor(...brandAccent);
+                            doc.rect(marginLeft, y, 2, 22, 'F');
+                            doc.setFontSize(10);
+                            doc.setFont('helvetica', 'bold');
+                            doc.setTextColor(...darkText);
+                            doc.text('[ARCHITECTURE DIAGRAM]', marginLeft + 8, y + 8);
+                            doc.setFontSize(8);
+                            doc.setFont('helvetica', 'normal');
+                            doc.setTextColor(...mutedText);
+                            doc.text('Visual architecture diagram available in the web interface', marginLeft + 8, y + 15);
+                            y += 26;
+                        }
+                    } else if (codeBlockType === 'erDiagram' || codeBlockType.includes('ER') || codeBlockType.includes('schema')) {
+                        // ── Embed actual rendered ER Diagram PNG image ──
+                        const imgData = erDiagramImages[erDiagramImageIdx++] || null;
+                        if (imgData && imgData.dataUrl) {
+                            const imgW = contentWidth;
+                            // Calculate height based on aspect ratio, allow more vertical space for ER diagrams
+                            const maxHeight = pageHeight - 60; // Leave room for margins
+                            let imgH = imgW * imgData.aspectRatio;
+                            // If image is taller than page, scale it down
+                            if (imgH > maxHeight) {
+                                imgH = maxHeight;
+                            }
+                            checkPage(imgH + 10);
+                            // light background card
+                            doc.setFillColor(...lightBg);
+                            doc.roundedRect(marginLeft, y, contentWidth, imgH + 6, 2, 2, 'F');
+                            doc.setFillColor(...brandAccent);
+                            doc.rect(marginLeft, y, 2, imgH + 6, 'F');
+                            doc.addImage(imgData.dataUrl, 'PNG', marginLeft + 4, y + 3, imgW - 8, imgH);
+                            y += imgH + 10;
+                        } else {
+                            // Fallback placeholder if render failed
+                            checkPage(25);
+                            doc.setFillColor(...lightBg);
+                            doc.roundedRect(marginLeft, y, contentWidth, 22, 2, 2, 'F');
+                            doc.setFillColor(...brandAccent);
+                            doc.rect(marginLeft, y, 2, 22, 'F');
+                            doc.setFontSize(10);
+                            doc.setFont('helvetica', 'bold');
+                            doc.setTextColor(...darkText);
+                            doc.text('[DATABASE SCHEMA DIAGRAM]', marginLeft + 8, y + 8);
+                            doc.setFontSize(8);
+                            doc.setFont('helvetica', 'normal');
+                            doc.setTextColor(...mutedText);
+                            doc.text('Visual database schema diagram available in the web interface', marginLeft + 8, y + 15);
+                            y += 26;
+                        }
+                    } else {
+                        // ── General / file-tree code block ──
+                        // Normalize Unicode / box-drawing tree chars so jsPDF courier can render them
+                        const normalizedContent = codeBlockContent.map(l => normalizeTreeChars(l));
+                        // Calculate height: render all lines (paginated)
+                        const lineH = 3.8;
+                        const paddingV = 6;
+                        const maxBlockH = pageHeight - 44; // nearly a full page at most
+                        const totalCodeH = Math.min(normalizedContent.length * lineH + paddingV * 2, maxBlockH);
+
+                        checkPage(Math.min(totalCodeH, 30));
+                        doc.setFillColor(...lightBg);
+                        doc.roundedRect(marginLeft, y, contentWidth, totalCodeH, 2, 2, 'F');
+                        doc.setFontSize(6.5);
+                        doc.setFont('courier', 'normal');
+                        doc.setTextColor(...darkText);
+
+                        let codeY = y + paddingV;
+                        for (const codeLine of normalizedContent) {
+                            if (codeY + lineH > y + totalCodeH - 2) break;
+                            if (codeY + lineH > pageHeight - 22) {
+                                // spill to next page
+                                addFooter(doc.internal.getNumberOfPages());
+                                doc.addPage();
+                                y = 20;
+                                codeY = y + paddingV;
+                                doc.setFillColor(...lightBg);
+                                doc.roundedRect(marginLeft, y, contentWidth, totalCodeH, 2, 2, 'F');
+                                doc.setFontSize(6.5);
+                                doc.setFont('courier', 'normal');
+                                doc.setTextColor(...darkText);
+                            }
+                            // Clip very long lines
+                            const printLine = codeLine.length > 110 ? codeLine.substring(0, 108) + '..' : codeLine;
+                            doc.text(printLine, marginLeft + 3, codeY);
+                            codeY += lineH;
+                        }
+                        y = codeY + paddingV;
+                    }
+                    
+                    codeBlockType = '';
+                    codeBlockContent = [];
+                    continue;
+                }
+            }
+
+            // ── Skip content inside code blocks ──
+            if (inCodeBlock) {
+                codeBlockContent.push(line);
+                continue;
+            }
+
+            // ── Detect loose folder-structure lines (tree chars that escaped a code block) ──
+            // These are Unicode box-drawing chars (├, │, └, ─) or %% sequences
+            const isTreeLine = /^[│├└─%]/.test(trimmed) || /^[|\\+]--/.test(trimmed);
+            if (isTreeLine) {
+                // Collect the whole tree block, normalize, and render in monospace
+                if (!skipFolderStructure) {
+                    skipFolderStructure = true;
+                    // Collect all consecutive tree lines
+                    const treeLines = [normalizeTreeChars(line)];
+                    let j = i + 1;
+                    while (j < lines.length) {
+                        const nextTrimmed = lines[j].trim();
+                        if (!nextTrimmed) { j++; break; }
+                        if (/^[│├└─%|\\+]/.test(nextTrimmed)) {
+                            treeLines.push(normalizeTreeChars(lines[j]));
+                            j++;
+                        } else {
+                            break;
+                        }
+                    }
+                    i = j - 1; // advance outer loop past consumed lines
+
+                    const lineH = 3.8;
+                    const paddingV = 5;
+                    const blockH = Math.min(treeLines.length * lineH + paddingV * 2, pageHeight - 44);
+                    checkPage(Math.min(blockH, 30));
+                    doc.setFillColor(...lightBg);
+                    doc.roundedRect(marginLeft, y, contentWidth, blockH, 2, 2, 'F');
+                    doc.setFontSize(6.5);
+                    doc.setFont('courier', 'normal');
+                    doc.setTextColor(...darkText);
+                    let codeY = y + paddingV;
+                    for (const tl of treeLines) {
+                        if (codeY + lineH > y + blockH - 2) break;
+                        if (codeY + lineH > pageHeight - 22) {
+                            addFooter(doc.internal.getNumberOfPages());
+                            doc.addPage();
+                            y = 20;
+                            codeY = y + paddingV;
+                            doc.setFillColor(...lightBg);
+                            doc.roundedRect(marginLeft, y, contentWidth, blockH, 2, 2, 'F');
+                            doc.setFontSize(6.5);
+                            doc.setFont('courier', 'normal');
+                            doc.setTextColor(...darkText);
+                        }
+                        const printLine = tl.length > 110 ? tl.substring(0, 108) + '..' : tl;
+                        doc.text(printLine, marginLeft + 3, codeY);
+                        codeY += lineH;
+                    }
+                    y = codeY + paddingV;
+                }
+                continue;
+            } else {
+                skipFolderStructure = false;
+            }
+
             if (!trimmed) {
                 y += 1.5;
                 continue;
@@ -1132,7 +1524,6 @@ export default function AgentAnalysis({
                     doc.text(hl, marginLeft, y);
                     y += fontSize * 0.42 + 1;
                 }
-
 
                 y += 1;
                 continue;
@@ -1274,7 +1665,176 @@ export default function AgentAnalysis({
 
     return (
         <div className="h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
-            <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+            {/* Fixed Right Sidebar - Outside main container */}
+            <div className={`fixed right-0 bg-white border-l border-gray-200 shadow-2xl transition-transform duration-300 z-40 ${
+                isSidebarOpen ? 'translate-x-0' : 'translate-x-full'
+            } w-[480px] overflow-hidden`} style={{ top: 'var(--sidebar-top, 0px)', height: 'calc(100vh - var(--sidebar-top, 0px))' }} ref={(el) => {
+                if (el) {
+                    // Calculate the top offset based on header + stepper height
+                    const mainContent = el.closest('.flex-1.min-w-0');
+                    if (mainContent) {
+                        const header = mainContent.querySelector('header');
+                        const stepper = header?.nextElementSibling;
+                        let topOffset = 0;
+                        if (header) topOffset += header.offsetHeight;
+                        if (stepper && stepper.querySelector('[class*="RoadmapHeader"]') !== null || (stepper && !stepper.classList.contains('flex-1'))) {
+                            topOffset += stepper.offsetHeight;
+                        }
+                        el.style.setProperty('--sidebar-top', `${topOffset}px`);
+                    }
+                }
+            }}>
+
+                {/* Sidebar Content */}
+                <div className="h-full overflow-y-auto p-6 space-y-6 pt-6">
+                    <div className="flex justify-between items-center pb-2 border-b border-gray-100">
+                        <h2 className="text-base font-bold text-gray-900">Analysis Data</h2>
+                        <button
+                            onClick={() => setIsSidebarOpen(false)}
+                            className="text-xs text-gray-500 hover:text-gray-900 font-semibold flex items-center transition-colors px-2 py-1.5 hover:bg-gray-100 rounded-md"
+                        >
+                            <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+                            </svg>
+                            Hide Details
+                        </button>
+                    </div>
+                    {result?.analysis?.architecture && (() => {
+                        const arch = result.analysis.architecture || {};
+                        const nodes = Array.isArray(arch.nodes) ? arch.nodes : [];
+                        const edges = Array.isArray(arch.edges) ? arch.edges : [];
+
+                        const rfNodes = layoutArchitectureGraph(nodes, edges, 'TB');
+                        const rfEdges = edges.map((edge, idx) => ({
+                            id: String(edge.id || `e-${idx}`),
+                            source: String(edge.from),
+                            target: String(edge.to),
+                            label: edge.description || undefined,
+                        }));
+
+                        return (
+                            <div className="bg-white rounded-xl border border-gray-200 p-5">
+                                <div className="flex items-center justify-between mb-4">
+                                    <h3 className="text-base font-bold text-gray-900">
+                                        Application Architecture
+                                    </h3>
+                                    <button
+                                        type="button"
+                                        onClick={() => setIsArchModalOpen(true)}
+                                        className="text-xs font-semibold text-blue-600 hover:text-blue-800 underline"
+                                    >
+                                        Expand
+                                    </button>
+                                </div>
+
+                                {(() => {
+                                    // Extract mermaid diagram from analysis content
+                                    const analysisContent = result.analysis?.analysis || '';
+                                    const mermaidMatch = analysisContent.match(/```mermaid\s*([\s\S]*?)```/);
+                                    const mermaidCode = mermaidMatch ? mermaidMatch[1].trim() : null;
+
+                                    if (mermaidCode) {
+                                        return (
+                                            <div className="rounded-lg border border-gray-200 bg-gray-50 overflow-hidden">
+                                                <MermaidDiagram code={mermaidCode} />
+                                            </div>
+                                        );
+                                    }
+
+                                    // Fallback to ReactFlow if no mermaid found
+                                    if (rfNodes.length > 0) {
+                                        return (
+                                            <div className="h-80 w-full rounded-lg border border-gray-200 bg-gray-50 overflow-hidden">
+                                                <ReactFlow
+                                                    nodes={rfNodes}
+                                                    edges={rfEdges}
+                                                    fitView
+                                                    nodesDraggable={false}
+                                                    nodesConnectable={false}
+                                                    elementsSelectable={false}
+                                                >
+                                                    <Background gap={16} size={1} />
+                                                    <Controls showInteractive={false} />
+                                                </ReactFlow>
+                                            </div>
+                                        );
+                                    }
+
+                                    return (
+                                        <p className="text-sm text-gray-500 italic">
+                                            Architecture details are not available.
+                                        </p>
+                                    );
+                                })()}
+                            </div>
+                        );
+                    })()}
+
+                    {/* Clarification Needed Section */}
+                    <div className="bg-white rounded-xl border border-gray-200 p-5">
+                        <div className="flex items-center mb-4">
+                            <div className="w-2 h-2 rounded-full bg-orange-500 mr-2"></div>
+                            <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide">
+                                Clarification Needed
+                            </h3>
+                        </div>
+
+                        <p className="text-xs text-gray-600 mb-6 leading-relaxed">
+                            The AI identified these ambiguous areas. Providing answers will refine the feasibility score.
+                        </p>
+
+                        {(() => {
+                            const questions = aiQuestions?.length > 0
+                                ? aiQuestions
+                                : (result?.analysis?.questions || []);
+
+                            return questions?.length > 0 ? (
+                                <div className="space-y-4 max-h-96 overflow-y-auto pr-2">
+                                    {questions.map((q, i) => (
+                                        <div key={i} className="bg-gray-50 rounded-lg p-3 border border-gray-200">
+                                            <p className="text-xs font-medium text-gray-700 mb-2">{q}</p>
+                                            <input
+                                                type="text"
+                                                value={userAnswers[i] || ''}
+                                                onChange={e => setUserAnswers(prev => ({ ...prev, [i]: e.target.value }))}
+                                                className="w-full px-3 py-2 text-xs border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                                                placeholder="Your answer..."
+                                            />
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <p className="text-xs text-gray-500 italic">No clarification questions at this time.</p>
+                            );
+                        })()}
+
+                        <div className="mt-6 pt-4 border-t border-gray-200">
+                            <label className="block text-xs font-medium text-gray-700 mb-2">Additional Context</label>
+                            <textarea
+                                value={userFeedback}
+                                onChange={(e) => setUserFeedback(e.target.value)}
+                                placeholder="Any other details..."
+                                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-h-[80px] text-xs bg-white resize-none"
+                            />
+                            <button
+                                onClick={handleRefineAnalysis}
+                                disabled={processing || (!(aiQuestions?.length) && !(userFeedback || '').trim())}
+                                className={`w-full mt-4 py-2.5 text-xs font-bold text-white rounded-lg shadow-sm transition-all ${
+                                    processing
+                                        ? 'bg-gray-400 cursor-not-allowed'
+                                        : 'bg-gray-900 hover:bg-gray-800 hover:shadow-md'
+                                }`}
+                            >
+                                {processing ? 'Refining...' : 'Update Analysis'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* Main Content Container */}
+            <div className={`transition-all duration-300 ${isSidebarOpen ? 'lg:mr-[480px]' : 'mr-0'}`}>
+                <div className="max-w-[1100px] mx-auto px-12 py-6 space-y-6">
                 {result && (
                     <div className="space-y-6 animate-fade-in-up">
                         {/* Result Header */}
@@ -1305,6 +1865,19 @@ export default function AgentAnalysis({
                                 >
                                     <Plus className="w-4 h-4 mr-1" /> Analyze Another
                                 </button>
+                                <div className="hidden sm:block h-4 w-px bg-app-border"></div>
+                                {!isSidebarOpen && (
+                                    <button
+                                        onClick={() => setIsSidebarOpen(true)}
+                                        className="text-sm text-app-text-label hover:text-app-text-main font-medium hover:underline flex items-center transition-colors"
+                                        title="Show Details"
+                                    >
+                                        <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+                                        </svg>
+                                        Show Details
+                                    </button>
+                                )}
                             </div>
                         </div>
 
@@ -1383,28 +1956,120 @@ export default function AgentAnalysis({
                                 </div>
                             )}
 
-                            {/* Main Content Grid */}
-                            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                                {/* Left Column: Report (8 cols) */}
-                                <div className="lg:col-span-8 space-y-6">
+                            {/* Main Content with Fixed Right Sidebar */}
+                            <div className="relative">
+                                {/* Main Content Area - Add right margin when sidebar is open */}
+                                <div>
                                     <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6">
-                                        <h3 className="text-base font-bold text-app-text-main mb-4 pb-2 border-b border-app-border-light">
+                                        <h3 className="text-lg font-bold text-app-text-main mb-4 pb-2 border-b-2 border-app-border-light">
                                             Executive Summary & Agent Analysis
                                         </h3>
-                                        <div className="prose prose-sm prose-slate max-w-none text-app-text-label leading-relaxed">
+                                        <div className="prose prose-lg prose-slate max-w-none text-app-text-label leading-relaxed">
                                             {(() => {
                                                 const analysisContent = result.analysis?.analysis || '';
                                                 const explicitHtml = result.analysis?.html;
                                                 const htmlToRender = explicitHtml || (isLikelyHtml(analysisContent) ? analysisContent : null);
 
-                                                if (htmlToRender) {
-                                                    return (
-                                                        <div
-                                                            className="bg-app-bg-card rounded-lg border border-app-border p-4"
-                                                            dangerouslySetInnerHTML={{ __html: sanitizeHtml(htmlToRender) }}
-                                                        />
-                                                    );
-                                                }
+                                                // Function to filter content for frontend display (hide ER diagrams and API sections)
+                                                const filterContentForDisplay = (content) => {
+                                                    if (!content) return '';
+
+                                                    const lines = content.split('\n');
+                                                    const result = [];
+                                                    let inCodeBlock = false;
+                                                    let codeBlockType = '';
+                                                    let skipSection = false;
+                                                    let sectionLevel = 0;
+
+                                                    for (let i = 0; i < lines.length; i++) {
+                                                        const line = lines[i];
+                                                        const trimmed = line.trim();
+
+                                                        // Detect section headers to skip
+                                                        const headerMatch = trimmed.match(/^(#{1,6})\s+(.+)/);
+                                                        if (headerMatch) {
+                                                            const level = headerMatch[1].length;
+                                                            const headerText = headerMatch[2].toLowerCase();
+                                                            
+                                                            // Check if this is a section we want to hide
+                                                            const shouldHide = 
+                                                                headerText.includes('data model') ||
+                                                                headerText.includes('database schema') ||
+                                                                headerText.includes('er diagram') ||
+                                                                headerText.includes('api specification') ||
+                                                                headerText.includes('api endpoint') ||
+                                                                headerText.includes('core api') ||
+                                                                headerText.includes('deliverable mapping') ||
+                                                                headerText.includes('files to create') ||
+                                                                headerText.includes('phase 1:') ||
+                                                                headerText.includes('phase 2:') ||
+                                                                headerText.includes('phase 3:') ||
+                                                                headerText.includes('phase 4:') ||
+                                                                headerText.includes('phase 5:') ||
+                                                                (headerText.match(/^\d+\.\d+/) && (
+                                                                    headerText.includes('data model') ||
+                                                                    headerText.includes('schema') ||
+                                                                    headerText.includes('api') ||
+                                                                    headerText.includes('deliverable')
+                                                                ));
+
+                                                            if (shouldHide) {
+                                                                skipSection = true;
+                                                                sectionLevel = level;
+                                                                continue;
+                                                            } else if (skipSection && level <= sectionLevel) {
+                                                                // End of skipped section - new section at same or higher level
+                                                                skipSection = false;
+                                                                sectionLevel = 0;
+                                                            }
+                                                        }
+
+                                                        // Skip lines if we're in a hidden section
+                                                        if (skipSection) {
+                                                            continue;
+                                                        }
+
+                                                        // Handle code blocks
+                                                        if (trimmed.startsWith('```')) {
+                                                            if (!inCodeBlock) {
+                                                                // Start of code block
+                                                                inCodeBlock = true;
+                                                                codeBlockType = trimmed.substring(3).trim().toLowerCase();
+
+                                                                // Hide erDiagram code blocks in frontend
+                                                                if (codeBlockType === 'erdiagram' || codeBlockType.includes('er')) {
+                                                                    // Skip this entire code block
+                                                                    while (i < lines.length - 1) {
+                                                                        i++;
+                                                                        if (lines[i].trim().startsWith('```')) {
+                                                                            break;
+                                                                        }
+                                                                    }
+                                                                    inCodeBlock = false;
+                                                                    codeBlockType = '';
+                                                                    continue;
+                                                                }
+                                                                
+                                                                result.push(line);
+                                                            } else {
+                                                                // End of code block
+                                                                inCodeBlock = false;
+                                                                codeBlockType = '';
+                                                                result.push(line);
+                                                            }
+                                                            continue;
+                                                        }
+
+                                                        // Skip content inside code blocks we're hiding
+                                                        if (inCodeBlock && (codeBlockType === 'erdiagram' || codeBlockType.includes('er'))) {
+                                                            continue;
+                                                        }
+
+                                                        result.push(line);
+                                                    }
+
+                                                    return result.join('\n');
+                                                };
 
                                                 if (processing && !analysisContent.trim()) {
                                                     return (
@@ -1414,9 +2079,71 @@ export default function AgentAnalysis({
                                                     );
                                                 }
 
+                                                // Always use ReactMarkdown for consistent formatting
                                                 return (
-                                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                                        {analysisContent}
+                                                    <ReactMarkdown 
+                                                        remarkPlugins={[remarkGfm]}
+                                                        components={{
+                                                            h1: ({node, ...props}) => <h1 className="text-lg font-bold text-gray-900 mt-6 mb-3 pb-2 border-b-2 border-gray-200" {...props} />,
+                                                            h2: ({node, ...props}) => <h2 className="text-base font-bold text-gray-900 mt-5 mb-2 pb-1 border-b border-gray-200" {...props} />,
+                                                            h3: ({node, ...props}) => <h3 className="text-sm font-semibold text-gray-800 mt-4 mb-2" {...props} />,
+                                                            h4: ({node, ...props}) => <h4 className="text-sm font-semibold text-gray-700 mt-3 mb-1" {...props} />,
+                                                            p: ({node, ...props}) => <p className="text-sm text-gray-700 leading-relaxed mb-3" {...props} />,
+                                                            ul: ({node, ...props}) => <ul className="list-disc list-outside ml-5 space-y-1 mb-3 text-sm text-gray-700" {...props} />,
+                                                            ol: ({node, ...props}) => <ol className="list-decimal list-outside ml-5 space-y-1 mb-3 text-sm text-gray-700" {...props} />,
+                                                            li: ({node, ...props}) => <li className="leading-relaxed text-sm" {...props} />,
+                                                            table: ({node, ...props}) => (
+                                                                <div className="overflow-x-auto my-6">
+                                                                    <table className="min-w-full divide-y divide-gray-200 border border-gray-200 rounded-lg" {...props} />
+                                                                </div>
+                                                            ),
+                                                            thead: ({node, ...props}) => <thead className="bg-gray-50" {...props} />,
+                                                            th: ({node, ...props}) => <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider border-b border-gray-200" {...props} />,
+                                                            td: ({node, ...props}) => <td className="px-4 py-3 text-sm text-gray-700 border-t border-gray-200" {...props} />,
+                                                            code: ({node, inline, className, children, ...props}) => {
+                                                                // Show inline code, show blocks based on config
+                                                                if (inline) {
+                                                                    return <code className="bg-gray-100 text-red-600 px-1 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>;
+                                                                }
+                                                                // Check if this is a mermaid or erDiagram block
+                                                                const codeContent = String(children || '').trim();
+                                                                const isMermaid = codeContent.startsWith('graph') ||
+                                                                    codeContent.includes('flowchart') ||
+                                                                    codeContent.includes('sequenceDiagram') ||
+                                                                    codeContent.includes('classDiagram') ||
+                                                                    codeContent.includes('stateDiagram');
+
+                                                                const isErDiagram = codeContent.includes('[') &&
+                                                                    (codeContent.includes('||') || codeContent.includes('}o') || codeContent.includes('o{'));
+
+                                                                if (isMermaid) {
+                                                                    return <MermaidDiagram code={codeContent} />;
+                                                                }
+
+                                                                return <code className="block bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-xs font-mono" {...props}>{children}</code>;
+                                                            },
+                                                            pre: ({node, children, ...props}) => {
+                                                                // Check if pre block contains mermaid
+                                                                const preContent = String(children || '');
+                                                                const codeMatch = preContent.match(/<code[^>]*>([\s\S]*?)<\/code>/);
+                                                                const codeContent = codeMatch ? codeMatch[1] : preContent;
+
+                                                                if (codeContent.includes('graph') ||
+                                                                    codeContent.includes('flowchart') ||
+                                                                    codeContent.includes('sequenceDiagram') ||
+                                                                    codeContent.includes('classDiagram') ||
+                                                                    codeContent.includes('stateDiagram')) {
+                                                                    return <MermaidDiagram code={codeContent} />;
+                                                                }
+
+                                                                return <pre className="bg-gray-900 rounded-lg my-4" {...props}>{children}</pre>;
+                                                            },
+                                                            blockquote: ({node, ...props}) => <blockquote className="border-l-4 border-blue-500 pl-4 italic text-gray-600 my-4 bg-blue-50 py-2" {...props} />,
+                                                            a: ({node, ...props}) => <a className="text-blue-600 hover:text-blue-800 underline font-medium" {...props} />,
+                                                            strong: ({node, ...props}) => <strong className="font-bold text-gray-900" {...props} />,
+                                                        }}
+                                                    >
+                                                        {filterContentForDisplay(analysisContent)}
                                                     </ReactMarkdown>
                                                 );
                                             })()}
@@ -1451,124 +2178,11 @@ export default function AgentAnalysis({
                                         </details>
                                     </div>
                                 </div>
-
-                                {/* Right Column: Architecture + Key Actions / Q&A (4 cols) */}
-                                <div className="lg:col-span-4 space-y-6">
-                                    {/* Application Architecture (React Flow diagram from AI JSON) */}
-                                    {result.analysis?.architecture && (() => {
-                                        const arch = result.analysis.architecture || {};
-                                        const nodes = Array.isArray(arch.nodes) ? arch.nodes : [];
-                                        const edges = Array.isArray(arch.edges) ? arch.edges : [];
-
-                                        const rfNodes = layoutArchitectureGraph(nodes, edges, 'TB');
-                                        const rfEdges = edges.map((edge, idx) => ({
-                                            id: String(edge.id || `e-${idx}`),
-                                            source: String(edge.from),
-                                            target: String(edge.to),
-                                            label: edge.description || undefined,
-                                        }));
-
-                                        return (
-                                            <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-5">
-                                                <div className="flex items-center justify-between mb-3">
-                                                    <h3 className="text-sm font-bold text-app-text-main">
-                                                        Application Architecture
-                                                    </h3>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => setIsArchModalOpen(true)}
-                                                        className="text-[11px] font-semibold text-app-primary hover:text-app-primary-dark border border-app-primary-light rounded-full px-2 py-0.5 bg-app-bg-page"
-                                                    >
-                                                        Expand
-                                                    </button>
-                                                </div>
-
-                                                {rfNodes.length > 0 ? (
-                                                    <div className="h-80 w-full rounded-lg border border-app-border-light bg-app-bg-page overflow-hidden">
-                                                        <ReactFlow
-                                                            nodes={rfNodes}
-                                                            edges={rfEdges}
-                                                            fitView
-                                                            nodesDraggable={false}
-                                                            nodesConnectable={false}
-                                                            elementsSelectable={false}
-                                                        >
-                                                            <Background gap={16} size={1} />
-                                                            <Controls showInteractive={false} />
-                                                        </ReactFlow>
-                                                    </div>
-                                                ) : (
-                                                    <p className="text-xs text-app-text-muted italic">
-                                                        Architecture details are not available for this analysis.
-                                                    </p>
-                                                )}
-                                            </div>
-                                        );
-                                    })()}
-
-                                    <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-5 lg:sticky lg:top-6">
-                                        <div className="flex items-center mb-4">
-                                            <div className="w-1.5 h-1.5 rounded-full bg-app-status-warning mr-2"></div>
-                                            <h3 className="text-sm font-bold text-app-text-main uppercase tracking-wide">
-                                                Clarification Needed
-                                            </h3>
-                                        </div>
-
-                                        <p className="text-xs text-app-text-muted mb-6 leading-relaxed">
-                                            The AI identified these ambiguous areas. Providing answers will refine the feasibility score.
-                                        </p>
-
-                                        {(() => {
-                                            // Get questions from state or from result analysis
-                                            const questions = aiQuestions?.length > 0
-                                                ? aiQuestions
-                                                : (result?.analysis?.questions || []);
-
-                                            return questions?.length > 0 ? (
-                                                <div className="space-y-4 max-h-96 overflow-y-auto pr-2 custom-scrollbar">
-                                                    {questions.map((q, i) => (
-                                                        <div key={i} className="bg-app-bg-page rounded-lg p-3 border border-app-border-light">
-                                                            <p className="text-xs font-medium text-app-text-label mb-2">{q}</p>
-                                                            <input
-                                                                type="text"
-                                                                value={userAnswers[i] || ''}
-                                                                onChange={e => setUserAnswers(prev => ({ ...prev, [i]: e.target.value }))}
-                                                                className="w-full px-3 py-2 text-xs border border-app-border rounded-md focus:ring-1 focus:ring-app-primary focus:border-app-primary bg-app-bg-card"
-                                                                placeholder="Your answer..."
-                                                            />
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            ) : (
-                                                <p className="text-xs text-app-text-muted italic">No clarification questions at this time.</p>
-                                            );
-                                        })()}
-
-                                        <div className="mt-6 pt-4 border-t border-app-border-light">
-                                            <label className="block text-xs font-medium text-app-text-label mb-2">Additional Context</label>
-                                            <textarea
-                                                value={userFeedback}
-                                                onChange={(e) => setUserFeedback(e.target.value)}
-                                                placeholder="Any other details..."
-                                                className="w-full p-3 border border-app-border rounded-lg focus:ring-app-primary focus:border-app-primary min-h-[80px] text-xs bg-app-bg-page resize-none"
-                                            />
-                                            <button
-                                                onClick={handleRefineAnalysis}
-                                                disabled={processing || (!(aiQuestions?.length) && !(userFeedback || '').trim())}
-                                                className={`w-full mt-4 py-2.5 text-xs font-bold text-white rounded-lg shadow-sm transition-all ${processing
-                                                    ? 'bg-app-text-light cursor-not-allowed'
-                                                    : 'bg-app-text-main hover:bg-app-text-label hover:shadow-md'
-                                                    }`}
-                                            >
-                                                {processing ? 'Refining...' : 'Update Analysis'}
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
                             </div>
                         </div>
                     </div>
                 )}
+            </div>
             </div>
 
             {/* Architecture Fullscreen Modal */}
@@ -1577,7 +2191,7 @@ export default function AgentAnalysis({
                 const nodes = Array.isArray(arch.nodes) ? arch.nodes : [];
                 const edges = Array.isArray(arch.edges) ? arch.edges : [];
 
-                const rfNodes = layoutArchitectureGraph(nodes, edges, 'LR');
+                const rfNodes = layoutArchitectureGraph(nodes, edges, 'TB');
 
                 const rfEdges = edges.map((edge, idx) => ({
                     id: String(edge.id || `e-${idx}`),
@@ -1601,24 +2215,42 @@ export default function AgentAnalysis({
                                     Close
                                 </button>
                             </div>
-                            <div className="flex-1 bg-app-bg-page">
-                                {rfNodes.length > 0 ? (
-                                    <ReactFlow
-                                        nodes={rfNodes}
-                                        edges={rfEdges}
-                                        fitView
-                                        nodesDraggable={false}
-                                        nodesConnectable={false}
-                                        elementsSelectable={false}
-                                    >
-                                        <Background gap={16} size={1} />
-                                        <Controls showInteractive={false} />
-                                    </ReactFlow>
-                                ) : (
-                                    <div className="h-full flex items-center justify-center text-xs text-app-text-muted">
-                                        Architecture details are not available for this analysis.
-                                    </div>
-                                )}
+                            <div className="flex-1 bg-app-bg-page overflow-auto p-6">
+                                {(() => {
+                                    // Extract mermaid diagram from analysis content
+                                    const analysisContent = result.analysis?.analysis || '';
+                                    const mermaidMatch = analysisContent.match(/```mermaid\s*([\s\S]*?)```/);
+                                    const mermaidCode = mermaidMatch ? mermaidMatch[1].trim() : null;
+
+                                    if (mermaidCode) {
+                                        return <MermaidDiagram code={mermaidCode} />;
+                                    }
+
+                                    // Fallback to ReactFlow if no mermaid found
+                                    if (rfNodes.length > 0) {
+                                        return (
+                                            <div className="h-full">
+                                                <ReactFlow
+                                                    nodes={rfNodes}
+                                                    edges={rfEdges}
+                                                    fitView
+                                                    nodesDraggable={false}
+                                                    nodesConnectable={false}
+                                                    elementsSelectable={false}
+                                                >
+                                                    <Background gap={16} size={1} />
+                                                    <Controls showInteractive={false} />
+                                                </ReactFlow>
+                                            </div>
+                                        );
+                                    }
+
+                                    return (
+                                        <div className="h-full flex items-center justify-center text-xs text-app-text-muted">
+                                            Architecture details are not available for this analysis.
+                                        </div>
+                                    );
+                                })()}
                             </div>
                         </div>
                     </div>

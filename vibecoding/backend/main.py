@@ -6,6 +6,7 @@ import os
 import uuid
 import re as _re
 from datetime import datetime
+import subprocess
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -589,21 +590,60 @@ HANDOFF_SECRET = os.getenv("HANDOFF_SECRET", "dsuite-vibecoding-handoff-secret-l
 
 
 def _verify_handoff_token(token_str: str) -> dict:
-    """Verify HMAC-signed handoff token and return payload."""
+    """
+    Verify HMAC-signed handoff token and retrieve payload from D-Suite database.
+    
+    New approach: Token is just tokenId.signature, payload is stored in database.
+    This avoids URL length limits (HTTP 431 errors).
+    """
     parts = token_str.rsplit(".", 1)
     if len(parts) != 2:
         raise ValueError("Malformed handoff token")
-    payload_b64, sig = parts
-    expected_sig = _hmac.new(HANDOFF_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+    
+    token_id, sig = parts
+    
+    # Verify HMAC signature
+    expected_sig = _hmac.new(HANDOFF_SECRET.encode(), token_id.encode(), hashlib.sha256).hexdigest()
     if not _hmac.compare_digest(expected_sig, sig):
         raise ValueError("Invalid handoff token signature")
-    padding = 4 - len(payload_b64) % 4
-    if padding != 4:
-        payload_b64 += "=" * padding
-    payload = json.loads(_base64.urlsafe_b64decode(payload_b64))
-    if payload.get("exp", 0) < int(_time_mod.time()):
-        raise ValueError("Handoff token expired")
-    return payload
+    
+    # Retrieve payload from D-Suite database
+    # We need to make an HTTP request to D-Suite backend to get the payload
+    try:
+        import requests
+        dsuite_backend_url = os.getenv("DSUITE_BACKEND_URL", "http://localhost:8000")
+        response = requests.get(
+            f"{dsuite_backend_url}/api/vibecoding/handoff-payload/{token_id}",
+            timeout=5
+        )
+        
+        if response.status_code == 404:
+            raise ValueError("Handoff token not found or expired")
+        elif response.status_code != 200:
+            raise ValueError(f"Failed to retrieve handoff payload: {response.status_code}")
+        
+        payload = response.json()
+        
+        # Check expiry
+        if payload.get("exp", 0) < int(_time_mod.time()):
+            raise ValueError("Handoff token expired")
+        
+        return payload
+        
+    except requests.exceptions.RequestException as e:
+        # Fallback: Try to decode from token (backward compatibility with old tokens)
+        try:
+            # Old format: payload_b64.signature
+            payload_b64 = token_id
+            padding = 4 - len(payload_b64) % 4
+            if padding != 4:
+                payload_b64 += "=" * padding
+            payload = json.loads(_base64.urlsafe_b64decode(payload_b64))
+            if payload.get("exp", 0) < int(_time_mod.time()):
+                raise ValueError("Handoff token expired")
+            return payload
+        except Exception:
+            raise ValueError(f"Failed to retrieve handoff payload: {str(e)}")
 
 
 class SSOHandoffRequest(BaseModel):
@@ -634,8 +674,12 @@ async def sso_handoff(request: SSOHandoffRequest):
     project_context = payload.get("project_context", {})
 
     from auth import get_db as get_auth_db, create_jwt_token, hash_password, generate_avatar_color, generate_random_password
+    from email_service import email_service
 
     conn = get_auth_db()
+    is_new_user = False
+    generated_password = None
+    
     try:
         user = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
         if user:
@@ -649,10 +693,11 @@ async def sso_handoff(request: SSOHandoffRequest):
                 "created_at": user["created_at"],
             }
         else:
-            password = generate_random_password()
-            password_hash, salt = hash_password(password)
+            # New user - generate password and mark for email notification
+            is_new_user = True
+            generated_password = generate_random_password()
+            password_hash, salt = hash_password(generated_password)
             avatar_color = generate_avatar_color(email)
-            from datetime import datetime
             now = datetime.utcnow().isoformat()
             base_username = username
             suffix = 0
@@ -674,6 +719,22 @@ async def sso_handoff(request: SSOHandoffRequest):
                 "avatar_color": avatar_color,
                 "created_at": now,
             }
+            
+            # Send welcome email with credentials to new user
+            try:
+                logger.info(f"📧 Sending welcome email to new user: {email}")
+                email_sent = email_service.send_welcome_email(
+                    email,
+                    username,
+                    generated_password
+                )
+                if email_sent:
+                    logger.info(f"✅ Welcome email sent successfully to {email}")
+                else:
+                    logger.warning(f"⚠️ Failed to send welcome email to {email}")
+            except Exception as e:
+                logger.error(f"❌ Error sending welcome email to {email}: {e}")
+                # Don't fail the handoff if email fails - user can still login
 
         token = create_jwt_token({"user_id": user_id, "email": email, "username": username})
     finally:
@@ -687,27 +748,261 @@ async def sso_handoff(request: SSOHandoffRequest):
                 existing["owner_id"] = user_id
             if project_context:
                 existing["brd_context"] = project_context
+            # Update with new handoff fields
+            if payload.get("brd_text"):
+                existing["brd_text"] = payload["brd_text"]
+            if payload.get("analysis_data"):
+                existing["analysis_data"] = payload["analysis_data"]
+            if payload.get("prerequisites"):
+                existing["prerequisites"] = payload["prerequisites"]
+            if payload.get("custom_rules"):
+                existing["custom_rules"] = payload["custom_rules"]
+            if payload.get("governance_context"):
+                existing["governance_context"] = payload["governance_context"]
+            existing["process_mode"] = payload.get("process_mode", "vibe_coding")
+            existing["handoff_source"] = "dsuite"
+            existing["handoff_timestamp"] = datetime.utcnow().isoformat()
+            
             project_manager.update_project_metadata(project_token, existing)
             project_info = existing
         else:
-            project_name = project_context.get("project_name") or f"Project {project_token[:8]}"
-            project_manager.create_project_directory(project_token, metadata={
+            project_name = payload.get("project_name") or project_context.get("project_name") or f"Project {project_token[:8]}"
+            brd_summary = project_context.get("brd_summary", "")
+            
+            # Create project with full handoff data
+            project_metadata = {
                 "name": project_name,
-                "description": project_context.get("brd_summary", ""),
+                "description": brd_summary,
                 "owner_id": user_id,
-            })
-            new_project = project_manager.get_project_info(project_token)
-            if new_project and project_context:
-                new_project["brd_context"] = project_context
-                project_manager.update_project_metadata(project_token, new_project)
+                "brd_context": project_context,
+                "brd_text": payload.get("brd_text", ""),
+                "analysis_data": payload.get("analysis_data", {}),
+                "prerequisites": payload.get("prerequisites", []),
+                "custom_rules": payload.get("custom_rules", ""),
+                "governance_context": payload.get("governance_context", {}),
+                "process_mode": payload.get("process_mode", "vibe_coding"),
+                "handoff_source": "dsuite",
+                "handoff_timestamp": datetime.utcnow().isoformat(),
+                "auto_execute": True,  # Flag to trigger automatic execution
+            }
+            
+            project_manager.create_project_directory(project_token, metadata=project_metadata)
             project_info = project_manager.get_project_info(project_token)
 
+    # Prepare response message
+    message = "SSO login successful"
+    if is_new_user:
+        message = "Welcome! Your account has been created. Check your email for login credentials."
+    
     return {
         "token": token,
         "user": user_data,
         "project": project_info,
-        "message": "SSO login successful",
+        "message": message,
+        "auto_execute": project_info.get("auto_execute", False) if project_info else False,
+        "is_new_user": is_new_user,
+        "email_sent": is_new_user and generated_password is not None,
     }
+
+
+@app.post("/vibecoding/api/projects/{project_id}/trigger-handoff-execution")
+async def trigger_handoff_execution(
+    project_id: str,
+    user: dict = Depends(get_current_user),
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Trigger automatic project creation and task execution for a project
+    that was created via D-Suite handoff.
+    
+    This endpoint:
+    1. Reads the BRD text and analysis data from project metadata
+    2. Writes the BRD to the agent's mailbox (/tmp/vibe_prompt)
+    3. Starts the agent container if not already running
+    4. Returns immediately while agent processes in background
+    """
+    try:
+        project_info = project_manager.get_project_info(project_id)
+        if not project_info:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Verify ownership
+        if project_info.get("owner_id") != user["id"]:
+            raise HTTPException(status_code=403, detail="Not authorized to access this project")
+        
+        # Check if this is a handoff project
+        if project_info.get("handoff_source") != "dsuite":
+            raise HTTPException(status_code=400, detail="This project was not created via D-Suite handoff")
+        
+        # Get BRD text and analysis data
+        brd_text = project_info.get("brd_text", "")
+        analysis_data = project_info.get("analysis_data", {})
+        prerequisites = project_info.get("prerequisites", [])
+        custom_rules = project_info.get("custom_rules", "")
+        
+        if not brd_text and not analysis_data:
+            raise HTTPException(status_code=400, detail="No BRD data found in project metadata")
+        
+        # Construct comprehensive prompt for the agent
+        agent_prompt = f"""# VibeCoding Auto-Execution from D-Suite
+
+## Project Information
+- **Project Name**: {project_info.get('name', 'Unnamed Project')}
+- **Project ID**: {project_id}
+- **Source**: D-Suite Handoff
+- **Timestamp**: {project_info.get('handoff_timestamp', 'Unknown')}
+
+## Business Requirements Document (BRD)
+
+{brd_text}
+
+## AI Analysis Summary
+
+{json.dumps(analysis_data, indent=2) if analysis_data else 'No analysis data available'}
+
+## Prerequisites Provided
+
+{json.dumps(prerequisites, indent=2) if prerequisites else 'No prerequisites specified'}
+
+## Custom Development Rules
+
+{custom_rules if custom_rules else 'No custom rules specified'}
+
+---
+
+**Instructions**: Please analyze the BRD above and create a complete, production-ready application that fulfills all the requirements. Follow these steps:
+
+1. **Plan**: Create a comprehensive task plan with all necessary components
+2. **Implement**: Generate all required code files with complete implementations
+3. **Deploy**: Set up the application and make it accessible
+4. **Verify**: Ensure everything works correctly
+
+Begin implementation now."""
+
+        container_name = f"vibecoding_{project_id}"  # Match the naming convention in project_manager
+        
+        try:
+            # Check if container is running
+            check_container = subprocess.run(
+                ["docker", "ps", "-q", "-f", f"name={container_name}"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            container_running = bool(check_container.stdout.strip())
+            
+            if not container_running:
+                # Start the container FIRST
+                logger.info(f"Starting agent container: {container_name}")
+                
+                # Get user's API key from project metadata or use default
+                api_key = project_info.get("api_key", os.getenv("OPENAI_API_KEY", ""))
+                
+                # Get the workspace path for this project
+                workspace_path = str(project_manager.artifacts_dir / project_id / "workspace")
+                
+                # Start the agent container
+                container_url = project_manager.start_agent_container(
+                    api_key=api_key,
+                    project_path=workspace_path,
+                    project_id=project_id
+                )
+                
+                if not container_url:
+                    raise HTTPException(status_code=500, detail="Failed to start container")
+                
+                logger.info(f"✅ Container started successfully at {container_url}")
+                
+                # Wait for container to fully initialize
+                import asyncio
+                await asyncio.sleep(8)  # Increased wait time for container initialization
+            else:
+                logger.info(f"Container {container_name} is already running")
+            
+            # Send a simple trigger prompt to start the agent
+            trigger_prompt = "start building based on the BRD requirements"
+            
+            logger.info(f"Sending trigger prompt to container")
+            
+            # Use docker exec to write the prompt inside the container
+            write_result = subprocess.run(
+                ["docker", "exec", container_name, "bash", "-c", 
+                 f"echo '{trigger_prompt}' > /tmp/vibe_prompt"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if write_result.returncode != 0:
+                logger.error(f"Failed to write prompt to container: {write_result.stderr}")
+                raise HTTPException(status_code=500, detail=f"Failed to send prompt to agent: {write_result.stderr}")
+            
+            logger.info(f"✅ Successfully sent trigger prompt to container")
+            
+            # Mark project as execution started
+            project_info["execution_started"] = True
+            project_info["execution_start_time"] = datetime.utcnow().isoformat()
+            project_manager.update_project_metadata(project_id, project_info)
+            
+            return {
+                "status": "triggered",
+                "message": "Agent execution triggered successfully",
+                "project_id": project_id,
+                "container_name": container_name,
+                "container_running": container_running,
+            }
+            
+        except subprocess.TimeoutExpired:
+            raise HTTPException(status_code=500, detail="Docker command timed out")
+        except Exception as e:
+            logger.error(f"Failed to trigger handoff execution: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to trigger execution: {str(e)}")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in trigger_handoff_execution: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/vibecoding/api/projects/{project_id}/brd-context")
+async def get_brd_context(project_id: str):
+    """
+    API endpoint for the AI agent inside the container to fetch BRD context.
+    This is called by the agent when it receives the trigger prompt.
+    No authentication required since it's called from within the container.
+    """
+    try:
+        project_info = project_manager.get_project_info(project_id)
+        if not project_info:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Check if this is a handoff project
+        if project_info.get("handoff_source") != "dsuite":
+            return {
+                "has_brd": False,
+                "message": "This project was not created via D-Suite handoff"
+            }
+        
+        # Return the BRD context
+        return {
+            "has_brd": True,
+            "project_name": project_info.get("name", "Unnamed Project"),
+            "project_id": project_id,
+            "brd_text": project_info.get("brd_text", ""),
+            "analysis_data": project_info.get("analysis_data", {}),
+            "prerequisites": project_info.get("prerequisites", []),
+            "custom_rules": project_info.get("custom_rules", ""),
+            "governance_context": project_info.get("governance_context", {}),
+            "handoff_timestamp": project_info.get("handoff_timestamp", ""),
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching BRD context for project {project_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/vibecoding/api")
@@ -2144,4 +2439,4 @@ async def asset_fallback_proxy(path: str, request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8001)

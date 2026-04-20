@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Mail, User, Building2, Loader2, ArrowRight, Lock } from 'lucide-react';
+import { Mail, User, Building2, Loader2, ArrowRight, Lock, Eye, EyeOff } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
+import { sanitizeErrorMessage } from '../utils/errorHandling';
 import logo from '../assets/logo.png';
 import bourntecLogo from '../assets/bourntec_logo.png';
 
@@ -11,6 +12,7 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
     const [organizationName, setOrganizationName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
     const navigate = useNavigate();
@@ -43,7 +45,8 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
             if (isModal && onClose) onClose();
             navigate('/login');
         } catch (err) {
-            setError(err.message);
+            console.error('Signup error:', err);
+            setError(sanitizeErrorMessage(err));
         } finally {
             setIsLoading(false);
         }
@@ -170,13 +173,24 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
             </div>
             <input
               id="password"
-              type="password"
+              type={showPassword ? "text" : "password"}
               placeholder="••••••••"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="block w-full pl-10 pr-3 py-3 border border-app-border rounded-xl leading-5 bg-app-bg-page placeholder-slate-400 focus:outline-none focus:bg-app-bg-card focus:ring-2 focus:ring-app-primary/20 focus:border-app-primary transition-all duration-200 sm:text-sm"
+              className="block w-full pl-10 pr-10 py-3 border border-app-border rounded-xl leading-5 bg-app-bg-page placeholder-slate-400 focus:outline-none focus:bg-app-bg-card focus:ring-2 focus:ring-app-primary/20 focus:border-app-primary transition-all duration-200 sm:text-sm"
               required
             />
+            <button
+              type="button"
+              onClick={() => setShowPassword(!showPassword)}
+              className="absolute inset-y-0 right-0 pr-3 flex items-center text-app-text-light hover:text-app-text-label transition-colors"
+            >
+              {showPassword ? (
+                <EyeOff className="h-5 w-5" />
+              ) : (
+                <Eye className="h-5 w-5" />
+              )}
+            </button>
           </div>
         </div>
 

@@ -1,7 +1,7 @@
 const SYSTEM_AGENT_NAMES = {
-  agent_03: 'Git Manager',
-  agent_04: 'Master Agent',
-  agent_05: 'Test Agent',
+  G_agent_01: 'Git Manager',
+  M_agent_01: 'Master Agent',
+  M_agent_02: 'Deploy Agent',
 };
 
 const GENERATED_NAME_PATTERNS = [

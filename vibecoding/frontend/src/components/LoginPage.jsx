@@ -89,7 +89,7 @@ export default function LoginPage({ onSwitchToSignup, onForgotPassword }) {
             </div>
           </div>
           <div className="auth-branding-footer">
-            <span>© 2026 Bourtec Solutions</span>
+            <span>© 2026 bourntec Solutions</span>
           </div>
         </div>
 

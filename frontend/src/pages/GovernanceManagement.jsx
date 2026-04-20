@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react';
+import { customConfirm } from '../utils/modalHelpers';
 import {
     Plus, Edit2, Trash2, ChevronDown, ChevronUp, Save, X, GripVertical,
     AlertCircle, CheckCircle2, Layout, Settings, List, BarChart2, ChevronRight, ChevronLeft
@@ -96,7 +97,8 @@ const GovernanceManagement = () => {
     };
 
     const handleDelete = async (id) => {
-        if (window.confirm('Are you sure you want to delete this question?')) {
+        const confirmed = await customConfirm('Are you sure you want to delete this question?');
+        if (confirmed) {
             try {
                 await deleteMutation.mutateAsync(id);
             } catch (err) {

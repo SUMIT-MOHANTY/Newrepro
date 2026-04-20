@@ -35,7 +35,7 @@ From the `vibecoding` directory:
 start.bat
 ```
 
-This will start both backend (port 8000) and frontend (port 3000).
+This will start both backend (port 8001) and frontend (port 3000).
 
 ## Manual Start
 
@@ -54,13 +54,13 @@ npm run dev
 
 ## Access the Application
 - Frontend: http://localhost:3000
-- Backend API: http://localhost:8000
-- API Docs: http://localhost:8000/docs
+- Backend API: http://localhost:8001
+- API Docs: http://localhost:8001/docs
 
 ## Troubleshooting
 
 ### Port Already in Use
-If ports 3000 or 8000 are in use:
+If ports 3000 or 8001 are in use:
 - Backend: Edit `main.py` and change the port in `uvicorn.run()`
 - Frontend: Edit `vite.config.js` and change the port in server config
 

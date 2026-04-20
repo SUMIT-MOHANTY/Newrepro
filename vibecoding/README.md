@@ -65,7 +65,7 @@ ANTHROPIC_API_KEY=your_actual_api_key_here
 python main.py
 ```
 
-Backend will run on http://localhost:8000
+Backend will run on http://localhost:8001
 
 ### Frontend Setup
 

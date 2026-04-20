@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { API_ENDPOINTS } from '../config';
 import { clearAuthData } from '../utils/auth';
+import { sanitizeErrorMessage } from '../utils/errorHandling';
+import { customAlert, customPrompt } from '../utils/modalHelpers';
 import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -101,7 +103,8 @@ const parseAIResponse = (text) => {
             questions: lastValidFenced.parsed.questions || [],
             metrics: lastValidFenced.parsed.metrics || null,
             title: lastValidFenced.parsed.title || null,
-            prerequisites: lastValidFenced.parsed.prerequisites || []
+            prerequisites: lastValidFenced.parsed.prerequisites || [],
+            architecture: lastValidFenced.parsed.architecture || null
         };
     }
 
@@ -109,7 +112,7 @@ const parseAIResponse = (text) => {
     if (lastJsonLikeFence) {
         const before = source.slice(0, lastJsonLikeFence.index);
         const after = source.slice(lastJsonLikeFence.index + lastJsonLikeFence.fullMatch.length);
-        return { report: `${before}${after}`.trim(), questions: [], metrics: null, title: null, prerequisites: [] };
+        return { report: `${before}${after}`.trim(), questions: [], metrics: null, title: null, prerequisites: [], architecture: null };
     }
 
     // 2) Fallback: parse trailing raw JSON object without fences
@@ -124,12 +127,13 @@ const parseAIResponse = (text) => {
                 questions: parsed.questions || [],
                 metrics: parsed.metrics || null,
                 title: parsed.title || null,
-                prerequisites: parsed.prerequisites || []
+                prerequisites: parsed.prerequisites || [],
+                architecture: parsed.architecture || null
             };
         }
     }
 
-    return { report: source, questions: [], metrics: null, title: null, prerequisites: [] };
+    return { report: source, questions: [], metrics: null, title: null, prerequisites: [], architecture: null };
 };
 
 const isLikelyHtml = (content = '') => {
@@ -358,7 +362,7 @@ const Dashboard = ({
     const [analyzeWithAi] = useState(true);
     const navigate = useNavigate();
 
-    const [streamResponse] = useState(true);
+    const [streamResponse] = useState(false);
 
     const [history, setHistory] = useState([]);
     const [governanceHistory, setGovernanceHistory] = useState([]);
@@ -582,7 +586,7 @@ const Dashboard = ({
 
     const handleChangeCredentials = () => {
         if (credentialsLocked && hasChangedCredentials) {
-            alert('Credentials can only be changed once after initial setup. Please contact support if you need to change them again.');
+            customAlert('Credentials can only be changed once after initial setup. Please contact support if you need to change them again.');
             return;
         }
         // Clear current credentials to allow new entry
@@ -1403,7 +1407,8 @@ const Dashboard = ({
         try {
             await fetchRequirementsFromUrl(urlInput, selectedProjectKey);
         } catch (err) {
-            setError(err.message || 'Failed to fetch URL requirements');
+            console.error('URL fetch error:', err);
+            setError(sanitizeErrorMessage(err));
         }
     };
 
@@ -1730,7 +1735,7 @@ const Dashboard = ({
             }
 
             const data = await response.json();
-            const { report, questions, metrics, title, prerequisites } = parseAIResponse(data.analysis || '');
+            const { report, questions, metrics, title, prerequisites, architecture } = parseAIResponse(data.analysis || '');
             if (questions.length > 0) setProjectState(taskKey, { aiQuestions: questions });
 
             const effectiveGovernanceContext = analysisOptions.governanceContext || governanceContext || null;
@@ -1746,6 +1751,7 @@ const Dashboard = ({
                     questions: questions,
                     metrics: metrics,
                     prerequisites: prerequisites,
+                    architecture: architecture,
                     userAnswers: userAnswers,
                     userFeedback: userFeedback,
                     governanceContext: effectiveGovernanceContext,
@@ -1916,7 +1922,7 @@ const Dashboard = ({
                             }
 
                             // Parse questions dynamically during stream
-                            const { report, questions, metrics, prerequisites } = parseAIResponse(aiText);
+                            const { report, questions, metrics, prerequisites, architecture } = parseAIResponse(aiText);
                             if (questions.length > 0) setProjectState(taskKey, { aiQuestions: questions });
 
                             // Update UI gracefully
@@ -1929,7 +1935,8 @@ const Dashboard = ({
                                         reasoning: aiReasoning,
                                         model: payload.model || 'Streaming...',
                                         metrics: metrics,
-                                        prerequisites: prerequisites
+                                        prerequisites: prerequisites,
+                                        architecture: architecture
                                     }
                                 }
                             }));
@@ -1942,7 +1949,7 @@ const Dashboard = ({
             }
 
             // Save history after stream completes
-            const { report, questions, metrics, title, prerequisites } = parseAIResponse(aiText);
+            const { report, questions, metrics, title, prerequisites, architecture } = parseAIResponse(aiText);
 
             const effectiveGovernanceContext = analysisOptions.governanceContext || governanceContext || null;
             const effectiveRepoContext = analysisOptions.repoContext || repoContext || null;
@@ -1956,6 +1963,7 @@ const Dashboard = ({
                     questions: questions,
                     metrics: metrics,
                     prerequisites: prerequisites,
+                    architecture: architecture,
                     userAnswers: userAnswers,
                     userFeedback: userFeedback,
                     governanceContext: effectiveGovernanceContext,
@@ -2402,7 +2410,7 @@ const Dashboard = ({
             pdf.save(`DSuite_Analysis_${safeFilename}.pdf`);
         } catch (err) {
             console.error('PDF generation failed', err);
-            setError(`PDF Error: ${err.message || 'Unknown error'}`);
+            setError(sanitizeErrorMessage(err));
         }
     };
 
@@ -2709,8 +2717,11 @@ const Dashboard = ({
 
     const handleCreateRevision = async () => {
         if (!selectedProject) return;
-        const reason = window.prompt(
-            `Provide a reason for creating a new revision for "${selectedProject.name}".`
+        const reason = await customPrompt(
+            `Provide a reason for creating a new revision for "${selectedProject.name}".`,
+            'Create New Revision',
+            '',
+            'Enter revision reason...'
         );
         if (!reason || !reason.trim()) {
             return;
@@ -3149,6 +3160,20 @@ const Dashboard = ({
                                                 </div>
                                             </div>
 
+                                            {/* OR Divider */}
+                                            <div className="flex items-center justify-center md:col-span-1 md:absolute md:left-1/2 md:top-1/2 md:-translate-x-1/2 md:-translate-y-1/2 md:z-20">
+                                                <div className="hidden md:flex items-center gap-3">
+                                                    <div className="w-12 h-12 rounded-full bg-app-bg-muted border-2 border-app-border flex items-center justify-center">
+                                                        <span className="text-xs font-bold text-app-text-muted uppercase">OR</span>
+                                                    </div>
+                                                </div>
+                                                <div className="md:hidden flex items-center gap-3 w-full">
+                                                    <div className="flex-1 h-px bg-app-border"></div>
+                                                    <span className="text-xs font-bold text-app-text-muted uppercase px-2">OR</span>
+                                                    <div className="flex-1 h-px bg-app-border"></div>
+                                                </div>
+                                            </div>
+
                                             {/* OPTION 2: Repository URL (GitHub / Azure DevOps) */}
                                             <div className="relative border border-app-border rounded-xl bg-app-bg-card shadow-sm p-5 flex flex-col justify-start overflow-hidden">
                                                 <div className={`absolute inset-0 bg-app-bg-card/75 backdrop-blur-[2px] z-10 flex items-center justify-center transition-all duration-300 ${(isOAuthRepoSelected || repoContext) ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
@@ -3204,15 +3229,15 @@ const Dashboard = ({
                                                     <div className="mb-4 p-3 bg-gradient-to-r from-gray-50 to-slate-50 dark:from-gray-900/20 dark:to-slate-900/20 border border-gray-200 dark:border-gray-800 rounded-lg shadow-sm">
                                                         <div className="flex items-start justify-between gap-2">
                                                             <div className="flex items-start gap-2 flex-1 min-w-0">
-                                                                <CheckCircle2 className="w-5 h-5 text-gray-700 dark:text-gray-400 mt-0.5 flex-shrink-0" />
+                                                                <CheckCircle2 className="w-5 h-5 text-app-status-success flex-shrink-0 mt-0.5" />
                                                                 <div className="flex-1 min-w-0">
-                                                                    <p className="text-xs font-bold text-gray-900 dark:text-gray-100 uppercase tracking-wide mb-1">
+                                                                    <p className="text-xs font-bold text-app-text-main uppercase tracking-wide mb-1">
                                                                         <span className="flex items-center gap-1.5">
                                                                             <GitHubIcon className="w-3.5 h-3.5" />
                                                                             GitHub Credentials Saved
                                                                         </span>
                                                                     </p>
-                                                                    <p className="text-[11px] text-gray-700 dark:text-gray-300 font-mono truncate" title={githubLinkUrl}>
+                                                                    <p className="text-[11px] text-app-text-muted font-mono truncate" title={githubLinkUrl}>
                                                                         {githubLinkUrl}
                                                                     </p>
                                                                     {hasChangedCredentials ? (
@@ -3226,7 +3251,7 @@ const Dashboard = ({
                                                                         <button
                                                                             type="button"
                                                                             onClick={handleChangeCredentials}
-                                                                            className="mt-2 text-[11px] font-semibold text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100 underline underline-offset-2 decoration-2 hover:decoration-gray-500 transition-all flex items-center gap-1"
+                                                                            className="mt-2 text-[11px] font-semibold text-app-primary hover:text-app-primary-hover underline underline-offset-2 decoration-2 hover:decoration-app-primary transition-all flex items-center gap-1"
                                                                         >
                                                                             <RefreshCw className="w-3 h-3" />
                                                                             Change credentials (one-time only)

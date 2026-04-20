@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { customAlert } from '../utils/modalHelpers';
 import { Loader2, ArrowLeft, ExternalLink, RefreshCw, Maximize2, Minimize2, Globe, StopCircle, Smartphone, Monitor, Tablet } from 'lucide-react';
-import { API_ENDPOINTS } from '../config';
+import { API_ENDPOINTS, API_BASE_URL } from '../config';
 
 const DEVICE_SIZES = [
     { id: 'desktop', label: 'Desktop', icon: Monitor, width: '100%', height: '100%' },
@@ -65,10 +66,10 @@ export default function AppPreview() {
                 setPreviewStatus(data);
             } else {
                 const err = await res.json().catch(() => ({}));
-                alert(err.detail || 'Deploy failed');
+                customAlert(err.detail || 'Deploy failed', 'Deploy Failed');
             }
         } catch (e) {
-            alert('Deploy failed: ' + e.message);
+            customAlert('Deploy failed: ' + e.message, 'Deploy Failed');
         } finally {
             setIsDeploying(false);
         }
@@ -104,7 +105,7 @@ export default function AppPreview() {
                 </div>
                 <iframe
                     key={iframeKey}
-                    src={previewStatus.preview_url}
+                    src={`${API_BASE_URL}/app/${projectId}/`}
                     className="w-full h-full pt-10 border-0"
                     title="App Preview"
                     sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
@@ -208,7 +209,8 @@ export default function AppPreview() {
                     >
                         <iframe
                             key={iframeKey}
-                            src={previewStatus.preview_url}
+                            // Force proxy URL instead of calling the docker port directly as requested.
+                            src={`${API_BASE_URL}/app/${projectId}/`}
                             className="w-full border-0"
                             style={{ height: '100%' }}
                             title="App Preview"

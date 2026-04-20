@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { API_ENDPOINTS } from '../config';
+import { customConfirm } from '../utils/modalHelpers';
 import { Send, AlertCircle, CheckCircle2, AlertTriangle, ChevronRight, ChevronLeft, ArrowRight, Check, Loader2 } from 'lucide-react';
 import { useGovernanceQuestions, useSubmitGovernance } from '../hooks/useGovernance';
 import colors from '../styles/colors';
@@ -375,11 +376,9 @@ const GovernanceForm = ({
                     setIsNewProjectMode?.(false);
                     fetchHistory?.();
 
-                    // Auto-refresh roadmap stepper after governance submission
-                    if (fetchRoadmapData) {
-                        const tokenToUse = resultData.project_token || selectedProjectKey;
-                        if (tokenToUse) fetchRoadmapData(tokenToUse);
-                    }
+                    // DO NOT auto-refresh roadmap here - it causes AppLayout to navigate away before user sees result
+                    // Roadmap will be refreshed when user clicks "Proceed to Agent Analysis" button
+                    // This ensures the GovernanceResult component renders and user can review their score
 
                     // If all questions were skipped (score 5), do NOT navigate - user should see the sandbox score
                     // Navigation is blocked in AppLayout.jsx for this case
@@ -409,22 +408,27 @@ const GovernanceForm = ({
     }
 
     if (result) {
-        return <GovernanceResult result={result} onBack={() => {
-            setResult(null);
-            // Clear stored result so it doesn't get restored by useEffect
-            sessionStorage.removeItem('governanceResult');
-            localStorage.removeItem('governanceResult');
-            // Set flag to indicate user wants to edit (prevents result restoration)
-            sessionStorage.setItem('governanceEditMode', 'true');
-            // Also clear governanceContext result_id to allow re-editing
-            const savedContext = getStoredJson('governanceContext');
-            if (savedContext && savedContext.result_id) {
-                const updatedContext = { ...savedContext };
-                delete updatedContext.result_id;
-                sessionStorage.setItem('governanceContext', JSON.stringify(updatedContext));
-                localStorage.setItem('governanceContext', JSON.stringify(updatedContext));
-            }
-        }} />;
+        return <GovernanceResult 
+            result={result} 
+            fetchRoadmapData={fetchRoadmapData}
+            navigate={navigate}
+            onBack={() => {
+                setResult(null);
+                // Clear stored result so it doesn't get restored by useEffect
+                sessionStorage.removeItem('governanceResult');
+                localStorage.removeItem('governanceResult');
+                // Set flag to indicate user wants to edit (prevents result restoration)
+                sessionStorage.setItem('governanceEditMode', 'true');
+                // Also clear governanceContext result_id to allow re-editing
+                const savedContext = getStoredJson('governanceContext');
+                if (savedContext && savedContext.result_id) {
+                    const updatedContext = { ...savedContext };
+                    delete updatedContext.result_id;
+                    sessionStorage.setItem('governanceContext', JSON.stringify(updatedContext));
+                    localStorage.setItem('governanceContext', JSON.stringify(updatedContext));
+                }
+            }} 
+        />;
     }
 
     /* ── build dimension list ── */
@@ -501,12 +505,32 @@ const GovernanceForm = ({
             setSelectedProjectKey?.(draftProject.key);
             setIsNewProjectMode?.(false);
 
-            const targetPath = `/a/${draftProject.projectToken}`;
-            navigate(targetPath, { replace: true });
+            // After successful draft creation, navigate straight to the Requirement Screening step.
+            // Previously the code redirected to the generic project URL (`/a/{token}`), which caused
+            // the AppLayout effect to immediately route back to the initiation step because the
+            // roadmap data hadn't been refreshed yet. Direct navigation to `/dashboard` (the
+            // Requirement Screening page) ensures a seamless one‑click transition.
+            // Set a flag to tell AppLayout to skip its automatic redirect during this navigation.
+            try {
+                sessionStorage.setItem('skipAppLayoutRedirect', 'true');
+            } catch (e) {
+                // ignore storage errors (e.g., in private mode)
+            }
 
+            // Set a flag to tell AppLayout to skip its automatic redirect during this navigation.
+            try {
+                sessionStorage.setItem('skipAppLayoutRedirect', 'true');
+            } catch (e) {
+                // ignore storage errors
+            }
+
+            const nextStepPath = '/dashboard';
+            navigate(nextStepPath, { replace: true });
+
+            // Fallback navigation in case the SPA router does not update the URL promptly.
             window.setTimeout(() => {
-                if (window.location.pathname !== targetPath) {
-                    window.location.assign(targetPath);
+                if (window.location.pathname !== nextStepPath) {
+                    window.location.assign(nextStepPath);
                 }
             }, 0);
         } catch (err) {
@@ -927,7 +951,9 @@ const ScoreRing = ({ score, max = 10, size = 120, stroke = 10 }) => {
     );
 };
 
-const GovernanceResult = ({ result, onBack }) => {
+const GovernanceResult = ({ result, onBack, fetchRoadmapData, navigate }) => {
+    const [isNavigating, setIsNavigating] = useState(false);
+
     if (!result) {
         return <div className="text-app-status-error p-6">Error: No result data available.</div>;
     }
@@ -1152,14 +1178,59 @@ const GovernanceResult = ({ result, onBack }) => {
                     </button>
                     {(classification !== 'ENTERPRISE' || !isSkipFollowUpCase) && (
                         <button
-                            onClick={() => {
-                                sessionStorage.setItem('governanceResult', JSON.stringify(result));
-                                sessionStorage.setItem('shouldStartAnalysis', 'true');
-                                window.location.href = `/a/${result.project_token}`;
+                            onClick={async () => {
+                                if (isNavigating) return; // Prevent double-clicks
+                                
+                                setIsNavigating(true);
+                                
+                                try {
+                                    // Store result in session storage
+                                    sessionStorage.setItem('governanceResult', JSON.stringify(result));
+                                    sessionStorage.setItem('shouldStartAnalysis', 'true');
+                                    
+                                    // Try to refresh roadmap data with timeout
+                                    if (fetchRoadmapData && result.project_token) {
+                                        try {
+                                            // Race between fetch and timeout (max 3 seconds)
+                                            await Promise.race([
+                                                fetchRoadmapData(result.project_token),
+                                                new Promise((_, reject) => 
+                                                    setTimeout(() => reject(new Error('Roadmap fetch timeout')), 3000)
+                                                )
+                                            ]);
+                                        } catch (fetchError) {
+                                            console.warn('Roadmap fetch failed or timed out, continuing anyway:', fetchError);
+                                            // Continue to navigation even if fetch fails
+                                        }
+                                    }
+                                    
+                                    // Navigate to Agent Analysis page (always happens)
+                                    navigate('/agent-analysis');
+                                } catch (error) {
+                                    console.error('Error during navigation:', error);
+                                    // Ensure navigation happens even on error
+                                    navigate('/agent-analysis');
+                                } finally {
+                                    // Reset loading state after a delay (in case navigation is slow)
+                                    setTimeout(() => setIsNavigating(false), 1000);
+                                }
                             }}
-                            className="inline-flex items-center justify-center gap-2 flex-1 py-3 px-6 text-sm font-bold rounded-xl text-white bg-app-primary hover:bg-app-primary-hover transition-all active:scale-[0.97] shadow-md"
+                            disabled={isNavigating}
+                            className={`inline-flex items-center justify-center gap-2 flex-1 py-3 px-6 text-sm font-bold rounded-xl text-white transition-all shadow-md ${
+                                isNavigating 
+                                    ? 'bg-app-primary/70 cursor-not-allowed' 
+                                    : 'bg-app-primary hover:bg-app-primary-hover active:scale-[0.97]'
+                            }`}
                         >
-                            <ArrowRight className="w-4 h-4" /> Proceed to Agent Analysis
+                            {isNavigating ? (
+                                <>
+                                    <Loader2 className="w-4 h-4 animate-spin" /> Loading...
+                                </>
+                            ) : (
+                                <>
+                                    <ArrowRight className="w-4 h-4" /> Proceed to Agent Analysis
+                                </>
+                            )}
                         </button>
                     )}
                     {isSkipFollowUpCase && (
@@ -1169,8 +1240,9 @@ const GovernanceResult = ({ result, onBack }) => {
                     )}
                     {!isSkipFollowUpCase && (
                         <button
-                            onClick={() => {
-                                if (window.confirm('Are you sure you want to reset your screening assessment? All answers will be cleared.')) {
+                            onClick={async () => {
+                                const confirmed = await customConfirm('Are you sure you want to reset your screening assessment? All answers will be cleared.');
+                                if (confirmed) {
                                     localStorage.removeItem('governanceResult');
                                     localStorage.removeItem('governanceContext');
                                     localStorage.removeItem('governancePassed');

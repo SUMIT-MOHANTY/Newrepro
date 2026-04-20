@@ -325,3 +325,92 @@ class GovernanceQuestionOption(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     question = relationship("GovernanceQuestion", back_populates="options")
+
+
+class Task(Base):
+    """Local task storage before syncing to NXDUNE"""
+    __tablename__ = "tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(String, unique=True, index=True, nullable=False)  # EPIC-01, TASK-01, etc.
+    project_token = Column(String, index=True, nullable=False)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    
+    # Task details
+    task_name = Column(String, nullable=False)
+    task_type = Column(String, nullable=False)  # EPIC, FEATURE, STORY, TASK, BUG
+    description = Column(Text, nullable=True)
+    priority = Column(String, default="medium")  # high, medium, low
+    task_wallet = Column(Integer, default=1)
+    
+    # Dates
+    startdate = Column(String, nullable=True)
+    planned_start = Column(String, nullable=True)
+    deadline = Column(String, nullable=True)
+    
+    # Assignment
+    assigned_to = Column(JSON, default=list)  # List of assignee IDs
+    reported_by = Column(String, default="system")
+    
+    # Organization
+    sprint = Column(String, default="new")
+    milestone = Column(String, default="main")
+    linked_tasks = Column(JSON, default=list)  # List of parent/dependent task IDs
+    
+    # Checklist
+    checklist = Column(Text, nullable=True)  # JSON string of checklist items
+    
+    # Sync status
+    synced_to_nxdune = Column(Boolean, default=False)
+    nxdune_task_id = Column(Integer, nullable=True)  # ID from NXDUNE after sync
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    owner = relationship("User")
+
+
+class AgentMessage(Base):
+    """Persistent agent-to-agent communication messages"""
+    __tablename__ = "agent_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_token = Column(String, index=True, nullable=False)
+
+    # Who sent it and who it's for (None = broadcast to all)
+    from_agent = Column(String, index=True, nullable=False)
+    to_agent = Column(String, index=True, nullable=True)  # None = broadcast
+
+    # Message classification
+    # BLOCKED | OFFERING | READY | HELP_REQUEST | RESPONSE | INFO | RESOLVED
+    msg_type = Column(String, nullable=False, default="INFO")
+
+    message = Column(Text, nullable=False)
+
+    # Optional structured payload (e.g. which file/model is needed)
+    payload = Column(JSON, nullable=True)
+
+    # Which task this message relates to
+    related_task_id = Column(String, nullable=True, index=True)
+
+    # Whether this blocker was resolved
+    resolved = Column(Boolean, default=False)
+    resolved_by = Column(String, nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class HandoffToken(Base):
+    """Store VibeCoding handoff tokens with full payload to avoid URL length limits"""
+    __tablename__ = "handoff_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    token_id = Column(String, unique=True, index=True, nullable=False)
+    payload = Column(Text, nullable=False)  # JSON string of the full handoff data
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    used_at = Column(DateTime, nullable=True)  # Track when token was used

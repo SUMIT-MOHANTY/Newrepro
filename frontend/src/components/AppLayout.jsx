@@ -2,11 +2,13 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { API_ENDPOINTS } from '../config';
 import { clearAuthData } from '../utils/auth';
+import { customError } from '../utils/modalHelpers';
 import { Menu, Settings, Moon, Sun, Lock, Mail, ShieldAlert, CheckCircle } from 'lucide-react';
 import Sidebar from './Sidebar';
 import RoadmapHeader from './RoadmapHeader';
 import AgentsPage from './AgentsPage';
 import AIConfig from '../components/AIConfig';
+import AssistantBot from '../components/AssistantBot';
 
 import { useProjects, useRoadmapData, useInvalidateProjects } from '../hooks/useProjects';
 import { fetchRoadmapStep } from '../api/projects';
@@ -444,6 +446,23 @@ export default function AppLayout({ children }) {
 
     // Navigate to the appropriate page based on roadmap step when project is selected
     useEffect(() => {
+        // Skip automatic redirection when a navigation was explicitly triggered
+        // from GovernanceForm after project creation. This prevents the AppLayout
+        // effect from overriding the intended navigation to Requirement Screening.
+        const skipRedirect = sessionStorage.getItem('skipAppLayoutRedirect') === 'true';
+        if (skipRedirect) {
+            sessionStorage.removeItem('skipAppLayoutRedirect');
+            return;
+        }
+
+        // If we are already on the Requirement Screening page, do not redirect
+        // regardless of roadmap step. This avoids a race where the roadmap data
+        // hasn't been refreshed yet and would otherwise push the user back to
+        // the initiation step.
+        if (location.pathname.startsWith('/dashboard')) {
+            return;
+        }
+
         if (!selectedProjectKey || isNewProjectMode) return;
 
         // FIRST: Check if governance was all skipped (score 5) - if so, block ALL navigation
@@ -520,11 +539,38 @@ export default function AppLayout({ children }) {
         // 1. We're on a project URL (/a/{token}) - redirect to step page
         // 2. We're not on the correct step page already
         // 3. We're not on special pages like /agents
+        // 4. IMPORTANT: Don't navigate away from current step if we're already on a valid step page
         const isOnProjectUrl = location.pathname.startsWith('/a/');
         const isOnTargetRoute = location.pathname.startsWith(targetRoute);
         const isOnSpecialPage = ['/agents', '/organization-admin', '/plugins'].includes(location.pathname);
-
-        if ((isOnProjectUrl || !isOnTargetRoute) && !isOnSpecialPage) {
+        
+        // Don't navigate away from status-dashboard if we're in On Flight or Complete mode
+        const isOnStatusDashboard = location.pathname === '/status-dashboard';
+        const isOnFlightOrComplete = stepLabel === 'On Flight' || stepLabel === 'Complete';
+        if (isOnStatusDashboard && isOnFlightOrComplete) {
+            return; // Stay on status dashboard, don't navigate away
+        }
+        
+        // Don't navigate away from any valid step page unless we're on a project URL
+        const validStepPages = [
+            '/new-project',
+            '/dashboard',
+            '/new-project/governance',
+            '/agent-analysis',
+            '/prerequisites',
+            '/task-creation',
+            '/resource-onboarding',
+            '/status-dashboard',
+        ];
+        const isOnValidStepPage = validStepPages.some(page => location.pathname.startsWith(page));
+        
+        // Only navigate if we're on a project URL or not on the target route
+        // Don't navigate if we're already on a valid step page (prevents unwanted redirects on refresh)
+        if ((isOnProjectUrl || !isOnTargetRoute) && !isOnSpecialPage && !isOnValidStepPage) {
+            lastNavigatedProjectRef.current = selectedProjectKey;
+            navigate(targetRoute);
+        } else if (isOnProjectUrl) {
+            // If we're on a project URL, always navigate to the correct step
             lastNavigatedProjectRef.current = selectedProjectKey;
             navigate(targetRoute);
         }
@@ -877,7 +923,7 @@ export default function AppLayout({ children }) {
             window.location.assign(data.launch_url);
         } catch (err) {
             fetchPluginClients();
-            window.alert(err.message || 'Unable to launch plugin.');
+            customError(err.message || 'Unable to launch plugin.');
         } finally {
             setLaunchingPluginId('');
         }
@@ -1154,6 +1200,8 @@ export default function AppLayout({ children }) {
                     </div>
                 )
             }
+            {/* AI Assistant Bot - available on all pages */}
+            <AssistantBot />
         </div >
     );
 }

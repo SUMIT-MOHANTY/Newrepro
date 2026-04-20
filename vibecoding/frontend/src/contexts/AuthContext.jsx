@@ -33,6 +33,9 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const handoffToken = params.get('handoff_token');
+    const autoExecute = params.get('auto_execute') === 'true';
+    const projectToken = params.get('project_token');
+    
     if (!handoffToken) return;
 
     let cancelled = false;
@@ -43,10 +46,25 @@ export function AuthProvider({ children }) {
           handoff_token: handoffToken,
         });
         if (cancelled) return;
-        const { token: newToken, user: userData } = res.data;
+        
+        const { token: newToken, user: userData, project, auto_execute: shouldAutoExecute } = res.data;
         localStorage.setItem('vibecoding_token', newToken);
         setToken(newToken);
         setUser(userData);
+        
+        // If auto_execute is enabled and we have a project, trigger execution
+        if ((autoExecute || shouldAutoExecute) && project && project.project_id) {
+          console.log('Auto-execution enabled for project:', project.project_id);
+          
+          // Store flag to trigger execution after auth completes
+          sessionStorage.setItem('vibe_auto_execute_project', project.project_id);
+          sessionStorage.setItem('vibe_auto_execute_token', newToken);
+          
+          // Navigate to project page - include /vibecoding base path
+          const projectUrl = `/vibecoding/a/${project.project_id}`;
+          window.location.href = projectUrl;  // Force navigation to trigger React Router
+        }
+        
       } catch (err) {
         console.error('SSO handoff failed:', err);
       } finally {

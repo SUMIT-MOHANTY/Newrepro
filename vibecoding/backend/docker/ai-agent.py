@@ -143,7 +143,7 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
         # Determine the correct backend URL
         # If running in Docker, use host.docker.internal or the service name
         backend_host = os.environ.get('BACKEND_HOST', 'host.docker.internal')
-        backend_port = os.environ.get('BACKEND_PORT', '8000')
+        backend_port = os.environ.get('BACKEND_PORT', '8001')
         backend_url = f'http://{backend_host}:{backend_port}/vibecoding/api/broadcast/{PROJECT_ID}'
         
         ws_payload = {
@@ -3636,6 +3636,11 @@ class Agent:
         3. If task execution: execute selected task with full context
         4. If simple request: use legacy direct generation
         """
+        # Check if this is a D-Suite handoff trigger
+        if prompt.strip().lower() == "start building based on the brd requirements":
+            self._handle_dsuite_handoff()
+            return
+        
         existing = read_workspace_files()
         is_empty = len(existing) == 0
         
@@ -3671,6 +3676,108 @@ class Agent:
         else:
             # Simple request - use legacy direct generation
             self._handle_direct_generation(prompt, existing, is_empty)
+    
+    def _handle_dsuite_handoff(self):
+        """
+        Handle D-Suite handoff by fetching BRD context from the backend API
+        and starting the task-based development workflow
+        """
+        import requests
+        import os
+        
+        report('🚀 **D-Suite Handoff Detected!**\n\nFetching your BRD requirements from D-Suite...', message_type='info')
+        
+        try:
+            # Get project ID from environment or workspace path
+            project_id = os.environ.get('PROJECT_ID')
+            if not project_id:
+                # Try to extract from workspace path: /project/workspace
+                workspace_path = str(WORKSPACE_DIR)
+                if '/project_artifacts/' in workspace_path:
+                    project_id = workspace_path.split('/project_artifacts/')[1].split('/')[0]
+                else:
+                    report('❌ **Error**: Could not determine project ID', message_type='error')
+                    return
+            
+            # Fetch BRD context from backend API
+            # The VibeCoding backend should be accessible from the container
+            # Try multiple possible backend URLs
+            backend_urls = [
+                f"http://host.docker.internal:8001/vibecoding/api/projects/{project_id}/brd-context",  # VibeCoding on 8001
+                f"http://localhost:8001/vibecoding/api/projects/{project_id}/brd-context",
+                f"http://host.docker.internal:8000/vibecoding/api/projects/{project_id}/brd-context",  # Fallback to 8000
+            ]
+            
+            brd_data = None
+            successful_url = None
+            
+            for api_url in backend_urls:
+                try:
+                    log(f'Trying to fetch BRD context from: {api_url}')
+                    response = requests.get(api_url, timeout=5)
+                    
+                    if response.status_code == 200:
+                        brd_data = response.json()
+                        successful_url = api_url
+                        log(f'✅ Successfully fetched BRD from: {api_url}')
+                        break
+                    else:
+                        log(f'❌ Failed with status {response.status_code} from: {api_url}')
+                except requests.exceptions.RequestException as e:
+                    log(f'❌ Connection failed to {api_url}: {e}')
+                    continue
+            
+            if not brd_data:
+                report('❌ **Error**: Could not connect to backend API on any port.', message_type='error')
+                report('💡 **Tip**: You can still describe what you want to build manually!', message_type='info')
+                return
+            
+            if not brd_data.get('has_brd'):
+                report('⚠️ **No BRD Found**: This project was not created via D-Suite handoff.', message_type='warning')
+                report('💡 You can start by describing what you want to build!', message_type='info')
+                return
+            
+            # Extract BRD information
+            project_name = brd_data.get('project_name', 'Unnamed Project')
+            brd_text = brd_data.get('brd_text', '')
+            analysis_data = brd_data.get('analysis_data', {})
+            prerequisites = brd_data.get('prerequisites', [])
+            custom_rules = brd_data.get('custom_rules', '')
+            
+            # Construct comprehensive prompt
+            full_prompt = f"""# Project: {project_name}
+
+## Business Requirements Document (BRD)
+
+{brd_text}
+
+## AI Analysis Summary
+
+{json.dumps(analysis_data, indent=2) if analysis_data else 'No analysis data available'}
+
+## Prerequisites
+
+{json.dumps(prerequisites, indent=2) if prerequisites else 'No prerequisites specified'}
+
+## Custom Development Rules
+
+{custom_rules if custom_rules else 'No custom rules specified'}
+
+---
+
+Please analyze the BRD above and create a complete, production-ready application that fulfills all the requirements."""
+
+            report(f'✅ **BRD Loaded Successfully!**\n\n**Project**: {project_name}\n\nAnalyzing requirements and creating task plan...', message_type='success')
+            
+            # Process as a large requirement to trigger task planning
+            self._handle_task_planning(full_prompt)
+            
+        except requests.exceptions.RequestException as e:
+            log(f'Failed to fetch BRD context: {e}')
+            report(f'❌ **Network Error**: Could not connect to backend API.\n\nError: {str(e)}', message_type='error')
+        except Exception as e:
+            log(f'Error in D-Suite handoff handler: {e}')
+            report(f'❌ **Error**: {str(e)}', message_type='error')
     
     def _is_large_requirement(self, prompt: str) -> bool:
         """Detect if a requirement is large enough to need task breakdown"""
@@ -4205,14 +4312,21 @@ if __name__ == '__main__':
 
     # 🚀 Start the version supervisor in the background
     # This enables the 'switch workspace' and 'versioning' features from the host
-    try:
-        sys.path.append('/usr/local/bin')
-        import supervisor
-        t = threading.Thread(target=supervisor.run, daemon=True)
-        t.start()
-        log('Supervisor launched in background.')
-    except Exception as e:
-        log(f'Failed to launch supervisor: {e}')
+    # ONLY start supervisor if we're NOT already being managed by one
+    current_version = os.environ.get('CURRENT_VERSION')
+    if not current_version:
+        # We're running standalone (not managed by supervisor)
+        try:
+            sys.path.append('/usr/local/bin')
+            import supervisor
+            supervisor_instance = supervisor.VersionSupervisor()
+            t = threading.Thread(target=supervisor_instance.run, daemon=True)
+            t.start()
+            log('Supervisor launched in background.')
+        except Exception as e:
+            log(f'Failed to launch supervisor: {e}')
+    else:
+        log(f'Running under supervisor management (version: {current_version})')
 
     agent = Agent()
 
