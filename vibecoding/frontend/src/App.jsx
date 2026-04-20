@@ -830,6 +830,19 @@ function Workspace({ user, logout, isAuthenticated }) {
             // Start polling for updates
             setIsContainerLoading(true);
             containerLoadExpectedRef.current = true;
+          } else if (triggerResp.data.status === 'already_started') {
+            console.log('ℹ️ Execution already started previously at', triggerResp.data.execution_start_time);
+            
+            // Show a message that execution is already in progress
+            setMessages(prev => [...prev, {
+              role: 'assistant',
+              content: '✅ **Welcome back!**\n\nExecution was already started for this project.',
+              timestamp: new Date().toISOString(),
+            }]);
+            
+            // Start polling for updates to show current progress
+            setIsContainerLoading(true);
+            containerLoadExpectedRef.current = true;
           }
         } catch (err) {
           console.error('Failed to trigger auto-execution:', err);

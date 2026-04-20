@@ -106,12 +106,21 @@ class AnalysisJobManager:
             logger.info(f"Deleted analysis job {job_id}")
             
     async def cleanup_old_jobs(self, max_age_hours: int = 24):
-        """Cleanup jobs older than max_age_hours"""
+        """
+        Cleanup jobs older than max_age_hours.
+        Keep completed/failed jobs for at least 1 hour to allow frontend to retrieve results.
+        """
         cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+        completed_cutoff = datetime.utcnow() - timedelta(hours=1)  # Keep completed jobs for 1 hour minimum
         jobs_to_delete = []
         
         for job_id, job in self._jobs.items():
-            if job.updated_at < cutoff:
+            # For completed/failed jobs, use shorter retention (1 hour)
+            if job.status in [JobStatus.COMPLETED, JobStatus.FAILED]:
+                if job.completed_at and job.completed_at < completed_cutoff:
+                    jobs_to_delete.append(job_id)
+            # For pending/processing jobs, use longer retention (24 hours)
+            elif job.updated_at < cutoff:
                 jobs_to_delete.append(job_id)
                 
         for job_id in jobs_to_delete:

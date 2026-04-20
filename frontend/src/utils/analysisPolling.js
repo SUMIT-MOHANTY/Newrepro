@@ -78,7 +78,7 @@ export async function pollUntilComplete(
     jobId,
     token,
     onProgress = null,
-    pollInterval = 2000,
+    pollInterval = 30000,
     maxAttempts = 300
 ) {
     let attempts = 0;
@@ -131,7 +131,7 @@ export async function startAndPollAnalysis(
     payload,
     token,
     onProgress = null,
-    pollInterval = 2000,
+    pollInterval = 30000,
     maxAttempts = 300
 ) {
     // Start the job

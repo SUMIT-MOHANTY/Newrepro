@@ -1,25 +1,42 @@
-# Dependencies
-node_modules/
-venv/
+# Backend
+backend/venv/
+backend/.env
+backend/uploads/
+backend/*.db
 __pycache__/
+*.pyc
 
-# Environment
-.env
-.env.local
-
-# Build
-dist/
-build/
+# Frontend
+frontend/node_modules/
+frontend/.env
+frontend/dist/
 
 # IDE
-.vscode/
 .idea/
-
-# OS
+.vscode/
+*.swp
 .DS_Store
-Thumbs.db
 
-# Logs
-*.log
-project_artifacts/
-ai_logs/
+# N-Mod EXT ignore file
+.nmodignore
+backend/.env.example
+frontend/package-lock.json
+backend/rag_storage/
+backend/storage/project_configs/2/0cb47f14-7ace-44bd-b33e-329eab43d8d1/project_config.json
+backend/storage/project_configs/2/511685f5-bded-4e36-9dc4-48018e01b565/project_config.json
+backend/storage/project_configs/
+vibecoding/backend/project_artifacts
+vibecoding/backend/venv/
+vibecoding/frontend/node_modules/
+vibecoding/frontend/.vite/
+vibecoding/backend/vibecoding_users.db
+vibecoding/frontend/package-lock.json
+vibecoding/backend/.env
+sql_app.db
+backend/sql_app.db-shm
+sql_app.db
+backend/sql_app.db-wal
+sql_app.db
+backend/logs/agent_service.txt
+backend/logs/ai_service.txt
+.md

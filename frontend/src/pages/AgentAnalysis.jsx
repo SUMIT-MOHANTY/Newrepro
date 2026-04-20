@@ -289,6 +289,7 @@ export default function AgentAnalysis({
     const [repoContext, setRepoContext] = useState(null);
     const [isArchModalOpen, setIsArchModalOpen] = useState(false);
     const [isSidebarOpen, setIsSidebarOpen] = useState(false); // Start closed by default
+    const [analysisInProgress, setAnalysisInProgress] = useState(false); // Track if analysis is running
 
     const selectedProject = projects.find((p) => p.key === selectedProjectKey) || null;
     const hasGovernanceAssessment = Boolean(selectedProject?.governanceResultId || governanceContext?.result_id);
@@ -401,8 +402,8 @@ export default function AgentAnalysis({
                     setProgress(progress);
                     setProgressMessage(message);
                 },
-                2000, // Poll every 2 seconds
-                300   // Max 10 minutes (300 * 2s = 600s)
+                30000, // Poll every 30 seconds
+                120    // Max 60 minutes (120 * 30s = 3600s)
             );
             
             const { report, questions, metrics, title, prerequisites, architecture } = parseAIResponse(data.analysis || '');
@@ -581,6 +582,13 @@ export default function AgentAnalysis({
             return;
         }
 
+        // Prevent duplicate analysis
+        if (analysisInProgress) {
+            console.log('Repository analysis already in progress, skipping...');
+            return;
+        }
+
+        setAnalysisInProgress(true);
         setProcessing(true);
         setLoading(false);
         setProgress(70);
@@ -649,8 +657,9 @@ export default function AgentAnalysis({
             setError(err.message || 'Repository analysis failed.');
         } finally {
             setProcessing(false);
+            setAnalysisInProgress(false);
         }
-    }, [token, governanceContext, selectedProjectKey, repoContext, fetchAnalysisRef, streamAnalysisRef]);
+    }, [token, governanceContext, selectedProjectKey, repoContext, fetchAnalysisRef, streamAnalysisRef, analysisInProgress]);
 
     const triggerPendingAnalysis = useCallback(async (document, pendingAnalysis) => {
         if (!token) {
@@ -659,6 +668,13 @@ export default function AgentAnalysis({
             return;
         }
 
+        // Prevent duplicate analysis
+        if (analysisInProgress) {
+            console.log('Analysis already in progress, skipping...');
+            return;
+        }
+
+        setAnalysisInProgress(true);
         setProcessing(true);
         setLoading(false);
         setProgress(70);
@@ -725,14 +741,21 @@ export default function AgentAnalysis({
             setError(err.message || 'Agent Analysis failed.');
         } finally {
             setProcessing(false);
+            setAnalysisInProgress(false);
         }
-    }, [token, governanceContext, selectedProject, fetchAnalysisRef, streamAnalysisRef]);
+    }, [token, governanceContext, selectedProject, fetchAnalysisRef, streamAnalysisRef, analysisInProgress]);
 
     useEffect(() => {
         // Don't run if user is on Governance page - analysis should only start from AgentAnalysis page
         const isOnGovernancePage = location.pathname === '/new-project/governance' || location.pathname.startsWith('/new-project/governance');
         if (isOnGovernancePage) {
             setLoading(false);
+            return;
+        }
+
+        // Don't run if analysis is already in progress
+        if (analysisInProgress) {
+            console.log('Analysis already in progress, skipping useEffect reload');
             return;
         }
 
@@ -780,8 +803,18 @@ export default function AgentAnalysis({
                 // Check if analysis is pending - only trigger if user clicked "Proceed to Agent Analysis"
                 if (isPendingGovernanceAnalysis(storedAnalysis)) {
                     const shouldStartAnalysis = sessionStorage.getItem('shouldStartAnalysis') === 'true';
+                    const analysisStartedKey = `analysis_started_${latestDocument.id}`;
+                    const alreadyStarted = sessionStorage.getItem(analysisStartedKey) === 'true';
+
+                    if (alreadyStarted) {
+                        console.log('Analysis already started for this document, skipping...');
+                        setLoading(false);
+                        return;
+                    }
 
                     if (shouldStartAnalysis && hasGovernanceAssessment) {
+                        // Mark as started to prevent re-triggering
+                        sessionStorage.setItem(analysisStartedKey, 'true');
                         // Clear the flag so it doesn't trigger again on refresh
                         sessionStorage.removeItem('shouldStartAnalysis');
                         await triggerPendingAnalysis(latestDocument, storedAnalysis);
@@ -862,8 +895,17 @@ export default function AgentAnalysis({
                         if (isPendingGovernanceAnalysis(docAnalysis)) {
                             hasPendingAnalysis = true;
                             const shouldStartAnalysis = sessionStorage.getItem('shouldStartAnalysis') === 'true';
+                            const analysisStartedKey = `analysis_started_${doc.id}`;
+                            const alreadyStarted = sessionStorage.getItem(analysisStartedKey) === 'true';
+
+                            if (alreadyStarted) {
+                                console.log('Analysis already started for document', doc.id);
+                                setLoading(false);
+                                return;
+                            }
 
                             if (shouldStartAnalysis && hasGovernanceAssessment) {
+                                sessionStorage.setItem(analysisStartedKey, 'true');
                                 sessionStorage.removeItem('shouldStartAnalysis');
                                 await triggerPendingAnalysis(doc, docAnalysis);
                                 break;
@@ -891,7 +933,8 @@ export default function AgentAnalysis({
         };
 
         loadAnalysis();
-    }, [selectedProjectKey, selectedProject, projectsLoading, token, hasGovernanceAssessment, triggerPendingAnalysis, location.pathname, repoContext]);
+    }, [selectedProjectKey, selectedProject, projectsLoading, token, hasGovernanceAssessment, location.pathname, analysisInProgress]);
+    // Removed: repoContext, triggerPendingAnalysis (to prevent unnecessary re-runs)
 
     const handleRefineAnalysis = async () => {
         let feedbackToSend = userFeedback;
