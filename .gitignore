@@ -5,11 +5,15 @@ backend/uploads/
 backend/*.db
 __pycache__/
 *.pyc
+backend/snyk
+vibecoding/backend/snyk
 
 # Frontend
 frontend/node_modules/
 frontend/.env
 frontend/dist/
+frontend/snyk
+vibecoding/frontend/snyk
 
 # IDE
 .idea/
