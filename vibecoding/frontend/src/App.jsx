@@ -249,6 +249,9 @@ function Workspace({ user, logout, isAuthenticated }) {
           if (response.data.messages) {
              let newMessages = response.data.messages;
              
+             // ✅ Filter out temporary status messages from polling
+             newMessages = newMessages.filter(msg => !msg.metadata?.temporary);
+             
              // Inject task plan if we have tasks
              if (tasksResponse.data.tasks && tasksResponse.data.tasks.length > 0) {
                const taskPlan = {
@@ -347,6 +350,9 @@ function Workspace({ user, logout, isAuthenticated }) {
           }
         } catch (e) {
           console.error("Polling error:", e);
+          // ✅ Stop polling on error to prevent infinite loops
+          setIsAutonomousPolling(false);
+          setLoading(false);
         }
       }, 3000);
     }
@@ -1267,6 +1273,8 @@ function Workspace({ user, logout, isAuthenticated }) {
 
     // Protection against double submissions
     if (loading) return;
+    
+    // ✅ Set loading immediately for instant feedback
     setLoading(true);
     stopWorkspacePolling(); // stop any previous live polling
 
@@ -1276,9 +1284,17 @@ function Workspace({ user, logout, isAuthenticated }) {
       images: imageDataUrls.length > 0 ? imageDataUrls : undefined,
       timestamp: new Date().toISOString()
     };
+    
+    // ✅ Add initial status message for immediate feedback
+    const initialStatusMessage = {
+      role: 'assistant',
+      content: '🚀 Initializing workspace...',
+      timestamp: new Date().toISOString(),
+      metadata: { type: 'status', temporary: true }
+    };
 
-    // Add user message to state immediately for UX
-    setMessages(prev => [...prev, userMessage]);
+    // Add user message and initial status to state immediately for UX
+    setMessages(prev => [...prev, userMessage, initialStatusMessage]);
     const currentInput = input;
     setInput('');
 
@@ -1293,6 +1309,9 @@ function Workspace({ user, logout, isAuthenticated }) {
         payload.images = imageDataUrls;
       }
       const response = await axios.post(`${API_BASE_URL}/api/generate`, payload);
+
+      // ✅ Remove temporary status message
+      setMessages(prev => prev.filter(msg => !msg.metadata?.temporary));
 
       const aiMessage = {
         role: 'assistant',
@@ -1335,6 +1354,18 @@ function Workspace({ user, logout, isAuthenticated }) {
         setIsAutonomousPolling(true);
         // CRITICAL: Keep loading true - polling will set it to false when done
         // Don't call setLoading(false) here!
+        
+        // ✅ Add safety timeout to prevent infinite loading (90 seconds)
+        setTimeout(() => {
+          setLoading(prev => {
+            if (prev) {
+              console.log('⏱️ Safety timeout - forcing loader off after 90 seconds');
+              setIsAutonomousPolling(false);
+              return false;
+            }
+            return prev;
+          });
+        }, 90000);
       } else {
         // In discuss mode, stop loader immediately
         console.log('💬 Discuss mode - stopping loader');
@@ -1495,12 +1526,17 @@ function Workspace({ user, logout, isAuthenticated }) {
       }
     } catch (error) {
       console.error('Error:', error);
+      
+      // ✅ Remove temporary status message
+      setMessages(prev => prev.filter(msg => !msg.metadata?.temporary));
+      
       const errorMessage = error.response?.data?.detail || error.message || 'Sorry, there was an error. Please try again.';
       setErrorHeader(errorMessage);
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: `I encountered an error while generating or deploying the preview: ${errorMessage}`,
-        timestamp: new Date().toISOString()
+        content: `❌ I encountered an error: ${errorMessage}`,
+        timestamp: new Date().toISOString(),
+        metadata: { type: 'error' }
       }]);
       // On error, stop loading and polling
       setLoading(false);
