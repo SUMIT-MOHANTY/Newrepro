@@ -34,45 +34,6 @@ from task_executor import TaskExecutor
 
 #!/usr/bin/env python3
 """
-VibeCoding Edit Engine — integrates directly into ai-agent.py
-==============================================================
-Drop this entire class block into ai-agent.py ABOVE the Agent class.
-
-Architecture (pure JSON pipeline, shell-based file mutation):
-
-  User Prompt
-      │
-      ▼
-  ┌─────────────────┐
-  │  classify()     │  ← lightweight AI call → JSON intent
-  └────────┬────────┘
-           │  intent.mode == CREATE_APP ?
-     ┌─────┴──────┐
-     │            │
-   (yes)        (no)
-     │            │
-     ▼            ▼
-  existing    ┌─────────────────────┐
-  generate_   │  build_context()    │  ← reads workspace files with line numbers
-  code()      └──────────┬──────────┘
-                         │
-                         ▼
-              ┌─────────────────────┐
-              │  plan_changes()     │  ← AI returns JSON operation list
-              └──────────┬──────────┘
-                         │
-                         ▼
-              ┌─────────────────────┐
-              │  execute_ops()      │  ← shell scripts (Python subprocess)
-              └──────────┬──────────┘
-                         │
-                         ▼
-              ┌─────────────────────┐
-              │  verify()           │  ← re-reads files, confirms changes
-              └──────────┬──────────┘
-                         │
-                         ▼
-              redeploy if needed
 """
 
 import json
@@ -2217,7 +2178,26 @@ STEP 3: DETERMINE BUILD ORDER
 
 STEP 4: GENERATE DEPLOYMENT SCRIPT
 
-Pattern A: Single-page app (Vite/React) with no backend
+Pattern A: Static HTML website (no build process needed)
+```bash
+#!/bin/bash
+set -e
+echo "Deploying static HTML website..."
+# No build process needed - files are already ready to serve
+# Nginx will serve the files directly from /project/workspace
+echo "Static site ready to be served by Nginx"
+```
+
+CRITICAL FOR STATIC HTML:
+- NO build process needed
+- NO npm install or serve command
+- Nginx serves files DIRECTLY from /project/workspace
+- DO NOT use systemctl, service, or any system commands
+- DO NOT try to restart nginx - it's already running
+- app_port should be 80 (nginx serves directly)
+- nginx config should use "root /project/workspace;" NOT proxy_pass
+
+Pattern B: Single-page app (Vite/React) with no backend
 ```bash
 cd /project/workspace
 rm -rf dist build .next out node_modules/.vite
@@ -2230,7 +2210,7 @@ CRITICAL: For serve command, ALWAYS use both PORT env var AND -l flag:
   PORT=3000 npx serve -s dist -l 3000
 This ensures the app binds to the correct port reliably.
 
-Pattern B: Client/Server in separate folders (server expects ./client/dist)
+Pattern C: Client/Server in separate folders (server expects ./client/dist)
 ```bash
 # Build client first
 cd /project/workspace/client
@@ -2248,7 +2228,25 @@ npm install
 PORT=3000 node server.js >> /tmp/app.log 2>&1 &
 ```
 
-Pattern C: Client/Server in separate folders (server expects ../client/dist)
+Pattern C: Client/Server in separate folders (server expects ./client/dist)
+```bash
+# Build client first
+cd /project/workspace/client
+rm -rf dist build node_modules/.vite
+npm install
+npm run build
+
+# Copy dist to where server expects it
+mkdir -p /project/workspace/server/client
+cp -r dist /project/workspace/server/client/
+
+# Start server
+cd /project/workspace/server
+npm install
+PORT=3000 node server.js >> /tmp/app.log 2>&1 &
+```
+
+Pattern D: Client/Server in separate folders (server expects ../client/dist)
 ```bash
 # Build client first
 cd /project/workspace/client
@@ -2262,7 +2260,7 @@ npm install
 PORT=3000 node server.js >> /tmp/app.log 2>&1 &
 ```
 
-Pattern D: Frontend/Backend (separate apps)
+Pattern E: Frontend/Backend (separate apps)
 ```bash
 # Build frontend
 cd /project/workspace/frontend
@@ -2280,7 +2278,7 @@ cd /project/workspace/frontend
 npx serve -s dist -l 3000 >> /tmp/app.log 2>&1 &
 ```
 
-Pattern E: Monorepo (server in root, serves built client)
+Pattern F: Monorepo (server in root, serves built client)
 ```bash
 # Build client
 cd /project/workspace
@@ -2361,7 +2359,35 @@ Your nginx config MUST:
 - Enable gzip compression
 - Add security headers
 
-Example nginx config:
+EXCEPTION FOR STATIC HTML:
+If the project is static HTML (no package.json, no build process), use this nginx config instead:
+server {{
+    listen 80;
+    root /project/workspace;
+    index index.html;
+    
+    # Gzip
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript image/svg+xml;
+    
+    # Security
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    
+    # Serve static files
+    location / {{
+        try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-cache, must-revalidate" always;
+    }}
+    
+    # Static assets
+    location ~* \.(js|css|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot)$ {{
+        expires 1h;
+        add_header Cache-Control "public, immutable";
+    }}
+}}
+
+For apps with a build process, use this nginx config:
 server {{
     listen 80;
     
