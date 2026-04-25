@@ -34,45 +34,6 @@ from task_executor import TaskExecutor
 
 #!/usr/bin/env python3
 """
-VibeCoding Edit Engine — integrates directly into ai-agent.py
-==============================================================
-Drop this entire class block into ai-agent.py ABOVE the Agent class.
-
-Architecture (pure JSON pipeline, shell-based file mutation):
-
-  User Prompt
-      │
-      ▼
-  ┌─────────────────┐
-  │  classify()     │  ← lightweight AI call → JSON intent
-  └────────┬────────┘
-           │  intent.mode == CREATE_APP ?
-     ┌─────┴──────┐
-     │            │
-   (yes)        (no)
-     │            │
-     ▼            ▼
-  existing    ┌─────────────────────┐
-  generate_   │  build_context()    │  ← reads workspace files with line numbers
-  code()      └──────────┬──────────┘
-                         │
-                         ▼
-              ┌─────────────────────┐
-              │  plan_changes()     │  ← AI returns JSON operation list
-              └──────────┬──────────┘
-                         │
-                         ▼
-              ┌─────────────────────┐
-              │  execute_ops()      │  ← shell scripts (Python subprocess)
-              └──────────┬──────────┘
-                         │
-                         ▼
-              ┌─────────────────────┐
-              │  verify()           │  ← re-reads files, confirms changes
-              └──────────┬──────────┘
-                         │
-                         ▼
-              redeploy if needed
 """
 
 import json
@@ -1011,7 +972,15 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
     meta = metadata or {}
     if message_type:
         meta['type'] = message_type
-    
+
+    # Always mark agent messages so the frontend can group them into ThinkingBlocks
+    # even after a page reload (these are never rendered as normal chat messages).
+    # EXCEPTION: messages with suggestions are terminal responses ("Great! Your
+    # changes are working…") — they must appear as regular chat messages, not be
+    # swallowed into the collapsible ThinkingBlock.
+    if not suggestions:
+        meta['is_background_log'] = True
+
     # Auto-detect message type from emoji if not provided
     if not message_type:
         if clean.startswith('❓'):
@@ -1212,6 +1181,82 @@ def _generate_summary(message: str) -> str:
         return summary
     
     return clean[:100]
+
+
+def _generate_next_step_suggestions(user_prompt: str, changed_files: dict, test_results: list) -> list:
+    """
+    Generate AI-powered suggestions for what the user might want to do next
+    after a successful deployment.
+    """
+    try:
+        # Build context about what was done
+        file_list = list(changed_files.keys())
+        file_summary = ', '.join(file_list[:3])
+        if len(file_list) > 3:
+            file_summary += f' and {len(file_list) - 3} more'
+        
+        # Ask AI for next step suggestions
+        suggestion_prompt = f"""The user's request has been successfully completed and all tests passed.
+
+USER REQUEST: {user_prompt}
+
+FILES CHANGED: {file_summary}
+
+TESTS PASSED: {len(test_results)}
+
+Generate 3-4 actionable suggestions for what the user might want to do next.
+These should be natural next steps that build on what was just accomplished.
+
+Examples:
+- Add authentication to the dashboard
+- Create a database to persist the metrics
+- Add more chart types (pie, bar, line)
+- Deploy to production
+- Add user management features
+- Improve the UI styling
+
+OUTPUT FORMAT (JSON only):
+{{
+  "suggestions": [
+    {{"text": "Add authentication", "icon": "🔐", "prompt": "Add user authentication to the dashboard"}},
+    {{"text": "Add database", "icon": "💾", "prompt": "Create a database to store metrics data"}},
+    ...
+  ]
+}}
+
+Output ONLY valid JSON."""
+
+        response = call_ai([
+            {'role': 'system', 'content': 'You are a helpful assistant that suggests next steps. Output only valid JSON.'},
+            {'role': 'user', 'content': suggestion_prompt}
+        ], temperature=0.7, show_thinking=False)
+        
+        # Parse JSON response
+        response = re.sub(r'^```[a-z]*\n?', '', response.strip(), flags=re.MULTILINE)
+        response = re.sub(r'\n?```$', '', response.strip(), flags=re.MULTILINE)
+        m = re.search(r'\{.*\}', response, re.DOTALL)
+        
+        if m:
+            data = json.loads(m.group(0))
+            suggestions = data.get('suggestions', [])
+            
+            # Ensure each suggestion has required fields
+            for sug in suggestions:
+                if 'action' not in sug:
+                    sug['action'] = 'next_step'
+            
+            return suggestions[:4]  # Limit to 4 suggestions
+        
+    except Exception as e:
+        log(f'Failed to generate next step suggestions: {e}')
+    
+    # Fallback suggestions if AI fails
+    return [
+        {'text': 'Add more features', 'action': 'enhance', 'icon': '✨', 'prompt': 'Add more features to the application'},
+        {'text': 'Improve styling', 'action': 'style', 'icon': '🎨', 'prompt': 'Improve the UI design and styling'},
+        {'text': 'Add tests', 'action': 'test', 'icon': '🧪', 'prompt': 'Add more comprehensive tests'},
+        {'text': 'Deploy to production', 'action': 'deploy', 'icon': '🚀', 'prompt': 'Deploy the application to production'}
+    ]
 
 
 def _generate_task_breakdown(user_prompt: str, existing_files: dict = None) -> str:
@@ -1721,7 +1766,7 @@ def generate_code(user_prompt: str, existing_files: dict = None) -> bool:
     if is_edit:
         # Generate task breakdown for edits
         task_summary = _generate_task_breakdown(user_prompt, existing_files)
-        report(f'✏️ Got your request! Here\'s what I\'ll do:\n\n{task_summary}', 
+        report(f'Got your request! Here\'s what I\'ll do:\n\n{task_summary}', 
                message_type='thinking',
                summary='Analyzing changes needed')
     else:
@@ -1826,7 +1871,7 @@ Apply the requested changes now."""
             # For edits, we MUST have file markers - don't guess
             log('⚠️ AI response for edit has no FILE/PATCH markers')
             log(f'Response preview: {response_text[:500]}')
-            report('⚠️ I need to try that again with the proper format. One moment...')
+            report('I need to try that again with the proper format. One moment...')
             
             # Retry with more explicit instructions
             retry_prompt = f"""CRITICAL: You must use file markers to make changes.
@@ -1865,16 +1910,16 @@ Apply the changes now using ONLY these markers."""
                 log(f'Retry found {len(matches)} FILE markers and {len(patch_matches)} PATCH markers')
                 
                 if not matches and not patch_matches:
-                    report('⚠️ The AI didn\'t return any code changes. Please try rephrasing your request.')
+                    report('The AI didn\'t return any code changes. Please try rephrasing your request.')
                     return False
             except Exception as e:
-                report(f'⚠️ Something went wrong. Please try again. (Details: {e})')
+                report(f'Something went wrong. Please try again. (Details: {e})')
                 return False
         else:
             # For new projects, try to detect the file type
             code = response_text.strip()
             if not code or len(code) < 30:
-                report('⚠️ The AI didn\'t return any code. Please try rephrasing your request.')
+                report('The AI didn\'t return any code. Please try rephrasing your request.')
                 return False
             filename = _detect_filename(code)
             _write_file(WORKSPACE_DIR / filename, code)
@@ -1903,21 +1948,21 @@ Apply the changes now using ONLY these markers."""
     total = len(files_written) + patches_applied
     if total == 0:
         log('⚠️ No files written and no patches applied!')
-        report('⚠️ The code was generated but couldn\'t be saved. Please try again.')
+        report('The code was generated but couldn\'t be saved. Please try again.')
         return False
 
     # Generate a summary of what was changed
     change_summary = _generate_change_summary(user_prompt, files_written, patches_applied, is_edit)
 
     if is_edit:
-        report(f'✅ Changes applied:\n\n{change_summary}',
+        report(f'Changes applied:\n\n{change_summary}',
                message_type='success',
                summary=f'Updated {total} file(s)')
         # Store what changed for post-deployment testing
         changed_files = files_written + [_clean_filename(pm.group(1)) for pm in patch_matches]
         return {'success': True, 'changed_files': changed_files, 'user_prompt': user_prompt}
     else:
-        report(f'✅ App created:\n\n{change_summary}',
+        report(f'App created:\n\n{change_summary}',
                message_type='success',
                summary=f'Created {total} file(s)')
         return True
@@ -2112,7 +2157,7 @@ def sanitize_workspace():
     if not corrupted:
         return
 
-    report(f'🔧 Found {len(corrupted)} file(s) with formatting issues — fixing them automatically...')
+    report(f'Found {len(corrupted)} file(s) with formatting issues — fixing them automatically...')
 
     for fp in corrupted:
         try:
@@ -2150,7 +2195,7 @@ Return ONLY the clean file content with no explanation, no markers, no fences.""
 
 # ── Phase 2: Deployment ────────────────────────────────────────────────────────
 def deploy(error_context: dict = None, max_retries: int = 3, test_changes: bool = False, changed_files: list = None, user_prompt: str = None) -> bool:
-    report('🔧 Figuring out the best way to run your app...')
+    report('Figuring out the best way to run your app...')
     
     # Show loading page immediately so users see progress
     apply_baseline_gateway()
@@ -2217,7 +2262,26 @@ STEP 3: DETERMINE BUILD ORDER
 
 STEP 4: GENERATE DEPLOYMENT SCRIPT
 
-Pattern A: Single-page app (Vite/React) with no backend
+Pattern A: Static HTML website (no build process needed)
+```bash
+#!/bin/bash
+set -e
+echo "Deploying static HTML website..."
+# No build process needed - files are already ready to serve
+# Nginx will serve the files directly from /project/workspace
+echo "Static site ready to be served by Nginx"
+```
+
+CRITICAL FOR STATIC HTML:
+- NO build process needed
+- NO npm install or serve command
+- Nginx serves files DIRECTLY from /project/workspace
+- DO NOT use systemctl, service, or any system commands
+- DO NOT try to restart nginx - it's already running
+- app_port should be 80 (nginx serves directly)
+- nginx config should use "root /project/workspace;" NOT proxy_pass
+
+Pattern B: Single-page app (Vite/React) with no backend
 ```bash
 cd /project/workspace
 rm -rf dist build .next out node_modules/.vite
@@ -2230,7 +2294,7 @@ CRITICAL: For serve command, ALWAYS use both PORT env var AND -l flag:
   PORT=3000 npx serve -s dist -l 3000
 This ensures the app binds to the correct port reliably.
 
-Pattern B: Client/Server in separate folders (server expects ./client/dist)
+Pattern C: Client/Server in separate folders (server expects ./client/dist)
 ```bash
 # Build client first
 cd /project/workspace/client
@@ -2248,7 +2312,25 @@ npm install
 PORT=3000 node server.js >> /tmp/app.log 2>&1 &
 ```
 
-Pattern C: Client/Server in separate folders (server expects ../client/dist)
+Pattern C: Client/Server in separate folders (server expects ./client/dist)
+```bash
+# Build client first
+cd /project/workspace/client
+rm -rf dist build node_modules/.vite
+npm install
+npm run build
+
+# Copy dist to where server expects it
+mkdir -p /project/workspace/server/client
+cp -r dist /project/workspace/server/client/
+
+# Start server
+cd /project/workspace/server
+npm install
+PORT=3000 node server.js >> /tmp/app.log 2>&1 &
+```
+
+Pattern D: Client/Server in separate folders (server expects ../client/dist)
 ```bash
 # Build client first
 cd /project/workspace/client
@@ -2262,7 +2344,7 @@ npm install
 PORT=3000 node server.js >> /tmp/app.log 2>&1 &
 ```
 
-Pattern D: Frontend/Backend (separate apps)
+Pattern E: Frontend/Backend (separate apps)
 ```bash
 # Build frontend
 cd /project/workspace/frontend
@@ -2280,7 +2362,7 @@ cd /project/workspace/frontend
 npx serve -s dist -l 3000 >> /tmp/app.log 2>&1 &
 ```
 
-Pattern E: Monorepo (server in root, serves built client)
+Pattern F: Monorepo (server in root, serves built client)
 ```bash
 # Build client
 cd /project/workspace
@@ -2361,7 +2443,35 @@ Your nginx config MUST:
 - Enable gzip compression
 - Add security headers
 
-Example nginx config:
+EXCEPTION FOR STATIC HTML:
+If the project is static HTML (no package.json, no build process), use this nginx config instead:
+server {{
+    listen 80;
+    root /project/workspace;
+    index index.html;
+    
+    # Gzip
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript image/svg+xml;
+    
+    # Security
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    
+    # Serve static files
+    location / {{
+        try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-cache, must-revalidate" always;
+    }}
+    
+    # Static assets
+    location ~* \.(js|css|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot)$ {{
+        expires 1h;
+        add_header Cache-Control "public, immutable";
+    }}
+}}
+
+For apps with a build process, use this nginx config:
 server {{
     listen 80;
     
@@ -2420,14 +2530,14 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
 
     for attempt in range(1, max_retries + 1):
         if attempt > 1:
-            report(f'🔄 Something didn\'t work as expected. Trying a different approach... (attempt {attempt}/{max_retries})')
+            report(f'Something didn\'t work as expected. Trying a different approach... (attempt {attempt}/{max_retries})')
 
             # Before retrying, check if we have a repeating pattern — fix code if so
             if len(error_history) >= 2:
                 code_fix_attempts += 1
                 
                 if code_fix_attempts >= MAX_FIX_ATTEMPTS:
-                    report(f'⚠️ I\'ve attempted {MAX_FIX_ATTEMPTS} code fixes but the issue persists. The deployment may require manual intervention.',
+                    report(f'I\'ve attempted {MAX_FIX_ATTEMPTS} code fixes but the issue persists. The deployment may require manual intervention.',
                            suggestions=[
                                {'text': 'Show me the errors', 'action': 'show_errors', 'icon': '📋', 'prompt': 'Show me all the error details'},
                                {'text': 'Try different approach', 'action': 'different_approach', 'icon': '🔄', 'prompt': 'Try a completely different deployment approach'},
@@ -2612,7 +2722,7 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
                 time.sleep(1)
                 continue
 
-            report('📦 Installing dependencies and building your app...')
+            report('Installing dependencies and building your app...')
             import uuid as _uuid
             script_path = f'/tmp/autodeploy_{_uuid.uuid4().hex[:8]}.sh'
             # Wrap script to redirect app stdout/stderr to a log file for diagnostics
@@ -2687,7 +2797,7 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
                         syntax_fix_attempts += 1
                         
                         if syntax_fix_attempts >= MAX_FIX_ATTEMPTS:
-                            report(f'⚠️ I\'ve attempted {MAX_FIX_ATTEMPTS} syntax fixes but the issue persists. The code may need manual review.',
+                            report(f'I\'ve attempted {MAX_FIX_ATTEMPTS} syntax fixes but the issue persists. The code may need manual review.',
                                    suggestions=[
                                        {'text': 'Show me the syntax error', 'action': 'show_error', 'icon': '📋', 'prompt': 'Show me the exact syntax error'},
                                        {'text': 'Review the code', 'action': 'review_code', 'icon': '👀', 'prompt': 'Let me review the problematic code'},
@@ -2698,20 +2808,20 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
                             return False
                         
                         log(f'🔧 Syntax error detected - attempting automatic fix (attempt {syntax_fix_attempts}/{MAX_FIX_ATTEMPTS})')
-                        report(f'🔧 I found a syntax error in the code. Let me fix it... (attempt {syntax_fix_attempts}/{MAX_FIX_ATTEMPTS})')
+                        report(f'I found a syntax error in the code. Let me fix it... (attempt {syntax_fix_attempts}/{MAX_FIX_ATTEMPTS})')
                         
                         fix_result = _auto_fix_syntax_error(full_error, tree)
                         log(f'Fix result: {fix_result}')
                         
                         if fix_result.get('fixed'):
-                            report(f'✅ Fixed syntax error in {fix_result["file"]}. Rebuilding...')
+                            report(f'Fixed syntax error in {fix_result["file"]}. Rebuilding...')
                             log('Retrying deployment after syntax fix')
                             time.sleep(2)
                             continue  # Retry deployment with fixed code
                         else:
                             error_msg = fix_result.get('error', 'Unknown error')
                             log(f'⚠️ Auto-fix failed: {error_msg}')
-                            report(f'⚠️ I found a syntax error but couldn\'t fix it automatically: {error_msg}')
+                            report(f'I found a syntax error but couldn\'t fix it automatically: {error_msg}')
                     else:
                         log('No syntax errors detected in build output')
                     
@@ -2746,7 +2856,7 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
 
         nginx_conf = strategy.get('nginx_config', '')
         if nginx_conf:
-            report('🌐 Setting up the web server...')
+            report('Setting up the web server...')
             
             # ═══════════════════════════════════════════════════════════════
             # VALIDATE: Check nginx config for common issues before applying
@@ -2767,7 +2877,7 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
         # ✅ NEW: Handle port mismatch - update nginx config to use actual port
         if not healthy and actual_port and actual_port != app_port:
             log(f'🔧 Port mismatch detected! Updating Nginx to proxy to port {actual_port}...')
-            report(f'🔧 Detected app is running on port {actual_port} instead of {app_port}. Updating configuration...')
+            report(f'Detected app is running on port {actual_port} instead of {app_port}. Updating configuration...')
             
             # Update nginx config to use the actual port
             try:
@@ -2793,7 +2903,7 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
                     healthy, msg, _ = _health_check(app_port=actual_port)
                     
                     if healthy:
-                        report('✅ Configuration updated! Your app is now live.',
+                        report('Configuration updated! Your app is now live.',
                                suggestions=[
                                    {'text': 'Make changes', 'action': 'edit', 'icon': '✏️', 'prompt': 'I want to make some changes'},
                                    {'text': 'Add features', 'action': 'add_feature', 'icon': '✨', 'prompt': 'Add a new feature'}
@@ -2825,7 +2935,7 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
                 # If fix was applied, redeploy (but check attempt limit)
                 if test_result.get('fix_applied'):
                     if attempt >= max_retries:
-                        report(f'⚠️ Maximum retry attempts ({max_retries}) reached. The app is deployed but may have issues.',
+                        report(f'Maximum retry attempts ({max_retries}) reached. The app is deployed but may have issues.',
                                suggestions=[
                                    {'text': 'Test manually', 'action': 'test', 'icon': '🧪', 'prompt': 'Let me test the app manually'},
                                    {'text': 'Review changes', 'action': 'review', 'icon': '👀', 'prompt': 'Review what was changed'},
@@ -2897,7 +3007,7 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
             ]
             metadata['error_category'] = 'general'
         
-        report(msg, code=app_log, suggestions=suggestions, metadata=metadata, summary=f"Deployment failed: {reason[:50]}")
+        report(msg, code=app_log, suggestions=suggestions, metadata=metadata, summary=f"Deployment error")
     else:
         report('⚠️ We ran into some trouble getting your app running. You can try sending your request again.',
                suggestions=[
@@ -3015,7 +3125,7 @@ def _targeted_code_fix(error_history: list, workspace_files: dict) -> bool:
     if not pattern:
         return False
 
-    report(f'🔍 Spotted a repeating issue — fixing the source code directly...')
+    report(f'Spotted a repeating issue — fixing the source code directly...')
 
     # Build context
     file_context = '\n\n'.join(
@@ -3088,7 +3198,7 @@ new lines
 
     total = files_fixed + patches_fixed
     if total > 0:
-        report(f'✅ Applied {total} fix(es) to the source code. Retrying deployment...')
+        report(f'Applied {total} fix(es) to the source code. Retrying deployment...')
         return True
 
     return False
@@ -4006,7 +4116,7 @@ def _test_changes_automatically(changed_files: list, user_prompt: str, app_port:
             - needs_user_input: bool
             - fix_applied: bool
     """
-    report('🧪 Testing your changes automatically...')
+    report('Testing your changes automatically...')
     log(f'Changed files: {changed_files}')
     log(f'User request: {user_prompt}')
     
@@ -4104,7 +4214,7 @@ Output ONLY valid JSON, no explanations."""
     
     for test in test_plan.get('endpoints_to_test', []):
         log(f'🧪 Testing: {test["method"]} {test["path"]}')
-        report(f'🧪 Testing: {test["description"]}')
+        report(f'Testing: {test["description"]}')
         
         try:
             url = f'http://127.0.0.1:{app_port}{test["path"]}'
@@ -4198,15 +4308,29 @@ Output ONLY valid JSON, no explanations."""
     # Report results
     total_tests = tests_passed + tests_failed
     if total_tests == 0:
-        report('ℹ️ No API endpoint tests were needed for this change.')
+        report('No API endpoint tests were needed for this change.')
         return {'success': True, 'tests_passed': 0, 'tests_failed': 0, 'test_results': [], 'needs_user_input': False, 'fix_applied': False}
     
     if tests_failed == 0:
-        report(f'✅ All {tests_passed} tests passed! Your changes are working correctly.')
+        # Don't report the success message again - it's already in the thinking logs
+        # Instead, generate AI-powered next step suggestions and report those
+        next_suggestions = _generate_next_step_suggestions(user_prompt, changed_content, test_results)
+        
+        # Create a user-friendly summary with suggestions
+        if next_suggestions:
+            summary = 'What would you like to do next?'
+            report(
+                f'Great! Your changes are working. Here are some suggestions for what to do next:',
+                suggestions=next_suggestions,
+                metadata={'type': 'success', 'tests_passed': tests_passed, 'tests_failed': 0, 'show_suggestions': True},
+                summary=summary,
+                message_type='success'
+            )
+        
         return {'success': True, 'tests_passed': tests_passed, 'tests_failed': 0, 'test_results': test_results, 'needs_user_input': False, 'fix_applied': False}
     
     # Some tests failed - try to auto-fix
-    report(f'⚠️ {tests_failed} out of {total_tests} tests failed. Analyzing failures...')
+    report(f'{tests_failed} out of {total_tests} tests failed. Analyzing failures...')
     
     # Format file context for AI without using backslashes in f-string expression
     file_list_str = []
@@ -4254,15 +4378,15 @@ Output ONLY valid JSON."""
         m = re.search(r'\{.*\}', fix_response, re.DOTALL)
         if not m:
             log('⚠️ AI did not return valid JSON for fix analysis')
-            report(f'⚠️ Tests failed but I need your help. Please check the logs.')
+            report(f'Tests failed but I need your help. Please check the logs.')
             return {'success': False, 'tests_passed': tests_passed, 'tests_failed': tests_failed, 'test_results': test_results, 'needs_user_input': True, 'fix_applied': False}
         
         fix_plan = json.loads(m.group(0))
         
         if fix_plan.get('can_auto_fix'):
             # Apply the fix
-            report(f'🔧 I found the issue: {fix_plan["analysis"]}')
-            report(f'🔧 Applying automatic fix...')
+            report(f'I found the issue: {fix_plan["analysis"]}')
+            report(f'Applying automatic fix...')
             
             fix_code = fix_plan.get('fix', '')
             if fix_code:
@@ -4273,7 +4397,7 @@ Output ONLY valid JSON."""
                 if patch_matches:
                     patches_applied = _apply_patches(fix_code, patch_matches)
                     if patches_applied > 0:
-                        report(f'✅ Fix applied! Rebuilding to test again...')
+                        report(f'Fix applied! Rebuilding to test again...')
                         return {'success': False, 'tests_passed': tests_passed, 'tests_failed': tests_failed, 'test_results': test_results, 'needs_user_input': False, 'fix_applied': True}
         
         # Can't auto-fix - ask user
@@ -4294,11 +4418,11 @@ Output ONLY valid JSON."""
             'tests_failed': tests_failed
         }
         
-        report(f'❓ {fix_plan["analysis"]}', 
+        report(f'{fix_plan["analysis"]}', 
                suggestions=suggestions, 
                metadata=metadata,
                summary='Tests failed - need your input')
-        report(f'❓ {user_question}',
+        report(f'{user_question}',
                suggestions=suggestions,
                metadata=metadata,
                summary=user_question[:100])
@@ -4726,7 +4850,7 @@ class Agent:
         if currently_busy or queue_size > 1:
             position = queue_size
             report(
-                f'📋 Got your request! I\'m still working on the previous one, '
+                f'Got your request! I\'m still working on the previous one, '
                 f'so yours is #{position} in line. I\'ll get to it as soon as I\'m done — '
                 f'usually just a minute or two.'
             )
@@ -4756,7 +4880,7 @@ class Agent:
             try:
                 self._handle(prompt)
             except Exception as e:
-                report(f'⚠️ Something unexpected went wrong. Please try sending your request again.')
+                report(f'Something unexpected went wrong. Please try sending your request again.')
                 log(f'Unhandled exception: {e}')
             finally:
                 with self._lock:
@@ -4823,7 +4947,7 @@ class Agent:
         import requests
         import os
         
-        report('🚀 **D-Suite Handoff Detected!**\n\nFetching your BRD requirements from D-Suite...', message_type='info')
+        report('**D-Suite Handoff Detected!**\n\nFetching your BRD requirements from D-Suite...', message_type='info')
         
         try:
             # Get project ID from environment or workspace path
@@ -4834,7 +4958,7 @@ class Agent:
                 if '/project_artifacts/' in workspace_path:
                     project_id = workspace_path.split('/project_artifacts/')[1].split('/')[0]
                 else:
-                    report('❌ **Error**: Could not determine project ID', message_type='error')
+                    report('**Error**: Could not determine project ID', message_type='error')
                     return
             
             # Fetch BRD context from backend API
@@ -4867,13 +4991,13 @@ class Agent:
                     continue
             
             if not brd_data:
-                report('❌ **Error**: Could not connect to backend API on any port.', message_type='error')
-                report('💡 **Tip**: You can still describe what you want to build manually!', message_type='info')
+                report('**Error**: Could not connect to backend API on any port.', message_type='error')
+                report('**Tip**: You can still describe what you want to build manually!', message_type='info')
                 return
             
             if not brd_data.get('has_brd'):
-                report('⚠️ **No BRD Found**: This project was not created via D-Suite handoff.', message_type='warning')
-                report('💡 You can start by describing what you want to build!', message_type='info')
+                report('**No BRD Found**: This project was not created via D-Suite handoff.', message_type='warning')
+                report('You can start by describing what you want to build!', message_type='info')
                 return
             
             # Extract BRD information
@@ -4906,17 +5030,17 @@ class Agent:
 
 Please analyze the BRD above and create a complete, production-ready application that fulfills all the requirements."""
 
-            report(f'✅ **BRD Loaded Successfully!**\n\n**Project**: {project_name}\n\nAnalyzing requirements and creating task plan...', message_type='success')
+            report(f'**BRD Loaded Successfully!**\n\n**Project**: {project_name}\n\nAnalyzing requirements and creating task plan...', message_type='success')
             
             # Process as a large requirement to trigger task planning
             self._handle_task_planning(full_prompt)
             
         except requests.exceptions.RequestException as e:
             log(f'Failed to fetch BRD context: {e}')
-            report(f'❌ **Network Error**: Could not connect to backend API.\n\nError: {str(e)}', message_type='error')
+            report(f'**Network Error**: Could not connect to backend API.\n\nError: {str(e)}', message_type='error')
         except Exception as e:
             log(f'Error in D-Suite handoff handler: {e}')
-            report(f'❌ **Error**: {str(e)}', message_type='error')
+            report(f'**Error**: {str(e)}', message_type='error')
     
     def _is_large_requirement(self, prompt: str) -> bool:
         """Detect if a requirement is large enough to need task breakdown"""
@@ -4937,7 +5061,7 @@ Please analyze the BRD above and create a complete, production-ready application
     
     def _handle_task_planning(self, prompt: str):
         """Generate and present task breakdown to user"""
-        report('🧠 Analyzing your requirement and breaking it down into manageable tasks...',
+        report('Analyzing your requirement and breaking it down into manageable tasks...',
                message_type='thinking')
         
         try:
@@ -4949,7 +5073,7 @@ Please analyze the BRD above and create a complete, production-ready application
             
         except Exception as e:
             log(f'Task planning failed: {e}')
-            report(f'⚠️ Had trouble breaking down the requirement. Trying direct generation instead...')
+            report(f'Had trouble breaking down the requirement. Trying direct generation instead...')
             self._handle_direct_generation(prompt, {}, True)
     
     def _present_task_plan(self, plan: Dict[str, Any]):
@@ -5010,12 +5134,12 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
         elif command == 'STATUS':
             self._show_task_status()
         else:
-            report('❓ Unknown task command. Try: TASK:START, TASK:EXECUTE:1, or TASK:STATUS')
+            report('Unknown task command. Try: TASK:START, TASK:EXECUTE:1, or TASK:STATUS')
     
     def _execute_tasks_sequentially(self):
         """Execute all pending tasks in order with real-time updates"""
         # Don't send task_plan here - it was already sent in _present_task_plan
-        report(f'🚀 Starting task execution...',
+        report(f'Starting task execution...',
                message_type='action',
                metadata={'type': 'task_execution_start'})
         
@@ -5042,7 +5166,7 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
                     break
                 else:
                     # Some tasks are pending but not executable (dependency issue)
-                    report(f"⚠️ {progress['pending']} tasks remaining but cannot execute (dependency issues).",
+                    report(f"{progress['pending']} tasks remaining but cannot execute (dependency issues).",
                            message_type='error',
                            metadata={
                                'type': 'task_execution_blocked',
@@ -5062,7 +5186,7 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
             if task.status == 'failed':
                 # Send final status with error
                 progress = self.task_planner.get_progress_summary()
-                report(f'⚠️ Task {task.task_id} failed. Stopping execution.',
+                report(f'Task {task.task_id} failed. Stopping execution.',
                        message_type='error',
                        metadata={
                            'type': 'task_execution_failed',
@@ -5085,11 +5209,11 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
             task = self.task_planner.get_task_by_id(task_id)
             
             if not task:
-                report(f'❌ Task {task_id} not found')
+                report(f'Task {task_id} not found')
                 continue
             
             if task.status == 'completed':
-                report(f'✅ Task {task_id} already completed')
+                report(f'Task {task_id} already completed')
                 continue
             
             # Check dependencies
@@ -5099,7 +5223,7 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
             )
             
             if not deps_met:
-                report(f'⚠️ Task {task_id} has unmet dependencies: {", ".join(task.dependencies)}')
+                report(f'Task {task_id} has unmet dependencies: {", ".join(task.dependencies)}')
                 continue
             
             self._execute_single_task(task)
@@ -5107,7 +5231,7 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
     def _execute_single_task(self, task: Task):
         """Execute a single task with full context"""
         # Mark task as in progress - send ONLY status update, not full task plan
-        report(f'▶️ Executing: **{task.title}**',
+        report(f'Executing: **{task.title}**',
                message_type='action',
                metadata={
                    'type': 'task_status_update',
@@ -5116,7 +5240,7 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
                })
         
         # Send thinking log
-        report(f'💡 Analyzing task requirements and building context...',
+        report(f'Analyzing task requirements and building context...',
                message_type='thinking',
                metadata={'type': 'thinking'})
         
@@ -5129,7 +5253,7 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
             context['project_summary'] = self.task_planner.context.get('project_summary', '')
             
             # Send thinking log
-            report(f'💡 Generating code for {len(task.files_to_create)} new files and modifying {len(task.files_to_modify)} existing files...',
+            report(f'Generating code for {len(task.files_to_create)} new files and modifying {len(task.files_to_modify)} existing files...',
                    message_type='thinking',
                    metadata={'type': 'thinking'})
             
@@ -5143,7 +5267,7 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
                 
                 # Send completion message - ONLY status update, not full task plan
                 progress = self.task_planner.get_progress_summary()
-                report(f'✅ Task completed: {task.title}',
+                report(f'Task completed: {task.title}',
                        message_type='success',
                        metadata={
                            'type': 'task_status_update',
@@ -5162,7 +5286,7 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
                 self.task_planner._save_state()
                 
                 # Send error message - ONLY status update, not full task plan
-                report(f'❌ Task failed: {task.title}\n   Error: {result["error"]}',
+                report(f'Task failed: {task.title}\n   Error: {result["error"]}',
                        message_type='error',
                        metadata={
                            'type': 'task_status_update',
@@ -5176,7 +5300,7 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
             task.error = str(e)
             self.task_planner._save_state()
             
-            report(f'❌ Task execution error: {str(e)}', 
+            report(f'Task execution error: {str(e)}', 
                    message_type='error',
                    metadata={
                        'type': 'task_status_update',
@@ -5190,7 +5314,7 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
         task = self.task_planner.get_task_by_id(f"task_{task_id.zfill(3)}")
         
         if not task:
-            report(f'❌ Task {task_id} not found')
+            report(f'Task {task_id} not found')
             return
         
         status_emoji = {
@@ -5307,11 +5431,11 @@ Use `TASK:START` to continue execution.
                 
                 # Report to user
                 if edit_result["verify_ok"]:
-                    report(f'✅ Changes applied successfully!\n\n{edit_result["plan_summary"]}',
+                    report(f'Changes applied successfully!\n\n{edit_result["plan_summary"]}',
                         message_type='success',
                         summary=f'Modified {len(changed_files)} file(s)')
                 else:
-                    report(f'⚠️ Changes applied but verification found issues:\n' + 
+                    report(f'Changes applied but verification found issues:\n' + 
                         '\n'.join(f'• {issue}' for issue in edit_result["verify_issues"]),
                         message_type='warning',
                         summary='Changes applied with warnings')
@@ -5331,7 +5455,7 @@ Use `TASK:START` to continue execution.
         except Exception as e:
             # EditEngine crashed - fall back to legacy
             log(f'❌ EditEngine exception: {e}')
-            report('⚠️ Advanced edit engine encountered an issue. Falling back to standard code generation...')
+            report('Advanced edit engine encountered an issue. Falling back to standard code generation...')
             
             result = generate_code(prompt, existing_files=existing_files if not is_empty else None)
             
@@ -5413,7 +5537,7 @@ def watchdog(agent: Agent):
                     consecutive_502_failures += 1
                     
                     if consecutive_502_failures >= MAX_AUTO_FIXES:
-                        report(f'⚠️ I\'ve tried fixing the deployment {MAX_AUTO_FIXES} times but the issue persists. Please review the error logs or send me specific instructions to resolve this.',
+                        report(f'I\'ve tried fixing the deployment {MAX_AUTO_FIXES} times but the issue persists. Please review the error logs or send me specific instructions to resolve this.',
                                suggestions=[
                                    {'text': 'Show me the logs', 'action': 'show_logs', 'icon': '📋', 'prompt': 'Show me the detailed error logs'},
                                    {'text': 'Start fresh', 'action': 'restart', 'icon': '🆕', 'prompt': 'Clear everything and start with a new deployment'},
@@ -5425,7 +5549,7 @@ def watchdog(agent: Agent):
                         last_502_time = now + 300  # Wait 5 minutes before trying again
                     else:
                         last_502_time = now
-                        report(f'🔧 Noticed your app stopped responding. Automatically fixing it... (attempt {consecutive_502_failures}/{MAX_AUTO_FIXES})')
+                        report(f'Noticed your app stopped responding. Automatically fixing it... (attempt {consecutive_502_failures}/{MAX_AUTO_FIXES})')
                         agent.enqueue('Fix the deployment — the app is returning 502 errors.')
                 else:
                     # Reset counter if no errors detected
@@ -5447,7 +5571,7 @@ def watchdog(agent: Agent):
                         # Attempt automatic fix
                         if _auto_fix_asset_404():
                             last_404_fix_time = now
-                            report('🔧 Fixed missing asset configuration. Your app should load correctly now.')
+                            report('Fixed missing asset configuration. Your app should load correctly now.')
                         else:
                             log('⚠️ Auto-fix failed - nginx config may need manual review')
 
@@ -5587,35 +5711,33 @@ if __name__ == '__main__':
             artifacts = prev_deployment['built_artifacts']
             
             log(f'Previous deployment found: port={app_port}, artifacts={artifacts}')
-            report(f'🔄 Restoring your app (found previous deployment on port {app_port})...')
+            report(f'Restoring your app (found previous deployment on port {app_port})...')
             
             # Check if app is already healthy
             if app_port:
                 healthy, msg, _ = _health_check(app_port=app_port)
                 if healthy:
-                    report('✅ Your app is already running and healthy!')
+                    report('Your app is already running and healthy!')
                     # Skip redeployment, go straight to watchdog
                     watchdog(agent)
                     # watchdog runs forever, so we never reach here
             
             # App not healthy - attempt redeployment
-            report(f'🔄 Restarting your app ({file_count} files found)...')
+            report(f'Restarting your app ({file_count} files found)...')
         else:
             # No previous deployment - fresh deploy
             log('No previous deployment detected - performing fresh deployment')
-            report(f'🔄 Deploying your app ({file_count} files found)...')
+            report(f'Deploying your app ({file_count} files found)...')
         
         # Attempt immediate redeployment without going through the queue
         try:
             success = deploy(error_context=None, max_retries=3)
             if success:
-                report('✅ Your app is back online!')
+                report('Your app is back online!')
             else:
-                report('⚠️ Had trouble restarting the app. You can send me a message to fix it, or I\'ll keep trying automatically.')
+                report('Had trouble restarting the app. You can send me a message to fix it, or I\'ll keep trying automatically.')
         except Exception as e:
             log(f'Auto-redeploy on restart failed: {e}')
-            report('⚠️ Had trouble restarting the app. Send me a message if you need help!')
-    else:
-        report('💡 Ready to build! Send me your first message to get started.')
+            report('Had trouble restarting the app. Send me a message if you need help!')
 
     watchdog(agent)

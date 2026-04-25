@@ -153,6 +153,59 @@ export function AuthProvider({ children }) {
     setUser(null);
   }, []);
 
+  const refreshToken = useCallback(async () => {
+    try {
+      const currentToken = localStorage.getItem('vibecoding_token');
+      if (!currentToken) return false;
+
+      const response = await axios.post(`${API_BASE_URL}/api/auth/refresh`, {}, {
+        headers: { Authorization: `Bearer ${currentToken}` }
+      });
+      
+      if (response.data.token) {
+        localStorage.setItem('vibecoding_token', response.data.token);
+        setToken(response.data.token);
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error('Token refresh failed:', error);
+      return false;
+    }
+  }, []);
+
+  // Setup axios interceptor for automatic token refresh on 401
+  useEffect(() => {
+    const interceptor = axios.interceptors.response.use(
+      (response) => response,
+      async (error) => {
+        const originalRequest = error.config;
+        
+        // If 401 and we haven't already tried to refresh
+        if (error.response?.status === 401 && !originalRequest._retry) {
+          originalRequest._retry = true;
+          
+          const refreshed = await refreshToken();
+          if (refreshed) {
+            // Update the authorization header and retry
+            const newToken = localStorage.getItem('vibecoding_token');
+            originalRequest.headers['Authorization'] = `Bearer ${newToken}`;
+            return axios(originalRequest);
+          } else {
+            // Refresh failed, logout user
+            logout();
+          }
+        }
+        
+        return Promise.reject(error);
+      }
+    );
+
+    return () => {
+      axios.interceptors.response.eject(interceptor);
+    };
+  }, [refreshToken, logout]);
+
   const value = {
     user,
     token,
@@ -161,6 +214,7 @@ export function AuthProvider({ children }) {
     login,
     signup,
     logout,
+    refreshToken,
   };
 
   return (

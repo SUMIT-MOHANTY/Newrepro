@@ -426,18 +426,37 @@ const ChatMessage = ({
               <ToolCallsDisplay toolCalls={message.toolCalls} darkMode={darkMode} />
             )}
             
-            {/* Inline Thinking Block - Shows accumulated thinking logs */}
-            {!isUser && message.thinkingLogs && message.thinkingLogs.length > 0 && (
-              <div className="mb-3">
-                <ThinkingBlock
-                  logs={message.thinkingLogs}
-                  status={message.isThinking ? 'thinking' : 'success'}
-                  title={message.isThinking ? 'Building you app...' : 'Background execution completed'}
-                  darkMode={darkMode}
-                  autoScroll={message.isThinking}
-                />
-              </div>
-            )}
+            {/* Inline Thinking Block - Shows accumulated thinking logs.
+                Works for both:
+                  - Live WS messages (thinkingLogs array built in memory)
+                  - DB-loaded messages (grouped by _group_log_messages; thinkingLogs comes from backend)
+                  - Legacy single log messages (fall back to content as the sole log entry) */}
+            {!isUser && message.metadata?.is_background_log && (() => {
+              const logs =
+                Array.isArray(message.thinkingLogs) && message.thinkingLogs.length > 0
+                  ? message.thinkingLogs
+                  : message.content
+                    ? [{ message: message.content, timestamp: message.timestamp, level: 'info' }]
+                    : [];
+
+              if (logs.length === 0) return null;
+
+              return (
+                <div className="mb-3">
+                  <ThinkingBlock
+                    logs={logs}
+                    status={message.isThinking ? 'thinking' : 'success'}
+                    title={message.isThinking ? 'Thinking...' : 'Thinking completed'}
+                    darkMode={darkMode}
+                    autoScroll={message.isThinking}
+                  />
+                </div>
+              );
+            })()}
+
+            {/* Skip rendering main content for background logs — shown in ThinkingBlock above */}
+            {message.metadata?.is_background_log ? null : (
+              <>
             
             {/* Task Breakdown Display */}
             {!isUser && message.metadata?.task_plan && (
@@ -689,6 +708,8 @@ const ChatMessage = ({
                     </Button>
                   )}
                 </div>
+              </>
+            )}
               </>
             )}
           </div>

@@ -28,6 +28,7 @@ const ChatPanel = ({
   onExecuteAllTasks,
   onEditTask,
   executingTaskId,
+  wsConnected = false,
 }) => {
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
@@ -76,41 +77,41 @@ const ChatPanel = ({
   }, []);
 
   // Group messages with their thinking logs
-  const processedMessages = React.useMemo(() => {
-    const result = [];
-    let currentThinkingLogs = [];
-    let lastNonThinkingMessage = null;
+  // const messages = React.useMemo(() => {
+  //   const result = [];
+  //   let currentThinkingLogs = [];
+  //   let lastNonThinkingMessage = null;
 
-    messages.forEach((message, idx) => {
-      if (message.metadata?.type === 'thinking') {
-        // Accumulate thinking logs
-        currentThinkingLogs.push({
-          message: message.content,
-          timestamp: message.timestamp,
-          level: 'info'
-        });
-      } else {
-        // Non-thinking message
-        if (currentThinkingLogs.length > 0 && lastNonThinkingMessage) {
-          // Attach accumulated logs to the last non-thinking message
-          lastNonThinkingMessage.thinkingLogs = currentThinkingLogs;
-          currentThinkingLogs = [];
-        }
+  //   messages.forEach((message, idx) => {
+  //     if (message.metadata?.type === 'thinking') {
+  //       // Accumulate thinking logs
+  //       currentThinkingLogs.push({
+  //         message: message.content,
+  //         timestamp: message.timestamp,
+  //         level: 'info'
+  //       });
+  //     } else {
+  //       // Non-thinking message
+  //       if (currentThinkingLogs.length > 0 && lastNonThinkingMessage) {
+  //         // Attach accumulated logs to the last non-thinking message
+  //         lastNonThinkingMessage.thinkingLogs = currentThinkingLogs;
+  //         currentThinkingLogs = [];
+  //       }
         
-        const processedMsg = { ...message, thinkingLogs: [] };
-        result.push(processedMsg);
-        lastNonThinkingMessage = processedMsg;
-      }
-    });
+  //       const processedMsg = { ...message, thinkingLogs: [] };
+  //       result.push(processedMsg);
+  //       lastNonThinkingMessage = processedMsg;
+  //     }
+  //   });
 
-    // If there are remaining thinking logs and we're loading, attach to last message
-    if (currentThinkingLogs.length > 0 && lastNonThinkingMessage) {
-      lastNonThinkingMessage.thinkingLogs = currentThinkingLogs;
-      lastNonThinkingMessage.isThinking = loading;
-    }
+  //   // If there are remaining thinking logs and we're loading, attach to last message
+  //   if (currentThinkingLogs.length > 0 && lastNonThinkingMessage) {
+  //     lastNonThinkingMessage.thinkingLogs = currentThinkingLogs;
+  //     lastNonThinkingMessage.isThinking = loading;
+  //   }
 
-    return result;
-  }, [messages, loading]);
+  //   return result;
+  // }, [messages, loading]);
 
   const [width, setWidth] = React.useState(384); // Default 96 tailwind class is 384px
   const isResizing = useRef(false);
@@ -171,10 +172,20 @@ const ChatPanel = ({
             <Sparkles className="w-4 h-4 text-white" />
           </div>
           <div>
-            <span className={cn(
-              'text-sm font-semibold block',
-              darkMode ? 'text-white' : 'text-gray-900'
-            )}>Vibe Assistant</span>
+            <div className="flex items-center gap-1.5">
+              <span className={cn(
+                'text-sm font-semibold',
+                darkMode ? 'text-white' : 'text-gray-900'
+              )}>Vibe Assistant</span>
+              {/* Live connection indicator */}
+              <span
+                title={wsConnected ? 'Live updates active' : 'Reconnecting to live updates…'}
+                className={cn(
+                  'inline-block w-2 h-2 rounded-full flex-shrink-0 transition-colors duration-500',
+                  wsConnected ? 'bg-green-400' : 'bg-gray-500'
+                )}
+              />
+            </div>
             <span className={cn(
               'text-xs',
               darkMode ? 'text-gray-400' : 'text-gray-500'
@@ -219,7 +230,7 @@ const ChatPanel = ({
         onScroll={handleScroll}
         className="flex-1 overflow-y-auto px-4 py-4 space-y-4 custom-scrollbar min-h-0"
       >
-        {processedMessages.length === 0 && suggestions && !loading && (
+        {messages.length === 0 && suggestions && !loading && (
           <div className="space-y-4 ">
             <div className={`text-center py-8 ${darkMode ? 'text-gray-400' : 'text-gray-500'
               }`}>
@@ -270,7 +281,7 @@ const ChatPanel = ({
           </div>
         )}
 
-        {processedMessages.map((message, idx) => (
+        {messages.map((message, idx) => (
           <ChatMessage
             key={idx}
             message={message}

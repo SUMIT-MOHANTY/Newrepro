@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import axios from 'axios';
 import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus, History, LogOut, X, Lock, Unlock } from 'lucide-react';
 import { Routes, Route, Navigate, useNavigate, Link, useParams, useLocation } from 'react-router-dom';
@@ -24,6 +24,24 @@ function App() {
   const { user, isAuthenticated, loading: authLoading, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+
+  // ── Global auth token interceptor ──────────────────────────────────────────
+  // Attach the JWT token to every axios request automatically.
+  // This fixes the 401 on /api/auth/verify that logged users out on page refresh,
+  // because the AuthContext's verify call fired before headers were set manually.
+  React.useEffect(() => {
+    const interceptorId = axios.interceptors.request.use((config) => {
+      const token = localStorage.getItem('vibecoding_token');
+      if (token && !config.headers['Authorization']) {
+        config.headers['Authorization'] = `Bearer ${token}`;
+      }
+      return config;
+    }, (error) => Promise.reject(error));
+
+    return () => {
+      axios.interceptors.request.eject(interceptorId);
+    };
+  }, []);
 
   // Auth loading state
   if (authLoading) {
@@ -147,6 +165,132 @@ function Workspace({ user, logout, isAuthenticated }) {
   const [discussMode, setDiscussMode] = useState(false);
   const [frozenFiles, setFrozenFiles] = useState([]);
   const [freezeLoading, setFreezeLoading] = useState(false);
+  const [isAutonomousPolling, setIsAutonomousPolling] = useState(false);
+  const [pollCount, setPollCount] = useState(0);
+
+  // ── WebSocket: real-time updates from the container agent ──────────────────
+  const { lastMessage: wsMessage, isConnected: wsConnected } = useWebSocket(currentProjectId);
+
+  /**
+   * Handle every inbound WebSocket frame.
+   * 
+   * The ai-agent.py `report()` function posts to /vibecoding/api/broadcast/{project_id}
+   * which calls manager.broadcast() — forwarding the payload to every connected WS client.
+   * 
+   * Payload shape (from ai-agent.py report()):
+   *   { content, type, summary, metadata, timestamp, code, suggestions }
+   */
+  // IN App.jsx — REPLACE the entire WS useEffect with this:
+
+  useEffect(() => {
+    if (!wsMessage) return;
+
+    console.log('[WS] Received message:', wsMessage);
+
+    const { content, type, metadata, code, suggestions, timestamp } = wsMessage;
+
+    // ── 1. Handle agent messages for real-time chat updates ───────────────────
+    if (content) {
+      setMessages(prev => {
+        // Find the most recent background log message in the array
+        // (not just the last one — there might be regular messages after it)
+        let lastBgIndex = -1;
+        for (let i = prev.length - 1; i >= 0; i--) {
+          if (prev[i]?.metadata?.is_background_log && !prev[i]?.metadata?.grouped) {
+            lastBgIndex = i;
+            break;
+          }
+        }
+
+        const newLog = {
+          message: content,
+          timestamp: timestamp || new Date().toISOString(),
+          level: type === 'success' ? 'success' : type === 'error' ? 'error' : 'info'
+        };
+
+        // If we found a recent background message AND it's still "thinking", update it
+        if (lastBgIndex !== -1) {
+          const lastBg = prev[lastBgIndex];
+          // Only update if it's still active (thinking) or this is part of same session
+          // We determine "same session" by checking if no regular assistant message came after
+          const hasRegularMessageAfter = prev.slice(lastBgIndex + 1).some(
+            m => m.role === 'assistant' && !m.metadata?.is_background_log
+          );
+          
+          if (!hasRegularMessageAfter || lastBg.isThinking) {
+            const updated = [...prev];
+            updated[lastBgIndex] = {
+              ...lastBg,
+              content: content, // Show latest content
+              timestamp: newLog.timestamp,
+              metadata: {
+                ...lastBg.metadata,
+                type: type || 'status',
+              },
+              thinkingLogs: [...(lastBg.thinkingLogs || []), newLog],
+              isThinking: type !== 'success' && type !== 'error',
+            };
+            return updated;
+          }
+        }
+
+        // No suitable background message found — create a new one
+        const newMsg = {
+          id: `ws_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          role: 'assistant',
+          content,
+          code: code || null,
+          suggestions: suggestions || [],
+          timestamp: newLog.timestamp,
+          metadata: { 
+            ...(metadata || {}), 
+            type: type || 'status',
+            is_background_log: true,
+          },
+          thinkingLogs: [newLog],
+          isThinking: type !== 'success' && type !== 'error',
+        };
+
+        // Deduplicate: skip if the last message has identical content
+        const lastMsg = prev[prev.length - 1];
+        if (lastMsg?.content === content && lastMsg?.role === 'assistant') return prev;
+        
+        return [...prev, newMsg];
+      });
+    }
+
+    // ── 2. Stop the loading/polling spinner on terminal signals ───────────────
+    const terminalTypes = ['success', 'error', 'celebration', 'task_breakdown'];
+    const isTerminal =
+      terminalTypes.includes(type) ||
+      content?.includes('[AGENT] VERIFICATION') ||
+      content?.includes('✅ Changes applied') ||
+      content?.includes('Deployment error') ||
+      metadata?.type === 'task_breakdown' ||
+      metadata?.task_plan;
+
+    if (isTerminal) {
+      console.log('[WS] Terminal signal detected, stopping loader');
+      setLoading(false);
+      setIsAutonomousPolling(false);
+    }
+
+    // ── 3. Refresh file tree whenever agent signals a code update ─────────────
+    if (content?.includes('[AGENT] CODE_UPDATE') || type === 'code_update') {
+      console.log('[WS] Code update detected, refreshing file tree');
+      fetchProjectFiles();
+    }
+
+    // ── 4. Bounce the preview iframe when a new deployment lands ─────────────
+    if (content?.includes('Your app is live') ||
+        content?.includes('🎉') ||
+        type === 'celebration') {
+      console.log('[WS] Deployment complete, refreshing preview');
+      setIframeKey(k => k + 1);
+    }
+  }, [wsMessage]);
+    
+  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Task execution handlers
   const { executingTaskId, handleExecuteTask, handleExecuteAllTasks, handleEditTask } = useTaskHandlers(
@@ -156,6 +300,28 @@ function Workspace({ user, logout, isAuthenticated }) {
     setLoading,
     setVerificationStatus
   );
+
+  // ── processedMessages ───────────────────────────────────────────────────────
+  // Normalise messages from two sources:
+  //   1. Live WS messages   — created by the WS handler with is_background_log + thinkingLogs
+  //   2. DB-loaded messages — already grouped by main.py's _group_log_messages()
+  // Both carry is_background_log:true and thinkingLogs[], so the same ChatMessage
+  // rendering path applies for both.
+  const processedMessages = useMemo(() => {
+    return messages.map(msg => {
+      if (msg.metadata?.is_background_log && msg.thinkingLogs?.length > 0) {
+        return {
+          ...msg,
+          metadata: {
+            ...msg.metadata,
+            type: 'background_execution',
+            grouped: true,
+          }
+        };
+      }
+      return msg;
+    });
+  }, [messages]);
 
   useEffect(() => {
     prevProjectIdRef.current = currentProjectId;
@@ -222,9 +388,6 @@ function Workspace({ user, logout, isAuthenticated }) {
   }, [lastMessageId, verificationStatus, currentProjectId]);
 
   // --- Autonomous Polling Logic ---
-  const [isAutonomousPolling, setIsAutonomousPolling] = useState(false);
-  const [pollCount, setPollCount] = useState(0);
-
   useEffect(() => {
     let pollInterval;
     if (isAutonomousPolling && currentProjectId) {
@@ -354,12 +517,12 @@ function Workspace({ user, logout, isAuthenticated }) {
           setIsAutonomousPolling(false);
           setLoading(false);
         }
-      }, 3000);
+      }, wsConnected ? 8000 : 2000); // slow down polling when WS is handling updates
     }
     return () => {
       if (pollInterval) clearInterval(pollInterval);
     };
-  }, [isAutonomousPolling, currentProjectId, pollCount]);
+  }, [isAutonomousPolling, currentProjectId, pollCount, wsConnected]);
 
   const fetchProjectFiles = async () => {
     if (!currentProjectId) return;
@@ -485,14 +648,11 @@ function Workspace({ user, logout, isAuthenticated }) {
 
     setFreezeLoading(true);
     try {
-      const token = localStorage.getItem('vibecoding_token');
       const isFrozen = frozenFiles.includes(filePath);
 
       await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/frozen-files`, {
         file_path: filePath,
         frozen: !isFrozen
-      }, {
-        headers: { Authorization: `Bearer ${token}` }
       });
 
       // Update local state
@@ -511,7 +671,7 @@ function Workspace({ user, logout, isAuthenticated }) {
   const fetchProjects = async () => {
     try {
       const response = await axios.get(`${API_BASE_URL}/api/projects`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` }
+        
       });
       // Sort projects by created_at descending (most recent first)
       const sortedProjects = (response.data.projects || []).sort((a, b) => {
@@ -751,7 +911,7 @@ function Workspace({ user, logout, isAuthenticated }) {
         try {
           // First, check if the project exists
           const response = await axios.get(`${API_BASE_URL}/api/projects/${urlProjectId}`, {
-            headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` }
+            
           });
 
           // Project exists, load it
@@ -767,7 +927,7 @@ function Workspace({ user, logout, isAuthenticated }) {
             const startResp = await axios.post(
               `${API_BASE_URL}/api/projects/${urlProjectId}/start`,
               {},
-              { headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` } }
+              {  }
             );
             if (startResp.data.started && startResp.data.preview_url) {
               console.log('🚀 Container starting for project:', urlProjectId);
@@ -887,7 +1047,7 @@ function Workspace({ user, logout, isAuthenticated }) {
       const startResp = await axios.post(
         `${API_BASE_URL}/api/projects/${newProjectId}/start`,
         {},
-        { headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` } }
+        {  }
       );
       if (startResp.data.started && startResp.data.preview_url) {
         console.log('🚀 Container starting for switched project:', newProjectId);
@@ -1530,17 +1690,28 @@ function Workspace({ user, logout, isAuthenticated }) {
       // ✅ Remove temporary status message
       setMessages(prev => prev.filter(msg => !msg.metadata?.temporary));
       
-      const errorMessage = error.response?.data?.detail || error.message || 'Sorry, there was an error. Please try again.';
-      setErrorHeader(errorMessage);
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: `❌ I encountered an error: ${errorMessage}`,
-        timestamp: new Date().toISOString(),
-        metadata: { type: 'error' }
-      }]);
-      // On error, stop loading and polling
+      // ✅ Always reset loading state on error
       setLoading(false);
       setIsAutonomousPolling(false);
+      
+      // ✅ Handle different error types with appropriate messages
+      if (error.response?.status === 401) {
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: '🔒 Your session has expired. Please log in again to continue.',
+          timestamp: new Date().toISOString(),
+          metadata: { type: 'error', auth_required: true }
+        }]);
+      } else {
+        const errorMessage = error.response?.data?.detail || error.message || 'Sorry, there was an error. Please try again.';
+        setErrorHeader(errorMessage);
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: `❌ I encountered an error: ${errorMessage}`,
+          timestamp: new Date().toISOString(),
+          metadata: { type: 'error' }
+        }]);
+      }
     }
     // NOTE: No finally block! We want polling to control the loader state
   };
@@ -1876,8 +2047,6 @@ Please suggest improvements or modifications for this element.`;
           role: 'user',
           content: editMessage.content,
           timestamp: editMessage.timestamp
-        }, {
-          headers: { Authorization: `Bearer ${token}` }
         });
       }
     } catch (error) {
@@ -2815,7 +2984,7 @@ Please suggest improvements or modifications for this element.`;
 
         {/* Right Panel - Chat */}
         <ChatPanel
-          messages={messages}
+          messages={processedMessages}
           loading={loading}
           input={input}
           setInput={setInput}
@@ -2856,6 +3025,7 @@ Please suggest improvements or modifications for this element.`;
           onExecuteAllTasks={handleExecuteAllTasks}
           onEditTask={handleEditTask}
           executingTaskId={executingTaskId}
+          wsConnected={wsConnected}
         />
       </div>
 

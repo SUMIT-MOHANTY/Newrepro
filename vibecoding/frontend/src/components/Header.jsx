@@ -43,9 +43,7 @@ const Header = ({
     if (!projectName.trim()) return;
 
     try {
-      const response = await axios.post(`${API_BASE_URL}/api/projects`, { name: projectName.trim() }, {
-        headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` }
-      });
+      const response = await axios.post(`${API_BASE_URL}/api/projects`, { name: projectName.trim() });
 
       const newProjectId = response.data.project_id;
       setCurrentProjectId(newProjectId);

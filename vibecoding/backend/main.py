@@ -2111,6 +2111,95 @@ async def git_push(request: GitRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+def _group_log_messages(raw_messages: list) -> list:
+    """
+    Group consecutive agent background-log messages (from ai-agent.py's report())
+    into a single ThinkingBlock-compatible message for the frontend.
+
+    Detection order (any match → it's a log):
+      1. metadata.is_background_log == True  (set by ai-agent.py after this fix)
+      2. container_id == 'vibecoding-ai-agent'  (legacy rows before the fix)
+      3. metadata.type in log_types AND no code AND no task_plan  (extra safety net)
+
+    Regular user messages, code-bearing assistant messages, and task-breakdown
+    messages are NEVER grouped — they pass through unchanged.
+    """
+    LOG_TYPES = {'status', 'info', 'thinking', 'action', 'celebration', 'question'}
+
+    def _is_log(msg):
+        if msg.get('role') != 'assistant':
+            return False
+        # Messages with suggestions are terminal responses ("Great! Your changes are
+        # working…", "Try these next:") — always show them as normal chat messages.
+        suggestions = msg.get('suggestions')
+        if suggestions and len(suggestions) > 0:
+            return False
+        meta = msg.get('metadata') or {}
+        if meta.get('is_background_log'):
+            return True
+        if msg.get('container_id') == 'vibecoding-ai-agent':
+            return True
+        # Safety-net: agent status message with no code/task data
+        if (meta.get('type') in LOG_TYPES
+                and not msg.get('code')
+                and not meta.get('task_plan')
+                and meta.get('type') != 'task_breakdown'):
+            return True
+        return False
+
+    result = []
+    log_buffer = []
+    group_id = None
+    group_ts = None
+
+    def _flush():
+        nonlocal log_buffer, group_id, group_ts
+        if not log_buffer:
+            return
+        has_error = any(l['level'] == 'error' for l in log_buffer)
+        result.append({
+            'id': group_id,
+            'role': 'assistant',
+            'content': log_buffer[-1]['message'],
+            'timestamp': group_ts,
+            'code': None,
+            'suggestions': None,
+            'metadata': {
+                'type': 'background_execution',
+                'is_background_log': True,
+                'grouped': True,
+                'has_error': has_error,
+            },
+            'thinkingLogs': log_buffer.copy(),
+            'isThinking': False,  # DB messages are always completed
+        })
+        log_buffer = []
+        group_id = None
+        group_ts = None
+
+    for msg in raw_messages:
+        if _is_log(msg):
+            if group_id is None:
+                group_id = msg['id']
+                group_ts = msg.get('timestamp')
+            meta = msg.get('metadata') or {}
+            mtype = meta.get('type', 'status')
+            level = ('error' if mtype == 'error'
+                     else 'success' if mtype in ('success', 'celebration')
+                     else 'info')
+            log_buffer.append({
+                'message': msg.get('content', ''),
+                'timestamp': msg.get('timestamp'),
+                'level': level,
+            })
+        else:
+            _flush()
+            result.append(msg)
+
+    _flush()  # flush any trailing log group
+    return result
+
+
 @app.get("/vibecoding/api/projects/{project_id}/messages")
 async def get_project_messages(project_id: str, background_tasks: BackgroundTasks):
     from auth import get_db
@@ -2126,8 +2215,7 @@ async def get_project_messages(project_id: str, background_tasks: BackgroundTask
         
         messages = []
         startup_messages = [
-            '👋 VibeCoding Agent is online and ready!',
-            '💡 Ready to build! Send me your first message to get started.'
+            '👋 VibeCoding Agent is online and ready!'
         ]
         
         for row in rows:
@@ -2158,6 +2246,11 @@ async def get_project_messages(project_id: str, background_tasks: BackgroundTask
                 if not msg.get("summary") and msg.get("code"):
                     background_tasks.add_task(lazy_summarize_message, msg["id"], msg["content"], msg["code"])
             messages.append(msg)
+
+        # ── Group consecutive agent log messages into ThinkingBlock format ──────
+        # This ensures that after a page reload the logs are still shown collapsed
+        # inside a single ThinkingBlock rather than as individual chat messages.
+        messages = _group_log_messages(messages)
             
         return {"messages": messages}
     finally:
