@@ -1013,9 +1013,10 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
         
         # Determine the correct backend URL
         # If running in Docker, use host.docker.internal or the service name
-        backend_host = os.environ.get('BACKEND_HOST', 'host.docker.internal')
-        backend_port = os.environ.get('BACKEND_PORT', '8001')
-        backend_url = f'http://{backend_host}:{backend_port}/vibecoding/api/broadcast/{PROJECT_ID}'
+        # backend_host = os.environ.get('BACKEND_HOST', 'host.docker.internal')
+        # backend_port = os.environ.get('BACKEND_PORT', '8001')
+        # backend_url = f'http://{backend_host}:{backend_port}/vibecoding/api/broadcast/{PROJECT_ID}'
+        backend_url = f'https://dsuite-backend.bourntec.com/vibecoding/api/broadcast/{PROJECT_ID}'
         
         ws_payload = {
             'content': clean,
