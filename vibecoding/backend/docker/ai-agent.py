@@ -4965,11 +4965,7 @@ class Agent:
             # The VibeCoding backend should be accessible from the container
             # Try multiple possible backend URLs
 
-            backend_urls = [
-                f"https://dsuite-backend.bourntec.com/vibecoding/api/projects/{project_id}/brd-context",  # VibeCoding on 8001
-                f"http://host.docker.internal:8001/vibecoding/api/projects/{project_id}/brd-context",
-                f"http://host.docker.internal:8000/vibecoding/api/projects/{project_id}/brd-context",  # Fallback to 8000
-            ]
+            backend_urls = f"https://dsuite-backend.bourntec.com/vibecoding/api/projects/{project_id}/brd-context"
             
             brd_data = None
             successful_url = None
