@@ -898,7 +898,7 @@ else:
 # ── Configuration ─────────────────────────────────────────────────────────────
 PROJECT_DIR   = Path(os.environ.get('PROJECT_DIR', '/project'))
 WORKSPACE_DIR = PROJECT_DIR / 'workspace'
-DB_PATH       = '/tmp/vibecoding_users.db'
+# DB_PATH is no longer needed - we use API for message persistence
 NGINX_CONF    = '/etc/nginx/sites-available/default'
 PROJECT_ID    = os.environ.get('PROJECT_ID', 'default')
 
@@ -929,26 +929,32 @@ def log(msg: str):
     print(f'🛠️  [Agent] {msg}', flush=True)
 
 
-def _get_db(timeout: int = 15):
-    """Get a robust DB connection with WAL mode enabled."""
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=timeout)
-        conn.row_factory = sqlite3.Row
-        # Always try to enable WAL - it improves performance and prevents some locks
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-        except:
-            pass
-        return conn
-    except Exception as e:
-        log(f"DB Connection failed: {e}")
-        return None
+# ─────────────────────────────────────────────────────────────────────────────
+# DATABASE CONNECTION (DEPRECATED - Now using API)
+# ─────────────────────────────────────────────────────────────────────────────
+# The _get_db() function is no longer needed since we use the backend API
+# for message persistence instead of direct database access.
+# This avoids file permission issues with Docker volume mounts.
+
+# def _get_db(timeout: int = 15):
+#     """Get a robust DB connection with WAL mode enabled."""
+#     try:
+#         conn = sqlite3.connect(DB_PATH, timeout=timeout)
+#         conn.row_factory = sqlite3.Row
+#         try:
+#             conn.execute("PRAGMA journal_mode=WAL")
+#         except:
+#             pass
+#         return conn
+#     except Exception as e:
+#         log(f"DB Connection failed: {e}")
+#         return None
 
 
 def report(msg: str, code: str = None, suggestions: list = None, metadata: dict = None, summary: str = None, message_type: str = None):
     """
-    Persist a user-facing message to the host SQLite DB with rich context.
-    Also broadcast via WebSocket for real-time updates.
+    Send message to backend API instead of writing directly to database.
+    This avoids file permission issues with Docker volume mounts.
     
     Args:
         msg: Main message content
@@ -960,13 +966,6 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
     """
     clean = str(msg).strip()
     print(f'\n💬 {clean}', flush=True)
-
-    if not os.path.exists(DB_PATH):
-        return
-        
-    conn = _get_db()
-    if not conn:
-        return
     
     # Build metadata
     meta = metadata or {}
@@ -1007,17 +1006,45 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
     if not summary:
         summary = _generate_summary(clean)
     
-    # Broadcast via WebSocket for real-time updates
+    # Send to backend API instead of direct database write
     try:
         import requests
         
-        # Determine the correct backend URL
-        # If running in Docker, use host.docker.internal or the service name
-        # backend_host = os.environ.get('BACKEND_HOST', 'host.docker.internal')
-        # backend_port = os.environ.get('BACKEND_PORT', '8001')
-        # backend_url = f'http://{backend_host}:{backend_port}/vibecoding/api/broadcast/{PROJECT_ID}'
-        backend_url = f'https://dsuite-backend.bourntec.com/vibecoding/api/broadcast/{PROJECT_ID}'
+        # Get backend URL from environment variable
+        # Default to host.docker.internal for Docker-to-host communication
+        backend_url = os.environ.get('BACKEND_URL', 'http://host.docker.internal:8001')
+        api_endpoint = f'{backend_url}/vibecoding/api/agent/message'
         
+        payload = {
+            'project_id': PROJECT_ID,
+            'container_id': 'vibecoding-ai-agent',
+            'role': 'assistant',
+            'content': clean,
+            'code': code,
+            'suggestions': suggestions,
+            'metadata': meta,
+            'summary': summary
+        }
+        
+        # Send message to backend API with timeout
+        response = requests.post(api_endpoint, json=payload, timeout=5)
+        
+        if response.status_code == 200:
+            result = response.json()
+            log(f'✅ Message saved via API: {result.get("message_id")}')
+        else:
+            log(f'⚠️ API save failed: {response.status_code} - {response.text}')
+            
+    except requests.exceptions.ConnectionError:
+        log('❌ Cannot connect to backend API - is the backend running?')
+    except requests.exceptions.Timeout:
+        log('⚠️ API request timeout - backend may be slow')
+    except Exception as e:
+        log(f'❌ API error: {e}')
+    
+    # Also broadcast via WebSocket for real-time updates (optional)
+    try:
+        ws_url = f'https://dsuite-backend.bourntec.com/vibecoding/api/broadcast/{PROJECT_ID}'
         ws_payload = {
             'content': clean,
             'type': meta.get('type'),
@@ -1027,44 +1054,9 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
             'code': code,
             'suggestions': suggestions
         }
-        
-        # Non-blocking request with short timeout
-        # This is optional - if it fails, we still write to DB
-        requests.post(backend_url, json=ws_payload, timeout=0.5)
-        
-    except requests.exceptions.ConnectionError:
-        # WebSocket server not available - this is OK, messages still go to DB
-        pass
-    except requests.exceptions.Timeout:
-        # Timeout is OK - don't block the agent
-        pass
-    except Exception as e:
-        # Log other errors but don't fail
-        log(f'WebSocket broadcast failed (non-critical): {e}')
-    
-    try:
-        conn.execute(
-            """INSERT INTO messages
-               (id, project_id, container_id, role, content, code, version_id,
-                timestamp, suggestions, tool_calls, image_paths, metadata, summary)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (f'agent_{int(time.time())}_{uuid.uuid4().hex[:4]}',
-             PROJECT_ID, 'vibecoding-ai-agent', 'assistant',
-             clean, code, None,
-             datetime.now().isoformat(),
-             json.dumps(suggestions) if suggestions else None,
-             None, None,
-             json.dumps(meta) if meta else None,
-             summary)
-        )
-        conn.commit()
-    except Exception as e:
-        print(f'DEBUG: DB write failed: {e}', flush=True)
-    finally:
-        try:
-            conn.close()
-        except:
-            pass
+        requests.post(ws_url, json=ws_payload, timeout=0.5)
+    except:
+        pass  # WebSocket is optional, don't fail if it doesn't work
 
 
 def _generate_contextual_suggestions(message: str, code: str = None) -> list:

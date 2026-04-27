@@ -1203,6 +1203,76 @@ async def save_project_message(project_id: str, request: MessagePersistenceReque
         conn.close()
 
 
+class AgentMessageRequest(BaseModel):
+    """Request model for AI agent to save messages via API"""
+    project_id: str
+    container_id: str
+    role: str
+    content: str
+    code: Optional[str] = None
+    suggestions: Optional[List[dict]] = None
+    metadata: Optional[dict] = None
+    summary: Optional[str] = None
+
+
+@app.post("/vibecoding/api/agent/message")
+async def save_agent_message(request: AgentMessageRequest):
+    """
+    API endpoint for AI agent (running in Docker) to save messages to database.
+    This replaces direct database access from the container.
+    No authentication required - only accessible from Docker network.
+    """
+    try:
+        from auth import get_db
+        import uuid
+        import time
+        
+        conn = get_db()
+        
+        # Generate unique message ID
+        message_id = f'agent_{int(time.time())}_{uuid.uuid4().hex[:4]}'
+        
+        # Insert message into database
+        conn.execute(
+            """INSERT INTO messages
+               (id, project_id, container_id, role, content, code, version_id,
+                timestamp, suggestions, tool_calls, image_paths, metadata, summary)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                message_id,
+                request.project_id,
+                request.container_id,
+                request.role,
+                request.content,
+                request.code,
+                None,  # version_id
+                datetime.now().isoformat(),
+                json.dumps(request.suggestions) if request.suggestions else None,
+                None,  # tool_calls
+                None,  # image_paths
+                json.dumps(request.metadata) if request.metadata else None,
+                request.summary
+            )
+        )
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✅ Agent message saved: {message_id} for project {request.project_id}")
+        
+        return {
+            "success": True,
+            "message_id": message_id,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to save agent message: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save message: {str(e)}"
+        )
+
+
 @app.post("/vibecoding/api/generate", response_model=GenerateResponse)
 async def generate_code(request: GenerateRequest, background_tasks: BackgroundTasks):
     # Get or create project ID at the start

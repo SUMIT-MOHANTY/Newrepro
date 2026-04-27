@@ -73,13 +73,25 @@ class AIAgentManager:
             # Start new container
             logger.info("🚀 Starting AI agent container...")
             
+            # Determine backend URL for API communication
+            # Use environment variable if set, otherwise detect based on deployment
+            backend_url = os.environ.get('BACKEND_URL')
+            if not backend_url:
+                # Check if we're running in production (dsuite-backend.bourntec.com)
+                if os.environ.get('PRODUCTION') == 'true':
+                    backend_url = 'https://dsuite-backend.bourntec.com'
+                else:
+                    # Local development - use host.docker.internal to reach host from container
+                    backend_url = 'http://host.docker.internal:8001'
+            
             # Prepare environment variables dynamically
             env_vars = {
                 "AI_PROVIDER": provider,
                 "AI_API_KEY": api_key,
                 "AI_API_URL": ai_config.base_url,
                 "AI_MODEL": ai_config.ai_model if hasattr(ai_config, 'ai_model') else ai_config.model,
-                "AI_TIMEOUT": "120"
+                "AI_TIMEOUT": "120",
+                "BACKEND_URL": backend_url  # Add backend URL for API communication
             }
             
             # Also forward provider-specific keys for backward compatibility
@@ -88,6 +100,7 @@ class AIAgentManager:
             elif "openai" in provider.lower():
                 env_vars["OPENAI_API_KEY"] = api_key
             
+            logger.info(f"🔗 Agent will communicate with backend at: {backend_url}")
             
             self.agent_container = self.docker_client.containers.run(
                 "vibecoding-agent-runtime:latest",
@@ -96,12 +109,15 @@ class AIAgentManager:
                 remove=False,
                 ports={'8080/tcp': None},  # Auto-assign port
                 environment=env_vars,
+                # Only mount Docker socket - no database mount needed anymore!
                 volumes={
                     '/var/run/docker.sock': {
                         'bind': '/var/run/docker.sock',
                         'mode': 'rw'
                     }
-                }
+                },
+                # Add extra_hosts for Linux compatibility with host.docker.internal
+                extra_hosts={'host.docker.internal': 'host-gateway'} if backend_url.startswith('http://host.docker.internal') else None
             )
             
             # Get assigned port
