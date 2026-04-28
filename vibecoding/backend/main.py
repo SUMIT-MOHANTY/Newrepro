@@ -1500,118 +1500,20 @@ Your analysis:"""
                 metadata={"awaiting_task_breakdown": True, "keep_loader_active": True}
             )
 
-        # 5. Generate dynamic acknowledgement message and suggestions using AI (only for simple tasks)
-        try:
-            # Generate a contextual acknowledgement message
-            ack_prompt = f"""The user requested: "{request.prompt}"
-
-I'm handing this task off to an autonomous agent that will work on it in the background.
-
-Generate a brief, friendly acknowledgement message (1-2 sentences) that:
-- Confirms we're working on their request
-- Mentions what the agent will be doing (be specific based on their request)
-- Reassures them the preview will update automatically
-
-Keep it conversational and encouraging. Don't use technical jargon.
-
-Example for "add a contact form":
-"Got it! I'm building a contact form with validation and styling. The preview will update automatically once it's ready."
-
-Example for "change colors to blue":
-"On it! I'm updating the color scheme to blue throughout your app. You'll see the changes in the preview shortly."
-
-Your message:"""
-
-            ack_response = await ai_config.make_async_request([
-                {"role": "system", "content": "You are a helpful assistant that writes brief, friendly acknowledgement messages."},
-                {"role": "user", "content": ack_prompt}
-            ])
-            delegate_msg = ack_response["choices"][0]["message"].get("content", "").strip() if "choices" in ack_response else None
-            
-            # Fallback if AI fails
-            if not delegate_msg or len(delegate_msg) < 10:
-                delegate_msg = "On it! The agent is now working on your request. The preview will update automatically once deployment is complete."
-            
-            # Generate contextual suggestions
-            suggestions_prompt = f"""The user just requested: "{request.prompt}"
-
-An autonomous agent is now working on this in the background.
-
-Generate 3 short, actionable suggestions (each under 50 characters) for what the user might want to do next.
-These should be natural follow-ups or related enhancements.
-
-Format: One suggestion per line, no numbering, no bullets.
-
-Example for "add a contact form":
-Check the preview once it's ready
-Add email validation
-Style the submit button
-
-Example for "change colors to blue":
-Preview the new color scheme
-Adjust the shade of blue
-Add gradient effects
-
-Your suggestions:"""
-
-            sugg_response = await ai_config.make_async_request([
-                {"role": "system", "content": "You are a helpful assistant that generates concise, actionable suggestions."},
-                {"role": "user", "content": suggestions_prompt}
-            ], temperature=0.7)
-            
-            suggestions_text = sugg_response["choices"][0]["message"].get("content", "") if "choices" in sugg_response else ""
-            suggestions = [s.strip() for s in suggestions_text.strip().split('\n') if s.strip()][:3]
-            
-            # Fallback suggestions
-            if len(suggestions) < 3:
-                suggestions = ["Check the preview", "Describe what to change next", "Add more features"]
-            
-            # Generate summary
-            summary_prompt = f"""Summarize this handoff in one professional sentence for a business stakeholder:
-
-User requested: "{request.prompt}"
-Action: Delegated to autonomous agent for implementation
-
-Summary:"""
-
-            summary_response = await ai_config.make_async_request([
-                {"role": "system", "content": "You are a professional business analyst writing executive summaries."},
-                {"role": "user", "content": summary_prompt}
-            ], temperature=0.3)
-            
-            summary = summary_response["choices"][0]["message"].get("content", "").strip() if "choices" in summary_response else None
-            if not summary or len(summary) < 10:
-                summary = "Handoff to Autonomous Resident Agent completed."
-                
-        except Exception as e:
-            logger.warning(f"Failed to generate dynamic messages: {e}")
-            # Fallback to static messages
-            delegate_msg = "On it! The agent is now working on your request. The preview will update automatically once deployment is complete."
-            suggestions = ["Check the preview", "Describe what to change next", "Add more features"]
-            summary = "Handoff to Autonomous Resident Agent completed."
-
-        # 6. Persist the assistant acknowledgement message
-        msg_id = f"msg_{int(time.time())}_{uuid.uuid4().hex[:4]}"
-        conn = get_db()
-        conn.execute(
-            """INSERT INTO messages
-                (id, project_id, container_id, role, content, code, timestamp, suggestions, summary)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (msg_id, project_id, "vibecoding-ai-agent", "assistant", delegate_msg, None,
-             datetime.now().isoformat(), json.dumps(suggestions), summary)
-        )
-        conn.commit()
-        conn.close()
-
+        # 5. Simple task — keep loader active; the agent sends all messages via WebSocket.
+        #    This ensures the correct order: thinking block → "Thinking completed" → summary with suggestions.
+        #    We deliberately skip generating an immediate ack here so the summary never jumps ahead.
+        logger.info("✅ Simple task — returning empty response; agent will broadcast progress via WebSocket")
         return GenerateResponse(
-            message=delegate_msg,
+            message="",           # Empty keeps the loader active in the frontend
             code=None,
             project_id=project_id,
             version_id="workspace",
             preview_url=preview_url,
-            suggestions=suggestions,
-            summary=summary,
-            message_id=msg_id
+            suggestions=[],
+            summary="",
+            message_id=None,
+            metadata={"keep_loader_active": True}
         )
 
     except Exception as e:
@@ -2193,8 +2095,18 @@ def _group_log_messages(raw_messages: list) -> list:
 
     Regular user messages, code-bearing assistant messages, and task-breakdown
     messages are NEVER grouped — they pass through unchanged.
+
+    KEY BEHAVIOUR: if a log group sits at the TAIL of the message list with no
+    terminal message (suggestions / code / task_plan) after it, we mark it as
+    isThinking=True so the frontend keeps the spinner visible while the agent
+    is still working.  Once a terminal message arrives the group is no longer at
+    the tail and will be flushed with isThinking=False.
     """
     LOG_TYPES = {'status', 'info', 'thinking', 'action', 'celebration', 'question'}
+
+    # Terminal message types / signals that mean the agent has finished a round.
+    TERMINAL_TYPES = {'success', 'celebration', 'task_breakdown', 'task_execution_complete',
+                      'task_execution_failed', 'task_execution_blocked'}
 
     def _is_log(msg):
         if msg.get('role') != 'assistant':
@@ -2217,16 +2129,38 @@ def _group_log_messages(raw_messages: list) -> list:
             return True
         return False
 
+    def _is_terminal(msg):
+        """True when this message signals the agent has finished its current task."""
+        if msg.get('role') != 'assistant':
+            return False
+        meta = msg.get('metadata') or {}
+        if meta.get('type') in TERMINAL_TYPES:
+            return True
+        if meta.get('task_plan') or meta.get('type') == 'task_breakdown':
+            return True
+        suggestions = msg.get('suggestions')
+        if suggestions and len(suggestions) > 0:
+            return True
+        if msg.get('code'):
+            return True
+        content = msg.get('content', '')
+        if '[AGENT] VERIFICATION' in content or 'Your app is live' in content:
+            return True
+        return False
+
     result = []
     log_buffer = []
     group_id = None
     group_ts = None
 
-    def _flush():
+    def _flush(is_tail: bool = False):
         nonlocal log_buffer, group_id, group_ts
         if not log_buffer:
             return
         has_error = any(l['level'] == 'error' for l in log_buffer)
+        # If this group is at the tail and no terminal message has followed,
+        # keep isThinking=True so the frontend spinner stays visible.
+        is_thinking = is_tail and not has_error
         result.append({
             'id': group_id,
             'role': 'assistant',
@@ -2241,17 +2175,22 @@ def _group_log_messages(raw_messages: list) -> list:
                 'has_error': has_error,
             },
             'thinkingLogs': log_buffer.copy(),
-            'isThinking': False,  # DB messages are always completed
+            'isThinking': is_thinking,
         })
         log_buffer = []
         group_id = None
         group_ts = None
+
+    # Track whether the last non-log message was terminal so we can decide
+    # whether a trailing log group should stay in "thinking" state.
+    seen_terminal_after_last_flush = False
 
     for msg in raw_messages:
         if _is_log(msg):
             if group_id is None:
                 group_id = msg['id']
                 group_ts = msg.get('timestamp')
+                seen_terminal_after_last_flush = False  # reset for new group
             meta = msg.get('metadata') or {}
             mtype = meta.get('type', 'status')
             level = ('error' if mtype == 'error'
@@ -2263,10 +2202,16 @@ def _group_log_messages(raw_messages: list) -> list:
                 'level': level,
             })
         else:
-            _flush()
+            # Flush current log group as NOT tail (a real message follows it)
+            _flush(is_tail=False)
             result.append(msg)
+            if _is_terminal(msg):
+                seen_terminal_after_last_flush = True
 
-    _flush()  # flush any trailing log group
+    # Final flush — this group IS at the tail.
+    # isThinking = True only if we haven't seen a terminal message after the
+    # last log group started (meaning the agent is still mid-task).
+    _flush(is_tail=not seen_terminal_after_last_flush)
     return result
 
 

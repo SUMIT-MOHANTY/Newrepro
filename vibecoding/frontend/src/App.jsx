@@ -219,15 +219,23 @@ function Workspace({ user, logout, isAuthenticated }) {
           
           if (!hasRegularMessageAfter || lastBg.isThinking) {
             const updated = [...prev];
+            
+            // Deduplicate: check if this exact log already exists
+            const existingLogs = lastBg.thinkingLogs || [];
+            const isDuplicate = existingLogs.some(
+              log => log.message === newLog.message && 
+                     Math.abs(new Date(log.timestamp) - new Date(newLog.timestamp)) < 1000 // within 1 second
+            );
+            
             updated[lastBgIndex] = {
               ...lastBg,
-              content: content, // Show latest content
+              content: lastBg.content || content, // Keep original content, don't replace
               timestamp: newLog.timestamp,
               metadata: {
                 ...lastBg.metadata,
                 type: type || 'status',
               },
-              thinkingLogs: [...(lastBg.thinkingLogs || []), newLog],
+              thinkingLogs: isDuplicate ? existingLogs : [...existingLogs, newLog], // Append new log only if not duplicate
               isThinking: type !== 'success' && type !== 'error',
             };
             return updated;
@@ -273,6 +281,9 @@ function Workspace({ user, logout, isAuthenticated }) {
       console.log('[WS] Terminal signal detected, stopping loader');
       setLoading(false);
       setIsAutonomousPolling(false);
+      // Do a final DB sync after a short delay to get the fully-persisted,
+      // properly-grouped messages (with isThinking:false, collapsed ThinkingBlock).
+      setTimeout(() => fetchMessages(), 1000);
     }
 
     // ── 3. Refresh file tree whenever agent signals a code update ─────────────
@@ -388,11 +399,23 @@ function Workspace({ user, logout, isAuthenticated }) {
   }, [lastMessageId, verificationStatus, currentProjectId]);
 
   // --- Autonomous Polling Logic ---
+  //
+  // KEY DESIGN: The polling loop must NEVER blindly overwrite setMessages() with
+  // raw DB rows while an agent task is in-flight, because:
+  //   - WebSocket messages build up rich thinkingLogs in memory
+  //   - Raw DB rows (pre-grouped) have isThinking:false and no thinkingLogs
+  //   - Replacing state with DB rows mid-task causes ThinkingBlock to vanish
+  //
+  // FIX: main.py's _group_log_messages() now marks tail log groups isThinking:true
+  // when no terminal message has followed. The polling merges DB messages with the
+  // live in-memory state: non-log messages are synced freely; the live thinking
+  // group is only replaced when the DB version also has isThinking:true (still
+  // in-flight) or when loading has ended.
   useEffect(() => {
     let pollInterval;
     if (isAutonomousPolling && currentProjectId) {
-      setPollCount(0); // Reset counter
-      
+      setPollCount(0);
+
       pollInterval = setInterval(async () => {
         try {
           setPollCount(prev => prev + 1);
@@ -400,124 +423,139 @@ function Workspace({ user, logout, isAuthenticated }) {
           const response = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/messages`, {
             headers: { Authorization: `Bearer ${token}` }
           });
-          
-          // Also fetch tasks to update their status
+
           const tasksResponse = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/tasks`, {
             headers: { Authorization: `Bearer ${token}` }
           }).catch(err => {
             console.warn('Failed to fetch tasks during polling:', err);
             return { data: { tasks: [], total_tasks: 0 } };
           });
-          
+
           if (response.data.messages) {
-             let newMessages = response.data.messages;
-             
-             // ✅ Filter out temporary status messages from polling
-             newMessages = newMessages.filter(msg => !msg.metadata?.temporary);
-             
-             // Inject task plan if we have tasks
-             if (tasksResponse.data.tasks && tasksResponse.data.tasks.length > 0) {
-               const taskPlan = {
-                 project_summary: tasksResponse.data.project_summary || 'Task breakdown',
-                 tasks: tasksResponse.data.tasks,
-                 total_tasks: tasksResponse.data.total_tasks,
-                 completed_count: tasksResponse.data.completed_count,
-                 pending_count: tasksResponse.data.pending_count,
-                 failed_count: tasksResponse.data.failed_count
-               };
-               
-               const taskBreakdownMsgIndex = newMessages.findIndex(msg => 
-                 msg.metadata?.type === 'task_breakdown' || 
-                 msg.metadata?.awaiting_task_selection ||
-                 (msg.content && msg.content.includes('Task Breakdown Complete'))
-               );
-               
-               if (taskBreakdownMsgIndex !== -1) {
-                 newMessages[taskBreakdownMsgIndex] = {
-                   ...newMessages[taskBreakdownMsgIndex],
-                   metadata: {
-                     ...newMessages[taskBreakdownMsgIndex].metadata,
-                     task_plan: taskPlan
-                   }
-                 };
-               } else {
-                 // Create task breakdown message if tasks exist but no message found
-                 console.log('📋 Tasks found but no breakdown message - creating one');
-                 const taskBreakdownMsg = {
-                   id: `task_breakdown_${Date.now()}`,
-                   role: 'assistant',
-                   content: `📋 **Task Breakdown Complete!**\n\n${taskPlan.project_summary}\n\nI've broken this down into **${taskPlan.total_tasks} tasks**. You can:\n• Click "Execute All" to start building automatically\n• Click "Execute" on individual tasks to run them one by one\n• Click "Edit" to modify task descriptions before execution\n\nReady to start building?`,
-                   timestamp: new Date().toISOString(),
-                   metadata: {
-                     type: 'task_breakdown',
-                     task_plan: taskPlan,
-                     awaiting_task_selection: true
-                   }
-                 };
-                 newMessages.push(taskBreakdownMsg);
-               }
-             }
-             
-             setMessages(newMessages);
-             
-             // Check if the last message signals completion or a code update
-             const lastMsg = newMessages[newMessages.length - 1];
-             
-             // 1. If we see a code update, refresh the tree
-             if (lastMsg?.content?.includes("[AGENT] CODE_UPDATE")) {
-                await fetchProjectFiles();
-             }
-             
-             // 2. If we see task breakdown, stop polling and loader
-             if (lastMsg?.metadata?.type === 'task_breakdown' || lastMsg?.metadata?.task_plan) {
-                console.log('✅ Task breakdown detected - stopping polling and loader');
-                setIsAutonomousPolling(false);
-                setLoading(false);
-                return;
-             }
-             
-             // 3. If we see verification or a generic stop signal, end polling
-             if (lastMsg?.content?.includes("[AGENT] VERIFICATION")) {
-                console.log('✅ Verification detected - stopping polling and loader');
-                setIsAutonomousPolling(false);
-                setLoading(false);
-                return;
-             }
-             
-             // 4. If we've polled at least 5 times (15 seconds) and no tasks found, check if we should stop
-             if (pollCount >= 5) {
-                // If no tasks were created and we have a "Got it!" message, stop polling
-                const hasGotItMessage = newMessages.some(msg => 
-                  msg.role === 'assistant' && 
-                  (msg.content?.includes('Got it!') || msg.content?.includes('On it!'))
-                );
-                
-                if (hasGotItMessage && tasksResponse.data.total_tasks === 0) {
-                  console.log('✅ No tasks detected after 15s with acknowledgment - stopping polling and loader');
-                  setIsAutonomousPolling(false);
-                  setLoading(false);
-                  return;
-                }
-             }
-             
-             // 5. Stop polling after 60 seconds (20 polls * 3 seconds) to prevent infinite polling
-             if (pollCount >= 20) {
-                console.log('⏱️ Polling timeout - stopping after 60 seconds');
-                setIsAutonomousPolling(false);
-                setLoading(false);
-                return;
-             }
-             
-             // Log polling status
-             console.log(`🔄 Poll #${pollCount}: ${newMessages.length} messages, ${tasksResponse.data.total_tasks} tasks, loader still active`);
+            let dbMessages = response.data.messages.filter(msg => !msg.metadata?.temporary);
+
+            // ── Inject task plan if tasks exist ─────────────────────────────
+            if (tasksResponse.data.tasks && tasksResponse.data.tasks.length > 0) {
+              const taskPlan = {
+                project_summary: tasksResponse.data.project_summary || 'Task breakdown',
+                tasks: tasksResponse.data.tasks,
+                total_tasks: tasksResponse.data.total_tasks,
+                completed_count: tasksResponse.data.completed_count,
+                pending_count: tasksResponse.data.pending_count,
+                failed_count: tasksResponse.data.failed_count
+              };
+              const tIdx = dbMessages.findIndex(msg =>
+                msg.metadata?.type === 'task_breakdown' ||
+                msg.metadata?.awaiting_task_selection ||
+                (msg.content && msg.content.includes('Task Breakdown Complete'))
+              );
+              if (tIdx !== -1) {
+                dbMessages[tIdx] = {
+                  ...dbMessages[tIdx],
+                  metadata: { ...dbMessages[tIdx].metadata, task_plan: taskPlan }
+                };
+              } else {
+                dbMessages.push({
+                  id: `task_breakdown_${Date.now()}`,
+                  role: 'assistant',
+                  content: `📋 **Task Breakdown Complete!**\n\n${taskPlan.project_summary}\n\nI've broken this down into **${taskPlan.total_tasks} tasks**. You can:\n• Click "Execute All" to start building automatically\n• Click "Execute" on individual tasks to run them one by one\n• Click "Edit" to modify task descriptions before execution\n\nReady to start building?`,
+                  timestamp: new Date().toISOString(),
+                  metadata: { type: 'task_breakdown', task_plan: taskPlan, awaiting_task_selection: true }
+                });
+              }
+            }
+
+            // ── Check terminal signals ───────────────────────────────────────
+            const lastDb = dbMessages[dbMessages.length - 1];
+
+            const isDbTerminal = (
+              lastDb?.metadata?.type === 'task_breakdown' ||
+              lastDb?.metadata?.task_plan ||
+              lastDb?.content?.includes('[AGENT] VERIFICATION') ||
+              lastDb?.suggestions?.length > 0 ||
+              lastDb?.code
+            );
+
+            const hasGotItStop = pollCount >= 5 &&
+              dbMessages.some(m => m.role === 'assistant' &&
+                (m.content?.includes('Got it!') || m.content?.includes('On it!'))) &&
+              tasksResponse.data.total_tasks === 0;
+
+            const isTimedOut = pollCount >= 20;
+
+            if (isDbTerminal || hasGotItStop || isTimedOut) {
+              const reason = isDbTerminal ? 'terminal DB signal' : hasGotItStop ? 'got-it + no tasks' : 'timeout';
+              console.log(`✅ Stopping polling: ${reason}`);
+              setIsAutonomousPolling(false);
+              setLoading(false);
+              // Safe to do a full sync now — agent is done
+              setMessages(dbMessages);
+              return;
+            }
+
+            // ── Safe merge: preserve live thinkingLogs, sync everything else ──
+            // The DB tail group now has isThinking:true (set by main.py fix).
+            // We merge it with the in-memory state so thinkingLogs accumulate.
+            setMessages(prev => {
+              // Find the in-memory live thinking group (isThinking:true)
+              const liveIdx = prev.findLastIndex?.(m =>
+                m.metadata?.is_background_log && m.isThinking
+              ) ?? [...prev].reverse().findIndex(m =>
+                m.metadata?.is_background_log && m.isThinking
+              );
+              const liveMsgIdx = liveIdx >= 0
+                ? (prev.findLastIndex
+                    ? liveIdx
+                    : prev.length - 1 - liveIdx)
+                : -1;
+
+              // Find the DB tail thinking group
+              const dbTailIdx = dbMessages.findLastIndex?.(m =>
+                m.metadata?.is_background_log && m.metadata?.grouped
+              ) ?? [...dbMessages].reverse().findIndex(m =>
+                m.metadata?.is_background_log && m.metadata?.grouped
+              );
+              const dbTailMsgIdx = dbTailIdx >= 0
+                ? (dbMessages.findLastIndex
+                    ? dbTailIdx
+                    : dbMessages.length - 1 - dbTailIdx)
+                : -1;
+
+              if (liveMsgIdx < 0 || dbTailMsgIdx < 0) {
+                // No live thinking group in memory — safe to sync DB directly
+                return dbMessages;
+              }
+
+              // Merge: use DB as base but keep the live thinkingLogs and isThinking:true
+              const liveMsg = prev[liveMsgIdx];
+              const dbTailMsg = dbMessages[dbTailMsgIdx];
+
+              // Merge thinkingLogs: DB logs first (deduplicated), then any extra live ones
+              const dbLogContents = new Set((dbTailMsg.thinkingLogs || []).map(l => l.message));
+              const extraLiveLogs = (liveMsg.thinkingLogs || []).filter(l => !dbLogContents.has(l.message));
+              const mergedLogs = [...(dbTailMsg.thinkingLogs || []), ...extraLiveLogs];
+
+              const merged = dbMessages.map((m, i) =>
+                i === dbTailMsgIdx
+                  ? { ...m, thinkingLogs: mergedLogs, isThinking: true }
+                  : m
+              );
+
+              return merged;
+            });
+
+            if (lastDb?.content?.includes('[AGENT] CODE_UPDATE')) {
+              await fetchProjectFiles();
+            }
+
+            console.log(`🔄 Poll #${pollCount}: ${dbMessages.length} DB msgs, ${tasksResponse.data.total_tasks} tasks`);
           }
         } catch (e) {
-          console.error("Polling error:", e);
-          // ✅ Stop polling on error to prevent infinite loops
+          console.error('Polling error:', e);
           setIsAutonomousPolling(false);
           setLoading(false);
         }
-      }, wsConnected ? 8000 : 2000); // slow down polling when WS is handling updates
+      }, wsConnected ? 5000 : 2000);
     }
     return () => {
       if (pollInterval) clearInterval(pollInterval);
@@ -1444,17 +1482,9 @@ function Workspace({ user, logout, isAuthenticated }) {
       images: imageDataUrls.length > 0 ? imageDataUrls : undefined,
       timestamp: new Date().toISOString()
     };
-    
-    // ✅ Add initial status message for immediate feedback
-    const initialStatusMessage = {
-      role: 'assistant',
-      content: '🚀 Initializing workspace...',
-      timestamp: new Date().toISOString(),
-      metadata: { type: 'status', temporary: true }
-    };
 
-    // Add user message and initial status to state immediately for UX
-    setMessages(prev => [...prev, userMessage, initialStatusMessage]);
+    // Add user message to state immediately for UX
+    setMessages(prev => [...prev, userMessage]);
     const currentInput = input;
     setInput('');
 
@@ -1469,9 +1499,6 @@ function Workspace({ user, logout, isAuthenticated }) {
         payload.images = imageDataUrls;
       }
       const response = await axios.post(`${API_BASE_URL}/api/generate`, payload);
-
-      // ✅ Remove temporary status message
-      setMessages(prev => prev.filter(msg => !msg.metadata?.temporary));
 
       const aiMessage = {
         role: 'assistant',
@@ -1516,16 +1543,16 @@ function Workspace({ user, logout, isAuthenticated }) {
         // Don't call setLoading(false) here!
         
         // ✅ Add safety timeout to prevent infinite loading (90 seconds)
-        setTimeout(() => {
-          setLoading(prev => {
-            if (prev) {
-              console.log('⏱️ Safety timeout - forcing loader off after 90 seconds');
-              setIsAutonomousPolling(false);
-              return false;
-            }
-            return prev;
-          });
-        }, 90000);
+        // setInterval(() => {
+        //   setLoading(prev => {
+        //     if (prev) {
+        //       console.log('⏱️ Safety timeout - forcing loader off after 90 seconds');
+        //       setIsAutonomousPolling(false);
+        //       // return false;
+        //     }
+        //     return prev;
+        //   });
+        // }, 9999);
       } else {
         // In discuss mode, stop loader immediately
         console.log('💬 Discuss mode - stopping loader');

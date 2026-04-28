@@ -15,6 +15,7 @@ const ThinkingBlock = ({ logs, status, title, darkMode, autoScroll = false }) =>
 
   const isThinking = status === 'thinking';
   const hasError = status === 'error' || logs.some(l => l.level === 'error');
+  const latestLog = logs[logs.length - 1]; // Get the most recent log for preview
 
   return (
     <div className={cn(
@@ -31,38 +32,51 @@ const ThinkingBlock = ({ logs, status, title, darkMode, autoScroll = false }) =>
           darkMode ? "hover:bg-white/5" : "hover:bg-gray-100"
         )}
       >
-        <div className="flex items-center gap-2">
+        <div className="flex-1 min-w-0 flex items-start gap-2">
           {isThinking ? (
             <Loader2 className={cn(
-              "w-4 h-4 animate-spin",
+              "w-4 h-4 animate-spin flex-shrink-0 mt-0.5",
               darkMode ? "text-purple-400" : "text-blue-500"
             )} />
           ) : hasError ? (
-            <XCircle className="w-4 h-4 text-red-500" />
+            <XCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
           ) : (
-            <CheckCircle2 className="w-4 h-4 text-green-500" />
+            <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0 mt-0.5" />
           )}
-          <span className={cn(
-            "text-sm font-medium",
-            darkMode ? "text-gray-200" : "text-gray-700"
-          )}>
-            {title || (isThinking ? 'Thinking...' : 'Thinking completed')}
-          </span>
-          <span className={cn(
-            "text-xs",
-            darkMode ? "text-gray-500" : "text-gray-400"
-          )}>
-            ({logs.length} {logs.length === 1 ? 'step' : 'steps'})
-          </span>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <span className={cn(
+                "text-sm font-medium",
+                darkMode ? "text-gray-200" : "text-gray-700"
+              )}>
+                {title || (isThinking ? 'Thinking...' : 'Thinking completed')}
+              </span>
+              <span className={cn(
+                "text-xs",
+                darkMode ? "text-gray-500" : "text-gray-400"
+              )}>
+                ({logs.length} {logs.length === 1 ? 'step' : 'steps'})
+              </span>
+            </div>
+            {/* Show latest log message as preview when collapsed */}
+            {!isExpanded && latestLog && (
+              <p className={cn(
+                "text-xs leading-relaxed truncate",
+                darkMode ? "text-gray-400" : "text-gray-500"
+              )}>
+                {latestLog.message}
+              </p>
+            )}
+          </div>
         </div>
         {isExpanded ? (
           <ChevronUp className={cn(
-            "w-4 h-4",
+            "w-4 h-4 flex-shrink-0",
             darkMode ? "text-gray-400" : "text-gray-500"
           )} />
         ) : (
           <ChevronDown className={cn(
-            "w-4 h-4",
+            "w-4 h-4 flex-shrink-0",
             darkMode ? "text-gray-400" : "text-gray-500"
           )} />
         )}

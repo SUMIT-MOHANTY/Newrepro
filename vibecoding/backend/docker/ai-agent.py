@@ -176,7 +176,7 @@ issues: list of strings describing anything wrong or missing.
 # ─────────────────────────────────────────────────────────────────────────────
 
 _SKIP_DIRS  = {"node_modules", ".git", "dist", "build", "__pycache__", ".vibecoding"}
-_SKIP_FILES = {".DS_Store", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"}
+_SKIP_FILES = {".DS_Store", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "metadata.json"}
 _TEXT_EXTS  = {
     ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte",
     ".py", ".go", ".rs", ".java", ".kt", ".swift", ".c", ".cpp", ".cs",
@@ -1012,7 +1012,8 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
         
         # Get backend URL from environment variable
         # Default to host.docker.internal for Docker-to-host communication
-        backend_url = os.environ.get('BACKEND_URL', 'http://host.docker.internal:8001')
+        # backend_url = os.environ.get('BACKEND_URL', 'http://host.docker.internal:8001')
+        backend_url = os.environ.get('BACKEND_URL', 'https://dsuite-backend.bourntec.com/vibecoding')
         api_endpoint = f'{backend_url}/vibecoding/api/agent/message'
         
         payload = {
@@ -1174,6 +1175,80 @@ def _generate_summary(message: str) -> str:
         return summary
     
     return clean[:100]
+
+
+def _generate_ai_suggestions_for_success(user_prompt: str, changed_files: list = None) -> list:
+    """
+    Use AI to generate 3 contextual suggestions for what the user might want to do next
+    after successfully deploying their app.
+    """
+    try:
+        # Build context about what was done
+        context = f"User requested: {user_prompt}\n"
+        if changed_files:
+            context += f"Files modified: {', '.join(changed_files[:5])}\n"
+        
+        suggestion_prompt = f"""Based on what was just built/deployed, suggest exactly 3 short, actionable next steps the user might want to take.
+
+{context}
+
+Each suggestion should be:
+- A natural follow-up to enhance or extend what was created
+- Under 50 characters
+- Actionable and specific
+- Written as a complete sentence that could be sent as a prompt
+
+Respond with ONLY valid JSON (no markdown fences):
+{{
+  "suggestions": [
+    {{"text": "Add user authentication", "icon": "🔐"}},
+    {{"text": "Make it mobile responsive", "icon": "📱"}},
+    {{"text": "Add a dark mode toggle", "icon": "🌙"}}
+  ]
+}}
+"""
+        
+        response = call_ai([
+            {'role': 'system', 'content': 'You are a helpful assistant that suggests next steps. Output only valid JSON.'},
+            {'role': 'user', 'content': suggestion_prompt}
+        ], temperature=0.7, show_thinking=False)
+        
+        # Parse JSON response
+        try:
+            # Try to extract JSON from response
+            response_text = response.strip()
+            if '```json' in response_text:
+                response_text = response_text.split('```json')[1].split('```')[0].strip()
+            elif '```' in response_text:
+                response_text = response_text.split('```')[1].split('```')[0].strip()
+            
+            data = json.loads(response_text)
+            suggestions_list = data.get('suggestions', [])
+            
+            # Convert to the format expected by the frontend
+            formatted_suggestions = []
+            for sug in suggestions_list[:3]:
+                formatted_suggestions.append({
+                    'text': sug.get('text', ''),
+                    'icon': sug.get('icon', '✨'),
+                    'action': 'custom',
+                    'prompt': sug.get('text', '')
+                })
+            
+            if len(formatted_suggestions) == 3:
+                return formatted_suggestions
+        except json.JSONDecodeError as e:
+            log(f'Failed to parse AI suggestions JSON: {e}')
+        
+    except Exception as e:
+        log(f'Failed to generate AI suggestions: {e}')
+    
+    # Fallback to generic suggestions if AI fails
+    return [
+        {'text': 'Make changes', 'action': 'edit', 'icon': '✏️', 'prompt': 'I want to make some changes'},
+        {'text': 'Add features', 'action': 'add_feature', 'icon': '✨', 'prompt': 'Add a new feature'},
+        {'text': 'Fix issues', 'action': 'fix', 'icon': '🔧', 'prompt': 'Fix any issues'}
+    ]
 
 
 def _generate_next_step_suggestions(user_prompt: str, changed_files: dict, test_results: list) -> list:
@@ -1697,59 +1772,58 @@ def call_ai(messages: list, temperature: float = 0.2, show_thinking: bool = True
 
 def _extract_and_show_thinking(response_text: str):
     """
-    Extract and show AI's thinking from response.
-    Looks for:
-    1. "thinking" field in JSON responses
-    2. Text before first code/file marker
-    3. Explanatory text at the start
+    Extract and show AI's thinking from response — conservative version.
+
+    Only reports thinking when the content is clearly intentional:
+      1. Explicit <thinking>…</thinking> XML tags
+      2. A "thinking" / "thought" / "analysis" key in a JSON response
+      3. Text before the first file/code marker that forms a complete sentence
+         and is short enough to not be partial content (≤ 200 chars)
+
+    Half-sentences and code preambles are silently ignored.
     """
-    # Try to extract from JSON first
+    import re as _re
+
+    # ── 1. Explicit <thinking> XML block ────────────────────────────────────
+    xml_match = _re.search(r'<thinking>(.*?)</thinking>', response_text, _re.DOTALL | _re.IGNORECASE)
+    if xml_match:
+        thinking = xml_match.group(1).strip()
+        if thinking and 10 < len(thinking) < 600:
+            report(f'💡 {thinking}', message_type='thinking')
+            log(f'AI thinking (xml): {thinking[:100]}')
+            return
+
+    # ── 2. JSON "thinking" field ─────────────────────────────────────────────
     try:
-        # Clean markdown code fences
-        cleaned = re.sub(r'^```[a-z]*\n?', '', response_text.strip(), flags=re.MULTILINE)
-        cleaned = re.sub(r'\n?```$', '', cleaned.strip(), flags=re.MULTILINE)
-        
-        # Try to find JSON
-        m = re.search(r'\{.*\}', cleaned, re.DOTALL)
-        if m:
-            try:
-                data = json.loads(m.group(0))
-                thinking = data.get('thinking') or data.get('thought') or data.get('analysis')
-                if thinking and isinstance(thinking, str) and 10 < len(thinking) < 500:
-                    report(f'💡 {thinking}')
-                    log(f'AI thinking: {thinking}')
-                    return
-            except:
-                pass
-    except:
-        pass
-    
-    # Try to extract text before first marker (FILE:, PATCH:, code fence, etc.)
-    markers = [
-        r'(?://|#|<!--)\s*(?:FILE|PATCH):',  # File/patch markers
-        r'^```',  # Code fences
-        r'^\{',  # JSON start
-    ]
-    
-    for marker_pattern in markers:
-        match = re.search(marker_pattern, response_text, re.MULTILINE)
-        if match:
-            thinking = response_text[:match.start()].strip()
-            # Clean up common prefixes
-            thinking = re.sub(r'^(Sure|Okay|Alright|Got it)[,!.]?\s*', '', thinking, flags=re.IGNORECASE)
-            thinking = re.sub(r'^(I will|I\'ll|Let me)\s+', '', thinking, flags=re.IGNORECASE)
-            
-            if thinking and 10 < len(thinking) < 500:
-                report(f'💡 {thinking}')
-                log(f'AI thinking: {thinking}')
+        cleaned = _re.sub(r'^```[a-z]*\n?', '', response_text.strip(), flags=_re.MULTILINE)
+        cleaned = _re.sub(r'\n?```$', '', cleaned.strip(), flags=_re.MULTILINE)
+        json_m = _re.search(r'\{.*\}', cleaned, _re.DOTALL)
+        if json_m:
+            data = json.loads(json_m.group(0))
+            thinking = data.get('thinking') or data.get('thought') or data.get('analysis')
+            if thinking and isinstance(thinking, str) and 10 < len(thinking) < 400:
+                report(f'💡 {thinking}', message_type='thinking')
+                log(f'AI thinking (json): {thinking[:100]}')
                 return
-    
-    # If response is short and looks like an explanation, show it
-    if len(response_text) < 300 and not any(marker in response_text for marker in ['```', '//', '<<<', '>>>']):
-        thinking = response_text.strip()
-        if thinking and 10 < len(thinking) < 300:
-            report(f'💡 {thinking}')
-            log(f'AI thinking: {thinking}')
+    except Exception:
+        pass
+
+    # ── 3. Text before first file/code marker — only if complete & concise ──
+    first_marker = _re.search(
+        r'(?://|#|<!--)\s*(?:FILE|PATCH):|^```|^\{',
+        response_text, _re.MULTILINE
+    )
+    if first_marker:
+        pre = response_text[:first_marker.start()].strip()
+        # Strip common filler phrases
+        pre = _re.sub(r'^(Sure|Okay|Alright|Got it|Certainly)[,!.]?\s*', '', pre, flags=_re.IGNORECASE)
+        pre = _re.sub(r'^(I will|I\'ll|Let me)\s+', '', pre, flags=_re.IGNORECASE)
+        # Only report if: reasonably short AND ends with sentence-ending punctuation
+        # (avoids cut-off mid-sentence text)
+        if pre and 10 < len(pre) <= 200 and pre[-1] in '.!?':
+            report(f'💡 {pre}', message_type='thinking')
+            log(f'AI thinking (pre-marker): {pre[:100]}')
+
 
 
 # ── Phase 1: Code Generation ───────────────────────────────────────────────────
@@ -2912,13 +2986,64 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
                 log(f'❌ Error updating nginx config for port mismatch: {e}')
         
         if healthy:
-            report('🎉 Your app is live! The preview should appear any moment now.',
-                   suggestions=[
-                       {'text': 'Make changes', 'action': 'edit', 'icon': '✏️', 'prompt': 'I want to make some changes'},
-                       {'text': 'Add features', 'action': 'add_feature', 'icon': '✨', 'prompt': 'Add a new feature'},
-                       {'text': 'Fix issues', 'action': 'fix', 'icon': '🔧', 'prompt': 'Fix any issues'}
-                   ],
-                   metadata={'status': 'success', 'app_port': app_port, 'deployment_time': time.time()},
+            # Generate dynamic AI suggestions based on what was built
+            ai_suggestions = _generate_ai_suggestions_for_success(user_prompt, changed_files)
+
+            # ── Build compact file-diff footer ──────────────────────────────
+            # Show which files were added / modified in a git-style summary.
+            # If changed_files is empty (new project), scan the workspace.
+            files_for_diff = changed_files or []
+            if not files_for_diff:
+                try:
+                    files_for_diff = [
+                        str(p.relative_to(WORKSPACE_DIR))
+                        for p in WORKSPACE_DIR.rglob('*')
+                        if p.is_file()
+                        and p.name not in ('metadata.json',)
+                        and '.git' not in p.parts
+                        and 'node_modules' not in p.parts
+                    ]
+                except Exception:
+                    files_for_diff = []
+
+            is_new_project = not bool(error_context) and not bool(changed_files)
+
+            # Build structured file-diff data for the frontend green bar.
+            # Do NOT embed file info in the message text - the UI renders it
+            # as a clean "filename +N" bar above the input box instead.
+            file_diff_data = []
+            for fp in files_for_diff[:50]:   # cap at 50
+                try:
+                    line_count = len((WORKSPACE_DIR / fp).read_text(encoding='utf-8', errors='ignore').splitlines())
+                except Exception:
+                    line_count = 0
+                file_diff_data.append({
+                    "path": fp,
+                    "name": os.path.basename(fp),
+                    "lines": line_count,
+                    "marker": "\u2746" if is_new_project else "\u25b3",
+                })
+
+            # Keep the success message clean - no file blocks embedded in text
+            success_msg = '🎉 Your app is live! The preview should appear any moment now.'
+
+            # Compact attachment payload for the frontend green bar
+            file_attachments = {
+                "files": [f["path"] for f in file_diff_data],
+                "diff": file_diff_data,
+            } if file_diff_data else None
+            
+            report(success_msg,
+                   suggestions=ai_suggestions,
+                   metadata={
+                       'status': 'success',
+                       'app_port': app_port,
+                       'deployment_time': time.time(),
+                       'is_final_message': True,
+                       'changed_files': files_for_diff,
+                       'is_new_project': is_new_project,
+                       'file_attachments': file_attachments,
+                   },
                    summary='App deployed successfully')
             
             # If this was an edit with changes, automatically test them
@@ -5421,16 +5546,23 @@ Use `TASK:START` to continue execution.
                 changed_files = edit_result["files_changed"]
                 user_prompt = prompt
                 
+                # Format file attachments for clean UI display
+                file_attachments = {
+                    "files": [os.path.basename(f) for f in changed_files[:50]]  # Only filenames, cap at 50
+                } if changed_files else None
+                
                 # Report to user
                 if edit_result["verify_ok"]:
                     report(f'Changes applied successfully!\n\n{edit_result["plan_summary"]}',
                         message_type='success',
-                        summary=f'Modified {len(changed_files)} file(s)')
+                        summary=f'Modified {len(changed_files)} file(s)',
+                        metadata={'file_attachments': file_attachments})
                 else:
                     report(f'Changes applied but verification found issues:\n' + 
                         '\n'.join(f'• {issue}' for issue in edit_result["verify_issues"]),
                         message_type='warning',
-                        summary='Changes applied with warnings')
+                        summary='Changes applied with warnings',
+                        metadata={'file_attachments': file_attachments})
             
             else:
                 # EditEngine failed - fall back to legacy

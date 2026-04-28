@@ -43,7 +43,13 @@ const Header = ({
     if (!projectName.trim()) return;
 
     try {
-      const response = await axios.post(`${API_BASE_URL}/api/projects`, { name: projectName.trim() });
+      const token = localStorage.getItem('vibecoding_token');
+      const response = await axios.post(`${API_BASE_URL}/api/projects`, 
+        { name: projectName.trim() },
+        {
+          headers: { Authorization: `Bearer ${token}` }
+        }
+      );
 
       const newProjectId = response.data.project_id;
       setCurrentProjectId(newProjectId);
@@ -52,7 +58,7 @@ const Header = ({
       setShowProjectModal(false);
       setProjectName('');
 
-      // Call parent callback to clear chat
+      // Call parent callback FIRST to clear chat state
       if (onCreateProject) {
         onCreateProject(newProjectId);
       }
@@ -60,6 +66,7 @@ const Header = ({
       window.location.href = `/vibecoding/a/${newProjectId}`;
     } catch (error) {
       console.error('Failed to create project:', error);
+      alert('Failed to create project. Please try again.');
     }
   };
 

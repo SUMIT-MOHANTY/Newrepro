@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import { Sparkles, Bot, RefreshCw, MoreHorizontal } from 'lucide-react';
+import { Sparkles, Bot, RefreshCw, MoreHorizontal, X } from 'lucide-react';
 import { Button } from './ui/button';
 import { cn } from '@/lib/utils';
 import ChatMessage from './ChatMessage';
@@ -76,43 +76,81 @@ const ChatPanel = ({
     };
   }, []);
 
-  // Group messages with their thinking logs
-  // const messages = React.useMemo(() => {
-  //   const result = [];
-  //   let currentThinkingLogs = [];
-  //   let lastNonThinkingMessage = null;
+  // Persist the last known thinking logs across renders so the ThinkingBlock
+  // stays visible during the long AI-generation gap (when no new log messages
+  // arrive but loading is still true).
+  const lastThinkingLogsRef = React.useRef([]);
 
-  //   messages.forEach((message, idx) => {
-  //     if (message.metadata?.type === 'thinking') {
-  //       // Accumulate thinking logs
-  //       currentThinkingLogs.push({
-  //         message: message.content,
-  //         timestamp: message.timestamp,
-  //         level: 'info'
-  //       });
-  //     } else {
-  //       // Non-thinking message
-  //       if (currentThinkingLogs.length > 0 && lastNonThinkingMessage) {
-  //         // Attach accumulated logs to the last non-thinking message
-  //         lastNonThinkingMessage.thinkingLogs = currentThinkingLogs;
-  //         currentThinkingLogs = [];
-  //       }
-        
-  //       const processedMsg = { ...message, thinkingLogs: [] };
-  //       result.push(processedMsg);
-  //       lastNonThinkingMessage = processedMsg;
-  //     }
-  //   });
+  // Group messages: attach thinking logs to the next non-thinking message
+  // NOTE: Messages from WebSocket already have thinkingLogs accumulated in App.jsx
+  // We only need to process messages that don't already have thinkingLogs
+  const processedMessages = React.useMemo(() => {
+    const result = [];
+    let pendingThinkingLogs = [];
 
-  //   // If there are remaining thinking logs and we're loading, attach to last message
-  //   if (currentThinkingLogs.length > 0 && lastNonThinkingMessage) {
-  //     lastNonThinkingMessage.thinkingLogs = currentThinkingLogs;
-  //     lastNonThinkingMessage.isThinking = loading;
-  //   }
+    messages.forEach((message) => {
+      // If message already has thinkingLogs (from WebSocket handler), use it as-is
+      if (message.thinkingLogs && message.thinkingLogs.length > 0) {
+        result.push(message);
+        return;
+      }
 
-  //   return result;
-  // }, [messages, loading]);
+      // Check if this is a thinking/background log message
+      const isThinkingMsg = message.metadata?.is_background_log || message.metadata?.type === 'thinking';
+      
+      if (isThinkingMsg) {
+        // Accumulate thinking logs
+        pendingThinkingLogs.push({
+          message: message.content,
+          timestamp: message.timestamp,
+          level: message.metadata?.level || 'info'
+        });
+      } else {
+        // Non-thinking message - attach any pending thinking logs BEFORE this message
+        const processedMsg = { 
+          ...message, 
+          thinkingLogs: pendingThinkingLogs.length > 0 ? [...pendingThinkingLogs] : [],
+          isThinking: false
+        };
+        result.push(processedMsg);
+        pendingThinkingLogs = []; // Clear after attaching
+      }
+    });
 
+    if (loading) {
+      // Keep the last known thinking logs alive even when pendingThinkingLogs is
+      // temporarily empty (the backend is generating code, not sending log msgs).
+      if (pendingThinkingLogs.length > 0) {
+        lastThinkingLogsRef.current = [...pendingThinkingLogs];
+      }
+
+      const logsToShow = lastThinkingLogsRef.current;
+      if (logsToShow.length > 0) {
+        // Check if the last result item is already a thinking placeholder to avoid duplicates
+        const lastItem = result[result.length - 1];
+        const alreadyHasThinking = lastItem?.isThinking === true;
+
+        if (!alreadyHasThinking) {
+          result.push({
+            role: 'assistant',
+            content: '',
+            thinkingLogs: logsToShow,
+            isThinking: true,
+            metadata: { is_background_log: true, type: 'thinking' },
+            timestamp: new Date().toISOString()
+          });
+        }
+      }
+    } else {
+      // Reset persisted logs once loading finishes so stale logs don't bleed
+      // into the next request.
+      lastThinkingLogsRef.current = [];
+    }
+
+    return result;
+  }, [messages, loading]);
+
+  const [dismissedAttachmentKey, setDismissedAttachmentKey] = React.useState(null);
   const [width, setWidth] = React.useState(384); // Default 96 tailwind class is 384px
   const isResizing = useRef(false);
 
@@ -281,29 +319,111 @@ const ChatPanel = ({
           </div>
         )}
 
-        {messages.map((message, idx) => (
-          <ChatMessage
-            key={idx}
-            message={message}
-            darkMode={darkMode}
-            codeVersions={codeVersions}
-            selectedVersion={selectedVersion}
-            onLoadVersion={onLoadVersion}
-            onCopyMessage={onCopyMessage}
-            onRegenerate={onRegenerate}
-            onSuggestionClick={setInput}
-            onExecuteTask={onExecuteTask}
-            onExecuteAllTasks={onExecuteAllTasks}
-            onEditTask={onEditTask}
-            executingTaskId={executingTaskId}
-          />
-        ))}
+        {processedMessages.map((message, idx) => {
+          return (
+            <ChatMessage
+              key={idx}
+              message={message}
+              darkMode={darkMode}
+              codeVersions={codeVersions}
+              selectedVersion={selectedVersion}
+              onLoadVersion={onLoadVersion}
+              onCopyMessage={onCopyMessage}
+              onRegenerate={onRegenerate}
+              onSuggestionClick={setInput}
+              onExecuteTask={onExecuteTask}
+              onExecuteAllTasks={onExecuteAllTasks}
+              onEditTask={onEditTask}
+              executingTaskId={executingTaskId}
+            />
+          );
+        })}
+
+        {/* Loading indicator with dotted animation — only show when there are no
+            thinking logs yet (very start of a request before any logs arrive) */}
+        {loading && (processedMessages.length === 0 || (
+          !processedMessages[processedMessages.length - 1]?.isThinking &&
+          lastThinkingLogsRef.current.length === 0
+        )) && (
+          <div className="flex gap-3">
+            <div className={cn(
+              'flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center',
+              darkMode ? 'bg-white/5' : 'bg-gray-100'
+            )}>
+              <Sparkles className={cn('w-4 h-4', darkMode ? 'text-gray-400' : 'text-gray-600')} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className={cn(
+                'rounded-lg px-4 py-3',
+                darkMode ? 'bg-white/5 text-gray-200' : 'bg-gray-100 text-gray-900'
+              )}>
+                <div className="flex items-center gap-2">
+                  <div className="flex gap-1">
+                    <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                    <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                    <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div ref={messagesEndRef} />
       </div>
 
       {/* Input - Fixed at bottom */}
       <div className="flex-shrink-0">
+        {/* File Attachments Display - Clean dismissible bar above input */}
+        {(() => {
+          const lastMessage = [...processedMessages].reverse().find(m => m.role === "assistant");
+          const fileAttachments = lastMessage?.metadata?.file_attachments;
+          
+          if (!fileAttachments?.files?.length) return null;
+
+          const files = fileAttachments.files;
+          const diffData = fileAttachments.diff || []; // rich data with line counts
+          // Build a stable key from the file list so dismissal resets when new files arrive
+          const attachmentKey = files.join('|');
+          if (attachmentKey === dismissedAttachmentKey) return null;
+
+          // Build display: all files with line counts, no triangle
+          const displayItems = diffData.length > 0
+            ? diffData.map(f => `${f.name} +${f.lines}`)
+            : files.map(f => f.split('/').pop());
+
+          return (
+            <div className={cn(
+              "flex items-center justify-between gap-2 px-4 py-1.5 border-b",
+              darkMode ? "border-white/10" : "border-gray-200"
+            )}>
+              <span className={cn(
+                "text-[11px] font-medium tracking-tight",
+                darkMode ? "text-green-400" : "text-green-600"
+              )}>
+                {displayItems.map((item, i) => (
+                  <span key={i}>
+                    {i > 0 && <span className={cn("mx-1.5 opacity-30", darkMode ? "text-green-400" : "text-green-600")}>·</span>}
+                    {item}
+                  </span>
+                ))}
+              </span>
+              <button
+                onClick={() => setDismissedAttachmentKey(attachmentKey)}
+                className={cn(
+                  "flex-shrink-0 rounded p-0.5 transition-colors",
+                  darkMode
+                    ? "text-gray-500 hover:text-gray-300 hover:bg-white/10"
+                    : "text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+                )}
+                title="Dismiss"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          );
+        })()}
+        
         <ChatInput
           input={input}
           setInput={setInput}
