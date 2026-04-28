@@ -230,15 +230,6 @@ class ProjectManager:
         logger.info(f"🚀 Starting unified container {cname} for project {pid}")
 
         # Locate the host DB file so the agent can write chat messages
-        db_path = None
-        for cand in [
-            Path(os.getcwd()) / "vibecoding_users.db",
-            Path(os.getcwd()) / "backend" / "vibecoding_users.db",
-            Path(__file__).parent / "vibecoding_users.db",
-        ]:
-            if cand.exists():
-                db_path = str(cand.absolute())
-                break
 
         env_vars = {
             # USE_BRN_LLAMA toggle (DSuite-style)
@@ -270,8 +261,6 @@ class ProjectManager:
         }
 
         volumes = {str(project_dir.absolute()): {'bind': '/project', 'mode': 'rw'}}
-        if db_path:
-            volumes[db_path] = {'bind': '/tmp/vibecoding_users.db', 'mode': 'rw'}
 
         try:
             container = self.docker_client.containers.run(
