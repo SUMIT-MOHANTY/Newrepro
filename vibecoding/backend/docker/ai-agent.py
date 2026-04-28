@@ -24,7 +24,7 @@ import requests
 import threading
 import queue
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
 # Import task-based development modules
@@ -1013,7 +1013,7 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
         # Get backend URL from environment variable
         # Default to host.docker.internal for Docker-to-host communication
         # backend_url = os.environ.get('BACKEND_URL', 'http://host.docker.internal:8001')
-        backend_url = os.environ.get('BACKEND_URL', 'https://dsuite-backend.bourntec.com/vibecoding')
+        backend_url = os.environ.get('BACKEND_URL', 'https://dsuite-backend.bourntec.com')
         api_endpoint = f'{backend_url}/vibecoding/api/agent/message'
         
         payload = {
@@ -1051,7 +1051,7 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
             'type': meta.get('type'),
             'summary': summary,
             'metadata': meta,
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'code': code,
             'suggestions': suggestions
         }
@@ -5379,7 +5379,7 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
             
             if result['success']:
                 task.status = 'completed'
-                task.completed_at = datetime.now().isoformat()
+                task.completed_at = datetime.now(timezone.utc).isoformat()
                 self.task_planner._save_state()
                 
                 # Send completion message - ONLY status update, not full task plan
