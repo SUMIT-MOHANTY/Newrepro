@@ -394,7 +394,7 @@ const ChatMessage = ({
             )}
             
             {/* Skip rendering main content for background logs — shown in ThinkingBlock above */}
-            {message.metadata?.is_background_log && !message.thinkingLogs ? null : (
+            {message.metadata?.is_background_log && message.thinkingLogs && message.thinkingLogs.length > 0 ? null : (
               <>
             
             {/* Task Breakdown Display */}

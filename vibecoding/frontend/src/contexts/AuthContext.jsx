@@ -165,7 +165,13 @@ export function AuthProvider({ children }) {
     isAuthenticated: !!user,
     login,
     signup: useCallback(async (username, email, password, fullName) => {
-      // ... signup logic
+      const response = await axios.post(`${API_BASE_URL}/api/auth/signup`, {
+        username,
+        email,
+        password,
+        full_name: fullName
+      });
+      return response.data;
     }, []),
     logout,
     refreshToken,
