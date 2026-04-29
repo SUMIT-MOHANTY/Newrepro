@@ -166,6 +166,7 @@ function Workspace({ user, logout, isAuthenticated }) {
   const [frozenFiles, setFrozenFiles] = useState([]);
   const [freezeLoading, setFreezeLoading] = useState(false);
   const [isAutonomousPolling, setIsAutonomousPolling] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(false);
   const [pollCount, setPollCount] = useState(0);
 
   // ── WebSocket: real-time updates from the container agent ──────────────────
@@ -1743,7 +1744,91 @@ function Workspace({ user, logout, isAuthenticated }) {
     // NOTE: No finally block! We want polling to control the loader state
   };
 
-  const handleDeploy = async () => {
+  /**
+   * handleRestore — reverts the project files to the git state that existed
+   * BEFORE the user message at `messageIndex` was sent, then puts the prompt
+   * back into the chat input so the user can re-send or tweak it.
+   *
+   * Strategy:
+   *   1. Find the assistant message BEFORE the target user message that carries a
+   *      versionId/version_id (a git commit hash).  That commit is the state we
+   *      want to restore to.
+   *   2. If no prior commit exists (first message) we call the backend endpoint
+   *      that resets to the very first commit on the branch.
+   *   3. Show the amber "Restoring…" loader in both chat and preview.
+   *   4. Put the original prompt back in the input box.
+   */
+  const handleRestore = async (promptText, messageIndex) => {
+    if (!currentProjectId) return;
+
+    // Walk backwards through messages to find the most recent assistant message
+    // with a versionId that comes BEFORE this user message.
+    let targetCommitHash = null;
+    const allMsgs = messages; // raw messages array (not processedMessages)
+    for (let i = messageIndex - 1; i >= 0; i--) {
+      const m = allMsgs[i];
+      const vId = m?.versionId || m?.version_id;
+      if (m?.role === 'assistant' && vId) {
+        targetCommitHash = vId;
+        break;
+      }
+    }
+
+    // Start the amber restoring state
+    setIsRestoring(true);
+    setLoading(true);
+    stopWorkspacePolling();
+
+    // Put the original prompt back in the input so user can re-send
+    setInput(promptText);
+
+    try {
+      if (targetCommitHash) {
+        // Restore to the specific commit that preceded this prompt
+        console.log(`🔄 Restoring to commit: ${targetCommitHash}`);
+        await loadCommitCheckpoint(targetCommitHash);
+      } else {
+        // No prior commit — restore to HEAD of first commit (initial state)
+        console.log('🔄 Restoring to initial project state (first commit)');
+        const commitsResp = await axios.get(
+          `${API_BASE_URL}/api/projects/${currentProjectId}/branches/${currentBranch}/commits`
+        );
+        const commits = commitsResp.data.commits || [];
+        if (commits.length > 0) {
+          // The oldest commit is the last in the array (most recent first ordering)
+          const firstCommit = commits[commits.length - 1];
+          await loadCommitCheckpoint(firstCommit.hash);
+        }
+      }
+
+      // Add a system message to chat confirming the restore
+      setMessages(prev => {
+        // Slice messages up to (but not including) the target user message and everything after
+        const slicedMsgs = prev.slice(0, messageIndex);
+        return [
+          ...slicedMsgs,
+          {
+            role: 'assistant',
+            content: `↩️ **Restored!** Code has been reverted to the state before this prompt. Your original message has been placed back in the input — feel free to edit and re-send.`,
+            timestamp: new Date().toISOString(),
+            metadata: { type: 'restore_confirmation' }
+          }
+        ];
+      });
+
+    } catch (err) {
+      console.error('Restore failed:', err);
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: '❌ Restore failed. Please try again or use the Version History panel.',
+        timestamp: new Date().toISOString(),
+        metadata: { type: 'error' }
+      }]);
+    } finally {
+      setIsRestoring(false);
+      setLoading(false);
+    }
+
     if (!currentProjectId || loading || isDeploying) return;
 
     setIsDeploying(true);
@@ -2463,7 +2548,6 @@ Please suggest improvements or modifications for this element.`;
         onNewChat={handleNewChat}
         onCreateProject={handleCreateProject}
         onGitClick={() => setShowGitPanel(true)}
-        onDeploy={handleDeploy}
         isDeploying={isDeploying}
         deployStatus={deployStatus}
         previewCode={previewCode}
@@ -2735,17 +2819,19 @@ Please suggest improvements or modifications for this element.`;
                       }}
                     />
 
-                    {/* Container / Checkpoint loader overlay */}
-                    {(isCheckpointLoading || (isContainerLoading && previewUrl && (verificationStatus !== 'completed' && verificationStatus !== 'failed'))) && (
+                    {/* Container / Checkpoint / Restoring loader overlay */}
+                    {(isRestoring || isCheckpointLoading || (isContainerLoading && previewUrl && (verificationStatus !== 'completed' && verificationStatus !== 'failed'))) && (
                       <div className={`absolute inset-0 z-20 flex flex-col items-center justify-center backdrop-blur-sm ${darkMode ? 'bg-[#0A0A0F]/60' : 'bg-white/60'
                         }`}>
                         {/* Animated rings */}
                         <div className="relative flex items-center justify-center mb-8">
-                          <div className="absolute w-24 h-24 rounded-full border-2 border-purple-500/20 animate-ping" style={{ animationDuration: '2s' }} />
-                          <div className="absolute w-20 h-20 rounded-full border border-purple-400/30 animate-ping" style={{ animationDuration: '1.5s', animationDelay: '0.3s' }} />
-                          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-600 to-pink-600 flex items-center justify-center shadow-lg shadow-purple-500/30 animate-pulse">
+                          <div className={`absolute w-24 h-24 rounded-full border-2 animate-ping ${isRestoring ? 'border-amber-500/20' : 'border-purple-500/20'}`} style={{ animationDuration: '2s' }} />
+                          <div className={`absolute w-20 h-20 rounded-full border animate-ping ${isRestoring ? 'border-amber-400/30' : 'border-purple-400/30'}`} style={{ animationDuration: '1.5s', animationDelay: '0.3s' }} />
+                          <div className={`w-16 h-16 rounded-2xl flex items-center justify-center shadow-lg animate-pulse ${isRestoring ? 'bg-gradient-to-br from-amber-500 to-orange-500 shadow-amber-500/30' : 'bg-gradient-to-br from-purple-600 to-pink-600 shadow-purple-500/30'}`}>
                             <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              {isCheckpointLoading ? (
+                              {isRestoring ? (
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                              ) : isCheckpointLoading ? (
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                               ) : (
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 12h14M12 5l7 7-7 7" />
@@ -2757,12 +2843,16 @@ Please suggest improvements or modifications for this element.`;
                         {/* Spinning arc */}
                         <div className="relative w-12 h-12 mb-6">
                           <svg className="w-12 h-12 animate-spin" viewBox="0 0 48 48" fill="none">
-                            <circle cx="24" cy="24" r="20" stroke="rgba(168,85,247,0.15)" strokeWidth="3" />
-                            <path d="M24 4 A20 20 0 0 1 44 24" stroke="url(#gradLoader)" strokeWidth="3" strokeLinecap="round" />
+                            <circle cx="24" cy="24" r="20" stroke={isRestoring ? 'rgba(245,158,11,0.15)' : 'rgba(168,85,247,0.15)'} strokeWidth="3" />
+                            <path d="M24 4 A20 20 0 0 1 44 24" stroke={`url(#${isRestoring ? 'gradLoaderAmber' : 'gradLoader'})`} strokeWidth="3" strokeLinecap="round" />
                             <defs>
                               <linearGradient id="gradLoader" x1="0%" y1="0%" x2="100%" y2="0%">
                                 <stop offset="0%" stopColor="#a855f7" />
                                 <stop offset="100%" stopColor="#ec4899" />
+                              </linearGradient>
+                              <linearGradient id="gradLoaderAmber" x1="0%" y1="0%" x2="100%" y2="0%">
+                                <stop offset="0%" stopColor="#f59e0b" />
+                                <stop offset="100%" stopColor="#f97316" />
                               </linearGradient>
                             </defs>
                           </svg>
@@ -2770,10 +2860,10 @@ Please suggest improvements or modifications for this element.`;
 
                         {/* Text */}
                         <h3 className={`text-lg font-semibold mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                          {verificationStatus === 'checking' ? 'Verifying deployment' : isCheckpointLoading ? 'Restoring session snapshot' : 'Activating live instance'}
+                          {isRestoring ? 'Restoring...' : verificationStatus === 'checking' ? 'Verifying deployment' : isCheckpointLoading ? 'Restoring session snapshot' : 'Activating live instance'}
                         </h3>
                         <p className={`text-xs ${darkMode ? 'text-[#858585]' : 'text-gray-400'}`}>
-                          {verificationStatus === 'checking' ? 'Checking for errors & matching expectations...' : isCheckpointLoading ? 'Rebuilding environment...' : 'Preparing business preview...'}
+                          {isRestoring ? 'Reverting files to previous state...' : verificationStatus === 'checking' ? 'Checking for errors & matching expectations...' : isCheckpointLoading ? 'Rebuilding environment...' : 'Preparing business preview...'}
                         </p>
 
                         {/* Animated dots progress */}
@@ -2781,7 +2871,7 @@ Please suggest improvements or modifications for this element.`;
                           {[0, 1, 2, 3, 4].map(i => (
                             <div
                               key={i}
-                              className="w-1.5 h-1.5 rounded-full bg-purple-500"
+                              className={`w-1.5 h-1.5 rounded-full ${isRestoring ? 'bg-amber-500' : 'bg-purple-500'}`}
                               style={{
                                 animation: 'containerDotBounce 1.2s ease-in-out infinite',
                                 animationDelay: `${i * 0.15}s`
@@ -3053,6 +3143,8 @@ Please suggest improvements or modifications for this element.`;
           onEditTask={handleEditTask}
           executingTaskId={executingTaskId}
           wsConnected={wsConnected}
+          onRestore={handleRestore}
+          isRestoring={isRestoring}
         />
       </div>
 

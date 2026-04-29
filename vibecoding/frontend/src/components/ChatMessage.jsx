@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { User, Sparkles, History, CheckCircle2, Copy, RefreshCw, Search, Globe, ChevronDown, ChevronRight } from 'lucide-react';
+import { User, Sparkles, History, CheckCircle2, Copy, RefreshCw, Search, Globe, ChevronDown, ChevronRight, RotateCcw } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Button } from './ui/button';
@@ -187,7 +187,9 @@ const ChatMessage = ({
   onExecuteTask,
   onExecuteAllTasks,
   onEditTask,
-  executingTaskId
+  executingTaskId,
+  onRestore,
+  messageIndex,
 }) => {
   // Debug: Log message to see what we're receiving
   if (!message.role || message.role === 'assistant') {
@@ -615,6 +617,25 @@ const ChatMessage = ({
           </div>
         </div>
       </div>
+
+      {/* Restore link — shown below user messages */}
+      {isUser && onRestore && (
+        <div className="flex justify-end mt-1 mr-11">
+          <button
+            onClick={() => onRestore(message.content, messageIndex)}
+            className={cn(
+              'text-[10px] font-medium flex items-center gap-1 px-1.5 py-0.5 rounded transition-all',
+              'opacity-40 hover:opacity-100 cursor-pointer',
+              darkMode
+                ? 'text-amber-400 hover:bg-amber-500/10'
+                : 'text-amber-600 hover:bg-amber-50'
+            )}
+          >
+            <RotateCcw className="w-2.5 h-2.5" />
+            Restore
+          </button>
+        </div>
+      )}
 
       {/* Suggestions - Only show for assistant messages */}
       {!isUser && message.suggestions && message.suggestions.length > 0 && (

@@ -29,6 +29,8 @@ const ChatPanel = ({
   onEditTask,
   executingTaskId,
   wsConnected = false,
+  onRestore,
+  isRestoring = false,
 }) => {
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
@@ -335,6 +337,8 @@ const ChatPanel = ({
               onExecuteAllTasks={onExecuteAllTasks}
               onEditTask={onEditTask}
               executingTaskId={executingTaskId}
+              onRestore={onRestore}
+              messageIndex={idx}
             />
           );
         })}
@@ -355,14 +359,27 @@ const ChatPanel = ({
             <div className="flex-1 min-w-0">
               <div className={cn(
                 'rounded-lg px-4 py-3',
-                darkMode ? 'bg-white/5 text-gray-200' : 'bg-gray-100 text-gray-900'
+                isRestoring
+                  ? (darkMode ? 'bg-amber-500/10 text-amber-300 border border-amber-500/20' : 'bg-amber-50 text-amber-700 border border-amber-200')
+                  : (darkMode ? 'bg-white/5 text-gray-200' : 'bg-gray-100 text-gray-900')
               )}>
                 <div className="flex items-center gap-2">
-                  <div className="flex gap-1">
-                    <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
-                    <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
-                    <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
-                  </div>
+                  {isRestoring ? (
+                    <>
+                      <div className="flex gap-1">
+                        <span className="w-2 h-2 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                        <span className="w-2 h-2 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                        <span className="w-2 h-2 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                      </div>
+                      <span className="text-xs font-semibold">Restoring...</span>
+                    </>
+                  ) : (
+                    <div className="flex gap-1">
+                      <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                      <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                      <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
