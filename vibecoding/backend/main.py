@@ -1458,7 +1458,9 @@ Your analysis:"""
                 {"role": "user", "content": complexity_prompt}
             ], temperature=0.1)
             
-            response_text = complexity_response["choices"][0]["message"].get("content", "").strip() if "choices" in complexity_response else "{}"
+            # response_text = complexity_response["choices"][0]["message"].get("content", "").strip() if "choices" in complexity_response else "{}"
+            print(complexity_response)
+            response_text = ''
             logger.info(f"🤖 AI raw response: {response_text[:200]}")
             
             # Parse JSON response

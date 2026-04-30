@@ -1723,29 +1723,34 @@ def call_ai(messages: list, temperature: float = 0.2, show_thinking: bool = True
             'agent_id': API_KEY,
             'model': AI_MODEL or 'BournAI',
             'platform_id': os.environ.get('BRN_PLATFORM_ID', 'DSuite'),
-            'stream': True,
+            'stream': False,
             'prompt': '\n\n'.join(parts),
         }
         resp = requests.post(API_URL, headers=headers, json=payload, stream=True, timeout=180)
         resp.raise_for_status()
         content = ''
-        for raw in resp.iter_lines():
-            if not raw:
-                continue
-            line = raw.decode('utf-8')
-            if line.startswith('data: '):
-                line = line[6:]
-            if line.strip() == '[DONE]':
-                break
-            try:
-                chunk = json.loads(line)
-                for part in chunk.get('content', []):
-                    if isinstance(part, dict) and part.get('type') == 'text':
-                        content += part.get('text', '')
-                if chunk.get('stop_reason') == 'end_turn':
-                    break
-            except json.JSONDecodeError:
-                pass
+        print(resp.json().get('response'))
+        resp = resp.json()
+        if isinstance(resp, dict):
+            print(resp.get('response'))
+            content = resp.get('response')
+        # for raw in resp.iter_lines():
+        #     if not raw:
+        #         continue
+        #     line = raw.decode('utf-8')
+        #     if line.startswith('data: '):
+        #         line = line[6:]
+        #     if line.strip() == '[DONE]':
+        #         break
+        #     try:
+        #         chunk = json.loads(line)
+        #         for part in chunk.get('content', []):
+        #             if isinstance(part, dict) and part.get('type') == 'text':
+        #                 content += part.get('text', '')
+        #         if chunk.get('stop_reason') == 'end_turn':
+        #             break
+        #     except json.JSONDecodeError:
+        #         pass
         
         # Extract and show thinking if enabled
         if show_thinking and content:
@@ -1909,7 +1914,7 @@ Apply the requested changes now."""
         response_text = call_ai([
             {'role': 'system', 'content': system_prompt},
             {'role': 'user', 'content': user_content},
-        ], temperature=0.3, show_thinking=is_edit)  # Show thinking for edits
+        ], temperature=0.7, show_thinking=is_edit)  # Show thinking for edits
         
         # Log AI response for debugging
         log(f'AI response length: {len(response_text)} chars')
