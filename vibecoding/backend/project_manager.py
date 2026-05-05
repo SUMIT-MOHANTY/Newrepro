@@ -9,7 +9,7 @@ import time
 import requests
 import threading
 import base64
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime
 from pathlib import Path
 import json
@@ -128,7 +128,7 @@ class ProjectManager:
     """Manages container-based code execution and project artifacts"""
     
     DEFAULT_IMAGE = os.environ.get("AGENT_IMAGE", "vibecoding-agent-runtime:latest")
-    DEFAULT_PORT = int(os.environ.get("AGENT_PORT", "8080"))
+    DEFAULT_PORT = int(os.environ.get("AGENT_PORT", "80"))  # Changed from 8080 to 80
     DEFAULT_RUNTIME = os.environ.get("DEFAULT_RUNTIME", "universal")
 
     def __init__(self, artifacts_dir: str = os.environ.get("ARTIFACTS_DIR", "project_artifacts")):
@@ -230,15 +230,6 @@ class ProjectManager:
         logger.info(f"🚀 Starting unified container {cname} for project {pid}")
 
         # Locate the host DB file so the agent can write chat messages
-        db_path = None
-        for cand in [
-            Path(os.getcwd()) / "vibecoding_users.db",
-            Path(os.getcwd()) / "backend" / "vibecoding_users.db",
-            Path(__file__).parent / "vibecoding_users.db",
-        ]:
-            if cand.exists():
-                db_path = str(cand.absolute())
-                break
 
         env_vars = {
             # USE_BRN_LLAMA toggle (DSuite-style)
@@ -270,8 +261,6 @@ class ProjectManager:
         }
 
         volumes = {str(project_dir.absolute()): {'bind': '/project', 'mode': 'rw'}}
-        if db_path:
-            volumes[db_path] = {'bind': '/tmp/vibecoding_users.db', 'mode': 'rw'}
 
         try:
             container = self.docker_client.containers.run(
@@ -1396,7 +1385,11 @@ class ProjectManager:
             generated_file_count = len(re.findall(file_marker_regex, code))
             
             if existing_file_count > 0 and generated_file_count > 0:
-                if generated_file_count < existing_file_count * 0.5:
+                # If generating only 1-2 files and many exist, it's incremental
+                if generated_file_count <= 2:
+                    is_incremental = True
+                    logger.info(f"✏️ Auto-detected incremental mode: {generated_file_count} files generated vs {existing_file_count} existing")
+                elif generated_file_count < existing_file_count * 0.5:
                     is_incremental = True
                     logger.info(f"✏️ Auto-detected incremental mode: {generated_file_count} files generated vs {existing_file_count} existing")
                 else:
@@ -1678,6 +1671,11 @@ except Exception as e:
             # For workspace, metadata is in workspace directory
             version_dir = project_dir / "workspace"
             metadata_file = version_dir / "metadata.json"
+            
+            # Ensure metadata.json exists for workspace
+            if not metadata_file.exists():
+                logger.info(f"📝 Creating missing metadata.json for workspace")
+                self._ensure_workspace_metadata(project_id, version_dir, "workspace")
         else:
             # For versioned code, metadata is in versions/{version_id}
             version_dir = project_dir / "versions" / version_id
@@ -2163,9 +2161,148 @@ except Exception as e:
         frozen_files = self.get_frozen_files(project_id)
         return file_path in frozen_files
     
+    def get_container_workspace_structure(self, project_id: str) -> Optional[str]:
+        """Get the current file structure from the container workspace"""
+        container_name = f"vibecoding_{project_id}"
+        
+        try:
+            if self.docker_client is None:
+                logger.warning("Docker client not available")
+                return None
+            
+            container = self.docker_client.containers.get(container_name)
+            
+            # Run tree command to get structure (or ls -R if tree not available)
+            exec_result = container.exec_run(
+                ['sh', '-c', 'cd /project/workspace && (tree -L 3 -I "node_modules|__pycache__|.git|dist|build|venv|.venv" || find . -maxdepth 3 -not -path "*/node_modules/*" -not -path "*/__pycache__/*" -not -path "*/.git/*" -not -path "*/dist/*" -not -path "*/build/*" | head -100)'],
+                demux=True
+            )
+            
+            if exec_result.exit_code == 0:
+                stdout = exec_result.output[0].decode() if exec_result.output and exec_result.output[0] else ""
+                return stdout.strip()
+            else:
+                stderr = exec_result.output[1].decode() if exec_result.output and exec_result.output[1] else ""
+                logger.warning(f"Failed to get container structure: {stderr}")
+                return None
+                
+        except docker.errors.NotFound:
+            logger.debug(f"Container {container_name} not found")
+            return None
+        except Exception as e:
+            logger.error(f"Error getting container structure: {e}")
+            return None
+    
+    def run_command_in_container(self, project_id: str, command: str) -> Dict[str, Any]:
+        """Run a shell command in the container and return the result"""
+        container_name = f"vibecoding_{project_id}"
+        
+        try:
+            if self.docker_client is None:
+                return {
+                    "success": False,
+                    "error": "Docker client not available",
+                    "stdout": "",
+                    "stderr": ""
+                }
+            
+            container = self.docker_client.containers.get(container_name)
+            
+            # Run command in workspace directory
+            exec_result = container.exec_run(
+                ['sh', '-c', f'cd /project/workspace && {command}'],
+                demux=True
+            )
+            
+            stdout = exec_result.output[0].decode() if exec_result.output and exec_result.output[0] else ""
+            stderr = exec_result.output[1].decode() if exec_result.output and exec_result.output[1] else ""
+            
+            return {
+                "success": exec_result.exit_code == 0,
+                "exit_code": exec_result.exit_code,
+                "stdout": stdout,
+                "stderr": stderr,
+                "command": command
+            }
+                
+        except docker.errors.NotFound:
+            return {
+                "success": False,
+                "error": f"Container {container_name} not found",
+                "stdout": "",
+                "stderr": ""
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "stdout": "",
+                "stderr": ""
+            }
+    
+    def detect_stack_from_workspace(self, project_id: str) -> str:
+        """Detect the stack type from workspace files"""
+        project_dir = self.artifacts_dir / project_id
+        workspace_dir = project_dir / "workspace"
+        
+        if not workspace_dir.exists():
+            return "unknown"
+        
+        has_react = False
+        has_flask = False
+        has_node = False
+        has_python = False
+        
+        # Check for React
+        for package_json in workspace_dir.rglob('package.json'):
+            try:
+                with open(package_json, 'r') as f:
+                    data = json.load(f)
+                    deps = {**data.get('dependencies', {}), **data.get('devDependencies', {})}
+                    if 'react' in deps or 'react-dom' in deps:
+                        has_react = True
+                    if any(dep in deps for dep in ['express', 'koa', 'fastify']):
+                        has_node = True
+            except Exception:
+                pass
+        
+        # Check for Flask/Python
+        for py_file in workspace_dir.rglob('*.py'):
+            has_python = True
+            try:
+                content = py_file.read_text()
+                if 'from flask import' in content or 'import flask' in content:
+                    has_flask = True
+                    break
+            except Exception:
+                pass
+        
+        # Determine stack
+        if has_react and has_flask:
+            return "react+flask"
+        elif has_react:
+            return "react"
+        elif has_flask:
+            return "flask"
+        elif has_node:
+            return "node"
+        elif has_python:
+            return "python"
+        else:
+            return "static"
+    
     def _save_container_registry(self, project_id: str, host_port: str):
         """Save container port mapping to registry for proxy access"""
+        # Ensure artifacts directory exists
+        self.artifacts_dir.mkdir(parents=True, exist_ok=True)
+        
         registry_file = self.artifacts_dir / '.container_registry.json'
+        logger.info(f"📝 Saving container registry to: {registry_file.absolute()}")
+        
+        # Validate inputs
+        if not host_port:
+            logger.error(f"❌ Cannot save registry: host_port is None or empty")
+            return
         
         # Load existing registry
         registry = {}
@@ -2173,8 +2310,9 @@ except Exception as e:
             try:
                 with open(registry_file, 'r') as f:
                     registry = json.load(f)
-            except Exception:
-                pass
+                logger.debug(f"Loaded existing registry with {len(registry)} entries")
+            except Exception as e:
+                logger.warning(f"Failed to load existing registry: {e}, starting fresh")
         
         # Update registry
         container_name = f"vibecoding_{project_id}"
@@ -2188,9 +2326,19 @@ except Exception as e:
         try:
             with open(registry_file, 'w') as f:
                 json.dump(registry, f, indent=2)
-            logger.info(f"📝 Saved container registry: {project_id} -> port {host_port}")
+            logger.info(f"✅ Saved container registry: {project_id} -> port {host_port}")
+            logger.info(f"   Registry now contains {len(registry)} container(s)")
+            
+            # Verify the save worked
+            if registry_file.exists():
+                file_size = registry_file.stat().st_size
+                logger.info(f"   Registry file size: {file_size} bytes")
+            else:
+                logger.error(f"❌ Registry file does not exist after save!")
         except Exception as e:
-            logger.error(f"Failed to save container registry: {e}")
+            logger.error(f"❌ Failed to save container registry: {e}")
+            import traceback
+            traceback.print_exc()
 
     def get_preview_url(self, project_id, direct_port=None):
         """Return a fixed, deterministic preview URL for a project.

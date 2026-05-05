@@ -61,6 +61,34 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
 
             const data = await response.json();
             localStorage.setItem('token', data.access_token);
+            
+            // Check if user has a saved progress page
+            try {
+                const progressResponse = await fetch(`${API_BASE_URL}/users/me/progress`, {
+                    headers: {
+                        'Authorization': `Bearer ${data.access_token}`,
+                    },
+                });
+                
+                if (progressResponse.ok) {
+                    const progressData = await progressResponse.json();
+                    const lastPage = progressData.last_page_path;
+                    
+                    // If user has a last page and it's not login/signup, redirect there
+                    if (lastPage && lastPage !== '/login' && lastPage !== '/signup' && lastPage !== '/') {
+                        if (nextUrl) {
+                            window.location.assign(appendDsuiteToken(nextUrl, data.access_token));
+                        } else {
+                            finishNavigate(lastPage);
+                        }
+                        return;
+                    }
+                }
+            } catch (progressError) {
+                console.debug('Could not fetch user progress:', progressError);
+                // Continue with default navigation
+            }
+            
             if (nextUrl) {
                 window.location.assign(appendDsuiteToken(nextUrl, data.access_token));
                 return;

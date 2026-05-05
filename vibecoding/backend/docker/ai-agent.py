@@ -24,7 +24,7 @@ import requests
 import threading
 import queue
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
 # Import task-based development modules
@@ -32,10 +32,873 @@ from task_planner import TaskPlanner, Task
 from task_executor import TaskExecutor
 from task_executor import TaskExecutor
 
+#!/usr/bin/env python3
+"""
+"""
+
+import json
+import os
+import re
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Dict, Any, List, Optional, Tuple
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PROMPTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CLASSIFY_PROMPT = """You are a senior engineering lead classifying a developer request.
+
+WORKSPACE STATE:
+- has_existing_code: {has_code}
+- file_count: {file_count}
+- files (first 40): {files_json}
+
+USER REQUEST:
+{prompt}
+
+Respond with ONLY valid JSON (no markdown fences, no extra text):
+{{
+  "mode": "CREATE_APP",
+  "confidence": 0.97,
+  "reasoning": "one sentence",
+  "scope": "broad",
+  "target_files": [],
+  "line_refs": [],
+  "is_line_edit": false,
+  "requires_redeploy": true,
+  "requires_new_deps": false
+}}
+
+mode values (pick exactly one):
+  CREATE_APP     – build from scratch (use ONLY when workspace is empty or user says start over)
+  ADD_FILE       – create a brand-new file
+  EDIT_FILE      – change lines/sections in existing file(s)
+  FIX_BUG        – fix a described bug
+  ADD_FEATURE    – add a feature (may touch several files)
+  REFACTOR       – restructure / rename / clean
+  STYLE_CHANGE   – CSS / visual / theme only
+  CONFIG_CHANGE  – env / config file only
+  DELETE         – remove file or code block
+  EXPLAIN        – user wants explanation, no code change
+
+scope: "surgical" (≤2 files, tiny change) | "moderate" | "broad"
+target_files: file paths mentioned by user (empty list if none)
+line_refs: any line numbers mentioned (empty list if none)
+is_line_edit: true when user references specific line numbers
+requires_redeploy: false for EXPLAIN / pure REFACTOR
+"""
+
+_PLAN_PROMPT = """You are a precise code-modification engine. 
+
+USER REQUEST:
+{prompt}
+
+INTENT: {intent_json}
+
+CURRENT FILES (line-numbered):
+{context}
+
+Produce a JSON change plan. Return ONLY valid JSON — no markdown fences, no explanation.
+
+Operation types:
+  REPLACE_LINES   – replace line range with new content  (needs: file, start_line, end_line, new_content)
+  INSERT_BEFORE   – insert before line N                 (needs: file, line, new_content)
+  INSERT_AFTER    – insert after line N                  (needs: file, line, new_content)
+  DELETE_LINES    – remove line range                    (needs: file, start_line, end_line)
+  APPEND          – add to end of file                   (needs: file, new_content)
+  PREPEND         – add to start of file                 (needs: file, new_content)
+  FULL_REWRITE    – replace entire file                  (needs: file, new_content)
+  CREATE_FILE     – new file                             (needs: file, new_content)
+  DELETE_FILE     – remove file                          (needs: file)
+  REPLACE_PATTERN – regex replace (last resort, no line# known) (needs: file, pattern, replacement, flags)
+
+RULES:
+1. Line numbers refer to the numbered content shown above (1-indexed, match exactly).
+2. new_content must be COMPLETE — no "...", no placeholders ever.
+3. Preserve existing indentation style (tabs vs spaces).
+4. Imports go at the top of the file, never in the middle of a function.
+5. For REPLACE_LINES the new_content replaces start_line..end_line inclusive.
+6. Multiple ops on the same file are applied in order — line numbers shift after each op,
+   so express subsequent ops on that file relative to the ORIGINAL line numbers.
+7. For a small files (< 60 lines) prefer FULL_REWRITE over many REPLACE_LINES.
+
+{{
+  "plan_summary": "one sentence",
+  "requires_install": false,
+  "new_packages": [],
+  "requires_redeploy": true,
+  "operations": [
+    {{
+      "op_id": "op_001",
+      "op_type": "REPLACE_LINES",
+      "file": "src/App.jsx",
+      "start_line": 12,
+      "end_line": 12,
+      "new_content": "  const color = 'red';",
+      "description": "Change button color to red"
+    }},
+    {{
+      "op_id": "op_002",
+      "op_type": "CREATE_FILE",
+      "file": "src/utils/helpers.js",
+      "new_content": "export const fmt = (d) => d.toLocaleDateString();\\n",
+      "description": "Add helpers utility"
+    }}
+  ]
+}}
+"""
+
+_VERIFY_PROMPT = """You are a code-review bot verifying that file changes were applied correctly.
+
+ORIGINAL REQUEST: {prompt}
+
+PLANNED OPERATIONS:
+{ops_json}
+
+ACTUAL FILE CONTENTS AFTER CHANGES (line-numbered):
+{after_context}
+
+Respond with ONLY valid JSON:
+{{
+  "all_changes_applied": true,
+  "issues": [],
+  "files_ok": ["src/App.jsx"],
+  "files_with_issues": []
+}}
+
+issues: list of strings describing anything wrong or missing.
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONSTANTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SKIP_DIRS  = {"node_modules", ".git", "dist", "build", "__pycache__", ".vibecoding"}
+_SKIP_FILES = {".DS_Store", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "metadata.json"}
+_TEXT_EXTS  = {
+    ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte",
+    ".py", ".go", ".rs", ".java", ".kt", ".swift", ".c", ".cpp", ".cs",
+    ".html", ".css", ".scss", ".sass", ".less",
+    ".json", ".yaml", ".yml", ".toml", ".env",
+    ".md", ".txt", ".sh", ".bash",
+    ".sql", ".graphql", ".prisma",
+    ".xml", ".config", ".dockerfile",
+}
+_FILE_CHAR_CAP   = 14_000   # chars per file before truncation
+_CONTEXT_CHAR_CAP = 60_000  # total context budget
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EditEngine  (paste this class into ai-agent.py above the Agent class)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class EditEngine:
+    """
+    Surgical, context-aware edit pipeline for VibeCoding.
+
+    Usage inside ai-agent.py:
+        engine = EditEngine(workspace_dir=WORKSPACE_DIR, ai_caller=call_ai)
+        result = engine.route(user_prompt)
+        # result["mode"] == "CREATE_APP" → fall through to existing generate_code()
+        # result["mode"] != "CREATE_APP" → engine already applied changes
+    """
+
+    def __init__(self, workspace_dir: Path, ai_caller):
+        self.ws = Path(workspace_dir)
+        self._call_ai = ai_caller   # same callable used by the rest of the agent
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # PUBLIC ENTRY POINT
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def route(self, user_prompt: str) -> Dict[str, Any]:
+        """
+        Top-level router.  Returns a result dict:
+        {
+            "mode":             str,         # CREATE_APP or edit mode
+            "handled":          bool,        # True if edit engine ran; False = caller must run generate_code()
+            "requires_redeploy":bool,
+            "requires_install": bool,
+            "new_packages":     list,
+            "files_changed":    list,
+            "plan_summary":     str,
+            "verify_ok":        bool,
+            "verify_issues":    list,
+            "error":            str | None,
+        }
+        """
+        intent = self._classify(user_prompt)
+        mode   = intent.get("mode", "ADD_FEATURE")
+
+        log(f"🧭 Intent: {mode} | scope={intent.get('scope')} | confidence={intent.get('confidence', 0):.2f}")
+        log(f"   Reason: {intent.get('reasoning', '')}")
+
+        # ── first build → hand back to existing generate_code() ──────────────
+        if mode == "CREATE_APP":
+            return {
+                "mode": "CREATE_APP", "handled": False,
+                "requires_redeploy": True, "requires_install": True,
+                "new_packages": [], "files_changed": [],
+                "plan_summary": "Building app from scratch",
+                "verify_ok": True, "verify_issues": [], "error": None,
+            }
+
+        # ── explanation only ─────────────────────────────────────────────────
+        if mode == "EXPLAIN":
+            return {
+                "mode": "EXPLAIN", "handled": True,
+                "requires_redeploy": False, "requires_install": False,
+                "new_packages": [], "files_changed": [],
+                "plan_summary": "Explanation provided",
+                "verify_ok": True, "verify_issues": [], "error": None,
+            }
+
+        # ── edit / add / fix path ────────────────────────────────────────────
+        try:
+            context      = self._build_context(user_prompt, intent)
+            plan         = self._plan_changes(user_prompt, intent, context)
+            files_changed = self._execute_ops(plan["operations"])
+            verify        = self._verify(user_prompt, plan["operations"], files_changed)
+
+            return {
+                "mode":             mode,
+                "handled":          True,
+                "requires_redeploy": plan.get("requires_redeploy", True),
+                "requires_install":  plan.get("requires_install", False),
+                "new_packages":      plan.get("new_packages", []),
+                "files_changed":     files_changed,
+                "plan_summary":      plan.get("plan_summary", ""),
+                "verify_ok":         verify.get("all_changes_applied", False),
+                "verify_issues":     verify.get("issues", []),
+                "error":             None,
+            }
+
+        except Exception as exc:
+            log(f"❌ EditEngine error: {exc}")
+            return {
+                "mode": mode, "handled": False,
+                "requires_redeploy": True, "requires_install": False,
+                "new_packages": [], "files_changed": [],
+                "plan_summary": "", "verify_ok": False,
+                "verify_issues": [str(exc)], "error": str(exc),
+            }
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 1 — CLASSIFY
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _classify(self, prompt: str) -> Dict[str, Any]:
+        """Lightweight AI call → JSON intent.  Fast heuristics tried first."""
+
+        fast = self._fast_classify(prompt)
+        if fast:
+            return fast
+
+        tree  = self._list_files()
+        snap  = {
+            "has_code":   len(tree) > 0,
+            "file_count": len(tree),
+            "files_json": json.dumps(tree[:40]),
+            "prompt":     prompt.strip(),
+        }
+        raw = self._call_ai(
+            [
+                {"role": "system",  "content": "You are a request classifier. Output only JSON."},
+                {"role": "user",    "content": _CLASSIFY_PROMPT.format(**snap)},
+            ],
+            temperature=0.0, show_thinking=False
+        )
+        return self._parse_json(raw, default={"mode": "ADD_FEATURE", "confidence": 0.5,
+                                               "requires_redeploy": True, "target_files": [],
+                                               "line_refs": [], "is_line_edit": False,
+                                               "scope": "moderate", "requires_new_deps": False})
+
+    def _fast_classify(self, prompt: str) -> Optional[Dict[str, Any]]:
+        """Regex heuristics — avoids an AI call when the intent is obvious."""
+        tree = self._list_files()
+        p    = prompt.lower().strip()
+
+        if not tree:
+            return {"mode": "CREATE_APP", "confidence": 0.99, "reasoning": "empty workspace",
+                    "scope": "broad", "target_files": [], "line_refs": [],
+                    "is_line_edit": False, "requires_redeploy": True, "requires_new_deps": True}
+
+        # Line-number reference + edit verb → surgical edit
+        line_refs = self._extract_line_numbers(prompt)
+        if line_refs and re.search(r'\b(change|edit|fix|update|replace|modify|set|rename|delete|remove)\b', p):
+            return {"mode": "EDIT_FILE", "confidence": 0.94, "scope": "surgical",
+                    "reasoning": f"Line number(s) {line_refs} with edit verb",
+                    "target_files": self._extract_file_mentions(prompt),
+                    "line_refs": line_refs, "is_line_edit": True,
+                    "requires_redeploy": True, "requires_new_deps": False}
+
+        if re.search(r'\b(start over|rebuild from scratch|create a brand new|completely redo)\b', p):
+            return {"mode": "CREATE_APP", "confidence": 0.96, "scope": "broad",
+                    "reasoning": "User asked to start over",
+                    "target_files": [], "line_refs": [], "is_line_edit": False,
+                    "requires_redeploy": True, "requires_new_deps": True}
+
+        if re.search(r'\b(create a new file|add a new file|new file called)\b', p):
+            return {"mode": "ADD_FILE", "confidence": 0.93, "scope": "surgical",
+                    "reasoning": "Explicit new file request",
+                    "target_files": self._extract_file_mentions(prompt),
+                    "line_refs": [], "is_line_edit": False,
+                    "requires_redeploy": True, "requires_new_deps": False}
+
+        if re.search(r'\b(explain|what is|what does|how does|why does|walk me through)\b', p):
+            return {"mode": "EXPLAIN", "confidence": 0.92, "scope": "surgical",
+                    "reasoning": "Explanation request",
+                    "target_files": [], "line_refs": [], "is_line_edit": False,
+                    "requires_redeploy": False, "requires_new_deps": False}
+
+        return None  # no fast path — fall through to AI
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 2 — BUILD CONTEXT
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _build_context(self, prompt: str, intent: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Read the right files from the workspace and return them as a dict.
+        We only load what's relevant to keep the planning prompt focused.
+        """
+        tree  = self._list_files()
+        scope = intent.get("scope", "moderate")
+
+        # Determine which files to read
+        candidates: List[str] = []
+
+        # 1. Files explicitly named in intent
+        for hint in (intent.get("target_files") or []):
+            matched = self._fuzzy_match(hint, tree)
+            if matched:
+                candidates.append(matched)
+
+        # 2. Surgical scope — hints are enough
+        if scope == "surgical" and candidates:
+            pass  # only load what was explicitly named
+        else:
+            # 3. Heuristic entry-points always useful for broader changes
+            for ep in self._heuristic_entrypoints(tree):
+                if ep not in candidates:
+                    candidates.append(ep)
+
+            # 4. For moderate/broad: AI picks additional relevant files
+            if scope in ("moderate", "broad"):
+                ai_files = self._ai_pick_files(prompt, tree)
+                for f in ai_files:
+                    if f not in candidates:
+                        candidates.append(f)
+
+        # De-dup, limit
+        seen: set = set()
+        final: List[str] = []
+        for f in candidates:
+            if f not in seen and f in tree:
+                seen.add(f); final.append(f)
+            if len(final) >= 12:
+                break
+
+        # Read files
+        file_data: Dict[str, Any] = {}
+        total_chars = 0
+        for rel in final:
+            if total_chars >= _CONTEXT_CHAR_CAP:
+                break
+            d = self._read_file(rel)
+            if d:
+                file_data[rel] = d
+                total_chars   += d["char_count"]
+
+        log(f"📂 Context: loaded {len(file_data)} file(s) ({total_chars:,} chars)")
+        return {"tree": tree, "files": file_data}
+
+    def _ai_pick_files(self, prompt: str, tree: List[str]) -> List[str]:
+        """Ask AI to choose up to 8 relevant files from the tree."""
+        pick_prompt = (
+            f"USER REQUEST: {prompt}\n\n"
+            f"WORKSPACE FILES:\n" + "\n".join(f"- {f}" for f in tree[:80]) +
+            '\n\nReturn ONLY JSON: {"relevant_files": ["path1", "path2"]} '
+            "(at most 8 files, the most likely to need reading for this request)"
+        )
+        try:
+            raw = self._call_ai(
+                [{"role": "user", "content": pick_prompt}],
+                temperature=0.0, show_thinking=False
+            )
+            data = self._parse_json(raw, default={"relevant_files": []})
+            return [f for f in data.get("relevant_files", []) if f in tree]
+        except Exception:
+            return []
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 3 — PLAN CHANGES
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _plan_changes(self, prompt: str, intent: Dict[str, Any],
+                      context: Dict[str, Any]) -> Dict[str, Any]:
+        """AI produces a JSON plan of operations. No files are touched here."""
+        context_str = self._format_context_for_prompt(context)
+
+        raw = self._call_ai(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a precise code-modification engine. "
+                        "Output ONLY valid JSON. Never truncate new_content. "
+                        "Never use '...' or placeholders."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": _PLAN_PROMPT.format(
+                        prompt=prompt.strip(),
+                        intent_json=json.dumps(intent, indent=2),
+                        context=context_str,
+                    ),
+                },
+            ],
+            temperature=0.1, show_thinking=False
+        )
+
+        plan = self._parse_json(raw, default={
+            "plan_summary": "Apply changes",
+            "requires_install": False, "new_packages": [],
+            "requires_redeploy": True, "operations": []
+        })
+
+        # Validate / normalise operations
+        plan["operations"] = [
+            op for op in (self._validate_op(op, i)
+                          for i, op in enumerate(plan.get("operations", [])))
+            if op is not None
+        ]
+
+        log(f"📋 Plan: {plan.get('plan_summary')} — {len(plan['operations'])} operation(s)")
+        for op in plan["operations"]:
+            log(f"   {op['op_type']} {op['file']} — {op.get('description', '')}")
+
+        return plan
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 4 — EXECUTE OPERATIONS (shell-script-based)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _execute_ops(self, ops: List[Dict[str, Any]]) -> List[str]:
+        """
+        Convert each JSON operation into a Python-based shell command and run it.
+
+        Using Python via subprocess (not sed/awk) because:
+          - Handles any encoding and any content without quoting nightmares
+          - Python repr() safely escapes the new_content for the script string
+          - Atomic via .vibe_tmp rename (never leaves a half-written file)
+          - Works identically across every project stack
+        """
+        files_changed: List[str] = []
+
+        for op in ops:
+            op_type  = op["op_type"]
+            rel_path = op["file"].lstrip("/")
+            abs_path = str(self.ws / rel_path)
+
+            try:
+                script = self._build_shell_script(op, abs_path, rel_path)
+                if script is None:
+                    log(f"⚠️  Skipped unsupported op: {op_type}")
+                    continue
+
+                result = subprocess.run(
+                    ["python3", "-c", script],
+                    capture_output=True, text=True, timeout=30
+                )
+
+                if result.returncode != 0:
+                    log(f"❌ Op {op['op_id']} failed: {result.stderr.strip()[:200]}")
+                else:
+                    log(f"  ✅ {op_type} → {rel_path}")
+                    if rel_path not in files_changed:
+                        files_changed.append(rel_path)
+
+            except Exception as exc:
+                log(f"❌ Op {op.get('op_id')} exception: {exc}")
+
+        return files_changed
+
+    def _build_shell_script(self, op: Dict[str, Any],
+                            abs_path: str, rel_path: str) -> Optional[str]:
+        """
+        Return a Python source string (run via python3 -c) that atomically
+        applies one operation.  Returns None if the op type is unknown.
+        """
+        op_type     = op["op_type"]
+        new_content = op.get("new_content", "")
+        ws_str      = str(self.ws)
+
+        # ── helpers embedded in every script ─────────────────────────────────
+        preamble = f"""
+import os, sys, pathlib
+ws = pathlib.Path({repr(ws_str)})
+p  = pathlib.Path({repr(abs_path)})
+tmp = pathlib.Path({repr(abs_path + '.vibe_tmp')})
+
+def atomic_write(content, target=p):
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp2 = target.parent / (target.name + '.vibe_tmp')
+    tmp2.write_text(content, encoding='utf-8')
+    os.replace(str(tmp2), str(target))
+
+def read_lines():
+    if not p.exists():
+        return []
+    return p.read_text(encoding='utf-8', errors='replace').splitlines(keepends=True)
+"""
+
+        # ── CREATE_FILE ───────────────────────────────────────────────────────
+        if op_type == "CREATE_FILE":
+            return preamble + f"""
+content = {repr(new_content)}
+# Ensure trailing newline
+if content and not content.endswith('\\n'):
+    content += '\\n'
+atomic_write(content)
+print('created', {repr(rel_path)})
+"""
+
+        # ── FULL_REWRITE ──────────────────────────────────────────────────────
+        if op_type == "FULL_REWRITE":
+            return preamble + f"""
+content = {repr(new_content)}
+if content and not content.endswith('\\n'):
+    content += '\\n'
+atomic_write(content)
+print('rewritten', {repr(rel_path)})
+"""
+
+        # ── REPLACE_LINES ─────────────────────────────────────────────────────
+        if op_type == "REPLACE_LINES":
+            start = int(op.get("start_line", 1))
+            end   = int(op.get("end_line",   start))
+            return preamble + f"""
+lines = read_lines()
+new_content_raw = {repr(new_content)}
+# Split replacement into lines, preserve endings
+new_lines = [l if l.endswith('\\n') else l + '\\n'
+             for l in new_content_raw.splitlines()] or ['\\n']
+s, e = {start - 1}, {end}     # convert to 0-indexed, end is exclusive
+if s < 0: s = 0
+if e > len(lines): e = len(lines)
+lines[s:e] = new_lines
+atomic_write(''.join(lines))
+print(f'replaced lines {start}-{end} in', {repr(rel_path)})
+"""
+
+        # ── INSERT_BEFORE ─────────────────────────────────────────────────────
+        if op_type == "INSERT_BEFORE":
+            line_n = int(op.get("line", 1))
+            return preamble + f"""
+lines = read_lines()
+new_lines = [l if l.endswith('\\n') else l + '\\n'
+             for l in {repr(new_content)}.splitlines()] or ['\\n']
+idx = max(0, {line_n} - 1)
+lines[idx:idx] = new_lines
+atomic_write(''.join(lines))
+print(f'inserted before line {line_n} in', {repr(rel_path)})
+"""
+
+        # ── INSERT_AFTER ──────────────────────────────────────────────────────
+        if op_type == "INSERT_AFTER":
+            line_n = int(op.get("line", 1))
+            return preamble + f"""
+lines = read_lines()
+new_lines = [l if l.endswith('\\n') else l + '\\n'
+             for l in {repr(new_content)}.splitlines()] or ['\\n']
+idx = min(len(lines), {line_n})   # insert after line N (1-indexed)
+lines[idx:idx] = new_lines
+atomic_write(''.join(lines))
+print(f'inserted after line {line_n} in', {repr(rel_path)})
+"""
+
+        # ── DELETE_LINES ──────────────────────────────────────────────────────
+        if op_type == "DELETE_LINES":
+            start = int(op.get("start_line", 1))
+            end   = int(op.get("end_line",   start))
+            return preamble + f"""
+lines = read_lines()
+s, e = {start - 1}, {end}
+if s < 0: s = 0
+if e > len(lines): e = len(lines)
+del lines[s:e]
+atomic_write(''.join(lines))
+print(f'deleted lines {start}-{end} from', {repr(rel_path)})
+"""
+
+        # ── APPEND ───────────────────────────────────────────────────────────
+        if op_type == "APPEND":
+            return preamble + f"""
+existing = p.read_text(encoding='utf-8', errors='replace') if p.exists() else ''
+addition = {repr(new_content)}
+if existing and not existing.endswith('\\n'):
+    existing += '\\n'
+atomic_write(existing + addition)
+print('appended to', {repr(rel_path)})
+"""
+
+        # ── PREPEND ──────────────────────────────────────────────────────────
+        if op_type == "PREPEND":
+            return preamble + f"""
+existing = p.read_text(encoding='utf-8', errors='replace') if p.exists() else ''
+addition = {repr(new_content)}
+if addition and not addition.endswith('\\n'):
+    addition += '\\n'
+atomic_write(addition + existing)
+print('prepended to', {repr(rel_path)})
+"""
+
+        # ── DELETE_FILE ───────────────────────────────────────────────────────
+        if op_type == "DELETE_FILE":
+            return preamble + f"""
+if p.exists():
+    p.unlink()
+    print('deleted', {repr(rel_path)})
+else:
+    print('already absent', {repr(rel_path)})
+"""
+
+        # ── REPLACE_PATTERN ───────────────────────────────────────────────────
+        if op_type == "REPLACE_PATTERN":
+            pattern     = op.get("pattern", "")
+            replacement = op.get("replacement", new_content)
+            flags_str   = op.get("flags", "")
+            re_flags    = "re.MULTILINE"
+            if "i" in flags_str.lower():
+                re_flags += " | re.IGNORECASE"
+            if "s" in flags_str.lower():
+                re_flags += " | re.DOTALL"
+            return preamble + f"""
+import re
+content = p.read_text(encoding='utf-8', errors='replace') if p.exists() else ''
+pattern     = {repr(pattern)}
+replacement = {repr(replacement)}
+new_content = re.sub(pattern, replacement, content, flags={re_flags})
+if new_content == content:
+    print('WARNING: pattern not found in', {repr(rel_path)})
+else:
+    atomic_write(new_content)
+    print('pattern replaced in', {repr(rel_path)})
+"""
+
+        return None  # unknown op type
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 5 — VERIFY
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _verify(self, prompt: str, ops: List[Dict[str, Any]],
+                files_changed: List[str]) -> Dict[str, Any]:
+        """
+        Re-read changed files and ask AI to confirm everything looks correct.
+        Returns the verify JSON dict.
+        """
+        if not files_changed:
+            return {"all_changes_applied": True, "issues": [], "files_ok": [], "files_with_issues": []}
+
+        # Re-read changed files with line numbers
+        after_parts: List[str] = []
+        for rel in files_changed[:8]:                # cap to keep prompt manageable
+            d = self._read_file(rel)
+            if d:
+                after_parts.append(f"--- {rel} ({d['line_count']} lines) ---\n{d['content']}")
+
+        after_context = "\n\n".join(after_parts)
+
+        # Filter ops to only those affecting changed files
+        relevant_ops = [op for op in ops if op.get("file") in files_changed]
+
+        raw = self._call_ai(
+            [
+                {"role": "system", "content": "You are a code-review bot. Output only JSON."},
+                {
+                    "role": "user",
+                    "content": _VERIFY_PROMPT.format(
+                        prompt=prompt.strip(),
+                        ops_json=json.dumps(relevant_ops, indent=2),
+                        after_context=after_context,
+                    ),
+                },
+            ],
+            temperature=0.0, show_thinking=False
+        )
+
+        result = self._parse_json(raw, default={
+            "all_changes_applied": True, "issues": [],
+            "files_ok": files_changed, "files_with_issues": []
+        })
+
+        if result.get("all_changes_applied"):
+            log(f"✅ Verification passed for: {', '.join(files_changed)}")
+        else:
+            log(f"⚠️  Verification issues: {result.get('issues', [])}")
+
+        return result
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # FILE UTILITIES
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _list_files(self) -> List[str]:
+        """Return sorted list of relative file paths in the workspace."""
+        if not self.ws.exists():
+            return []
+        result: List[str] = []
+        for root, dirs, files in os.walk(self.ws):
+            dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+            for f in files:
+                if f in _SKIP_FILES or f.startswith(".vibecoding"):
+                    continue
+                rel = os.path.relpath(os.path.join(root, f), self.ws)
+                result.append(rel.replace("\\", "/"))
+        return sorted(result)
+
+    def _read_file(self, rel_path: str) -> Optional[Dict[str, Any]]:
+        """Read a file and return it with 1-indexed line numbers."""
+        full = self.ws / rel_path
+        if not full.exists() or not full.is_file():
+            return None
+        if full.suffix.lower() not in _TEXT_EXTS and full.name.lower() not in _TEXT_EXTS:
+            return None
+        try:
+            raw = full.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return None
+
+        truncated = False
+        if len(raw) > _FILE_CHAR_CAP:
+            raw = raw[:_FILE_CHAR_CAP]
+            truncated = True
+
+        lines = raw.splitlines()
+        numbered = "\n".join(f"{i+1:>4}\t{l}" for i, l in enumerate(lines))
+        return {
+            "content": numbered,    # for AI prompts
+            "raw": raw,             # original
+            "line_count": len(lines),
+            "char_count": len(raw),
+            "truncated": truncated,
+        }
+
+    def _format_context_for_prompt(self, context: Dict[str, Any]) -> str:
+        """Render context dict as a readable string for the planning prompt."""
+        parts: List[str] = []
+        tree = context.get("tree", [])
+        parts.append(f"WORKSPACE ({len(tree)} files):")
+        parts.append("\n".join(f"  {f}" for f in tree[:50]))
+
+        files = context.get("files", {})
+        if files:
+            parts.append("\n\nFILE CONTENTS (line-numbered):")
+            for path, d in files.items():
+                note = " [TRUNCATED]" if d.get("truncated") else ""
+                parts.append(f"\n--- {path}{note} ({d['line_count']} lines) ---")
+                parts.append(d["content"])
+
+        return "\n".join(parts)
+
+    def _fuzzy_match(self, hint: str, tree: List[str]) -> Optional[str]:
+        """Find the best match for a file hint in the workspace tree."""
+        h = hint.replace("\\", "/").strip("./")
+        if h in tree:
+            return h
+        matches = [f for f in tree if f.endswith("/" + h) or f.endswith(h)]
+        if matches:
+            return matches[0]
+        base = os.path.basename(h)
+        matches = [f for f in tree if os.path.basename(f) == base]
+        return matches[0] if matches else None
+
+    def _heuristic_entrypoints(self, tree: List[str]) -> List[str]:
+        """Return likely entry-point files worth including in context."""
+        candidates = [
+            "src/App.jsx", "src/App.tsx", "src/App.js",
+            "src/main.jsx", "src/main.tsx", "src/main.js",
+            "src/index.jsx", "src/index.tsx", "src/index.js",
+            "app/page.tsx", "app/layout.tsx",
+            "pages/index.tsx", "pages/index.jsx", "pages/index.js",
+            "main.py", "app.py", "server.py", "index.py",
+            "package.json", "requirements.txt",
+        ]
+        return [c for c in candidates if c in tree]
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # JSON / REGEX HELPERS
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _parse_json(self, raw: str, default: Dict) -> Dict[str, Any]:
+        """Extract and parse the first JSON object from a string."""
+        cleaned = re.sub(r'```(?:json)?', '', raw).replace('```', '').strip()
+        m = re.search(r'\{.*\}', cleaned, re.DOTALL)
+        if not m:
+            return default
+        try:
+            return json.loads(m.group(0))
+        except json.JSONDecodeError:
+            # Attempt repair: replace unescaped newlines inside string values
+            try:
+                repaired = re.sub(r'(?<!\\)\n', '\\n', m.group(0))
+                return json.loads(repaired)
+            except Exception:
+                return default
+
+    def _validate_op(self, op: Dict, idx: int) -> Optional[Dict]:
+        """Sanitise a single operation dict."""
+        VALID = {
+            "CREATE_FILE", "FULL_REWRITE", "REPLACE_LINES",
+            "INSERT_BEFORE", "INSERT_AFTER", "DELETE_LINES",
+            "APPEND", "PREPEND", "DELETE_FILE", "REPLACE_PATTERN",
+        }
+        op_type = str(op.get("op_type", "")).upper()
+        if op_type not in VALID:
+            return None
+        file_path = (op.get("file") or "").strip().lstrip("/")
+        if not file_path:
+            return None
+        return {
+            "op_id":              op.get("op_id", f"op_{idx+1:03d}"),
+            "op_type":            op_type,
+            "file":               file_path,
+            "description":        op.get("description", op_type),
+            "new_content":        op.get("new_content", ""),
+            # optional fields passed through as-is
+            "start_line":         op.get("start_line"),
+            "end_line":           op.get("end_line"),
+            "line":               op.get("line"),
+            "pattern":            op.get("pattern"),
+            "replacement":        op.get("replacement"),
+            "flags":              op.get("flags"),
+        }
+
+    def _extract_line_numbers(self, prompt: str) -> List[int]:
+        """Extract line numbers mentioned in the prompt."""
+        found = []
+        for m in re.finditer(r'\blines?\s*(\d+)(?:\s*[-–to]+\s*(\d+))?', prompt, re.I):
+            found.append(int(m.group(1)))
+            if m.group(2):
+                found.append(int(m.group(2)))
+        for m in re.finditer(r'\bL(\d+)\b', prompt):
+            found.append(int(m.group(1)))
+        return sorted(set(found))
+
+    def _extract_file_mentions(self, prompt: str) -> List[str]:
+        """Extract file paths or names from the prompt."""
+        return [c for c in re.findall(r'[\w./-]+\.\w{1,6}', prompt)
+                if not c.startswith("http")]
+
 # ── Configuration ─────────────────────────────────────────────────────────────
 PROJECT_DIR   = Path(os.environ.get('PROJECT_DIR', '/project'))
 WORKSPACE_DIR = PROJECT_DIR / 'workspace'
-DB_PATH       = '/tmp/vibecoding_users.db'
+# DB_PATH is no longer needed - we use API for message persistence
 NGINX_CONF    = '/etc/nginx/sites-available/default'
 PROJECT_ID    = os.environ.get('PROJECT_ID', 'default')
 
@@ -66,26 +929,32 @@ def log(msg: str):
     print(f'🛠️  [Agent] {msg}', flush=True)
 
 
-def _get_db(timeout: int = 15):
-    """Get a robust DB connection with WAL mode enabled."""
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=timeout)
-        conn.row_factory = sqlite3.Row
-        # Always try to enable WAL - it improves performance and prevents some locks
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-        except:
-            pass
-        return conn
-    except Exception as e:
-        log(f"DB Connection failed: {e}")
-        return None
+# ─────────────────────────────────────────────────────────────────────────────
+# DATABASE CONNECTION (DEPRECATED - Now using API)
+# ─────────────────────────────────────────────────────────────────────────────
+# The _get_db() function is no longer needed since we use the backend API
+# for message persistence instead of direct database access.
+# This avoids file permission issues with Docker volume mounts.
+
+# def _get_db(timeout: int = 15):
+#     """Get a robust DB connection with WAL mode enabled."""
+#     try:
+#         conn = sqlite3.connect(DB_PATH, timeout=timeout)
+#         conn.row_factory = sqlite3.Row
+#         try:
+#             conn.execute("PRAGMA journal_mode=WAL")
+#         except:
+#             pass
+#         return conn
+#     except Exception as e:
+#         log(f"DB Connection failed: {e}")
+#         return None
 
 
 def report(msg: str, code: str = None, suggestions: list = None, metadata: dict = None, summary: str = None, message_type: str = None):
     """
-    Persist a user-facing message to the host SQLite DB with rich context.
-    Also broadcast via WebSocket for real-time updates.
+    Send message to backend API instead of writing directly to database.
+    This avoids file permission issues with Docker volume mounts.
     
     Args:
         msg: Main message content
@@ -97,19 +966,20 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
     """
     clean = str(msg).strip()
     print(f'\n💬 {clean}', flush=True)
-
-    if not os.path.exists(DB_PATH):
-        return
-        
-    conn = _get_db()
-    if not conn:
-        return
     
     # Build metadata
     meta = metadata or {}
     if message_type:
         meta['type'] = message_type
-    
+
+    # Always mark agent messages so the frontend can group them into ThinkingBlocks
+    # even after a page reload (these are never rendered as normal chat messages).
+    # EXCEPTION: messages with suggestions are terminal responses ("Great! Your
+    # changes are working…") — they must appear as regular chat messages, not be
+    # swallowed into the collapsible ThinkingBlock.
+    if not suggestions:
+        meta['is_background_log'] = True
+
     # Auto-detect message type from emoji if not provided
     if not message_type:
         if clean.startswith('❓'):
@@ -136,63 +1006,58 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
     if not summary:
         summary = _generate_summary(clean)
     
-    # Broadcast via WebSocket for real-time updates
+    # Send to backend API instead of direct database write
     try:
         import requests
         
-        # Determine the correct backend URL
-        # If running in Docker, use host.docker.internal or the service name
-        backend_host = os.environ.get('BACKEND_HOST', 'host.docker.internal')
-        backend_port = os.environ.get('BACKEND_PORT', '8001')
-        backend_url = f'http://{backend_host}:{backend_port}/vibecoding/api/broadcast/{PROJECT_ID}'
+        # Get backend URL from environment variable
+        # Default to host.docker.internal for Docker-to-host communication
+        # backend_url = os.environ.get('BACKEND_URL', 'http://host.docker.internal:8001')
+        backend_url = os.environ.get('BACKEND_URL', 'https://dsuite-backend.bourntec.com')
+        api_endpoint = f'{backend_url}/vibecoding/api/agent/message'
         
+        payload = {
+            'project_id': PROJECT_ID,
+            'container_id': 'vibecoding-ai-agent',
+            'role': 'assistant',
+            'content': clean,
+            'code': code,
+            'suggestions': suggestions,
+            'metadata': meta,
+            'summary': summary
+        }
+        
+        # Send message to backend API with timeout
+        response = requests.post(api_endpoint, json=payload, timeout=5)
+        
+        if response.status_code == 200:
+            result = response.json()
+            log(f'✅ Message saved via API: {result.get("message_id")}')
+        else:
+            log(f'⚠️ API save failed: {response.status_code} - {response.text}')
+            
+    except requests.exceptions.ConnectionError:
+        log('❌ Cannot connect to backend API - is the backend running?')
+    except requests.exceptions.Timeout:
+        log('⚠️ API request timeout - backend may be slow')
+    except Exception as e:
+        log(f'❌ API error: {e}')
+    
+    # Also broadcast via WebSocket for real-time updates (optional)
+    try:
+        ws_url = f'https://dsuite-backend.bourntec.com/vibecoding/api/broadcast/{PROJECT_ID}'
         ws_payload = {
             'content': clean,
             'type': meta.get('type'),
             'summary': summary,
             'metadata': meta,
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'code': code,
             'suggestions': suggestions
         }
-        
-        # Non-blocking request with short timeout
-        # This is optional - if it fails, we still write to DB
-        requests.post(backend_url, json=ws_payload, timeout=0.5)
-        
-    except requests.exceptions.ConnectionError:
-        # WebSocket server not available - this is OK, messages still go to DB
-        pass
-    except requests.exceptions.Timeout:
-        # Timeout is OK - don't block the agent
-        pass
-    except Exception as e:
-        # Log other errors but don't fail
-        log(f'WebSocket broadcast failed (non-critical): {e}')
-    
-    try:
-        conn.execute(
-            """INSERT INTO messages
-               (id, project_id, container_id, role, content, code, version_id,
-                timestamp, suggestions, tool_calls, image_paths, metadata, summary)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (f'agent_{int(time.time())}_{uuid.uuid4().hex[:4]}',
-             PROJECT_ID, 'vibecoding-ai-agent', 'assistant',
-             clean, code, None,
-             datetime.now().isoformat(),
-             json.dumps(suggestions) if suggestions else None,
-             None, None,
-             json.dumps(meta) if meta else None,
-             summary)
-        )
-        conn.commit()
-    except Exception as e:
-        print(f'DEBUG: DB write failed: {e}', flush=True)
-    finally:
-        try:
-            conn.close()
-        except:
-            pass
+        requests.post(ws_url, json=ws_payload, timeout=0.5)
+    except:
+        pass  # WebSocket is optional, don't fail if it doesn't work
 
 
 def _generate_contextual_suggestions(message: str, code: str = None) -> list:
@@ -310,6 +1175,156 @@ def _generate_summary(message: str) -> str:
         return summary
     
     return clean[:100]
+
+
+def _generate_ai_suggestions_for_success(user_prompt: str, changed_files: list = None) -> list:
+    """
+    Use AI to generate 3 contextual suggestions for what the user might want to do next
+    after successfully deploying their app.
+    """
+    try:
+        # Build context about what was done
+        context = f"User requested: {user_prompt}\n"
+        if changed_files:
+            context += f"Files modified: {', '.join(changed_files[:5])}\n"
+        
+        suggestion_prompt = f"""Based on what was just built/deployed, suggest exactly 3 short, actionable next steps the user might want to take.
+
+{context}
+
+Each suggestion should be:
+- A natural follow-up to enhance or extend what was created
+- Under 50 characters
+- Actionable and specific
+- Written as a complete sentence that could be sent as a prompt
+
+Respond with ONLY valid JSON (no markdown fences):
+{{
+  "suggestions": [
+    {{"text": "Add user authentication", "icon": "🔐"}},
+    {{"text": "Make it mobile responsive", "icon": "📱"}},
+    {{"text": "Add a dark mode toggle", "icon": "🌙"}}
+  ]
+}}
+"""
+        
+        response = call_ai([
+            {'role': 'system', 'content': 'You are a helpful assistant that suggests next steps. Output only valid JSON.'},
+            {'role': 'user', 'content': suggestion_prompt}
+        ], temperature=0.7, show_thinking=False)
+        
+        # Parse JSON response
+        try:
+            # Try to extract JSON from response
+            response_text = response.strip()
+            if '```json' in response_text:
+                response_text = response_text.split('```json')[1].split('```')[0].strip()
+            elif '```' in response_text:
+                response_text = response_text.split('```')[1].split('```')[0].strip()
+            
+            data = json.loads(response_text)
+            suggestions_list = data.get('suggestions', [])
+            
+            # Convert to the format expected by the frontend
+            formatted_suggestions = []
+            for sug in suggestions_list[:3]:
+                formatted_suggestions.append({
+                    'text': sug.get('text', ''),
+                    'icon': sug.get('icon', '✨'),
+                    'action': 'custom',
+                    'prompt': sug.get('text', '')
+                })
+            
+            if len(formatted_suggestions) == 3:
+                return formatted_suggestions
+        except json.JSONDecodeError as e:
+            log(f'Failed to parse AI suggestions JSON: {e}')
+        
+    except Exception as e:
+        log(f'Failed to generate AI suggestions: {e}')
+    
+    # Fallback to generic suggestions if AI fails
+    return [
+        {'text': 'Make changes', 'action': 'edit', 'icon': '✏️', 'prompt': 'I want to make some changes'},
+        {'text': 'Add features', 'action': 'add_feature', 'icon': '✨', 'prompt': 'Add a new feature'},
+        {'text': 'Fix issues', 'action': 'fix', 'icon': '🔧', 'prompt': 'Fix any issues'}
+    ]
+
+
+def _generate_next_step_suggestions(user_prompt: str, changed_files: dict, test_results: list) -> list:
+    """
+    Generate AI-powered suggestions for what the user might want to do next
+    after a successful deployment.
+    """
+    try:
+        # Build context about what was done
+        file_list = list(changed_files.keys())
+        file_summary = ', '.join(file_list[:3])
+        if len(file_list) > 3:
+            file_summary += f' and {len(file_list) - 3} more'
+        
+        # Ask AI for next step suggestions
+        suggestion_prompt = f"""The user's request has been successfully completed and all tests passed.
+
+USER REQUEST: {user_prompt}
+
+FILES CHANGED: {file_summary}
+
+TESTS PASSED: {len(test_results)}
+
+Generate 3-4 actionable suggestions for what the user might want to do next.
+These should be natural next steps that build on what was just accomplished.
+
+Examples:
+- Add authentication to the dashboard
+- Create a database to persist the metrics
+- Add more chart types (pie, bar, line)
+- Deploy to production
+- Add user management features
+- Improve the UI styling
+
+OUTPUT FORMAT (JSON only):
+{{
+  "suggestions": [
+    {{"text": "Add authentication", "icon": "🔐", "prompt": "Add user authentication to the dashboard"}},
+    {{"text": "Add database", "icon": "💾", "prompt": "Create a database to store metrics data"}},
+    ...
+  ]
+}}
+
+Output ONLY valid JSON."""
+
+        response = call_ai([
+            {'role': 'system', 'content': 'You are a helpful assistant that suggests next steps. Output only valid JSON.'},
+            {'role': 'user', 'content': suggestion_prompt}
+        ], temperature=0.7, show_thinking=False)
+        
+        # Parse JSON response
+        response = re.sub(r'^```[a-z]*\n?', '', response.strip(), flags=re.MULTILINE)
+        response = re.sub(r'\n?```$', '', response.strip(), flags=re.MULTILINE)
+        m = re.search(r'\{.*\}', response, re.DOTALL)
+        
+        if m:
+            data = json.loads(m.group(0))
+            suggestions = data.get('suggestions', [])
+            
+            # Ensure each suggestion has required fields
+            for sug in suggestions:
+                if 'action' not in sug:
+                    sug['action'] = 'next_step'
+            
+            return suggestions[:4]  # Limit to 4 suggestions
+        
+    except Exception as e:
+        log(f'Failed to generate next step suggestions: {e}')
+    
+    # Fallback suggestions if AI fails
+    return [
+        {'text': 'Add more features', 'action': 'enhance', 'icon': '✨', 'prompt': 'Add more features to the application'},
+        {'text': 'Improve styling', 'action': 'style', 'icon': '🎨', 'prompt': 'Improve the UI design and styling'},
+        {'text': 'Add tests', 'action': 'test', 'icon': '🧪', 'prompt': 'Add more comprehensive tests'},
+        {'text': 'Deploy to production', 'action': 'deploy', 'icon': '🚀', 'prompt': 'Deploy the application to production'}
+    ]
 
 
 def _generate_task_breakdown(user_prompt: str, existing_files: dict = None) -> str:
@@ -708,29 +1723,34 @@ def call_ai(messages: list, temperature: float = 0.2, show_thinking: bool = True
             'agent_id': API_KEY,
             'model': AI_MODEL or 'BournAI',
             'platform_id': os.environ.get('BRN_PLATFORM_ID', 'DSuite'),
-            'stream': True,
+            'stream': False,
             'prompt': '\n\n'.join(parts),
         }
         resp = requests.post(API_URL, headers=headers, json=payload, stream=True, timeout=180)
         resp.raise_for_status()
         content = ''
-        for raw in resp.iter_lines():
-            if not raw:
-                continue
-            line = raw.decode('utf-8')
-            if line.startswith('data: '):
-                line = line[6:]
-            if line.strip() == '[DONE]':
-                break
-            try:
-                chunk = json.loads(line)
-                for part in chunk.get('content', []):
-                    if isinstance(part, dict) and part.get('type') == 'text':
-                        content += part.get('text', '')
-                if chunk.get('stop_reason') == 'end_turn':
-                    break
-            except json.JSONDecodeError:
-                pass
+        print(resp.json().get('response'))
+        resp = resp.json()
+        if isinstance(resp, dict):
+            print(resp.get('response'))
+            content = resp.get('response')
+        # for raw in resp.iter_lines():
+        #     if not raw:
+        #         continue
+        #     line = raw.decode('utf-8')
+        #     if line.startswith('data: '):
+        #         line = line[6:]
+        #     if line.strip() == '[DONE]':
+        #         break
+        #     try:
+        #         chunk = json.loads(line)
+        #         for part in chunk.get('content', []):
+        #             if isinstance(part, dict) and part.get('type') == 'text':
+        #                 content += part.get('text', '')
+        #         if chunk.get('stop_reason') == 'end_turn':
+        #             break
+        #     except json.JSONDecodeError:
+        #         pass
         
         # Extract and show thinking if enabled
         if show_thinking and content:
@@ -757,59 +1777,58 @@ def call_ai(messages: list, temperature: float = 0.2, show_thinking: bool = True
 
 def _extract_and_show_thinking(response_text: str):
     """
-    Extract and show AI's thinking from response.
-    Looks for:
-    1. "thinking" field in JSON responses
-    2. Text before first code/file marker
-    3. Explanatory text at the start
+    Extract and show AI's thinking from response — conservative version.
+
+    Only reports thinking when the content is clearly intentional:
+      1. Explicit <thinking>…</thinking> XML tags
+      2. A "thinking" / "thought" / "analysis" key in a JSON response
+      3. Text before the first file/code marker that forms a complete sentence
+         and is short enough to not be partial content (≤ 200 chars)
+
+    Half-sentences and code preambles are silently ignored.
     """
-    # Try to extract from JSON first
+    import re as _re
+
+    # ── 1. Explicit <thinking> XML block ────────────────────────────────────
+    xml_match = _re.search(r'<thinking>(.*?)</thinking>', response_text, _re.DOTALL | _re.IGNORECASE)
+    if xml_match:
+        thinking = xml_match.group(1).strip()
+        if thinking and 10 < len(thinking) < 600:
+            report(f'💡 {thinking}', message_type='thinking')
+            log(f'AI thinking (xml): {thinking[:100]}')
+            return
+
+    # ── 2. JSON "thinking" field ─────────────────────────────────────────────
     try:
-        # Clean markdown code fences
-        cleaned = re.sub(r'^```[a-z]*\n?', '', response_text.strip(), flags=re.MULTILINE)
-        cleaned = re.sub(r'\n?```$', '', cleaned.strip(), flags=re.MULTILINE)
-        
-        # Try to find JSON
-        m = re.search(r'\{.*\}', cleaned, re.DOTALL)
-        if m:
-            try:
-                data = json.loads(m.group(0))
-                thinking = data.get('thinking') or data.get('thought') or data.get('analysis')
-                if thinking and isinstance(thinking, str) and 10 < len(thinking) < 500:
-                    report(f'💡 {thinking}')
-                    log(f'AI thinking: {thinking}')
-                    return
-            except:
-                pass
-    except:
-        pass
-    
-    # Try to extract text before first marker (FILE:, PATCH:, code fence, etc.)
-    markers = [
-        r'(?://|#|<!--)\s*(?:FILE|PATCH):',  # File/patch markers
-        r'^```',  # Code fences
-        r'^\{',  # JSON start
-    ]
-    
-    for marker_pattern in markers:
-        match = re.search(marker_pattern, response_text, re.MULTILINE)
-        if match:
-            thinking = response_text[:match.start()].strip()
-            # Clean up common prefixes
-            thinking = re.sub(r'^(Sure|Okay|Alright|Got it)[,!.]?\s*', '', thinking, flags=re.IGNORECASE)
-            thinking = re.sub(r'^(I will|I\'ll|Let me)\s+', '', thinking, flags=re.IGNORECASE)
-            
-            if thinking and 10 < len(thinking) < 500:
-                report(f'💡 {thinking}')
-                log(f'AI thinking: {thinking}')
+        cleaned = _re.sub(r'^```[a-z]*\n?', '', response_text.strip(), flags=_re.MULTILINE)
+        cleaned = _re.sub(r'\n?```$', '', cleaned.strip(), flags=_re.MULTILINE)
+        json_m = _re.search(r'\{.*\}', cleaned, _re.DOTALL)
+        if json_m:
+            data = json.loads(json_m.group(0))
+            thinking = data.get('thinking') or data.get('thought') or data.get('analysis')
+            if thinking and isinstance(thinking, str) and 10 < len(thinking) < 400:
+                report(f'💡 {thinking}', message_type='thinking')
+                log(f'AI thinking (json): {thinking[:100]}')
                 return
-    
-    # If response is short and looks like an explanation, show it
-    if len(response_text) < 300 and not any(marker in response_text for marker in ['```', '//', '<<<', '>>>']):
-        thinking = response_text.strip()
-        if thinking and 10 < len(thinking) < 300:
-            report(f'💡 {thinking}')
-            log(f'AI thinking: {thinking}')
+    except Exception:
+        pass
+
+    # ── 3. Text before first file/code marker — only if complete & concise ──
+    first_marker = _re.search(
+        r'(?://|#|<!--)\s*(?:FILE|PATCH):|^```|^\{',
+        response_text, _re.MULTILINE
+    )
+    if first_marker:
+        pre = response_text[:first_marker.start()].strip()
+        # Strip common filler phrases
+        pre = _re.sub(r'^(Sure|Okay|Alright|Got it|Certainly)[,!.]?\s*', '', pre, flags=_re.IGNORECASE)
+        pre = _re.sub(r'^(I will|I\'ll|Let me)\s+', '', pre, flags=_re.IGNORECASE)
+        # Only report if: reasonably short AND ends with sentence-ending punctuation
+        # (avoids cut-off mid-sentence text)
+        if pre and 10 < len(pre) <= 200 and pre[-1] in '.!?':
+            report(f'💡 {pre}', message_type='thinking')
+            log(f'AI thinking (pre-marker): {pre[:100]}')
+
 
 
 # ── Phase 1: Code Generation ───────────────────────────────────────────────────
@@ -819,7 +1838,7 @@ def generate_code(user_prompt: str, existing_files: dict = None) -> bool:
     if is_edit:
         # Generate task breakdown for edits
         task_summary = _generate_task_breakdown(user_prompt, existing_files)
-        report(f'✏️ Got your request! Here\'s what I\'ll do:\n\n{task_summary}', 
+        report(f'Got your request! Here\'s what I\'ll do:\n\n{task_summary}', 
                message_type='thinking',
                summary='Analyzing changes needed')
     else:
@@ -895,7 +1914,7 @@ Apply the requested changes now."""
         response_text = call_ai([
             {'role': 'system', 'content': system_prompt},
             {'role': 'user', 'content': user_content},
-        ], temperature=0.3, show_thinking=is_edit)  # Show thinking for edits
+        ], temperature=0.7, show_thinking=is_edit)  # Show thinking for edits
         
         # Log AI response for debugging
         log(f'AI response length: {len(response_text)} chars')
@@ -924,7 +1943,7 @@ Apply the requested changes now."""
             # For edits, we MUST have file markers - don't guess
             log('⚠️ AI response for edit has no FILE/PATCH markers')
             log(f'Response preview: {response_text[:500]}')
-            report('⚠️ I need to try that again with the proper format. One moment...')
+            report('I need to try that again with the proper format. One moment...')
             
             # Retry with more explicit instructions
             retry_prompt = f"""CRITICAL: You must use file markers to make changes.
@@ -963,16 +1982,16 @@ Apply the changes now using ONLY these markers."""
                 log(f'Retry found {len(matches)} FILE markers and {len(patch_matches)} PATCH markers')
                 
                 if not matches and not patch_matches:
-                    report('⚠️ The AI didn\'t return any code changes. Please try rephrasing your request.')
+                    report('The AI didn\'t return any code changes. Please try rephrasing your request.')
                     return False
             except Exception as e:
-                report(f'⚠️ Something went wrong. Please try again. (Details: {e})')
+                report(f'Something went wrong. Please try again. (Details: {e})')
                 return False
         else:
             # For new projects, try to detect the file type
             code = response_text.strip()
             if not code or len(code) < 30:
-                report('⚠️ The AI didn\'t return any code. Please try rephrasing your request.')
+                report('The AI didn\'t return any code. Please try rephrasing your request.')
                 return False
             filename = _detect_filename(code)
             _write_file(WORKSPACE_DIR / filename, code)
@@ -1001,21 +2020,21 @@ Apply the changes now using ONLY these markers."""
     total = len(files_written) + patches_applied
     if total == 0:
         log('⚠️ No files written and no patches applied!')
-        report('⚠️ The code was generated but couldn\'t be saved. Please try again.')
+        report('The code was generated but couldn\'t be saved. Please try again.')
         return False
 
     # Generate a summary of what was changed
     change_summary = _generate_change_summary(user_prompt, files_written, patches_applied, is_edit)
 
     if is_edit:
-        report(f'✅ Changes applied:\n\n{change_summary}',
+        report(f'Changes applied:\n\n{change_summary}',
                message_type='success',
                summary=f'Updated {total} file(s)')
         # Store what changed for post-deployment testing
         changed_files = files_written + [_clean_filename(pm.group(1)) for pm in patch_matches]
         return {'success': True, 'changed_files': changed_files, 'user_prompt': user_prompt}
     else:
-        report(f'✅ App created:\n\n{change_summary}',
+        report(f'App created:\n\n{change_summary}',
                message_type='success',
                summary=f'Created {total} file(s)')
         return True
@@ -1210,7 +2229,7 @@ def sanitize_workspace():
     if not corrupted:
         return
 
-    report(f'🔧 Found {len(corrupted)} file(s) with formatting issues — fixing them automatically...')
+    report(f'Found {len(corrupted)} file(s) with formatting issues — fixing them automatically...')
 
     for fp in corrupted:
         try:
@@ -1248,7 +2267,7 @@ Return ONLY the clean file content with no explanation, no markers, no fences.""
 
 # ── Phase 2: Deployment ────────────────────────────────────────────────────────
 def deploy(error_context: dict = None, max_retries: int = 3, test_changes: bool = False, changed_files: list = None, user_prompt: str = None) -> bool:
-    report('🔧 Figuring out the best way to run your app...')
+    report('Figuring out the best way to run your app...')
     
     # Show loading page immediately so users see progress
     apply_baseline_gateway()
@@ -1315,16 +2334,39 @@ STEP 3: DETERMINE BUILD ORDER
 
 STEP 4: GENERATE DEPLOYMENT SCRIPT
 
-Pattern A: Single-page app (Vite/React) with no backend
+Pattern A: Static HTML website (no build process needed)
+```bash
+#!/bin/bash
+set -e
+echo "Deploying static HTML website..."
+# No build process needed - files are already ready to serve
+# Nginx will serve the files directly from /project/workspace
+echo "Static site ready to be served by Nginx"
+```
+
+CRITICAL FOR STATIC HTML:
+- NO build process needed
+- NO npm install or serve command
+- Nginx serves files DIRECTLY from /project/workspace
+- DO NOT use systemctl, service, or any system commands
+- DO NOT try to restart nginx - it's already running
+- app_port should be 80 (nginx serves directly)
+- nginx config should use "root /project/workspace;" NOT proxy_pass
+
+Pattern B: Single-page app (Vite/React) with no backend
 ```bash
 cd /project/workspace
 rm -rf dist build .next out node_modules/.vite
 npm install
 npm run build
-npx serve -s dist -l 3000 &
+PORT=3000 npx serve -s dist -l 3000 >> /tmp/app.log 2>&1 &
 ```
 
-Pattern B: Client/Server in separate folders (server expects ./client/dist)
+CRITICAL: For serve command, ALWAYS use both PORT env var AND -l flag:
+  PORT=3000 npx serve -s dist -l 3000
+This ensures the app binds to the correct port reliably.
+
+Pattern C: Client/Server in separate folders (server expects ./client/dist)
 ```bash
 # Build client first
 cd /project/workspace/client
@@ -1342,7 +2384,25 @@ npm install
 PORT=3000 node server.js >> /tmp/app.log 2>&1 &
 ```
 
-Pattern C: Client/Server in separate folders (server expects ../client/dist)
+Pattern C: Client/Server in separate folders (server expects ./client/dist)
+```bash
+# Build client first
+cd /project/workspace/client
+rm -rf dist build node_modules/.vite
+npm install
+npm run build
+
+# Copy dist to where server expects it
+mkdir -p /project/workspace/server/client
+cp -r dist /project/workspace/server/client/
+
+# Start server
+cd /project/workspace/server
+npm install
+PORT=3000 node server.js >> /tmp/app.log 2>&1 &
+```
+
+Pattern D: Client/Server in separate folders (server expects ../client/dist)
 ```bash
 # Build client first
 cd /project/workspace/client
@@ -1356,7 +2416,7 @@ npm install
 PORT=3000 node server.js >> /tmp/app.log 2>&1 &
 ```
 
-Pattern D: Frontend/Backend (separate apps)
+Pattern E: Frontend/Backend (separate apps)
 ```bash
 # Build frontend
 cd /project/workspace/frontend
@@ -1374,7 +2434,7 @@ cd /project/workspace/frontend
 npx serve -s dist -l 3000 >> /tmp/app.log 2>&1 &
 ```
 
-Pattern E: Monorepo (server in root, serves built client)
+Pattern F: Monorepo (server in root, serves built client)
 ```bash
 # Build client
 cd /project/workspace
@@ -1455,7 +2515,35 @@ Your nginx config MUST:
 - Enable gzip compression
 - Add security headers
 
-Example nginx config:
+EXCEPTION FOR STATIC HTML:
+If the project is static HTML (no package.json, no build process), use this nginx config instead:
+server {{
+    listen 80;
+    root /project/workspace;
+    index index.html;
+    
+    # Gzip
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript image/svg+xml;
+    
+    # Security
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    
+    # Serve static files
+    location / {{
+        try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-cache, must-revalidate" always;
+    }}
+    
+    # Static assets
+    location ~* \.(js|css|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot)$ {{
+        expires 1h;
+        add_header Cache-Control "public, immutable";
+    }}
+}}
+
+For apps with a build process, use this nginx config:
 server {{
     listen 80;
     
@@ -1514,14 +2602,14 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
 
     for attempt in range(1, max_retries + 1):
         if attempt > 1:
-            report(f'🔄 Something didn\'t work as expected. Trying a different approach... (attempt {attempt}/{max_retries})')
+            report(f'Something didn\'t work as expected. Trying a different approach... (attempt {attempt}/{max_retries})')
 
             # Before retrying, check if we have a repeating pattern — fix code if so
             if len(error_history) >= 2:
                 code_fix_attempts += 1
                 
                 if code_fix_attempts >= MAX_FIX_ATTEMPTS:
-                    report(f'⚠️ I\'ve attempted {MAX_FIX_ATTEMPTS} code fixes but the issue persists. The deployment may require manual intervention.',
+                    report(f'I\'ve attempted {MAX_FIX_ATTEMPTS} code fixes but the issue persists. The deployment may require manual intervention.',
                            suggestions=[
                                {'text': 'Show me the errors', 'action': 'show_errors', 'icon': '📋', 'prompt': 'Show me all the error details'},
                                {'text': 'Try different approach', 'action': 'different_approach', 'icon': '🔄', 'prompt': 'Try a completely different deployment approach'},
@@ -1706,15 +2794,19 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
                 time.sleep(1)
                 continue
 
-            report('📦 Installing dependencies and building your app...')
-            script_path = '/tmp/autodeploy.sh'
+            report('Installing dependencies and building your app...')
+            import uuid as _uuid
+            script_path = f'/tmp/autodeploy_{_uuid.uuid4().hex[:8]}.sh'
             # Wrap script to redirect app stdout/stderr to a log file for diagnostics
             script_with_logging = (
                 script if script.startswith('#') else '#!/bin/bash\nset -e\n' + script
             )
             # Redirect background process output to a log file
-            script_with_logging = script_with_logging.replace(
-                ' &\n', ' >> /tmp/app_stdout.log 2>&1 &\n'
+            import re as _re
+            script_with_logging = re.sub(
+                r'(\S) &\n',
+                r'\1 >> /tmp/app_stdout.log 2>&1 &\n',
+                script_with_logging
             )
             # Clear previous log
             Path('/tmp/app_stdout.log').write_text('')
@@ -1777,7 +2869,7 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
                         syntax_fix_attempts += 1
                         
                         if syntax_fix_attempts >= MAX_FIX_ATTEMPTS:
-                            report(f'⚠️ I\'ve attempted {MAX_FIX_ATTEMPTS} syntax fixes but the issue persists. The code may need manual review.',
+                            report(f'I\'ve attempted {MAX_FIX_ATTEMPTS} syntax fixes but the issue persists. The code may need manual review.',
                                    suggestions=[
                                        {'text': 'Show me the syntax error', 'action': 'show_error', 'icon': '📋', 'prompt': 'Show me the exact syntax error'},
                                        {'text': 'Review the code', 'action': 'review_code', 'icon': '👀', 'prompt': 'Let me review the problematic code'},
@@ -1788,20 +2880,20 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
                             return False
                         
                         log(f'🔧 Syntax error detected - attempting automatic fix (attempt {syntax_fix_attempts}/{MAX_FIX_ATTEMPTS})')
-                        report(f'🔧 I found a syntax error in the code. Let me fix it... (attempt {syntax_fix_attempts}/{MAX_FIX_ATTEMPTS})')
+                        report(f'I found a syntax error in the code. Let me fix it... (attempt {syntax_fix_attempts}/{MAX_FIX_ATTEMPTS})')
                         
                         fix_result = _auto_fix_syntax_error(full_error, tree)
                         log(f'Fix result: {fix_result}')
                         
                         if fix_result.get('fixed'):
-                            report(f'✅ Fixed syntax error in {fix_result["file"]}. Rebuilding...')
+                            report(f'Fixed syntax error in {fix_result["file"]}. Rebuilding...')
                             log('Retrying deployment after syntax fix')
                             time.sleep(2)
                             continue  # Retry deployment with fixed code
                         else:
                             error_msg = fix_result.get('error', 'Unknown error')
                             log(f'⚠️ Auto-fix failed: {error_msg}')
-                            report(f'⚠️ I found a syntax error but couldn\'t fix it automatically: {error_msg}')
+                            report(f'I found a syntax error but couldn\'t fix it automatically: {error_msg}')
                     else:
                         log('No syntax errors detected in build output')
                     
@@ -1836,7 +2928,7 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
 
         nginx_conf = strategy.get('nginx_config', '')
         if nginx_conf:
-            report('🌐 Setting up the web server...')
+            report('Setting up the web server...')
             
             # ═══════════════════════════════════════════════════════════════
             # VALIDATE: Check nginx config for common issues before applying
@@ -1852,15 +2944,111 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
 
         time.sleep(2)
 
-        healthy, msg = _health_check(app_port=app_port)
+        healthy, msg, actual_port = _health_check(app_port=app_port)
+        
+        # ✅ NEW: Handle port mismatch - update nginx config to use actual port
+        if not healthy and actual_port and actual_port != app_port:
+            log(f'🔧 Port mismatch detected! Updating Nginx to proxy to port {actual_port}...')
+            report(f'Detected app is running on port {actual_port} instead of {app_port}. Updating configuration...')
+            
+            # Update nginx config to use the actual port
+            try:
+                # Re-read current nginx config
+                current_nginx = Path(NGINX_CONF).read_text() if Path(NGINX_CONF).exists() else nginx_conf
+                
+                # Replace the old port with the new port in proxy_pass directives
+                updated_nginx = re.sub(
+                    rf'proxy_pass\s+http://[^:]+:{app_port}',
+                    f'proxy_pass http://127.0.0.1:{actual_port}',
+                    current_nginx
+                )
+                
+                # Write updated config
+                if write_nginx_config(updated_nginx):
+                    log(f'✅ Nginx config updated to use port {actual_port}')
+                    app_port = actual_port  # Update app_port for future checks
+                    
+                    # Wait a moment for nginx to reload
+                    time.sleep(2)
+                    
+                    # Re-check health with the correct port
+                    healthy, msg, _ = _health_check(app_port=actual_port)
+                    
+                    if healthy:
+                        report('Configuration updated! Your app is now live.',
+                               suggestions=[
+                                   {'text': 'Make changes', 'action': 'edit', 'icon': '✏️', 'prompt': 'I want to make some changes'},
+                                   {'text': 'Add features', 'action': 'add_feature', 'icon': '✨', 'prompt': 'Add a new feature'}
+                               ],
+                               metadata={'status': 'success', 'app_port': actual_port, 'port_corrected': True},
+                               summary='App deployed successfully (port corrected)')
+                        return True
+                    else:
+                        log(f'⚠️ Still unhealthy after port correction: {msg}')
+                else:
+                    log('❌ Failed to update nginx config')
+            except Exception as e:
+                log(f'❌ Error updating nginx config for port mismatch: {e}')
+        
         if healthy:
-            report('🎉 Your app is live! The preview should appear any moment now.',
-                   suggestions=[
-                       {'text': 'Make changes', 'action': 'edit', 'icon': '✏️', 'prompt': 'I want to make some changes'},
-                       {'text': 'Add features', 'action': 'add_feature', 'icon': '✨', 'prompt': 'Add a new feature'},
-                       {'text': 'Fix issues', 'action': 'fix', 'icon': '🔧', 'prompt': 'Fix any issues'}
-                   ],
-                   metadata={'status': 'success', 'app_port': app_port, 'deployment_time': time.time()},
+            # Generate dynamic AI suggestions based on what was built
+            ai_suggestions = _generate_ai_suggestions_for_success(user_prompt, changed_files)
+
+            # ── Build compact file-diff footer ──────────────────────────────
+            # Show which files were added / modified in a git-style summary.
+            # If changed_files is empty (new project), scan the workspace.
+            files_for_diff = changed_files or []
+            if not files_for_diff:
+                try:
+                    files_for_diff = [
+                        str(p.relative_to(WORKSPACE_DIR))
+                        for p in WORKSPACE_DIR.rglob('*')
+                        if p.is_file()
+                        and p.name not in ('metadata.json',)
+                        and '.git' not in p.parts
+                        and 'node_modules' not in p.parts
+                    ]
+                except Exception:
+                    files_for_diff = []
+
+            is_new_project = not bool(error_context) and not bool(changed_files)
+
+            # Build structured file-diff data for the frontend green bar.
+            # Do NOT embed file info in the message text - the UI renders it
+            # as a clean "filename +N" bar above the input box instead.
+            file_diff_data = []
+            for fp in files_for_diff[:50]:   # cap at 50
+                try:
+                    line_count = len((WORKSPACE_DIR / fp).read_text(encoding='utf-8', errors='ignore').splitlines())
+                except Exception:
+                    line_count = 0
+                file_diff_data.append({
+                    "path": fp,
+                    "name": os.path.basename(fp),
+                    "lines": line_count,
+                    "marker": "\u2746" if is_new_project else "\u25b3",
+                })
+
+            # Keep the success message clean - no file blocks embedded in text
+            success_msg = '🎉 Your app is live! The preview should appear any moment now.'
+
+            # Compact attachment payload for the frontend green bar
+            file_attachments = {
+                "files": [f["path"] for f in file_diff_data],
+                "diff": file_diff_data,
+            } if file_diff_data else None
+            
+            report(success_msg,
+                   suggestions=ai_suggestions,
+                   metadata={
+                       'status': 'success',
+                       'app_port': app_port,
+                       'deployment_time': time.time(),
+                       'is_final_message': True,
+                       'changed_files': files_for_diff,
+                       'is_new_project': is_new_project,
+                       'file_attachments': file_attachments,
+                   },
                    summary='App deployed successfully')
             
             # If this was an edit with changes, automatically test them
@@ -1870,7 +3058,7 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
                 # If fix was applied, redeploy (but check attempt limit)
                 if test_result.get('fix_applied'):
                     if attempt >= max_retries:
-                        report(f'⚠️ Maximum retry attempts ({max_retries}) reached. The app is deployed but may have issues.',
+                        report(f'Maximum retry attempts ({max_retries}) reached. The app is deployed but may have issues.',
                                suggestions=[
                                    {'text': 'Test manually', 'action': 'test', 'icon': '🧪', 'prompt': 'Let me test the app manually'},
                                    {'text': 'Review changes', 'action': 'review', 'icon': '👀', 'prompt': 'Review what was changed'},
@@ -1942,7 +3130,7 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
             ]
             metadata['error_category'] = 'general'
         
-        report(msg, code=app_log, suggestions=suggestions, metadata=metadata, summary=f"Deployment failed: {reason[:50]}")
+        report(msg, code=app_log, suggestions=suggestions, metadata=metadata, summary=f"Deployment error")
     else:
         report('⚠️ We ran into some trouble getting your app running. You can try sending your request again.',
                suggestions=[
@@ -2060,7 +3248,7 @@ def _targeted_code_fix(error_history: list, workspace_files: dict) -> bool:
     if not pattern:
         return False
 
-    report(f'🔍 Spotted a repeating issue — fixing the source code directly...')
+    report(f'Spotted a repeating issue — fixing the source code directly...')
 
     # Build context
     file_context = '\n\n'.join(
@@ -2133,10 +3321,42 @@ new lines
 
     total = files_fixed + patches_fixed
     if total > 0:
-        report(f'✅ Applied {total} fix(es) to the source code. Retrying deployment...')
+        report(f'Applied {total} fix(es) to the source code. Retrying deployment...')
         return True
 
     return False
+
+
+def _fallback_file_discovery() -> list:
+    """
+    Fallback file discovery using Python's pathlib when find command times out.
+    This is slower but more reliable for large directory structures.
+    """
+    excluded_dirs = {'node_modules', '.git', 'venv', '.venv', 'dist', 'build', '__pycache__'}
+    excluded_extensions = {'.pyc'}
+    
+    all_files = []
+    try:
+        for item in WORKSPACE_DIR.rglob('*'):
+            # Skip if any parent directory is in excluded_dirs
+            if any(part in excluded_dirs for part in item.parts):
+                continue
+            
+            # Skip if file extension is excluded
+            if item.suffix in excluded_extensions:
+                continue
+            
+            # Only include files, not directories
+            if item.is_file():
+                # Convert to relative path string
+                rel_path = './' + str(item.relative_to(WORKSPACE_DIR))
+                all_files.append(rel_path)
+        
+        log(f'📊 Fallback discovery found {len(all_files)} files')
+    except Exception as e:
+        log(f'❌ Fallback file discovery failed: {e}')
+    
+    return all_files
 
 
 def _discover_workspace() -> dict:
@@ -2176,35 +3396,59 @@ def _discover_workspace() -> dict:
         # ═══════════════════════════════════════════════════════════════════
         # STEP 1: Get complete file tree with tree command (visual structure)
         # ═══════════════════════════════════════════════════════════════════
-        tree_result = subprocess.run(
-            ['tree', '-a', '-L', '10', '--noreport',
-             '-I', 'node_modules|.git|venv|.venv|dist|build|__pycache__|*.pyc'],
-            cwd=str(WORKSPACE_DIR),
-            capture_output=True, text=True, timeout=10
-        )
-        
-        full_tree = tree_result.stdout if tree_result.returncode == 0 else ''
+        full_tree = ''
+        try:
+            tree_result = subprocess.run(
+                ['tree', '-a', '-L', '10', '--noreport',
+                 '-I', 'node_modules|.git|venv|.venv|dist|build|__pycache__|*.pyc'],
+                cwd=str(WORKSPACE_DIR),
+                capture_output=True, text=True, timeout=15  # Increased timeout from 10 to 15 seconds
+            )
+            
+            full_tree = tree_result.stdout if tree_result.returncode == 0 else ''
+        except subprocess.TimeoutExpired:
+            log(f'⚠️ Tree command timed out after 15 seconds, skipping tree visualization')
+            full_tree = ''
+        except Exception as e:
+            log(f'⚠️ Tree command failed: {e}')
+            full_tree = ''
         
         # ═══════════════════════════════════════════════════════════════════
         # STEP 2: Get all files with find (for detailed analysis)
         # ═══════════════════════════════════════════════════════════════════
-        find_result = subprocess.run(
-            ['find', '.', '-type', 'f',
-             '-not', '-path', '*/node_modules/*',
-             '-not', '-path', '*/.git/*',
-             '-not', '-path', '*/venv/*',
-             '-not', '-path', '*/.venv/*',
-             '-not', '-path', '*/dist/*',
-             '-not', '-path', '*/build/*',
-             '-not', '-path', '*/__pycache__/*',
-             '-not', '-name', '*.pyc'],
-            cwd=str(WORKSPACE_DIR),
-            capture_output=True, text=True, timeout=10
-        )
+        all_files = []
+        try:
+            find_result = subprocess.run(
+                ['find', '.', '-type', 'f',
+                 '-not', '-path', '*/node_modules/*',
+                 '-not', '-path', '*/.git/*',
+                 '-not', '-path', '*/venv/*',
+                 '-not', '-path', '*/.venv/*',
+                 '-not', '-path', '*/dist/*',
+                 '-not', '-path', '*/build/*',
+                 '-not', '-path', '*/__pycache__/*',
+                 '-not', '-name', '*.pyc'],
+                cwd=str(WORKSPACE_DIR),
+                capture_output=True, text=True, timeout=30  # Increased timeout from 10 to 30 seconds
+            )
+            
+            if find_result.returncode == 0:
+                all_files = [line.strip() for line in find_result.stdout.splitlines() if line.strip()]
+                log(f'📊 Found {len(all_files)} files in workspace')
+            else:
+                log(f'⚠️ Find command failed with return code {find_result.returncode}, using fallback method')
+                # Fallback: use Python's pathlib to walk the directory
+                all_files = _fallback_file_discovery()
+                
+        except subprocess.TimeoutExpired:
+            log(f'⚠️ Find command timed out after 30 seconds, using fallback method')
+            # Fallback: use Python's pathlib to walk the directory
+            all_files = _fallback_file_discovery()
         
-        if find_result.returncode != 0:
+        if not all_files:
+            log(f'⚠️ No files found in workspace, returning minimal structure')
             return {
-                'error': 'find command failed',
+                'error': 'no files found',
                 'full_tree': full_tree,
                 'files_by_type': {},
                 'manifests': [],
@@ -2215,9 +3459,6 @@ def _discover_workspace() -> dict:
                 'total_files': 0,
                 'total_size': 0
             }
-        
-        all_files = [line.strip() for line in find_result.stdout.splitlines() if line.strip()]
-        log(f'📊 Found {len(all_files)} files in workspace')
         
         # ═══════════════════════════════════════════════════════════════════
         # STEP 3: Group files by extension
@@ -2831,63 +4072,147 @@ def _read_manifests() -> dict:
 
 def _health_check(app_port: int = None) -> tuple:
     """
-    Perform health check on the deployed application.
+    Perform health check on the deployed application with retry logic.
     
     Args:
         app_port: Internal port the application should be listening on
     
     Returns:
-        tuple: (healthy: bool, status_message: str)
+        tuple: (healthy: bool, status_message: str, actual_port: int or None)
+    """
+    max_retries = 3
+    retry_delay = 15  # seconds between retries
+    
+    for attempt in range(1, max_retries + 1):
+        try:
+            # Check nginx response (port 80)
+            res = subprocess.run(
+                ['curl', '-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '4', 'http://127.0.0.1'],
+                capture_output=True, text=True
+            )
+            nginx_code = res.stdout.strip()
+            nginx_healthy = nginx_code in ('200', '301', '302', '304')
+            
+            # If app_port is provided, verify app is actually listening on that port
+            if app_port:
+                try:
+                    port_check = subprocess.run(
+                        ['ss', '-tlnp'],
+                        capture_output=True, text=True, timeout=3
+                    )
+                    
+                    if port_check.returncode == 0:
+                        # Check if app_port is in the listening ports
+                        app_listening = f':{app_port}' in port_check.stdout
+                        
+                        if not app_listening:
+                            # ✅ NEW: Detect what port the app is ACTUALLY on
+                            actual_port = _detect_actual_app_port(port_check.stdout)
+                            
+                            if actual_port and actual_port != app_port:
+                                log(f'⚠️ Port mismatch detected! Expected: {app_port}, Actual: {actual_port}')
+                                return False, f'Nginx: HTTP {nginx_code}, App: listening on port {actual_port} (expected {app_port})', actual_port
+                            else:
+                                # App not listening yet, retry if attempts remain
+                                if attempt < max_retries:
+                                    log(f'⏳ Health check attempt {attempt}/{max_retries} failed: App not listening on port {app_port}. Retrying in {retry_delay}s...')
+                                    time.sleep(retry_delay)
+                                    continue
+                                return False, f'Nginx: HTTP {nginx_code}, App: not listening on port {app_port}', None
+                        
+                        # Both nginx and app are healthy
+                        if nginx_healthy:
+                            if attempt > 1:
+                                log(f'✅ Health check succeeded on attempt {attempt}/{max_retries}')
+                            return True, f'Nginx: HTTP {nginx_code}, App: listening on port {app_port}', app_port
+                        else:
+                            # Nginx not healthy, retry if attempts remain
+                            if attempt < max_retries:
+                                log(f'⏳ Health check attempt {attempt}/{max_retries} failed: Nginx returned HTTP {nginx_code}. Retrying in {retry_delay}s...')
+                                time.sleep(retry_delay)
+                                continue
+                            return False, f'Nginx: HTTP {nginx_code}, App: listening on port {app_port}', app_port
+                    else:
+                        # Can't verify port, fall back to nginx check only
+                        log(f'Port check failed, falling back to nginx-only health check')
+                        if nginx_healthy:
+                            if attempt > 1:
+                                log(f'✅ Health check succeeded on attempt {attempt}/{max_retries}')
+                            return True, f'HTTP {nginx_code} (port check unavailable)', None
+                        else:
+                            # Retry if attempts remain
+                            if attempt < max_retries:
+                                log(f'⏳ Health check attempt {attempt}/{max_retries} failed: HTTP {nginx_code}. Retrying in {retry_delay}s...')
+                                time.sleep(retry_delay)
+                                continue
+                            return False, f'HTTP {nginx_code}', None
+                except Exception as e:
+                    log(f'App port verification error: {e}')
+                    # Fall back to nginx check only
+                    if nginx_healthy:
+                        if attempt > 1:
+                            log(f'✅ Health check succeeded on attempt {attempt}/{max_retries}')
+                        return True, f'HTTP {nginx_code} (port verification failed)', None
+                    else:
+                        # Retry if attempts remain
+                        if attempt < max_retries:
+                            log(f'⏳ Health check attempt {attempt}/{max_retries} failed: HTTP {nginx_code}. Retrying in {retry_delay}s...')
+                            time.sleep(retry_delay)
+                            continue
+                        return False, f'HTTP {nginx_code}', None
+            else:
+                # No app_port provided, use nginx check only (backward compatibility)
+                if nginx_healthy:
+                    if attempt > 1:
+                        log(f'✅ Health check succeeded on attempt {attempt}/{max_retries}')
+                    return True, f'HTTP {nginx_code}', None
+                else:
+                    # Retry if attempts remain
+                    if attempt < max_retries:
+                        log(f'⏳ Health check attempt {attempt}/{max_retries} failed: HTTP {nginx_code}. Retrying in {retry_delay}s...')
+                        time.sleep(retry_delay)
+                        continue
+                    return False, f'HTTP {nginx_code}', None
+        
+        except Exception as e:
+            log(f'❌ Health check attempt {attempt}/{max_retries} exception: {e}')
+            if attempt < max_retries:
+                log(f'⏳ Retrying in {retry_delay}s...')
+                time.sleep(retry_delay)
+                continue
+            return False, f'Health check failed: {str(e)}', None
+    
+    # Should not reach here, but just in case
+    return False, 'Health check failed after all retries', None
+
+def _detect_actual_app_port(ss_output: str) -> Optional[int]:
+    """
+    Detect which port the app is actually listening on by analyzing ss output.
+    Looks for common app ports (3000-9000) excluding port 80 (nginx).
+    
+    Returns:
+        int: The detected port, or None if not found
     """
     try:
-        # Check nginx response (port 80)
-        res = subprocess.run(
-            ['curl', '-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '4', 'http://127.0.0.1'],
-            capture_output=True, text=True
-        )
-        nginx_code = res.stdout.strip()
-        nginx_healthy = nginx_code in ('200', '301', '302', '304')
+        # Parse ss output for listening ports
+        # Format: LISTEN 0 511 127.0.0.1:3000 *:*
+        import re
         
-        # If app_port is provided, verify app is actually listening on that port
-        if app_port:
-            try:
-                port_check = subprocess.run(
-                    ['ss', '-tlnp'],
-                    capture_output=True, text=True, timeout=3
-                )
-                
-                if port_check.returncode == 0:
-                    # Check if app_port is in the listening ports
-                    app_listening = f':{app_port}' in port_check.stdout
-                    
-                    if not app_listening:
-                        return False, f'Nginx: HTTP {nginx_code}, App: not listening on port {app_port}'
-                    
-                    # Both nginx and app are healthy
-                    if nginx_healthy:
-                        return True, f'Nginx: HTTP {nginx_code}, App: listening on port {app_port}'
-                    else:
-                        return False, f'Nginx: HTTP {nginx_code}, App: listening on port {app_port}'
-                else:
-                    # Can't verify port, fall back to nginx check only
-                    log(f'Port check failed, falling back to nginx-only health check')
-                    if nginx_healthy:
-                        return True, f'HTTP {nginx_code} (port check unavailable)'
-                    return False, f'HTTP {nginx_code}'
-            except Exception as e:
-                log(f'App port verification error: {e}')
-                # Fall back to nginx check only
-                if nginx_healthy:
-                    return True, f'HTTP {nginx_code} (port verification failed)'
-                return False, f'HTTP {nginx_code}'
-        else:
-            # No app_port provided, use nginx check only (backward compatibility)
-            if nginx_healthy:
-                return True, f'HTTP {nginx_code}'
-            return False, f'HTTP {nginx_code}'
-            
+        # Look for ports in the 3000-9000 range (common app ports)
+        port_pattern = r':(\d{4,5})\s'
+        matches = re.findall(port_pattern, ss_output)
+        
+        for port_str in matches:
+            port = int(port_str)
+            # Exclude nginx (80), common system ports, and focus on app ports
+            if 3000 <= port <= 9000:
+                log(f'🔍 Detected app listening on port {port}')
+                return port
+        
+        return None
     except Exception as e:
-        return False, str(e)
+        log(f'Error detecting actual port: {e}')
+        return None
 
 
 def _test_changes_automatically(changed_files: list, user_prompt: str, app_port: int) -> dict:
@@ -2914,7 +4239,7 @@ def _test_changes_automatically(changed_files: list, user_prompt: str, app_port:
             - needs_user_input: bool
             - fix_applied: bool
     """
-    report('🧪 Testing your changes automatically...')
+    report('Testing your changes automatically...')
     log(f'Changed files: {changed_files}')
     log(f'User request: {user_prompt}')
     
@@ -3012,7 +4337,7 @@ Output ONLY valid JSON, no explanations."""
     
     for test in test_plan.get('endpoints_to_test', []):
         log(f'🧪 Testing: {test["method"]} {test["path"]}')
-        report(f'🧪 Testing: {test["description"]}')
+        report(f'Testing: {test["description"]}')
         
         try:
             url = f'http://127.0.0.1:{app_port}{test["path"]}'
@@ -3106,15 +4431,29 @@ Output ONLY valid JSON, no explanations."""
     # Report results
     total_tests = tests_passed + tests_failed
     if total_tests == 0:
-        report('ℹ️ No API endpoint tests were needed for this change.')
+        report('No API endpoint tests were needed for this change.')
         return {'success': True, 'tests_passed': 0, 'tests_failed': 0, 'test_results': [], 'needs_user_input': False, 'fix_applied': False}
     
     if tests_failed == 0:
-        report(f'✅ All {tests_passed} tests passed! Your changes are working correctly.')
+        # Don't report the success message again - it's already in the thinking logs
+        # Instead, generate AI-powered next step suggestions and report those
+        next_suggestions = _generate_next_step_suggestions(user_prompt, changed_content, test_results)
+        
+        # Create a user-friendly summary with suggestions
+        if next_suggestions:
+            summary = 'What would you like to do next?'
+            report(
+                f'Great! Your changes are working. Here are some suggestions for what to do next:',
+                suggestions=next_suggestions,
+                metadata={'type': 'success', 'tests_passed': tests_passed, 'tests_failed': 0, 'show_suggestions': True},
+                summary=summary,
+                message_type='success'
+            )
+        
         return {'success': True, 'tests_passed': tests_passed, 'tests_failed': 0, 'test_results': test_results, 'needs_user_input': False, 'fix_applied': False}
     
     # Some tests failed - try to auto-fix
-    report(f'⚠️ {tests_failed} out of {total_tests} tests failed. Analyzing failures...')
+    report(f'{tests_failed} out of {total_tests} tests failed. Analyzing failures...')
     
     # Format file context for AI without using backslashes in f-string expression
     file_list_str = []
@@ -3162,15 +4501,15 @@ Output ONLY valid JSON."""
         m = re.search(r'\{.*\}', fix_response, re.DOTALL)
         if not m:
             log('⚠️ AI did not return valid JSON for fix analysis')
-            report(f'⚠️ Tests failed but I need your help. Please check the logs.')
+            report(f'Tests failed but I need your help. Please check the logs.')
             return {'success': False, 'tests_passed': tests_passed, 'tests_failed': tests_failed, 'test_results': test_results, 'needs_user_input': True, 'fix_applied': False}
         
         fix_plan = json.loads(m.group(0))
         
         if fix_plan.get('can_auto_fix'):
             # Apply the fix
-            report(f'🔧 I found the issue: {fix_plan["analysis"]}')
-            report(f'🔧 Applying automatic fix...')
+            report(f'I found the issue: {fix_plan["analysis"]}')
+            report(f'Applying automatic fix...')
             
             fix_code = fix_plan.get('fix', '')
             if fix_code:
@@ -3181,7 +4520,7 @@ Output ONLY valid JSON."""
                 if patch_matches:
                     patches_applied = _apply_patches(fix_code, patch_matches)
                     if patches_applied > 0:
-                        report(f'✅ Fix applied! Rebuilding to test again...')
+                        report(f'Fix applied! Rebuilding to test again...')
                         return {'success': False, 'tests_passed': tests_passed, 'tests_failed': tests_failed, 'test_results': test_results, 'needs_user_input': False, 'fix_applied': True}
         
         # Can't auto-fix - ask user
@@ -3202,11 +4541,11 @@ Output ONLY valid JSON."""
             'tests_failed': tests_failed
         }
         
-        report(f'❓ {fix_plan["analysis"]}', 
+        report(f'{fix_plan["analysis"]}', 
                suggestions=suggestions, 
                metadata=metadata,
                summary='Tests failed - need your input')
-        report(f'❓ {user_question}',
+        report(f'{user_question}',
                suggestions=suggestions,
                metadata=metadata,
                summary=user_question[:100])
@@ -3613,11 +4952,13 @@ class Agent:
         self._queue  = queue.Queue()
         self._busy   = False
         self._lock   = threading.Lock()
+        self._last_busy_time = 0  # ✅ Track when agent last finished work
         
         # Initialize task-based development components
         self.task_planner = TaskPlanner(str(WORKSPACE_DIR), call_ai)
         self.task_executor = TaskExecutor(str(WORKSPACE_DIR), call_ai)
         self.task_mode = False  # Flag to indicate if we're in task-based mode
+        self.edit_engine = EditEngine(workspace_dir=WORKSPACE_DIR, ai_caller=call_ai)
         
         t = threading.Thread(target=self._worker, daemon=True)
         t.start()
@@ -3632,7 +4973,7 @@ class Agent:
         if currently_busy or queue_size > 1:
             position = queue_size
             report(
-                f'📋 Got your request! I\'m still working on the previous one, '
+                f'Got your request! I\'m still working on the previous one, '
                 f'so yours is #{position} in line. I\'ll get to it as soon as I\'m done — '
                 f'usually just a minute or two.'
             )
@@ -3650,22 +4991,24 @@ class Agent:
                 continue
             with self._lock:
                 self._busy = True
+                self._last_busy_time = time.time()  # ✅ Track when we started working
 
-            # Tell the user we're starting their queued request
+            # Log internally (don't send to UI to avoid clutter)
             remaining = self._queue.qsize()
             if remaining > 0:
-                report(f'▶️ Starting your request now! ({remaining} more waiting after this)')
+                log(f'▶️ Starting queued request ({remaining} more waiting after this)')
             else:
-                report(f'▶️ Working on your request now...')
+                log(f'▶️ Processing request...')
 
             try:
                 self._handle(prompt)
             except Exception as e:
-                report(f'⚠️ Something unexpected went wrong. Please try sending your request again.')
+                report(f'Something unexpected went wrong. Please try sending your request again.')
                 log(f'Unhandled exception: {e}')
             finally:
                 with self._lock:
                     self._busy = False
+                    self._last_busy_time = time.time()  # ✅ Track when we finished
                 self._queue.task_done()
 
     def _handle(self, prompt: str):
@@ -3727,7 +5070,7 @@ class Agent:
         import requests
         import os
         
-        report('🚀 **D-Suite Handoff Detected!**\n\nFetching your BRD requirements from D-Suite...', message_type='info')
+        report('**D-Suite Handoff Detected!**\n\nFetching your BRD requirements from D-Suite...', message_type='info')
         
         try:
             # Get project ID from environment or workspace path
@@ -3738,16 +5081,16 @@ class Agent:
                 if '/project_artifacts/' in workspace_path:
                     project_id = workspace_path.split('/project_artifacts/')[1].split('/')[0]
                 else:
-                    report('❌ **Error**: Could not determine project ID', message_type='error')
+                    report('**Error**: Could not determine project ID', message_type='error')
                     return
             
             # Fetch BRD context from backend API
             # The VibeCoding backend should be accessible from the container
             # Try multiple possible backend URLs
+
             backend_urls = [
-                f"http://host.docker.internal:8001/vibecoding/api/projects/{project_id}/brd-context",  # VibeCoding on 8001
-                f"http://localhost:8001/vibecoding/api/projects/{project_id}/brd-context",
-                f"http://host.docker.internal:8000/vibecoding/api/projects/{project_id}/brd-context",  # Fallback to 8000
+                f"https://dsuite-backend.bourntec.com/vibecoding/api/projects/{project_id}/brd-context",  # VibeCoding on 8001
+                f"http://host.docker.internal:8001/vibecoding/api/projects/{project_id}/brd-context"
             ]
             
             brd_data = None
@@ -3770,13 +5113,13 @@ class Agent:
                     continue
             
             if not brd_data:
-                report('❌ **Error**: Could not connect to backend API on any port.', message_type='error')
-                report('💡 **Tip**: You can still describe what you want to build manually!', message_type='info')
+                report('**Error**: Could not connect to backend API on any port.', message_type='error')
+                report('**Tip**: You can still describe what you want to build manually!', message_type='info')
                 return
             
             if not brd_data.get('has_brd'):
-                report('⚠️ **No BRD Found**: This project was not created via D-Suite handoff.', message_type='warning')
-                report('💡 You can start by describing what you want to build!', message_type='info')
+                report('**No BRD Found**: This project was not created via D-Suite handoff.', message_type='warning')
+                report('You can start by describing what you want to build!', message_type='info')
                 return
             
             # Extract BRD information
@@ -3809,17 +5152,17 @@ class Agent:
 
 Please analyze the BRD above and create a complete, production-ready application that fulfills all the requirements."""
 
-            report(f'✅ **BRD Loaded Successfully!**\n\n**Project**: {project_name}\n\nAnalyzing requirements and creating task plan...', message_type='success')
+            report(f'**BRD Loaded Successfully!**\n\n**Project**: {project_name}\n\nAnalyzing requirements and creating task plan...', message_type='success')
             
             # Process as a large requirement to trigger task planning
             self._handle_task_planning(full_prompt)
             
         except requests.exceptions.RequestException as e:
             log(f'Failed to fetch BRD context: {e}')
-            report(f'❌ **Network Error**: Could not connect to backend API.\n\nError: {str(e)}', message_type='error')
+            report(f'**Network Error**: Could not connect to backend API.\n\nError: {str(e)}', message_type='error')
         except Exception as e:
             log(f'Error in D-Suite handoff handler: {e}')
-            report(f'❌ **Error**: {str(e)}', message_type='error')
+            report(f'**Error**: {str(e)}', message_type='error')
     
     def _is_large_requirement(self, prompt: str) -> bool:
         """Detect if a requirement is large enough to need task breakdown"""
@@ -3840,7 +5183,7 @@ Please analyze the BRD above and create a complete, production-ready application
     
     def _handle_task_planning(self, prompt: str):
         """Generate and present task breakdown to user"""
-        report('🧠 Analyzing your requirement and breaking it down into manageable tasks...',
+        report('Analyzing your requirement and breaking it down into manageable tasks...',
                message_type='thinking')
         
         try:
@@ -3852,7 +5195,7 @@ Please analyze the BRD above and create a complete, production-ready application
             
         except Exception as e:
             log(f'Task planning failed: {e}')
-            report(f'⚠️ Had trouble breaking down the requirement. Trying direct generation instead...')
+            report(f'Had trouble breaking down the requirement. Trying direct generation instead...')
             self._handle_direct_generation(prompt, {}, True)
     
     def _present_task_plan(self, plan: Dict[str, Any]):
@@ -3913,12 +5256,12 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
         elif command == 'STATUS':
             self._show_task_status()
         else:
-            report('❓ Unknown task command. Try: TASK:START, TASK:EXECUTE:1, or TASK:STATUS')
+            report('Unknown task command. Try: TASK:START, TASK:EXECUTE:1, or TASK:STATUS')
     
     def _execute_tasks_sequentially(self):
         """Execute all pending tasks in order with real-time updates"""
         # Don't send task_plan here - it was already sent in _present_task_plan
-        report(f'🚀 Starting task execution...',
+        report(f'Starting task execution...',
                message_type='action',
                metadata={'type': 'task_execution_start'})
         
@@ -3945,7 +5288,7 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
                     break
                 else:
                     # Some tasks are pending but not executable (dependency issue)
-                    report(f"⚠️ {progress['pending']} tasks remaining but cannot execute (dependency issues).",
+                    report(f"{progress['pending']} tasks remaining but cannot execute (dependency issues).",
                            message_type='error',
                            metadata={
                                'type': 'task_execution_blocked',
@@ -3965,7 +5308,7 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
             if task.status == 'failed':
                 # Send final status with error
                 progress = self.task_planner.get_progress_summary()
-                report(f'⚠️ Task {task.task_id} failed. Stopping execution.',
+                report(f'Task {task.task_id} failed. Stopping execution.',
                        message_type='error',
                        metadata={
                            'type': 'task_execution_failed',
@@ -3988,11 +5331,11 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
             task = self.task_planner.get_task_by_id(task_id)
             
             if not task:
-                report(f'❌ Task {task_id} not found')
+                report(f'Task {task_id} not found')
                 continue
             
             if task.status == 'completed':
-                report(f'✅ Task {task_id} already completed')
+                report(f'Task {task_id} already completed')
                 continue
             
             # Check dependencies
@@ -4002,7 +5345,7 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
             )
             
             if not deps_met:
-                report(f'⚠️ Task {task_id} has unmet dependencies: {", ".join(task.dependencies)}')
+                report(f'Task {task_id} has unmet dependencies: {", ".join(task.dependencies)}')
                 continue
             
             self._execute_single_task(task)
@@ -4010,7 +5353,7 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
     def _execute_single_task(self, task: Task):
         """Execute a single task with full context"""
         # Mark task as in progress - send ONLY status update, not full task plan
-        report(f'▶️ Executing: **{task.title}**',
+        report(f'Executing: **{task.title}**',
                message_type='action',
                metadata={
                    'type': 'task_status_update',
@@ -4019,7 +5362,7 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
                })
         
         # Send thinking log
-        report(f'💡 Analyzing task requirements and building context...',
+        report(f'Analyzing task requirements and building context...',
                message_type='thinking',
                metadata={'type': 'thinking'})
         
@@ -4032,7 +5375,7 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
             context['project_summary'] = self.task_planner.context.get('project_summary', '')
             
             # Send thinking log
-            report(f'💡 Generating code for {len(task.files_to_create)} new files and modifying {len(task.files_to_modify)} existing files...',
+            report(f'Generating code for {len(task.files_to_create)} new files and modifying {len(task.files_to_modify)} existing files...',
                    message_type='thinking',
                    metadata={'type': 'thinking'})
             
@@ -4041,12 +5384,12 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
             
             if result['success']:
                 task.status = 'completed'
-                task.completed_at = datetime.now().isoformat()
+                task.completed_at = datetime.now(timezone.utc).isoformat()
                 self.task_planner._save_state()
                 
                 # Send completion message - ONLY status update, not full task plan
                 progress = self.task_planner.get_progress_summary()
-                report(f'✅ Task completed: {task.title}',
+                report(f'Task completed: {task.title}',
                        message_type='success',
                        metadata={
                            'type': 'task_status_update',
@@ -4065,7 +5408,7 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
                 self.task_planner._save_state()
                 
                 # Send error message - ONLY status update, not full task plan
-                report(f'❌ Task failed: {task.title}\n   Error: {result["error"]}',
+                report(f'Task failed: {task.title}\n   Error: {result["error"]}',
                        message_type='error',
                        metadata={
                            'type': 'task_status_update',
@@ -4079,7 +5422,7 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
             task.error = str(e)
             self.task_planner._save_state()
             
-            report(f'❌ Task execution error: {str(e)}', 
+            report(f'Task execution error: {str(e)}', 
                    message_type='error',
                    metadata={
                        'type': 'task_status_update',
@@ -4093,7 +5436,7 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
         task = self.task_planner.get_task_by_id(f"task_{task_id.zfill(3)}")
         
         if not task:
-            report(f'❌ Task {task_id} not found')
+            report(f'Task {task_id} not found')
             return
         
         status_emoji = {
@@ -4156,7 +5499,9 @@ Use `TASK:START` to continue execution.
             self._handle_direct_generation(prompt, existing_files, False)
     
     def _handle_direct_generation(self, prompt: str, existing_files: dict, is_empty: bool):
-        """Legacy direct code generation (for simple requests)"""
+        """Direct code generation with EditEngine integration"""
+        
+        # Check if this is a deployment-only fix
         deploy_only_keywords = [
             '502', 'fix deployment', 'fix the deployment', 'restart', 'redeploy',
             'not loading', 'broken', 'fix nginx', 'server error'
@@ -4169,23 +5514,95 @@ Use `TASK:START` to continue execution.
         changed_files = []
         user_prompt = prompt
         
-        if is_empty or not is_deploy_fix:
+        # Skip code generation for deployment-only fixes
+        if is_deploy_fix:
+            deploy_result = deploy(
+                error_context={'reason': prompt},
+                test_changes=False,
+                changed_files=[],
+                user_prompt=prompt
+            )
+            return
+        
+        # ✅ NEW: Route through EditEngine first
+        try:
+            log('🔀 Routing request through EditEngine...')
+            edit_result = self.edit_engine.route(prompt)
+            
+            log(f'EditEngine result: mode={edit_result["mode"]}, handled={edit_result["handled"]}')
+            
+            if edit_result["mode"] == "CREATE_APP" and not edit_result["handled"]:
+                # New app creation - use legacy generate_code()
+                log('📝 CREATE_APP mode - using legacy generate_code()')
+                result = generate_code(prompt, existing_files=None)
+                
+                if not result:
+                    return
+                
+                # Check if this was an edit that returned change info
+                if isinstance(result, dict) and result.get('success'):
+                    changed_files = result.get('changed_files', [])
+                    user_prompt = result.get('user_prompt', prompt)
+            
+            elif edit_result["handled"]:
+                # EditEngine successfully handled the edit
+                log(f'✅ EditEngine handled: {len(edit_result["files_changed"])} files changed')
+                
+                changed_files = edit_result["files_changed"]
+                user_prompt = prompt
+                
+                # Format file attachments for clean UI display
+                file_attachments = {
+                    "files": [os.path.basename(f) for f in changed_files[:50]]  # Only filenames, cap at 50
+                } if changed_files else None
+                
+                # Report to user
+                if edit_result["verify_ok"]:
+                    report(f'Changes applied successfully!\n\n{edit_result["plan_summary"]}',
+                        message_type='success',
+                        summary=f'Modified {len(changed_files)} file(s)',
+                        metadata={'file_attachments': file_attachments})
+                else:
+                    report(f'Changes applied but verification found issues:\n' + 
+                        '\n'.join(f'• {issue}' for issue in edit_result["verify_issues"]),
+                        message_type='warning',
+                        summary='Changes applied with warnings',
+                        metadata={'file_attachments': file_attachments})
+            
+            else:
+                # EditEngine failed - fall back to legacy
+                log('⚠️ EditEngine failed - falling back to legacy generate_code()')
+                result = generate_code(prompt, existing_files=existing_files if not is_empty else None)
+                
+                if not result:
+                    return
+                
+                if isinstance(result, dict) and result.get('success'):
+                    changed_files = result.get('changed_files', [])
+                    user_prompt = result.get('user_prompt', prompt)
+        
+        except Exception as e:
+            # EditEngine crashed - fall back to legacy
+            log(f'❌ EditEngine exception: {e}')
+            report('Advanced edit engine encountered an issue. Falling back to standard code generation...')
+            
             result = generate_code(prompt, existing_files=existing_files if not is_empty else None)
+            
             if not result:
                 return
             
-            # Check if this was an edit that returned change info
             if isinstance(result, dict) and result.get('success'):
                 changed_files = result.get('changed_files', [])
                 user_prompt = result.get('user_prompt', prompt)
 
         # Deploy with testing enabled for edits
         deploy_result = deploy(
-            error_context={'reason': prompt} if is_deploy_fix else None,
+            error_context=None,
             test_changes=bool(changed_files),
             changed_files=changed_files,
             user_prompt=user_prompt
         )
+
 
 
 # ── Watchdog ───────────────────────────────────────────────────────────────────
@@ -4232,13 +5649,24 @@ def watchdog(agent: Agent):
                 # ═══════════════════════════════════════════════════════════
                 # Monitor for 502 errors (app not responding)
                 # ═══════════════════════════════════════════════════════════
+                # ✅ NEW: Only check for errors if agent has been idle for at least 15 seconds
+                # This prevents detecting stale errors from recent deployment attempts
+                with agent._lock:
+                    idle_duration = time.time() - getattr(agent, '_last_busy_time', 0)
+                
+                if idle_duration < 15:
+                    # Agent just finished - give it time before checking for errors
+                    # This prevents false positives from deployment retry attempts
+                    time.sleep(5)
+                    continue
+                
                 nginx_errors = get_nginx_errors()
                 now = time.time()
                 if nginx_errors and (now - last_502_time) > 30:
                     consecutive_502_failures += 1
                     
                     if consecutive_502_failures >= MAX_AUTO_FIXES:
-                        report(f'⚠️ I\'ve tried fixing the deployment {MAX_AUTO_FIXES} times but the issue persists. Please review the error logs or send me specific instructions to resolve this.',
+                        report(f'I\'ve tried fixing the deployment {MAX_AUTO_FIXES} times but the issue persists. Please review the error logs or send me specific instructions to resolve this.',
                                suggestions=[
                                    {'text': 'Show me the logs', 'action': 'show_logs', 'icon': '📋', 'prompt': 'Show me the detailed error logs'},
                                    {'text': 'Start fresh', 'action': 'restart', 'icon': '🆕', 'prompt': 'Clear everything and start with a new deployment'},
@@ -4250,7 +5678,7 @@ def watchdog(agent: Agent):
                         last_502_time = now + 300  # Wait 5 minutes before trying again
                     else:
                         last_502_time = now
-                        report(f'🔧 Noticed your app stopped responding. Automatically fixing it... (attempt {consecutive_502_failures}/{MAX_AUTO_FIXES})')
+                        report(f'Noticed your app stopped responding. Automatically fixing it... (attempt {consecutive_502_failures}/{MAX_AUTO_FIXES})')
                         agent.enqueue('Fix the deployment — the app is returning 502 errors.')
                 else:
                     # Reset counter if no errors detected
@@ -4272,7 +5700,7 @@ def watchdog(agent: Agent):
                         # Attempt automatic fix
                         if _auto_fix_asset_404():
                             last_404_fix_time = now
-                            report('🔧 Fixed missing asset configuration. Your app should load correctly now.')
+                            report('Fixed missing asset configuration. Your app should load correctly now.')
                         else:
                             log('⚠️ Auto-fix failed - nginx config may need manual review')
 
@@ -4412,35 +5840,33 @@ if __name__ == '__main__':
             artifacts = prev_deployment['built_artifacts']
             
             log(f'Previous deployment found: port={app_port}, artifacts={artifacts}')
-            report(f'🔄 Restoring your app (found previous deployment on port {app_port})...')
+            report(f'Restoring your app (found previous deployment on port {app_port})...')
             
             # Check if app is already healthy
             if app_port:
-                healthy, msg = _health_check(app_port=app_port)
+                healthy, msg, _ = _health_check(app_port=app_port)
                 if healthy:
-                    report('✅ Your app is already running and healthy!')
+                    report('Your app is already running and healthy!')
                     # Skip redeployment, go straight to watchdog
                     watchdog(agent)
                     # watchdog runs forever, so we never reach here
             
             # App not healthy - attempt redeployment
-            report(f'🔄 Restarting your app ({file_count} files found)...')
+            report(f'Restarting your app ({file_count} files found)...')
         else:
             # No previous deployment - fresh deploy
             log('No previous deployment detected - performing fresh deployment')
-            report(f'🔄 Deploying your app ({file_count} files found)...')
+            report(f'Deploying your app ({file_count} files found)...')
         
         # Attempt immediate redeployment without going through the queue
         try:
             success = deploy(error_context=None, max_retries=3)
             if success:
-                report('✅ Your app is back online!')
+                report('Your app is back online!')
             else:
-                report('⚠️ Had trouble restarting the app. You can send me a message to fix it, or I\'ll keep trying automatically.')
+                report('Had trouble restarting the app. You can send me a message to fix it, or I\'ll keep trying automatically.')
         except Exception as e:
             log(f'Auto-redeploy on restart failed: {e}')
-            report('⚠️ Had trouble restarting the app. Send me a message if you need help!')
-    else:
-        report('💡 Ready to build! Send me your first message to get started.')
+            report('Had trouble restarting the app. Send me a message if you need help!')
 
     watchdog(agent)

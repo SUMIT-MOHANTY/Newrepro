@@ -1644,6 +1644,42 @@ async def read_users_me(
 ):
     return current_user
 
+@app.put("/users/me/progress")
+async def update_user_progress(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    page_path: str = None,
+    project_token: str = None,
+    db: Session = Depends(get_db)
+):
+    """Update user's last visited page and project for progress tracking"""
+    try:
+        if page_path is not None:
+            current_user.last_page_path = page_path
+        if project_token is not None:
+            current_user.last_project_token = project_token
+        
+        db.commit()
+        db.refresh(current_user)
+        
+        return {
+            "success": True,
+            "last_page_path": current_user.last_page_path,
+            "last_project_token": current_user.last_project_token
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update progress: {str(e)}")
+
+@app.get("/users/me/progress")
+async def get_user_progress(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+):
+    """Get user's last visited page and project"""
+    return {
+        "last_page_path": current_user.last_page_path,
+        "last_project_token": current_user.last_project_token
+    }
+
 def _require_org_admin(current_user: models.User) -> str:
     if not current_user.is_org_admin:
         raise HTTPException(status_code=403, detail="Organization admin access required")

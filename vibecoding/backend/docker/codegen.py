@@ -38,7 +38,7 @@ class CodegenAgent:
         timestamp = time.strftime("%H:%M:%S")
         print(f"[{timestamp}] {emoji} {message}", flush=True)
 
-    def _call_ai(self, prompt: str) -> dict:
+    def _call_ai(self, prompt: str) -> str:
         import requests
         self.log("🤖", "Calling AI for code generation...")
 
@@ -52,7 +52,7 @@ class CodegenAgent:
                     "model": self.ai_model or "BournAI",
                     "platform_id": os.environ.get('BRN_PLATFORM_ID', 'DSuite'),
                     "stream": True,
-                    "prompt": f"You are a senior full-stack developer. You generate complete, production-ready applications as a JSON file tree.\n\n{prompt}",
+                    "prompt": prompt,
                 }
                 is_stream = True
             else:
@@ -63,7 +63,6 @@ class CodegenAgent:
                 payload = {
                     "model": self.ai_model,
                     "messages": [
-                        {"role": "system", "content": "You are a senior full-stack developer. You generate complete, production-ready applications as a JSON file tree."},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.2,
@@ -88,13 +87,7 @@ class CodegenAgent:
                 res_json = response.json()
                 content = res_json["choices"][0]["message"]["content"]
 
-            for pattern in (r"```(?:json)?\s*(\{.*?\})\s*```", r"(\{.*\})"):
-                match = re.search(pattern, content, re.DOTALL)
-                if match:
-                    return json.loads(match.group(1))
-
-            self.log("⚠️", "No JSON found in AI response. Content length: " + str(len(content)))
-            raise Exception("No JSON found in AI response")
+            return content
 
         except Exception as e:
             self.log("❌", f"AI call failed: {e}")
@@ -164,104 +157,222 @@ class CodegenAgent:
 
         self.log("🏗️", f"Generating Version {version_id}...")
 
-        ai_prompt = f"""You are an expert developer generating code for a SINGLE-CONTAINER Docker deployment.
-The container has Python 3, Node.js 18, Nginx, and `serve` (static file server) pre-installed.
-An AI DevOps agent inside the container auto-detects the stack, runs setup/install, builds, and starts the server.
+        ai_prompt = f"""You are an expert developer generating a complete, working application.
+Generate a bash script that will create all necessary files and set up the project.
 
 ════════════════════════════════════════════════════
  DEPLOYMENT ENVIRONMENT
 ════════════════════════════════════════════════════
-Browser → Host Ports → Docker Container
-                           └── AI Agent auto-manages: install → build → serve
-
-DEFAULT PRIMARY PORT: {self.port}
-Pre-installed: Python3, pip3, Node.js 18, npm, Nginx, serve, git, curl
-
-════════════════════════════════════════════════════
- ABSOLUTE RULES
-════════════════════════════════════════════════════
-
-RULE 1 — PORT BINDING
-  ✅ Servers MUST bind to 0.0.0.0 (NOT 127.0.0.1)
-  ✅ Primary service uses PORT env var (default {self.port})
-
-RULE 2 — COMPLETE BUILDABLE CODE
-  ✅ All source files must be COMPLETE — no truncation or placeholders
-  ✅ If a package manager is used (npm, pip, etc.), include the manifest listing ALL dependencies
-  ✅ Choose the BEST technology stack for the user's request — do NOT default to any specific stack
-
-RULE 3 — STRUCTURE REFERENCE (follow the standard patterns for whichever stack you choose)
-  The AI agent inside the container auto-detects ANY stack, installs deps, builds, and serves.
-  Here are deployment patterns for COMMON frameworks (use the right one, or invent your own):
-
-  React (CRA):   public/index.html + src/index.js + src/App.js + package.json (with react-scripts)
-  React (Vite):  index.html + src/main.jsx + src/App.jsx + package.json + vite.config.js
-  Vue.js:        src/main.js + src/App.vue + package.json
-  Angular:       src/app/ + package.json (with @angular/cli)
-  Svelte:        src/App.svelte + package.json
-  Next.js:       pages/index.js (or app/page.js) + package.json (with next)
-  Python:        app.py + requirements.txt (bind to 0.0.0.0, use PORT env var)
-  Node.js:       server.js + package.json (bind to 0.0.0.0, use PORT env var)
-  Go:            main.go + go.mod
-  Static:        index.html (no manifest needed — served directly)
-  ANY OTHER:     Include the standard project structure for that stack
-
-RULE 4 — SPA FALLBACK
-  ✅ For frontend frameworks, `serve -s build` handles SPA routing automatically.
+- Running in Docker container (Ubuntu 22.04)
+- Pre-installed: Python3, pip3, Node.js 18, npm, Nginx, serve, git, curl
+- Working directory: /project/workspace
+- Target port: {self.port}
+- An AI agent will auto-detect the stack and run: install → build → serve
 
 ════════════════════════════════════════════════════
- EXPECTED JSON STRUCTURE
+ YOUR TASK
 ════════════════════════════════════════════════════
-Return ONLY a raw JSON object (no markdown fences):
+Generate a bash script that creates ALL project files using cat with heredoc syntax.
+The script will be executed to set up the complete project structure.
+
+════════════════════════════════════════════════════
+ BASH SCRIPT FORMAT (CRITICAL)
+════════════════════════════════════════════════════
+Use this EXACT format for creating files:
+
+#!/bin/bash
+set -e  # Exit on any error
+
+# Create directory structure
+mkdir -p src/components
+mkdir -p public
+
+# Create package.json
+cat > package.json << 'PACKAGE_JSON_EOF'
 {{
-    "files": {{
-        "path/to/file1": "...complete file content...",
-        "package.json": "...complete valid JSON...",
-        "metadata.json": {{
-            "project_type": "React | Vue | Flask | Static HTML | etc.",
-            "port": {self.port}
-        }}
-    }}
+  "name": "my-app",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {{
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  }},
+  "dependencies": {{
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  }},
+  "devDependencies": {{
+    "@vitejs/plugin-react": "^4.2.0",
+    "vite": "^5.0.0"
+  }}
+}}
+PACKAGE_JSON_EOF
+
+# Create index.html
+cat > index.html << 'INDEX_HTML_EOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>My App</title>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+</html>
+INDEX_HTML_EOF
+
+# Create vite.config.js
+cat > vite.config.js << 'VITE_CONFIG_EOF'
+import {{ defineConfig }} from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({{
+  plugins: [react()],
+  server: {{
+    host: '0.0.0.0',
+    port: 3000
+  }}
+}})
+VITE_CONFIG_EOF
+
+# Create src/main.jsx
+cat > src/main.jsx << 'MAIN_JSX_EOF'
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import App from './App'
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+)
+MAIN_JSX_EOF
+
+# Create src/App.jsx
+cat > src/App.jsx << 'APP_JSX_EOF'
+import React from 'react'
+import './App.css'
+
+function App() {{
+  return (
+    <div className="app">
+      <h1>Hello World</h1>
+    </div>
+  )
 }}
 
-CRITICAL: Every file must contain COMPLETE, WORKING content. Do NOT truncate.
-The metadata.json helps the AI agent understand the project type.
-Do NOT include run.sh — the AI agent auto-detects how to run the project.
+export default App
+APP_JSX_EOF
+
+# Create src/App.css
+cat > src/App.css << 'APP_CSS_EOF'
+.app {{
+  padding: 2rem;
+  text-align: center;
+}}
+APP_CSS_EOF
+
+echo "✅ Project setup complete!"
+
+════════════════════════════════════════════════════
+ CRITICAL RULES
+════════════════════════════════════════════════════
+1. Use 'FILENAME_EOF' as heredoc delimiter (unique per file)
+2. Use single quotes around delimiter: << 'EOF' (prevents variable expansion)
+3. For JSON files, escape {{ as {{{{ and }} as }}}}
+4. Include ALL necessary files (package.json, config files, source files)
+5. Create directories with mkdir -p before creating files in them
+6. For React/Vite: index.html at root, src/main.jsx, src/App.jsx, package.json, vite.config.js
+7. For Python: app.py, requirements.txt
+8. For static sites: index.html, styles.css, script.js
+9. Choose the BEST stack for the user's request
+10. Make the code COMPLETE and WORKING - no placeholders or TODOs
+
+════════════════════════════════════════════════════
+ OUTPUT FORMAT
+════════════════════════════════════════════════════
+Return ONLY the bash script. No explanations, no markdown fences, no extra text.
+Start with #!/bin/bash and end with the last file creation.
 
 USER REQUEST: {prompt}
-"""
+
+Generate the complete bash script now:"""
         try:
-            result = self._call_ai(ai_prompt)
-            files = result.get("files", {})
-            if not files:
-                raise Exception("AI returned empty file list")
-
-            for filepath, content in files.items():
-                full_path = version_path / filepath
-                full_path.parent.mkdir(parents=True, exist_ok=True)
-                
-                if isinstance(content, (dict, list)):
-                    full_path.write_text(json.dumps(content, indent=2))
-                else:
-                    full_path.write_text(content)
-
-            self.log("✅", f"Successfully wrote {len(files)} files to {version_path}")
+            response = self._call_ai(ai_prompt)
             
-            # Merge system metadata with AI-generated metadata if any
-            metadata = {}
-            existing_metadata_path = version_path / "metadata.json"
-            if existing_metadata_path.exists():
-                try:
-                    metadata = json.loads(existing_metadata_path.read_text())
-                except:
-                    pass
+            # Extract bash script from response
+            script_content = None
             
-            metadata.update({
+            # Try to extract from markdown code block
+            if "```bash" in response or "```sh" in response:
+                import re
+                match = re.search(r'```(?:bash|sh)\s*\n(.*?)```', response, re.DOTALL)
+                if match:
+                    script_content = match.group(1).strip()
+            
+            # If no code block, check if response starts with shebang
+            if not script_content:
+                if response.strip().startswith('#!/bin/bash') or response.strip().startswith('#!/bin/sh'):
+                    script_content = response.strip()
+            
+            # If still no script, try to find it anywhere in the response
+            if not script_content:
+                import re
+                match = re.search(r'(#!/bin/(?:ba)?sh.*)', response, re.DOTALL)
+                if match:
+                    script_content = match.group(1).strip()
+            
+            if not script_content:
+                self.log("❌", "Could not extract bash script from AI response")
+                self.log("📄", f"Response preview: {response[:500]}")
+                return None
+            
+            # Write the script to a file
+            script_path = version_path / "setup.sh"
+            script_path.write_text(script_content)
+            script_path.chmod(0o755)  # Make executable
+            
+            self.log("📝", f"Generated setup script: {script_path}")
+            
+            # Execute the script to create all files
+            self.log("🔨", "Executing setup script...")
+            result = subprocess.run(
+                ['bash', str(script_path)],
+                cwd=str(version_path),
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            
+            if result.returncode != 0:
+                self.log("❌", f"Setup script failed with exit code {result.returncode}")
+                self.log("📄", f"STDOUT: {result.stdout}")
+                self.log("📄", f"STDERR: {result.stderr}")
+                return None
+            
+            self.log("✅", "Setup script executed successfully")
+            self.log("📄", result.stdout)
+            
+            # Count created files
+            created_files = list(version_path.rglob('*'))
+            file_count = len([f for f in created_files if f.is_file() and f.name != 'setup.sh'])
+            
+            self.log("✅", f"Created {file_count} files in {version_path}")
+            
+            # Create metadata.json
+            metadata = {
                 "prompt": prompt,
                 "version": version_id,
-                "timestamp": time.time()
-            })
-            existing_metadata_path.write_text(json.dumps(metadata, indent=2))
+                "timestamp": time.time(),
+                "project_type": "auto-detected"
+            }
+            
+            metadata_path = version_path / "metadata.json"
+            metadata_path.write_text(json.dumps(metadata, indent=2))
 
             self._signal_supervisor(version_id)
             return version_id

@@ -1,10 +1,10 @@
+// AuthContext.jsx — Complete implementation with SSO, auto-refresh, and passwordless signup
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 
 // Vibecoding backend routes are mounted under `/vibecoding/api/*`
 // (can be overridden via VITE_API_BASE_URL)
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/vibecoding';
-
 const AuthContext = createContext(null);
 
 function _stripHandoffParam() {
@@ -35,36 +35,32 @@ export function AuthProvider({ children }) {
     const handoffToken = params.get('handoff_token');
     const autoExecute = params.get('auto_execute') === 'true';
     const projectToken = params.get('project_token');
-    
+
     if (!handoffToken) return;
 
     let cancelled = false;
-
     const exchangeHandoff = async () => {
       try {
         const res = await axios.post(`${API_BASE_URL}/api/auth/sso`, {
           handoff_token: handoffToken,
         });
         if (cancelled) return;
-        
+
         const { token: newToken, user: userData, project, auto_execute: shouldAutoExecute } = res.data;
         localStorage.setItem('vibecoding_token', newToken);
         setToken(newToken);
         setUser(userData);
-        
+
         // If auto_execute is enabled and we have a project, trigger execution
         if ((autoExecute || shouldAutoExecute) && project && project.project_id) {
           console.log('Auto-execution enabled for project:', project.project_id);
-          
           // Store flag to trigger execution after auth completes
           sessionStorage.setItem('vibe_auto_execute_project', project.project_id);
           sessionStorage.setItem('vibe_auto_execute_token', newToken);
-          
           // Navigate to project page - include /vibecoding base path
           const projectUrl = `/vibecoding/a/${project.project_id}`;
           window.location.href = projectUrl;  // Force navigation to trigger React Router
         }
-        
       } catch (err) {
         console.error('SSO handoff failed:', err);
       } finally {
@@ -77,7 +73,7 @@ export function AuthProvider({ children }) {
 
     exchangeHandoff();
     return () => { cancelled = true; };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Verify existing token on mount (skip if handoff is in progress)
   useEffect(() => {
@@ -112,14 +108,13 @@ export function AuthProvider({ children }) {
 
     verifyToken();
     return () => clearTimeout(safetyTimer);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const login = useCallback(async (email, password) => {
     const response = await axios.post(`${API_BASE_URL}/api/auth/login`, {
       email,
       password,
     });
-
     const { token: newToken, user: userData } = response.data;
     localStorage.setItem('vibecoding_token', newToken);
     setToken(newToken);
@@ -153,6 +148,66 @@ export function AuthProvider({ children }) {
     setUser(null);
   }, []);
 
+  const refreshToken = useCallback(async () => {
+    try {
+      const currentToken = localStorage.getItem('vibecoding_token');
+      if (!currentToken) return false;
+
+      const response = await axios.post(`${API_BASE_URL}/api/auth/refresh`, {}, {
+        headers: { Authorization: `Bearer ${currentToken}` }
+      });
+
+      if (response.data.token) {
+        localStorage.setItem('vibecoding_token', response.data.token);
+        setToken(response.data.token);
+        if (response.data.user) {
+          setUser(response.data.user);
+        }
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error('Token refresh failed:', error);
+      return false;
+    }
+  }, []);
+
+  // Setup axios interceptor for automatic token refresh on 401
+  useEffect(() => {
+    const interceptor = axios.interceptors.response.use(
+      (response) => response,
+      async (error) => {
+        const originalRequest = error.config;
+        const requestUrl = originalRequest?.url || '';
+
+        // Never try to refresh on auth endpoints themselves (prevents infinite loops)
+        const isAuthEndpoint = requestUrl.includes('/api/auth/');
+
+        // If 401 and we haven't already tried to refresh AND it's not an auth endpoint
+        if (error.response?.status === 401 && !originalRequest._retry && !isAuthEndpoint) {
+          originalRequest._retry = true;
+          const refreshed = await refreshToken();
+
+          if (refreshed) {
+            // Update the authorization header and retry
+            const newToken = localStorage.getItem('vibecoding_token');
+            originalRequest.headers['Authorization'] = `Bearer ${newToken}`;
+            return axios(originalRequest);
+          } else {
+            // Refresh failed, logout user
+            logout();
+          }
+        }
+
+        return Promise.reject(error);
+      }
+    );
+
+    return () => {
+      axios.interceptors.response.eject(interceptor);
+    };
+  }, [refreshToken, logout]);
+
   const value = {
     user,
     token,
@@ -161,6 +216,7 @@ export function AuthProvider({ children }) {
     login,
     signup,
     logout,
+    refreshToken,
   };
 
   return (

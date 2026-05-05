@@ -19,6 +19,8 @@ class User(Base):
     azure_devops_token = Column(String, nullable=True)
     azure_devops_username = Column(String, nullable=True)
     last_login = Column(DateTime, nullable=True)
+    last_page_path = Column(String, nullable=True)  # Track last visited page
+    last_project_token = Column(String, nullable=True)  # Track last active project
 
     documents = relationship("Document", back_populates="owner")
     governance_responses = relationship("GovernanceResponse", back_populates="owner")
