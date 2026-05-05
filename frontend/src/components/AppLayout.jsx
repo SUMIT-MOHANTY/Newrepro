@@ -9,6 +9,7 @@ import RoadmapHeader from './RoadmapHeader';
 import AgentsPage from './AgentsPage';
 import AIConfig from '../components/AIConfig';
 import AssistantBot from '../components/AssistantBot';
+import { useProgressTracking } from '../hooks/useProgressTracking';
 
 import { useProjects, useRoadmapData, useInvalidateProjects } from '../hooks/useProjects';
 import { fetchRoadmapStep } from '../api/projects';
@@ -148,6 +149,9 @@ export default function AppLayout({ children }) {
     const [authorizedRoles, setAuthorizedRoles] = useState([]);
 
     const invalidateProjects = useInvalidateProjects();
+    
+    // Track user progress automatically
+    useProgressTracking(selectedProjectKey, true);
 
     const currentView = location.pathname === '/status-dashboard' ? 'statusDashboard'
         : location.pathname === '/organization-admin' ? 'organizationAdmin'

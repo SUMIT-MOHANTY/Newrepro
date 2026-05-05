@@ -807,8 +807,10 @@ export default function AgentAnalysis({
                     const alreadyStarted = sessionStorage.getItem(analysisStartedKey) === 'true';
 
                     if (alreadyStarted) {
-                        console.log('Analysis already started for this document, skipping...');
+                        console.log('Analysis already started for this document, showing loading state...');
                         setLoading(false);
+                        setProcessing(true);
+                        setProgressMessage('Analysis in progress...');
                         return;
                     }
 
@@ -822,8 +824,9 @@ export default function AgentAnalysis({
                         setError('Governance assessment required before analysis.');
                         setLoading(false);
                     } else {
-                        // Analysis is pending but user hasn't clicked proceed yet - just show pending state
-                        setError('');
+                        // Analysis is pending but user hasn't clicked proceed yet
+                        // Show a message prompting them to complete governance first
+                        setError('Please complete the governance questionnaire and click "Proceed to Agent Analysis" to start the analysis.');
                         setLoading(false);
                     }
                     return;
@@ -1690,7 +1693,7 @@ export default function AgentAnalysis({
         );
     }
 
-    if (!result) {
+    if (!result && !loading && !processing) {
         return (
             <div className="h-full flex items-center justify-center bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
                 <div className="text-center max-w-md">
@@ -1701,6 +1704,28 @@ export default function AgentAnalysis({
                     >
                         Go to Dashboard
                     </button>
+                </div>
+            </div>
+        );
+    }
+    
+    // Show loading state while analysis is being prepared or is in progress
+    if (!result && (loading || processing)) {
+        return (
+            <div className="h-full flex items-center justify-center bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
+                <div className="text-center max-w-md">
+                    <Loader2 className="w-12 h-12 text-app-primary animate-spin mx-auto mb-4" />
+                    <p className="text-app-text-main font-semibold mb-2">
+                        {progressMessage || 'Preparing analysis...'}
+                    </p>
+                    {progress > 0 && (
+                        <div className="w-full bg-gray-200 rounded-full h-2 mt-4">
+                            <div
+                                className="bg-app-primary h-2 rounded-full transition-all duration-300"
+                                style={{ width: `${progress}%` }}
+                            />
+                        </div>
+                    )}
                 </div>
             </div>
         );
