@@ -628,31 +628,95 @@ async def analyze_document_chunked(
         # ─────────────────────────────────────────────────────────────────
         update_job_progress(85, "Stage 5: Synthesizing final report...")
         logger.info("=== STAGE 5: Final Report Synthesis ===")
+        
+        # Build a more compact synthesis context to avoid truncation issues
         synthesis_context = {
-            "stage1_requirements": stage1_data,
-            "stage2_architecture": stage2_data,
-            "stage3_data_api": stage3_data,
-            "stage4_implementation": stage4_data
+            "stage1_requirements": {
+                "product_name": stage1_data.get("product_name"),
+                "product_vision": stage1_data.get("product_vision"),
+                "functional_requirements": stage1_data.get("functional_requirements", []),
+                "non_functional_requirements": stage1_data.get("non_functional_requirements", []),
+                "clarification_questions": stage1_data.get("clarification_questions", [])
+            },
+            "stage2_architecture": {
+                "tech_stack": stage2_data.get("tech_stack", []),
+                "architecture_pattern": stage2_data.get("architecture_pattern"),
+                "architecture_justification": stage2_data.get("architecture_justification"),
+                "mermaid_flowchart": stage2_data.get("mermaid_flowchart"),
+                "architecture": stage2_data.get("architecture", {})
+            },
+            "stage3_data_api": {
+                "mermaid_er_diagram": stage3_data.get("mermaid_er_diagram"),
+                "validation_rules": stage3_data.get("validation_rules", []),
+                "api_endpoints": stage3_data.get("api_endpoints", [])
+            },
+            "stage4_implementation": {
+                "repository_structure": stage4_data.get("repository_structure"),
+                "prerequisites": stage4_data.get("prerequisites", []),
+                "implementation_phases": stage4_data.get("implementation_phases", []),
+                "implementation_guidelines": stage4_data.get("implementation_guidelines", [])
+            }
         }
+        
+        # Serialize context and check size
+        context_json = json.dumps(synthesis_context, indent=2)
+        logger.info(f"Stage 5 context size: {len(context_json)} characters")
+        
+        # If context is too large, summarize further
+        if len(context_json) > 12000:
+            logger.warning(f"Stage 5 context too large ({len(context_json)} chars), summarizing...")
+            synthesis_context["stage1_requirements"]["functional_requirements"] = stage1_data.get("functional_requirements", [])[:15]
+            synthesis_context["stage2_architecture"]["tech_stack"] = stage2_data.get("tech_stack", [])[:10]
+            synthesis_context["stage3_data_api"]["api_endpoints"] = stage3_data.get("api_endpoints", [])[:20]
+            context_json = json.dumps(synthesis_context, indent=2)
+            logger.info(f"Stage 5 context reduced to: {len(context_json)} characters")
         
         stage5_messages = [
             {"role": "system", "content": STAGE_5_SYNTHESIS_PROMPT},
-            {"role": "user", "content": f"Synthesize comprehensive BRD Analysis Report from:\n\n{json.dumps(synthesis_context, indent=2)[:6000]}"}
+            {"role": "user", "content": f"Synthesize comprehensive BRD Analysis Report from:\n\n{context_json}"}
         ]
         
-        stage5_result = await llm_gateway.call_llm_and_extract(
-            messages=stage5_messages,
-            api_url=api_url,
-            api_key=api_key,
-            model=model,
-            timeout=240.0
-        )
-        
-        logger.info("Stage 5 complete: Final report generated")
-        update_job_progress(95, "Finalizing analysis...")
-        
-        # Extract final JSON from the report
-        final_json = _extract_json_from_response(stage5_result)
+        try:
+            stage5_result = await llm_gateway.call_llm_and_extract(
+                messages=stage5_messages,
+                api_url=api_url,
+                api_key=api_key,
+                model=model,
+                timeout=240.0
+            )
+            
+            if not stage5_result or len(stage5_result.strip()) == 0:
+                raise ValueError("Stage 5 returned empty response from LLM")
+            
+            logger.info(f"Stage 5 complete: Generated report of {len(stage5_result)} characters")
+            update_job_progress(95, "Finalizing analysis...")
+            
+            # Extract final JSON from the report
+            final_json = _extract_json_from_response(stage5_result)
+            
+            if not final_json:
+                logger.error("Failed to extract JSON from Stage 5 response")
+                logger.error(f"Stage 5 response preview: {stage5_result[:500]}")
+                raise ValueError("Failed to extract valid JSON from Stage 5 synthesis")
+                
+        except Exception as stage5_error:
+            logger.error(f"Stage 5 failed: {type(stage5_error).__name__}: {str(stage5_error)}")
+            # Create a fallback response using data from previous stages
+            logger.warning("Creating fallback response from previous stages")
+            stage5_result = _create_fallback_report(stage1_data, stage2_data, stage3_data, stage4_data)
+            final_json = {
+                "title": f"{stage1_data.get('product_name', 'Product')} - BRD Analysis",
+                "metrics": {
+                    "complexity": "Medium",
+                    "timeline": "To be determined",
+                    "deployment": stage2_data.get("architecture_pattern", "To be determined"),
+                    "resources": "To be determined",
+                    "project_type": "greenfield"
+                },
+                "questions": stage1_data.get("clarification_questions", []),
+                "prerequisites": stage4_data.get("prerequisites", []),
+                "architecture": stage2_data.get("architecture", {"nodes": [], "edges": []})
+            }
         
         # Ensure architecture data is included
         if not final_json.get("architecture"):
@@ -673,10 +737,12 @@ async def analyze_document_chunked(
         }
     
     except Exception as e:
-        logger.error(f"Chunked analysis failed: {str(e)}")
+        error_type = type(e).__name__
+        error_msg = str(e) if str(e) else "Unknown error occurred"
+        logger.error(f"Chunked analysis failed: {error_type}: {error_msg}", exc_info=True)
         return {
             "status": "error",
-            "error": f"Analysis failed: {str(e)}"
+            "error": f"Analysis failed: {error_type}: {error_msg}"
         }
 
 
@@ -684,13 +750,92 @@ async def analyze_document_chunked(
 # HELPER FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _normalize_unicode_to_ascii(text: str) -> str:
+    """
+    Normalize problematic Unicode characters to ASCII equivalents.
+    This fixes issues where LLMs return Unicode characters despite instructions.
+    """
+    replacements = {
+        '\u2011': '-',  # Non-breaking hyphen
+        '\u2013': '-',  # En dash
+        '\u2014': '--', # Em dash
+        '\u202f': ' ',  # Narrow no-break space
+        '\u00a0': ' ',  # Non-breaking space
+        '\u2265': '>=', # Greater than or equal
+        '\u2264': '<=', # Less than or equal
+        '\u2018': "'",  # Left single quote
+        '\u2019': "'",  # Right single quote
+        '\u201c': '"',  # Left double quote
+        '\u201d': '"',  # Right double quote
+        '\u2022': '-',  # Bullet point
+        '\u2026': '...', # Ellipsis
+    }
+    
+    for unicode_char, ascii_char in replacements.items():
+        text = text.replace(unicode_char, ascii_char)
+    
+    return text
+
+
+def _create_fallback_report(stage1_data: dict, stage2_data: dict, stage3_data: dict, stage4_data: dict) -> str:
+    """
+    Create a basic markdown report from stage data when Stage 5 synthesis fails.
+    """
+    report_parts = []
+    
+    # Header
+    product_name = stage1_data.get("product_name", "Product")
+    report_parts.append(f"# BRD Analysis Report: {product_name}\n")
+    report_parts.append("*Note: This is a fallback report generated from stage data.*\n\n")
+    
+    # Product Understanding
+    report_parts.append("## 0.1 Product Understanding\n")
+    report_parts.append(f"**Product Name:** {product_name}\n\n")
+    if stage1_data.get("product_vision"):
+        report_parts.append(f"**Vision:** {stage1_data['product_vision']}\n\n")
+    
+    # Requirements
+    report_parts.append("## 0.2 Functional Requirements\n")
+    for req in stage1_data.get("functional_requirements", [])[:20]:
+        report_parts.append(f"- {req}\n")
+    report_parts.append("\n")
+    
+    # Architecture
+    report_parts.append("## 0.3 Technical Architecture\n")
+    report_parts.append(f"**Pattern:** {stage2_data.get('architecture_pattern', 'Not specified')}\n\n")
+    
+    # Tech Stack
+    report_parts.append("### Technology Stack\n")
+    for tech in stage2_data.get("tech_stack", [])[:10]:
+        report_parts.append(f"- **{tech.get('layer')}:** {tech.get('technology')} {tech.get('version', '')}\n")
+    report_parts.append("\n")
+    
+    # Prerequisites
+    report_parts.append("## 0.4 Prerequisites\n")
+    for prereq in stage4_data.get("prerequisites", [])[:15]:
+        report_parts.append(f"- **{prereq.get('name')}** ({prereq.get('category')}): {prereq.get('description')}\n")
+    report_parts.append("\n")
+    
+    # Questions
+    report_parts.append("## 0.5 Clarification Questions\n")
+    for q in stage1_data.get("clarification_questions", []):
+        report_parts.append(f"- {q}\n")
+    report_parts.append("\n")
+    
+    return "".join(report_parts)
+
+
 def _extract_json_from_response(text: str) -> dict:
     """Extract JSON object from LLM response, handling markdown fences and think tags."""
     if not text or not isinstance(text, str):
+        logger.warning("Empty or invalid text provided to _extract_json_from_response")
         return {}
     
     # Remove think tags
     text = re.sub(r"ქ.*?ქ", "", text, flags=re.DOTALL)
+    
+    # Normalize Unicode characters to ASCII before parsing
+    text = _normalize_unicode_to_ascii(text)
     
     # Try to find JSON in markdown fence
     fenced_regex = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
@@ -699,7 +844,8 @@ def _extract_json_from_response(text: str) -> dict:
         if candidate.startswith("{") and candidate.endswith("}"):
             try:
                 return json.loads(candidate)
-            except:
+            except Exception as e:
+                logger.warning(f"Failed to parse JSON from markdown fence: {e}")
                 continue
     
     # Try to find trailing JSON object
@@ -709,9 +855,11 @@ def _extract_json_from_response(text: str) -> dict:
             candidate = trimmed[i:].strip()
             try:
                 return json.loads(candidate)
-            except:
+            except Exception as e:
+                logger.warning(f"Failed to parse JSON from position {i}: {e}")
                 continue
     
+    logger.error("No valid JSON found in LLM response")
     return {}
 
 
