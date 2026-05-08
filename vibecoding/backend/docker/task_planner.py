@@ -7,7 +7,7 @@ Breaks down large requirements into manageable, executable tasks
 import json
 import os
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class Task:
@@ -25,7 +25,7 @@ class Task:
         self.priority = priority  # high, medium, low
         self.estimated_tokens = estimated_tokens
         self.status = "pending"  # pending, in_progress, completed, failed
-        self.created_at = datetime.now().isoformat()
+        self.created_at = datetime.now(timezone.utc).isoformat()
         self.completed_at = None
         self.error = None
     
@@ -58,7 +58,7 @@ class Task:
             estimated_tokens=data["estimated_tokens"]
         )
         task.status = data.get("status", "pending")
-        task.created_at = data.get("created_at", datetime.now().isoformat())
+        task.created_at = data.get("created_at", datetime.now(timezone.utc).isoformat())
         task.completed_at = data.get("completed_at")
         task.error = data.get("error")
         return task
@@ -286,7 +286,7 @@ IMPORTANT:
         task = self.get_task_by_id(task_id)
         if task:
             task.status = "completed"
-            task.completed_at = datetime.now().isoformat()
+            task.completed_at = datetime.now(timezone.utc).isoformat()
             self._save_state()
     
     def mark_task_failed(self, task_id: str, error: str):

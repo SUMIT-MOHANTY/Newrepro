@@ -87,6 +87,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+ARTIFACTS_DIR = Path(os.getenv('ARTIFACTS_DIR', './project_artifacts'))
+
 # ─── WebSocket Connection Manager ───────────────────────────────────────────────
 class ConnectionManager:
     """Manage WebSocket connections for real-time updates"""
@@ -1202,6 +1204,76 @@ async def save_project_message(project_id: str, request: MessagePersistenceReque
         conn.close()
 
 
+class AgentMessageRequest(BaseModel):
+    """Request model for AI agent to save messages via API"""
+    project_id: str
+    container_id: str
+    role: str
+    content: str
+    code: Optional[str] = None
+    suggestions: Optional[List[dict]] = None
+    metadata: Optional[dict] = None
+    summary: Optional[str] = None
+
+
+@app.post("/vibecoding/api/agent/message")
+async def save_agent_message(request: AgentMessageRequest):
+    """
+    API endpoint for AI agent (running in Docker) to save messages to database.
+    This replaces direct database access from the container.
+    No authentication required - only accessible from Docker network.
+    """
+    try:
+        from auth import get_db
+        import uuid
+        import time
+        
+        conn = get_db()
+        
+        # Generate unique message ID
+        message_id = f'agent_{int(time.time())}_{uuid.uuid4().hex[:4]}'
+        
+        # Insert message into database
+        conn.execute(
+            """INSERT INTO messages
+               (id, project_id, container_id, role, content, code, version_id,
+                timestamp, suggestions, tool_calls, image_paths, metadata, summary)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                message_id,
+                request.project_id,
+                request.container_id,
+                request.role,
+                request.content,
+                request.code,
+                None,  # version_id
+                datetime.now().isoformat(),
+                json.dumps(request.suggestions) if request.suggestions else None,
+                None,  # tool_calls
+                None,  # image_paths
+                json.dumps(request.metadata) if request.metadata else None,
+                request.summary
+            )
+        )
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✅ Agent message saved: {message_id} for project {request.project_id}")
+        
+        return {
+            "success": True,
+            "message_id": message_id,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to save agent message: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save message: {str(e)}"
+        )
+
+
 @app.post("/vibecoding/api/generate", response_model=GenerateResponse)
 async def generate_code(request: GenerateRequest, background_tasks: BackgroundTasks):
     # Get or create project ID at the start
@@ -1387,7 +1459,9 @@ Your analysis:"""
                 {"role": "user", "content": complexity_prompt}
             ], temperature=0.1)
             
-            response_text = complexity_response["choices"][0]["message"].get("content", "").strip() if "choices" in complexity_response else "{}"
+            # response_text = complexity_response["choices"][0]["message"].get("content", "").strip() if "choices" in complexity_response else "{}"
+            print(complexity_response)
+            response_text = ''
             logger.info(f"🤖 AI raw response: {response_text[:200]}")
             
             # Parse JSON response
@@ -1429,118 +1503,20 @@ Your analysis:"""
                 metadata={"awaiting_task_breakdown": True, "keep_loader_active": True}
             )
 
-        # 5. Generate dynamic acknowledgement message and suggestions using AI (only for simple tasks)
-        try:
-            # Generate a contextual acknowledgement message
-            ack_prompt = f"""The user requested: "{request.prompt}"
-
-I'm handing this task off to an autonomous agent that will work on it in the background.
-
-Generate a brief, friendly acknowledgement message (1-2 sentences) that:
-- Confirms we're working on their request
-- Mentions what the agent will be doing (be specific based on their request)
-- Reassures them the preview will update automatically
-
-Keep it conversational and encouraging. Don't use technical jargon.
-
-Example for "add a contact form":
-"Got it! I'm building a contact form with validation and styling. The preview will update automatically once it's ready."
-
-Example for "change colors to blue":
-"On it! I'm updating the color scheme to blue throughout your app. You'll see the changes in the preview shortly."
-
-Your message:"""
-
-            ack_response = await ai_config.make_async_request([
-                {"role": "system", "content": "You are a helpful assistant that writes brief, friendly acknowledgement messages."},
-                {"role": "user", "content": ack_prompt}
-            ])
-            delegate_msg = ack_response["choices"][0]["message"].get("content", "").strip() if "choices" in ack_response else None
-            
-            # Fallback if AI fails
-            if not delegate_msg or len(delegate_msg) < 10:
-                delegate_msg = "On it! The agent is now working on your request. The preview will update automatically once deployment is complete."
-            
-            # Generate contextual suggestions
-            suggestions_prompt = f"""The user just requested: "{request.prompt}"
-
-An autonomous agent is now working on this in the background.
-
-Generate 3 short, actionable suggestions (each under 50 characters) for what the user might want to do next.
-These should be natural follow-ups or related enhancements.
-
-Format: One suggestion per line, no numbering, no bullets.
-
-Example for "add a contact form":
-Check the preview once it's ready
-Add email validation
-Style the submit button
-
-Example for "change colors to blue":
-Preview the new color scheme
-Adjust the shade of blue
-Add gradient effects
-
-Your suggestions:"""
-
-            sugg_response = await ai_config.make_async_request([
-                {"role": "system", "content": "You are a helpful assistant that generates concise, actionable suggestions."},
-                {"role": "user", "content": suggestions_prompt}
-            ], temperature=0.7)
-            
-            suggestions_text = sugg_response["choices"][0]["message"].get("content", "") if "choices" in sugg_response else ""
-            suggestions = [s.strip() for s in suggestions_text.strip().split('\n') if s.strip()][:3]
-            
-            # Fallback suggestions
-            if len(suggestions) < 3:
-                suggestions = ["Check the preview", "Describe what to change next", "Add more features"]
-            
-            # Generate summary
-            summary_prompt = f"""Summarize this handoff in one professional sentence for a business stakeholder:
-
-User requested: "{request.prompt}"
-Action: Delegated to autonomous agent for implementation
-
-Summary:"""
-
-            summary_response = await ai_config.make_async_request([
-                {"role": "system", "content": "You are a professional business analyst writing executive summaries."},
-                {"role": "user", "content": summary_prompt}
-            ], temperature=0.3)
-            
-            summary = summary_response["choices"][0]["message"].get("content", "").strip() if "choices" in summary_response else None
-            if not summary or len(summary) < 10:
-                summary = "Handoff to Autonomous Resident Agent completed."
-                
-        except Exception as e:
-            logger.warning(f"Failed to generate dynamic messages: {e}")
-            # Fallback to static messages
-            delegate_msg = "On it! The agent is now working on your request. The preview will update automatically once deployment is complete."
-            suggestions = ["Check the preview", "Describe what to change next", "Add more features"]
-            summary = "Handoff to Autonomous Resident Agent completed."
-
-        # 6. Persist the assistant acknowledgement message
-        msg_id = f"msg_{int(time.time())}_{uuid.uuid4().hex[:4]}"
-        conn = get_db()
-        conn.execute(
-            """INSERT INTO messages
-                (id, project_id, container_id, role, content, code, timestamp, suggestions, summary)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (msg_id, project_id, "vibecoding-ai-agent", "assistant", delegate_msg, None,
-             datetime.now().isoformat(), json.dumps(suggestions), summary)
-        )
-        conn.commit()
-        conn.close()
-
+        # 5. Simple task — keep loader active; the agent sends all messages via WebSocket.
+        #    This ensures the correct order: thinking block → "Thinking completed" → summary with suggestions.
+        #    We deliberately skip generating an immediate ack here so the summary never jumps ahead.
+        logger.info("✅ Simple task — returning empty response; agent will broadcast progress via WebSocket")
         return GenerateResponse(
-            message=delegate_msg,
+            message="",           # Empty keeps the loader active in the frontend
             code=None,
             project_id=project_id,
             version_id="workspace",
             preview_url=preview_url,
-            suggestions=suggestions,
-            summary=summary,
-            message_id=msg_id
+            suggestions=[],
+            summary="",
+            message_id=None,
+            metadata={"keep_loader_active": True}
         )
 
     except Exception as e:
@@ -2110,6 +2086,138 @@ async def git_push(request: GitRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+def _group_log_messages(raw_messages: list) -> list:
+    """
+    Group consecutive agent background-log messages (from ai-agent.py's report())
+    into a single ThinkingBlock-compatible message for the frontend.
+
+    Detection order (any match → it's a log):
+      1. metadata.is_background_log == True  (set by ai-agent.py after this fix)
+      2. container_id == 'vibecoding-ai-agent'  (legacy rows before the fix)
+      3. metadata.type in log_types AND no code AND no task_plan  (extra safety net)
+
+    Regular user messages, code-bearing assistant messages, and task-breakdown
+    messages are NEVER grouped — they pass through unchanged.
+
+    KEY BEHAVIOUR: if a log group sits at the TAIL of the message list with no
+    terminal message (suggestions / code / task_plan) after it, we mark it as
+    isThinking=True so the frontend keeps the spinner visible while the agent
+    is still working.  Once a terminal message arrives the group is no longer at
+    the tail and will be flushed with isThinking=False.
+    """
+    LOG_TYPES = {'status', 'info', 'thinking', 'action', 'celebration', 'question'}
+
+    # Terminal message types / signals that mean the agent has finished a round.
+    TERMINAL_TYPES = {'success', 'celebration', 'task_breakdown', 'task_execution_complete',
+                      'task_execution_failed', 'task_execution_blocked'}
+
+    def _is_log(msg):
+        if msg.get('role') != 'assistant':
+            return False
+        # Messages with suggestions are terminal responses ("Great! Your changes are
+        # working…", "Try these next:") — always show them as normal chat messages.
+        suggestions = msg.get('suggestions')
+        if suggestions and len(suggestions) > 0:
+            return False
+        meta = msg.get('metadata') or {}
+        if meta.get('is_background_log'):
+            return True
+        if msg.get('container_id') == 'vibecoding-ai-agent':
+            return True
+        # Safety-net: agent status message with no code/task data
+        if (meta.get('type') in LOG_TYPES
+                and not msg.get('code')
+                and not meta.get('task_plan')
+                and meta.get('type') != 'task_breakdown'):
+            return True
+        return False
+
+    def _is_terminal(msg):
+        """True when this message signals the agent has finished its current task."""
+        if msg.get('role') != 'assistant':
+            return False
+        meta = msg.get('metadata') or {}
+        if meta.get('type') in TERMINAL_TYPES:
+            return True
+        if meta.get('task_plan') or meta.get('type') == 'task_breakdown':
+            return True
+        suggestions = msg.get('suggestions')
+        if suggestions and len(suggestions) > 0:
+            return True
+        if msg.get('code'):
+            return True
+        content = msg.get('content', '')
+        if '[AGENT] VERIFICATION' in content or 'Your app is live' in content:
+            return True
+        return False
+
+    result = []
+    log_buffer = []
+    group_id = None
+    group_ts = None
+
+    def _flush(is_tail: bool = False):
+        nonlocal log_buffer, group_id, group_ts
+        if not log_buffer:
+            return
+        has_error = any(l['level'] == 'error' for l in log_buffer)
+        # If this group is at the tail and no terminal message has followed,
+        # keep isThinking=True so the frontend spinner stays visible.
+        is_thinking = is_tail and not has_error
+        result.append({
+            'id': group_id,
+            'role': 'assistant',
+            'content': log_buffer[-1]['message'],
+            'timestamp': group_ts,
+            'code': None,
+            'suggestions': None,
+            'metadata': {
+                'type': 'background_execution',
+                'is_background_log': True,
+                'grouped': True,
+                'has_error': has_error,
+            },
+            'thinkingLogs': log_buffer.copy(),
+            'isThinking': is_thinking,
+        })
+        log_buffer = []
+        group_id = None
+        group_ts = None
+
+    # Track whether the last non-log message was terminal so we can decide
+    # whether a trailing log group should stay in "thinking" state.
+    seen_terminal_after_last_flush = False
+
+    for msg in raw_messages:
+        if _is_log(msg):
+            if group_id is None:
+                group_id = msg['id']
+                group_ts = msg.get('timestamp')
+                seen_terminal_after_last_flush = False  # reset for new group
+            meta = msg.get('metadata') or {}
+            mtype = meta.get('type', 'status')
+            level = ('error' if mtype == 'error'
+                     else 'success' if mtype in ('success', 'celebration')
+                     else 'info')
+            log_buffer.append({
+                'message': msg.get('content', ''),
+                'timestamp': msg.get('timestamp'),
+                'level': level,
+            })
+        else:
+            # Flush current log group as NOT tail (a real message follows it)
+            _flush(is_tail=False)
+            result.append(msg)
+            if _is_terminal(msg):
+                seen_terminal_after_last_flush = True
+
+    # Final flush — this group IS at the tail.
+    # isThinking = True only if we haven't seen a terminal message after the
+    # last log group started (meaning the agent is still mid-task).
+    _flush(is_tail=not seen_terminal_after_last_flush)
+    return result
+
+
 @app.get("/vibecoding/api/projects/{project_id}/messages")
 async def get_project_messages(project_id: str, background_tasks: BackgroundTasks):
     from auth import get_db
@@ -2125,8 +2233,7 @@ async def get_project_messages(project_id: str, background_tasks: BackgroundTask
         
         messages = []
         startup_messages = [
-            '👋 VibeCoding Agent is online and ready!',
-            '💡 Ready to build! Send me your first message to get started.'
+            '👋 VibeCoding Agent is online and ready!'
         ]
         
         for row in rows:
@@ -2157,6 +2264,11 @@ async def get_project_messages(project_id: str, background_tasks: BackgroundTask
                 if not msg.get("summary") and msg.get("code"):
                     background_tasks.add_task(lazy_summarize_message, msg["id"], msg["content"], msg["code"])
             messages.append(msg)
+
+        # ── Group consecutive agent log messages into ThinkingBlock format ──────
+        # This ensures that after a page reload the logs are still shown collapsed
+        # inside a single ThinkingBlock rather than as individual chat messages.
+        messages = _group_log_messages(messages)
             
         return {"messages": messages}
     finally:
@@ -2340,23 +2452,32 @@ async def set_file_frozen(project_id: str, request: dict, user: dict = Depends(g
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-ARTIFACTS_DIR = Path(os.getenv('ARTIFACTS_DIR', './project_artifacts'))
 
 def get_container_port(project_id: str) -> str:
     """Get the container port for a project by reading its container info"""
     try:
-        # Check running containers registry
-        registry_file = ARTIFACTS_DIR / '.container_registry.json'
-        print(f"Looking for registry at: {registry_file}")
+        # Use the same artifacts_dir as project_manager to ensure consistency
+        registry_file = project_manager.artifacts_dir / '.container_registry.json'
+        logger.debug(f"Looking for registry at: {registry_file.absolute()}")
         
         if registry_file.exists():
             with open(registry_file, 'r') as f:
                 registry = json.load(f)
                 container_name = f"vibecoding_{project_id}"
+                logger.debug(f"Registry contents: {list(registry.keys())}")
                 if container_name in registry:
-                    return registry[container_name]['port']
+                    port = registry[container_name]['port']
+                    logger.info(f"✅ Found container port for {project_id}: {port}")
+                    return port
+                else:
+                    logger.warning(f"⚠️ Container {container_name} not in registry")
+                    logger.warning(f"   Available containers: {list(registry.keys())}")
+        else:
+            logger.warning(f"⚠️ Registry file does not exist: {registry_file.absolute()}")
     except Exception as e:
-        print(f"Error reading container registry: {e}")
+        logger.error(f"❌ Error reading container registry: {e}")
+        import traceback
+        traceback.print_exc()
     return None
 
 

@@ -945,11 +945,12 @@
   line-height: 1.2;
 }
 
-/* User Menu Dropdown */
+/* User Menu Dropdown - Styles moved to inline Tailwind classes in Header.jsx */
 .user-menu-container {
   position: relative;
 }
 
+/* Removed hardcoded dark theme styles - now using Tailwind classes for light/dark mode support
 .user-menu-dropdown {
   position: absolute;
   top: calc(100% + 8px);
@@ -965,6 +966,7 @@
   animation: authMenuIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   z-index: 100;
 }
+*/
 
 @keyframes authMenuIn {
   from {

@@ -9,6 +9,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Settings, FileText, History, User, LogOut, Plus, Zap, Server, Users, Activity, Clock, Download, Menu, CheckCircle2, KeyRound, AlertTriangle, RefreshCw } from 'lucide-react';
 import { jsPDF } from 'jspdf';
+import { generateRobustPDF } from './robustPdfGenerator';
 
 // import bourntecLogo from '../assets/bourntec_logo.png';
 import StatusDashboard from '../components/StatusDashboard';
@@ -2065,349 +2066,29 @@ const Dashboard = ({
         if (!result) return;
 
         try {
-            const parseHex = (hex) => {
-                const normalized = String(hex || '').replace('#', '').trim();
-                const full = normalized.length === 3
-                    ? normalized.split('').map((char) => char + char).join('')
-                    : normalized;
-                const intValue = Number.parseInt(full || '000000', 16);
-                return [
-                    (intValue >> 16) & 255,
-                    (intValue >> 8) & 255,
-                    intValue & 255
-                ];
-            };
-
-            const normalizeForPdf = (value = '') => String(value)
-                .replace(/```[\s\S]*?```/g, (match) => match.replace(/```/g, '').trim())
-                .replace(/<\s*br\s*\/?>/gi, '\n')
-                .replace(/<\/\s*(p|div|h[1-6]|section|article|tr)\s*>/gi, '\n')
-                .replace(/<\s*li\s*>/gi, '- ')
-                .replace(/<\/\s*(li|ul|ol|table|thead|tbody)\s*>/gi, '\n')
-                .replace(/<[^>]+>/g, '')
-                .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
-                .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-                .replace(/^#{1,6}\s*/gm, '')
-                .replace(/\*\*(.*?)\*\*/g, '$1')
-                .replace(/\*(.*?)\*/g, '$1')
-                .replace(/`([^`]+)`/g, '$1')
-                .replace(/&nbsp;/gi, ' ')
-                .replace(/&amp;/gi, '&')
-                .replace(/&lt;/gi, '<')
-                .replace(/&gt;/gi, '>')
-                .replace(/&quot;/gi, '"')
-                .replace(/&#39;/gi, "'")
-                .replace(/&#39;/gi, "'")
-                .replace(/[\u2018\u2019]/g, "'")
-                .replace(/[\u201C\u201D]/g, '"')
-                .replace(/[\u2013\u2014]/g, '-')
-                .replace(/\u2026/g, '...')
-                .replace(/\u2264/g, '<=')
-                .replace(/\u2265/g, '>=')
-                // eslint-disable-next-line no-control-regex
-                .replace(/[^\x00-\x7F]/g, ' ')
-                .replace(/\r/g, '')
-                .replace(/\n{3,}/g, '\n\n')
-                .trim();
-
-            const palette = {
-                primary: '#1E3A8A',
-                primarySoft: '#E8EEFF',
-                border: '#D6E0F5',
-                text: '#1F2937',
-                muted: '#64748B'
-            };
-
-            const analysisText = normalizeForPdf(result.analysis?.analysis || '');
-            const questions = result.analysis?.questions?.length ? result.analysis.questions : aiQuestions;
-            const answers = result.analysis?.userAnswers || userAnswers;
-            const additionalNotes = normalizeForPdf(result.analysis?.userFeedback || userFeedback || '');
-            const reasoningText = normalizeForPdf(result.analysis?.reasoning || '');
+            // Build metrics from result
             const metricSource = result.analysis?.metrics || {};
-            const metricItems = [
+            const metrics = [
                 { label: 'Deployment', value: metricSource?.deployment || 'TBD' },
                 { label: 'Resources', value: metricSource?.resources || 'TBD' },
                 { label: 'Complexity', value: metricSource?.complexity || 'TBD' },
-                { label: 'Timeline ( For Developer Only Mode)', value: metricSource?.timeline || 'TBD' }
+                { label: 'Timeline (For Developer Only Mode)', value: metricSource?.timeline || 'TBD' }
             ];
 
-            const verdictMatch = analysisText.match(/Verdict:\s*\[?\s*(GO|NO-GO|PROCEED WITH CAUTION)\s*\]?/i);
-            const verdict = verdictMatch ? verdictMatch[1].toUpperCase() : 'NOT SPECIFIED';
-            const verdictStyle = verdict === 'GO'
-                ? { fill: '#DCFCE7', border: '#86EFAC', text: '#166534' }
-                : verdict === 'NO-GO'
-                    ? { fill: '#FEE2E2', border: '#FCA5A5', text: '#B91C1C' }
-                    : { fill: '#FEF3C7', border: '#FCD34D', text: '#B45309' };
+            // Get questions and answers
+            const questions = result.analysis?.questions?.length ? result.analysis.questions : aiQuestions;
+            const answers = result.analysis?.userAnswers || userAnswers;
 
-            // Extract the first two paragraphs which usually correspond to the Executive Summary section
-            const pdfParagraphs = analysisText.split(/\n{2,}/);
-            let execSummaryText = pdfParagraphs.slice(0, 2).join('\n\n');
-            let remainingAnalysisText = pdfParagraphs.slice(2).join('\n\n');
-
-            // Strip the list number from the Executive Summary heading
-            execSummaryText = execSummaryText.replace(/^1\.\s*Executive Summary/i, 'Executive Summary');
-
-            // Renumber the remaining sections down by 1 (e.g., "2. Key Requirements" -> "1. Key Requirements")
-            remainingAnalysisText = remainingAnalysisText.replace(/^(#*\s*)(\d+)\.\s/gm, (match, prefix, num) => {
-                return `${prefix}${parseInt(num) - 1}. `;
+            // Generate robust PDF (AI-model-agnostic)
+            generateRobustPDF(result, {
+                filename: result.filename || 'Report',
+                title: 'BRD Analysis Report',
+                metrics: metrics,
+                questions: questions,
+                answers: answers,
+                additionalNotes: result.analysis?.userFeedback || userFeedback || '',
+                reasoningText: result.analysis?.reasoning || ''
             });
-
-            const pdf = new jsPDF('p', 'mm', 'a4');
-            const pageWidth = pdf.internal.pageSize.getWidth();
-            const pageHeight = pdf.internal.pageSize.getHeight();
-            const marginX = 14;
-            const bottomMargin = 14;
-            const topBandHeight = 22;
-            const contentWidth = pageWidth - marginX * 2;
-            const generatedAt = new Date().toLocaleString('en-IN');
-            let cursorY = 0;
-
-            const setTextHex = (hex) => {
-                const [r, g, b] = parseHex(hex);
-                pdf.setTextColor(r, g, b);
-            };
-
-            const setFillHex = (hex) => {
-                const [r, g, b] = parseHex(hex);
-                pdf.setFillColor(r, g, b);
-            };
-
-            const setDrawHex = (hex) => {
-                const [r, g, b] = parseHex(hex);
-                pdf.setDrawColor(r, g, b);
-            };
-
-            const drawHeader = () => {
-                setFillHex(palette.primary);
-                pdf.rect(0, 0, pageWidth, topBandHeight, 'F');
-
-                pdf.setFont('helvetica', 'bold');
-                pdf.setFontSize(13);
-                pdf.setTextColor(255, 255, 255);
-                pdf.text('Analysis Report', marginX, 9);
-
-                pdf.setFont('helvetica', 'normal');
-                pdf.setFontSize(8);
-                const docLabel = (result.filename || 'Untitled document').slice(0, 72);
-                pdf.text(docLabel, marginX, 15);
-
-                const dateLabel = `Generated ${generatedAt}`;
-                const dateWidth = pdf.getTextWidth(dateLabel);
-                pdf.text(dateLabel, pageWidth - marginX - dateWidth, 15);
-
-                cursorY = topBandHeight + 8;
-                setTextHex(palette.text);
-            };
-
-            const ensureSpace = (requiredHeight = 8) => {
-                if (cursorY + requiredHeight > pageHeight - bottomMargin) {
-                    pdf.addPage();
-                    drawHeader();
-                }
-            };
-
-            const addSectionTitle = (title) => {
-                ensureSpace(11);
-                setFillHex(palette.primarySoft);
-                setDrawHex(palette.border);
-                pdf.roundedRect(marginX, cursorY, contentWidth, 8, 1.5, 1.5, 'FD');
-
-                setTextHex(palette.primary);
-                pdf.setFont('helvetica', 'bold');
-                pdf.setFontSize(10.5);
-                pdf.text(title, marginX + 3, cursorY + 5.4);
-
-                cursorY += 11;
-                pdf.setFont('helvetica', 'normal');
-                pdf.setFontSize(10);
-                setTextHex(palette.text);
-            };
-
-            const addParagraphs = (text, options = {}) => {
-                const {
-                    fontSize = 10,
-                    lineHeight = 4.8,
-                    color = palette.text,
-                    bold = false
-                } = options;
-
-                const blocks = String(text || '')
-                    .split(/\n{2,}/)
-                    .map((block) => block.trim())
-                    .filter(Boolean);
-
-                if (!blocks.length) return;
-
-                pdf.setFont('helvetica', bold ? 'bold' : 'normal');
-                pdf.setFontSize(fontSize);
-                setTextHex(color);
-
-                blocks.forEach((block, blockIndex) => {
-                    const lines = pdf.splitTextToSize(block, contentWidth);
-                    lines.forEach((line) => {
-                        ensureSpace(lineHeight);
-                        // Re-apply properties after ensureSpace in case it created a new page and reset the font
-                        pdf.setFont('helvetica', bold ? 'bold' : 'normal');
-                        pdf.setFontSize(fontSize);
-                        setTextHex(color);
-
-                        pdf.text(line, marginX, cursorY);
-                        cursorY += lineHeight;
-                    });
-
-                    if (blockIndex < blocks.length - 1) {
-                        cursorY += 1.5;
-                    }
-                });
-
-                pdf.setFont('helvetica', 'normal');
-                setTextHex(palette.text);
-            };
-
-            const addMetricsGrid = () => {
-                addSectionTitle('Key Metrics');
-
-                const cardGap = 4;
-                const cardWidth = (contentWidth - cardGap) / 2;
-                const cardHeight = 17;
-                const rows = Math.ceil(metricItems.length / 2);
-                const totalHeight = rows * cardHeight + (rows - 1) * cardGap;
-                const cardFills = ['#F8FAFC', '#F0F9FF', '#F9FAFB', '#ECFEFF'];
-
-                ensureSpace(totalHeight + 2);
-
-                metricItems.forEach((item, index) => {
-                    const row = Math.floor(index / 2);
-                    const col = index % 2;
-                    const x = marginX + col * (cardWidth + cardGap);
-                    const y = cursorY + row * (cardHeight + cardGap);
-
-                    setFillHex(cardFills[index % cardFills.length]);
-                    setDrawHex(palette.border);
-                    pdf.roundedRect(x, y, cardWidth, cardHeight, 1.5, 1.5, 'FD');
-
-                    setTextHex(palette.muted);
-                    pdf.setFont('helvetica', 'bold');
-                    pdf.setFontSize(8);
-                    pdf.text(item.label, x + 3, y + 5);
-
-                    setTextHex(palette.text);
-                    pdf.setFont('helvetica', 'normal');
-                    pdf.setFontSize(9.5);
-                    const valueLines = pdf.splitTextToSize(String(item.value || 'TBD'), cardWidth - 6).slice(0, 2);
-                    pdf.text(valueLines, x + 3, y + 10);
-                });
-
-                cursorY += totalHeight + 2;
-            };
-
-            drawHeader();
-
-            ensureSpace(25);
-            setFillHex('#F8FAFC');
-            setDrawHex(palette.border);
-            pdf.roundedRect(marginX, cursorY, contentWidth, 19, 2, 2, 'FD');
-
-            setTextHex(palette.text);
-            pdf.setFont('helvetica', 'bold');
-            pdf.setFontSize(11);
-            pdf.text('Project Overview', marginX + 3, cursorY + 6);
-
-            pdf.setFont('helvetica', 'normal');
-            pdf.setFontSize(9);
-            setTextHex(palette.muted);
-            pdf.text(`Document: ${result.filename || 'Untitled'}`, marginX + 3, cursorY + 12);
-            pdf.text(`Generated: ${generatedAt}`, marginX + 3, cursorY + 17);
-
-            cursorY += 24;
-
-            addSectionTitle('Go / No-Go Recommendation');
-            ensureSpace(14);
-            setFillHex(verdictStyle.fill);
-            setDrawHex(verdictStyle.border);
-            pdf.roundedRect(marginX, cursorY, contentWidth, 12, 2, 2, 'FD');
-            setTextHex(verdictStyle.text);
-            pdf.setFont('helvetica', 'bold');
-            pdf.setFontSize(11.5);
-            pdf.text(verdict, marginX + 3, cursorY + 7.4);
-            cursorY += 15;
-            cursorY += 4; // Add extra space before Executive Summary
-
-            addParagraphs(execSummaryText || 'Executive summary not available.', {
-                fontSize: 10,
-                lineHeight: 4.8,
-                color: palette.text
-            });
-
-            cursorY += 2;
-            addMetricsGrid();
-
-            addSectionTitle('Analysis');
-            cursorY += 3; // Add extra space below the Analysis heading
-
-            addParagraphs(remainingAnalysisText || analysisText || 'No analysis text available.', {
-                fontSize: 10,
-                lineHeight: 4.8
-            });
-
-            if (questions?.length) {
-                cursorY += 2;
-                addSectionTitle('Targeted Questions & Clarifications');
-                cursorY += 3; // Add extra space below the Clarifications heading
-
-                questions.forEach((question, index) => {
-                    const questionText = normalizeForPdf(question);
-                    const answerText = normalizeForPdf(answers?.[index] || '');
-
-                    addParagraphs(`${index + 1}. ${questionText}`, {
-                        fontSize: 10,
-                        lineHeight: 4.8,
-                        bold: true
-                    });
-                    addParagraphs(`Answer: ${answerText || 'Pending clarification'}`, {
-                        fontSize: 10,
-                        lineHeight: 4.8,
-                        color: answerText ? palette.muted : '#94A3B8'
-                    });
-                    cursorY += 1;
-                });
-            }
-
-            if (additionalNotes) {
-                cursorY += 2;
-                addSectionTitle('Additional Context');
-                addParagraphs(additionalNotes, {
-                    fontSize: 10,
-                    lineHeight: 4.8,
-                    color: palette.muted
-                });
-            }
-
-            if (reasoningText) {
-                cursorY += 2;
-                addSectionTitle('Model Reasoning Notes');
-                addParagraphs(reasoningText, {
-                    fontSize: 10,
-                    lineHeight: 4.8,
-                    color: palette.muted
-                });
-            }
-
-            const totalPages = pdf.getNumberOfPages();
-            for (let page = 1; page <= totalPages; page += 1) {
-                pdf.setPage(page);
-                pdf.setFont('helvetica', 'normal');
-                pdf.setFontSize(8);
-                setTextHex('#94A3B8');
-                const footerLabel = `Page ${page} of ${totalPages}`;
-                const footerWidth = pdf.getTextWidth(footerLabel);
-                pdf.text(footerLabel, pageWidth - marginX - footerWidth, pageHeight - 6);
-            }
-
-            const safeFilename = String(result.filename || 'Report')
-                .replace(/[^a-zA-Z0-9._-]/g, '_')
-                .slice(0, 80);
-            pdf.save(`DSuite_Analysis_${safeFilename}.pdf`);
         } catch (err) {
             console.error('PDF generation failed', err);
             setError(sanitizeErrorMessage(err));

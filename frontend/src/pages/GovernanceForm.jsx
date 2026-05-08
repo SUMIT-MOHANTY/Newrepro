@@ -1204,12 +1204,13 @@ const GovernanceResult = ({ result, onBack, fetchRoadmapData, navigate }) => {
                                         }
                                     }
                                     
-                                    // Navigate to Agent Analysis page (always happens)
-                                    navigate('/agent-analysis');
+                                    // Navigate to Agent Analysis page using window.location for a hard navigation
+                                    // This ensures the page actually changes and React Router processes the route
+                                    window.location.href = '/agent-analysis';
                                 } catch (error) {
                                     console.error('Error during navigation:', error);
                                     // Ensure navigation happens even on error
-                                    navigate('/agent-analysis');
+                                    window.location.href = '/agent-analysis';
                                 } finally {
                                     // Reset loading state after a delay (in case navigation is slow)
                                     setTimeout(() => setIsNavigating(false), 1000);

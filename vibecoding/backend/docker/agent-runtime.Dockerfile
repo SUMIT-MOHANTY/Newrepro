@@ -25,7 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Pre-install essential tooling for all major frameworks
 # - serve: Static file server for React/Vue/Angular/Svelte production builds
 # - concurrently: For running multiple processes (frontend+backend)
-RUN npm install -g serve@latest concurrently@latest 2>/dev/null || npm install -g serve concurrently
+# RUN npm install -g serve@latest concurrently@latest 2>/dev/null || npm install -g serve concurrently
 
 WORKDIR /project
 

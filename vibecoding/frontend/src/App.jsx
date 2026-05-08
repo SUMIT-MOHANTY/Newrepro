@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import axios from 'axios';
 import { Send, Sparkles, Code, Eye, Download, Copy, Check, Zap, RefreshCw, File, Folder, ChevronRight, ChevronDown, Plus, History, LogOut, X, Lock, Unlock } from 'lucide-react';
 import { Routes, Route, Navigate, useNavigate, Link, useParams, useLocation } from 'react-router-dom';
@@ -24,6 +24,24 @@ function App() {
   const { user, isAuthenticated, loading: authLoading, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+
+  // ── Global auth token interceptor ──────────────────────────────────────────
+  // Attach the JWT token to every axios request automatically.
+  // This fixes the 401 on /api/auth/verify that logged users out on page refresh,
+  // because the AuthContext's verify call fired before headers were set manually.
+  React.useEffect(() => {
+    const interceptorId = axios.interceptors.request.use((config) => {
+      const token = localStorage.getItem('vibecoding_token');
+      if (token && !config.headers['Authorization']) {
+        config.headers['Authorization'] = `Bearer ${token}`;
+      }
+      return config;
+    }, (error) => Promise.reject(error));
+
+    return () => {
+      axios.interceptors.request.eject(interceptorId);
+    };
+  }, []);
 
   // Auth loading state
   if (authLoading) {
@@ -147,6 +165,144 @@ function Workspace({ user, logout, isAuthenticated }) {
   const [discussMode, setDiscussMode] = useState(false);
   const [frozenFiles, setFrozenFiles] = useState([]);
   const [freezeLoading, setFreezeLoading] = useState(false);
+  const [isAutonomousPolling, setIsAutonomousPolling] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(false);
+  const [pollCount, setPollCount] = useState(0);
+
+  // ── WebSocket: real-time updates from the container agent ──────────────────
+  const { lastMessage: wsMessage, isConnected: wsConnected } = useWebSocket(currentProjectId);
+
+  /**
+   * Handle every inbound WebSocket frame.
+   * 
+   * The ai-agent.py `report()` function posts to /vibecoding/api/broadcast/{project_id}
+   * which calls manager.broadcast() — forwarding the payload to every connected WS client.
+   * 
+   * Payload shape (from ai-agent.py report()):
+   *   { content, type, summary, metadata, timestamp, code, suggestions }
+   */
+  // IN App.jsx — REPLACE the entire WS useEffect with this:
+
+  useEffect(() => {
+    if (!wsMessage) return;
+
+    console.log('[WS] Received message:', wsMessage);
+
+    const { content, type, metadata, code, suggestions, timestamp } = wsMessage;
+
+    // ── 1. Handle agent messages for real-time chat updates ───────────────────
+    if (content) {
+      setMessages(prev => {
+        // Find the most recent background log message in the array
+        // (not just the last one — there might be regular messages after it)
+        let lastBgIndex = -1;
+        for (let i = prev.length - 1; i >= 0; i--) {
+          if (prev[i]?.metadata?.is_background_log && !prev[i]?.metadata?.grouped) {
+            lastBgIndex = i;
+            break;
+          }
+        }
+
+        const newLog = {
+          message: content,
+          timestamp: timestamp || new Date().toISOString(),
+          level: type === 'success' ? 'success' : type === 'error' ? 'error' : 'info'
+        };
+
+        // If we found a recent background message AND it's still "thinking", update it
+        if (lastBgIndex !== -1) {
+          const lastBg = prev[lastBgIndex];
+          // Only update if it's still active (thinking) or this is part of same session
+          // We determine "same session" by checking if no regular assistant message came after
+          const hasRegularMessageAfter = prev.slice(lastBgIndex + 1).some(
+            m => m.role === 'assistant' && !m.metadata?.is_background_log
+          );
+          
+          if (!hasRegularMessageAfter || lastBg.isThinking) {
+            const updated = [...prev];
+            
+            // Deduplicate: check if this exact log already exists
+            const existingLogs = lastBg.thinkingLogs || [];
+            const isDuplicate = existingLogs.some(
+              log => log.message === newLog.message && 
+                     Math.abs(new Date(log.timestamp) - new Date(newLog.timestamp)) < 1000 // within 1 second
+            );
+            
+            updated[lastBgIndex] = {
+              ...lastBg,
+              content: lastBg.content || content, // Keep original content, don't replace
+              timestamp: newLog.timestamp,
+              metadata: {
+                ...lastBg.metadata,
+                type: type || 'status',
+              },
+              thinkingLogs: isDuplicate ? existingLogs : [...existingLogs, newLog], // Append new log only if not duplicate
+              isThinking: type !== 'success' && type !== 'error',
+            };
+            return updated;
+          }
+        }
+
+        // No suitable background message found — create a new one
+        const newMsg = {
+          id: `ws_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          role: 'assistant',
+          content,
+          code: code || null,
+          suggestions: suggestions || [],
+          timestamp: newLog.timestamp,
+          metadata: { 
+            ...(metadata || {}), 
+            type: type || 'status',
+            is_background_log: true,
+          },
+          thinkingLogs: [newLog],
+          isThinking: type !== 'success' && type !== 'error',
+        };
+
+        // Deduplicate: skip if the last message has identical content
+        const lastMsg = prev[prev.length - 1];
+        if (lastMsg?.content === content && lastMsg?.role === 'assistant') return prev;
+        
+        return [...prev, newMsg];
+      });
+    }
+
+    // ── 2. Stop the loading/polling spinner on terminal signals ───────────────
+    const terminalTypes = ['success', 'error', 'celebration', 'task_breakdown'];
+    const isTerminal =
+      terminalTypes.includes(type) ||
+      content?.includes('[AGENT] VERIFICATION') ||
+      content?.includes('✅ Changes applied') ||
+      content?.includes('Deployment error') ||
+      metadata?.type === 'task_breakdown' ||
+      metadata?.task_plan;
+
+    if (isTerminal) {
+      console.log('[WS] Terminal signal detected, stopping loader');
+      setLoading(false);
+      setIsAutonomousPolling(false);
+      // Do a final DB sync after a short delay to get the fully-persisted,
+      // properly-grouped messages (with isThinking:false, collapsed ThinkingBlock).
+      setTimeout(() => fetchMessages(), 1000);
+    }
+
+    // ── 3. Refresh file tree whenever agent signals a code update ─────────────
+    if (content?.includes('[AGENT] CODE_UPDATE') || type === 'code_update') {
+      console.log('[WS] Code update detected, refreshing file tree');
+      fetchProjectFiles();
+    }
+
+    // ── 4. Bounce the preview iframe when a new deployment lands ─────────────
+    if (content?.includes('Your app is live') ||
+        content?.includes('🎉') ||
+        type === 'celebration') {
+      console.log('[WS] Deployment complete, refreshing preview');
+      setIframeKey(k => k + 1);
+    }
+  }, [wsMessage]);
+    
+  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Task execution handlers
   const { executingTaskId, handleExecuteTask, handleExecuteAllTasks, handleEditTask } = useTaskHandlers(
@@ -156,6 +312,28 @@ function Workspace({ user, logout, isAuthenticated }) {
     setLoading,
     setVerificationStatus
   );
+
+  // ── processedMessages ───────────────────────────────────────────────────────
+  // Normalise messages from two sources:
+  //   1. Live WS messages   — created by the WS handler with is_background_log + thinkingLogs
+  //   2. DB-loaded messages — already grouped by main.py's _group_log_messages()
+  // Both carry is_background_log:true and thinkingLogs[], so the same ChatMessage
+  // rendering path applies for both.
+  const processedMessages = useMemo(() => {
+    return messages.map(msg => {
+      if (msg.metadata?.is_background_log && msg.thinkingLogs?.length > 0) {
+        return {
+          ...msg,
+          metadata: {
+            ...msg.metadata,
+            type: 'background_execution',
+            grouped: true,
+          }
+        };
+      }
+      return msg;
+    });
+  }, [messages]);
 
   useEffect(() => {
     prevProjectIdRef.current = currentProjectId;
@@ -222,14 +400,23 @@ function Workspace({ user, logout, isAuthenticated }) {
   }, [lastMessageId, verificationStatus, currentProjectId]);
 
   // --- Autonomous Polling Logic ---
-  const [isAutonomousPolling, setIsAutonomousPolling] = useState(false);
-  const [pollCount, setPollCount] = useState(0);
-
+  //
+  // KEY DESIGN: The polling loop must NEVER blindly overwrite setMessages() with
+  // raw DB rows while an agent task is in-flight, because:
+  //   - WebSocket messages build up rich thinkingLogs in memory
+  //   - Raw DB rows (pre-grouped) have isThinking:false and no thinkingLogs
+  //   - Replacing state with DB rows mid-task causes ThinkingBlock to vanish
+  //
+  // FIX: main.py's _group_log_messages() now marks tail log groups isThinking:true
+  // when no terminal message has followed. The polling merges DB messages with the
+  // live in-memory state: non-log messages are synced freely; the live thinking
+  // group is only replaced when the DB version also has isThinking:true (still
+  // in-flight) or when loading has ended.
   useEffect(() => {
     let pollInterval;
     if (isAutonomousPolling && currentProjectId) {
-      setPollCount(0); // Reset counter
-      
+      setPollCount(0);
+
       pollInterval = setInterval(async () => {
         try {
           setPollCount(prev => prev + 1);
@@ -237,123 +424,144 @@ function Workspace({ user, logout, isAuthenticated }) {
           const response = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/messages`, {
             headers: { Authorization: `Bearer ${token}` }
           });
-          
-          // Also fetch tasks to update their status
+
           const tasksResponse = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/tasks`, {
             headers: { Authorization: `Bearer ${token}` }
           }).catch(err => {
             console.warn('Failed to fetch tasks during polling:', err);
             return { data: { tasks: [], total_tasks: 0 } };
           });
-          
+
           if (response.data.messages) {
-             let newMessages = response.data.messages;
-             
-             // Inject task plan if we have tasks
-             if (tasksResponse.data.tasks && tasksResponse.data.tasks.length > 0) {
-               const taskPlan = {
-                 project_summary: tasksResponse.data.project_summary || 'Task breakdown',
-                 tasks: tasksResponse.data.tasks,
-                 total_tasks: tasksResponse.data.total_tasks,
-                 completed_count: tasksResponse.data.completed_count,
-                 pending_count: tasksResponse.data.pending_count,
-                 failed_count: tasksResponse.data.failed_count
-               };
-               
-               const taskBreakdownMsgIndex = newMessages.findIndex(msg => 
-                 msg.metadata?.type === 'task_breakdown' || 
-                 msg.metadata?.awaiting_task_selection ||
-                 (msg.content && msg.content.includes('Task Breakdown Complete'))
-               );
-               
-               if (taskBreakdownMsgIndex !== -1) {
-                 newMessages[taskBreakdownMsgIndex] = {
-                   ...newMessages[taskBreakdownMsgIndex],
-                   metadata: {
-                     ...newMessages[taskBreakdownMsgIndex].metadata,
-                     task_plan: taskPlan
-                   }
-                 };
-               } else {
-                 // Create task breakdown message if tasks exist but no message found
-                 console.log('📋 Tasks found but no breakdown message - creating one');
-                 const taskBreakdownMsg = {
-                   id: `task_breakdown_${Date.now()}`,
-                   role: 'assistant',
-                   content: `📋 **Task Breakdown Complete!**\n\n${taskPlan.project_summary}\n\nI've broken this down into **${taskPlan.total_tasks} tasks**. You can:\n• Click "Execute All" to start building automatically\n• Click "Execute" on individual tasks to run them one by one\n• Click "Edit" to modify task descriptions before execution\n\nReady to start building?`,
-                   timestamp: new Date().toISOString(),
-                   metadata: {
-                     type: 'task_breakdown',
-                     task_plan: taskPlan,
-                     awaiting_task_selection: true
-                   }
-                 };
-                 newMessages.push(taskBreakdownMsg);
-               }
-             }
-             
-             setMessages(newMessages);
-             
-             // Check if the last message signals completion or a code update
-             const lastMsg = newMessages[newMessages.length - 1];
-             
-             // 1. If we see a code update, refresh the tree
-             if (lastMsg?.content?.includes("[AGENT] CODE_UPDATE")) {
-                await fetchProjectFiles();
-             }
-             
-             // 2. If we see task breakdown, stop polling and loader
-             if (lastMsg?.metadata?.type === 'task_breakdown' || lastMsg?.metadata?.task_plan) {
-                console.log('✅ Task breakdown detected - stopping polling and loader');
-                setIsAutonomousPolling(false);
-                setLoading(false);
-                return;
-             }
-             
-             // 3. If we see verification or a generic stop signal, end polling
-             if (lastMsg?.content?.includes("[AGENT] VERIFICATION")) {
-                console.log('✅ Verification detected - stopping polling and loader');
-                setIsAutonomousPolling(false);
-                setLoading(false);
-                return;
-             }
-             
-             // 4. If we've polled at least 5 times (15 seconds) and no tasks found, check if we should stop
-             if (pollCount >= 5) {
-                // If no tasks were created and we have a "Got it!" message, stop polling
-                const hasGotItMessage = newMessages.some(msg => 
-                  msg.role === 'assistant' && 
-                  (msg.content?.includes('Got it!') || msg.content?.includes('On it!'))
-                );
-                
-                if (hasGotItMessage && tasksResponse.data.total_tasks === 0) {
-                  console.log('✅ No tasks detected after 15s with acknowledgment - stopping polling and loader');
-                  setIsAutonomousPolling(false);
-                  setLoading(false);
-                  return;
-                }
-             }
-             
-             // 5. Stop polling after 60 seconds (20 polls * 3 seconds) to prevent infinite polling
-             if (pollCount >= 20) {
-                console.log('⏱️ Polling timeout - stopping after 60 seconds');
-                setIsAutonomousPolling(false);
-                setLoading(false);
-                return;
-             }
-             
-             // Log polling status
-             console.log(`🔄 Poll #${pollCount}: ${newMessages.length} messages, ${tasksResponse.data.total_tasks} tasks, loader still active`);
+            let dbMessages = response.data.messages.filter(msg => !msg.metadata?.temporary);
+
+            // ── Inject task plan if tasks exist ─────────────────────────────
+            if (tasksResponse.data.tasks && tasksResponse.data.tasks.length > 0) {
+              const taskPlan = {
+                project_summary: tasksResponse.data.project_summary || 'Task breakdown',
+                tasks: tasksResponse.data.tasks,
+                total_tasks: tasksResponse.data.total_tasks,
+                completed_count: tasksResponse.data.completed_count,
+                pending_count: tasksResponse.data.pending_count,
+                failed_count: tasksResponse.data.failed_count
+              };
+              const tIdx = dbMessages.findIndex(msg =>
+                msg.metadata?.type === 'task_breakdown' ||
+                msg.metadata?.awaiting_task_selection ||
+                (msg.content && msg.content.includes('Task Breakdown Complete'))
+              );
+              if (tIdx !== -1) {
+                dbMessages[tIdx] = {
+                  ...dbMessages[tIdx],
+                  metadata: { ...dbMessages[tIdx].metadata, task_plan: taskPlan }
+                };
+              } else {
+                dbMessages.push({
+                  id: `task_breakdown_${Date.now()}`,
+                  role: 'assistant',
+                  content: `📋 **Task Breakdown Complete!**\n\n${taskPlan.project_summary}\n\nI've broken this down into **${taskPlan.total_tasks} tasks**. You can:\n• Click "Execute All" to start building automatically\n• Click "Execute" on individual tasks to run them one by one\n• Click "Edit" to modify task descriptions before execution\n\nReady to start building?`,
+                  timestamp: new Date().toISOString(),
+                  metadata: { type: 'task_breakdown', task_plan: taskPlan, awaiting_task_selection: true }
+                });
+              }
+            }
+
+            // ── Check terminal signals ───────────────────────────────────────
+            const lastDb = dbMessages[dbMessages.length - 1];
+
+            const isDbTerminal = (
+              lastDb?.metadata?.type === 'task_breakdown' ||
+              lastDb?.metadata?.task_plan ||
+              lastDb?.content?.includes('[AGENT] VERIFICATION') ||
+              lastDb?.suggestions?.length > 0 ||
+              lastDb?.code
+            );
+
+            const hasGotItStop = pollCount >= 5 &&
+              dbMessages.some(m => m.role === 'assistant' &&
+                (m.content?.includes('Got it!') || m.content?.includes('On it!'))) &&
+              tasksResponse.data.total_tasks === 0;
+
+            const isTimedOut = pollCount >= 20;
+
+            if (isDbTerminal || hasGotItStop || isTimedOut) {
+              const reason = isDbTerminal ? 'terminal DB signal' : hasGotItStop ? 'got-it + no tasks' : 'timeout';
+              console.log(`✅ Stopping polling: ${reason}`);
+              setIsAutonomousPolling(false);
+              setLoading(false);
+              // Safe to do a full sync now — agent is done
+              setMessages(dbMessages);
+              return;
+            }
+
+            // ── Safe merge: preserve live thinkingLogs, sync everything else ──
+            // The DB tail group now has isThinking:true (set by main.py fix).
+            // We merge it with the in-memory state so thinkingLogs accumulate.
+            setMessages(prev => {
+              // Find the in-memory live thinking group (isThinking:true)
+              const liveIdx = prev.findLastIndex?.(m =>
+                m.metadata?.is_background_log && m.isThinking
+              ) ?? [...prev].reverse().findIndex(m =>
+                m.metadata?.is_background_log && m.isThinking
+              );
+              const liveMsgIdx = liveIdx >= 0
+                ? (prev.findLastIndex
+                    ? liveIdx
+                    : prev.length - 1 - liveIdx)
+                : -1;
+
+              // Find the DB tail thinking group
+              const dbTailIdx = dbMessages.findLastIndex?.(m =>
+                m.metadata?.is_background_log && m.metadata?.grouped
+              ) ?? [...dbMessages].reverse().findIndex(m =>
+                m.metadata?.is_background_log && m.metadata?.grouped
+              );
+              const dbTailMsgIdx = dbTailIdx >= 0
+                ? (dbMessages.findLastIndex
+                    ? dbTailIdx
+                    : dbMessages.length - 1 - dbTailIdx)
+                : -1;
+
+              if (liveMsgIdx < 0 || dbTailMsgIdx < 0) {
+                // No live thinking group in memory — safe to sync DB directly
+                return dbMessages;
+              }
+
+              // Merge: use DB as base but keep the live thinkingLogs and isThinking:true
+              const liveMsg = prev[liveMsgIdx];
+              const dbTailMsg = dbMessages[dbTailMsgIdx];
+
+              // Merge thinkingLogs: DB logs first (deduplicated), then any extra live ones
+              const dbLogContents = new Set((dbTailMsg.thinkingLogs || []).map(l => l.message));
+              const extraLiveLogs = (liveMsg.thinkingLogs || []).filter(l => !dbLogContents.has(l.message));
+              const mergedLogs = [...(dbTailMsg.thinkingLogs || []), ...extraLiveLogs];
+
+              const merged = dbMessages.map((m, i) =>
+                i === dbTailMsgIdx
+                  ? { ...m, thinkingLogs: mergedLogs, isThinking: true }
+                  : m
+              );
+
+              return merged;
+            });
+
+            if (lastDb?.content?.includes('[AGENT] CODE_UPDATE')) {
+              await fetchProjectFiles();
+            }
+
+            console.log(`🔄 Poll #${pollCount}: ${dbMessages.length} DB msgs, ${tasksResponse.data.total_tasks} tasks`);
           }
         } catch (e) {
-          console.error("Polling error:", e);
+          console.error('Polling error:', e);
+          setIsAutonomousPolling(false);
+          setLoading(false);
         }
-      }, 3000);
+      }, wsConnected ? 5000 : 2000);
     }
     return () => {
       if (pollInterval) clearInterval(pollInterval);
     };
-  }, [isAutonomousPolling, currentProjectId, pollCount]);
+  }, [isAutonomousPolling, currentProjectId, pollCount, wsConnected]);
 
   const fetchProjectFiles = async () => {
     if (!currentProjectId) return;
@@ -479,14 +687,11 @@ function Workspace({ user, logout, isAuthenticated }) {
 
     setFreezeLoading(true);
     try {
-      const token = localStorage.getItem('vibecoding_token');
       const isFrozen = frozenFiles.includes(filePath);
 
       await axios.post(`${API_BASE_URL}/api/projects/${currentProjectId}/frozen-files`, {
         file_path: filePath,
         frozen: !isFrozen
-      }, {
-        headers: { Authorization: `Bearer ${token}` }
       });
 
       // Update local state
@@ -505,7 +710,7 @@ function Workspace({ user, logout, isAuthenticated }) {
   const fetchProjects = async () => {
     try {
       const response = await axios.get(`${API_BASE_URL}/api/projects`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` }
+        
       });
       // Sort projects by created_at descending (most recent first)
       const sortedProjects = (response.data.projects || []).sort((a, b) => {
@@ -745,7 +950,7 @@ function Workspace({ user, logout, isAuthenticated }) {
         try {
           // First, check if the project exists
           const response = await axios.get(`${API_BASE_URL}/api/projects/${urlProjectId}`, {
-            headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` }
+            
           });
 
           // Project exists, load it
@@ -761,7 +966,7 @@ function Workspace({ user, logout, isAuthenticated }) {
             const startResp = await axios.post(
               `${API_BASE_URL}/api/projects/${urlProjectId}/start`,
               {},
-              { headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` } }
+              {  }
             );
             if (startResp.data.started && startResp.data.preview_url) {
               console.log('🚀 Container starting for project:', urlProjectId);
@@ -881,7 +1086,7 @@ function Workspace({ user, logout, isAuthenticated }) {
       const startResp = await axios.post(
         `${API_BASE_URL}/api/projects/${newProjectId}/start`,
         {},
-        { headers: { Authorization: `Bearer ${localStorage.getItem('vibecoding_token')}` } }
+        {  }
       );
       if (startResp.data.started && startResp.data.preview_url) {
         console.log('🚀 Container starting for switched project:', newProjectId);
@@ -1267,6 +1472,8 @@ function Workspace({ user, logout, isAuthenticated }) {
 
     // Protection against double submissions
     if (loading) return;
+    
+    // ✅ Set loading immediately for instant feedback
     setLoading(true);
     stopWorkspacePolling(); // stop any previous live polling
 
@@ -1335,6 +1542,18 @@ function Workspace({ user, logout, isAuthenticated }) {
         setIsAutonomousPolling(true);
         // CRITICAL: Keep loading true - polling will set it to false when done
         // Don't call setLoading(false) here!
+        
+        // ✅ Add safety timeout to prevent infinite loading (90 seconds)
+        // setInterval(() => {
+        //   setLoading(prev => {
+        //     if (prev) {
+        //       console.log('⏱️ Safety timeout - forcing loader off after 90 seconds');
+        //       setIsAutonomousPolling(false);
+        //       // return false;
+        //     }
+        //     return prev;
+        //   });
+        // }, 9999);
       } else {
         // In discuss mode, stop loader immediately
         console.log('💬 Discuss mode - stopping loader');
@@ -1495,21 +1714,121 @@ function Workspace({ user, logout, isAuthenticated }) {
       }
     } catch (error) {
       console.error('Error:', error);
-      const errorMessage = error.response?.data?.detail || error.message || 'Sorry, there was an error. Please try again.';
-      setErrorHeader(errorMessage);
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: `I encountered an error while generating or deploying the preview: ${errorMessage}`,
-        timestamp: new Date().toISOString()
-      }]);
-      // On error, stop loading and polling
+      
+      // ✅ Remove temporary status message
+      setMessages(prev => prev.filter(msg => !msg.metadata?.temporary));
+      
+      // ✅ Always reset loading state on error
       setLoading(false);
       setIsAutonomousPolling(false);
+      
+      // ✅ Handle different error types with appropriate messages
+      if (error.response?.status === 401) {
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: '🔒 Your session has expired. Please log in again to continue.',
+          timestamp: new Date().toISOString(),
+          metadata: { type: 'error', auth_required: true }
+        }]);
+      } else {
+        const errorMessage = error.response?.data?.detail || error.message || 'Sorry, there was an error. Please try again.';
+        setErrorHeader(errorMessage);
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: `❌ I encountered an error: ${errorMessage}`,
+          timestamp: new Date().toISOString(),
+          metadata: { type: 'error' }
+        }]);
+      }
     }
     // NOTE: No finally block! We want polling to control the loader state
   };
 
-  const handleDeploy = async () => {
+  /**
+   * handleRestore — reverts the project files to the git state that existed
+   * BEFORE the user message at `messageIndex` was sent, then puts the prompt
+   * back into the chat input so the user can re-send or tweak it.
+   *
+   * Strategy:
+   *   1. Find the assistant message BEFORE the target user message that carries a
+   *      versionId/version_id (a git commit hash).  That commit is the state we
+   *      want to restore to.
+   *   2. If no prior commit exists (first message) we call the backend endpoint
+   *      that resets to the very first commit on the branch.
+   *   3. Show the amber "Restoring…" loader in both chat and preview.
+   *   4. Put the original prompt back in the input box.
+   */
+  const handleRestore = async (promptText, messageIndex) => {
+    if (!currentProjectId) return;
+
+    // Walk backwards through messages to find the most recent assistant message
+    // with a versionId that comes BEFORE this user message.
+    let targetCommitHash = null;
+    const allMsgs = messages; // raw messages array (not processedMessages)
+    for (let i = messageIndex - 1; i >= 0; i--) {
+      const m = allMsgs[i];
+      const vId = m?.versionId || m?.version_id;
+      if (m?.role === 'assistant' && vId) {
+        targetCommitHash = vId;
+        break;
+      }
+    }
+
+    // Start the amber restoring state
+    setIsRestoring(true);
+    setLoading(true);
+    stopWorkspacePolling();
+
+    // Put the original prompt back in the input so user can re-send
+    setInput(promptText);
+
+    try {
+      if (targetCommitHash) {
+        // Restore to the specific commit that preceded this prompt
+        console.log(`🔄 Restoring to commit: ${targetCommitHash}`);
+        await loadCommitCheckpoint(targetCommitHash);
+      } else {
+        // No prior commit — restore to HEAD of first commit (initial state)
+        console.log('🔄 Restoring to initial project state (first commit)');
+        const commitsResp = await axios.get(
+          `${API_BASE_URL}/api/projects/${currentProjectId}/branches/${currentBranch}/commits`
+        );
+        const commits = commitsResp.data.commits || [];
+        if (commits.length > 0) {
+          // The oldest commit is the last in the array (most recent first ordering)
+          const firstCommit = commits[commits.length - 1];
+          await loadCommitCheckpoint(firstCommit.hash);
+        }
+      }
+
+      // Add a system message to chat confirming the restore
+      setMessages(prev => {
+        // Slice messages up to (but not including) the target user message and everything after
+        const slicedMsgs = prev.slice(0, messageIndex);
+        return [
+          ...slicedMsgs,
+          {
+            role: 'assistant',
+            content: `↩️ **Restored!** Code has been reverted to the state before this prompt. Your original message has been placed back in the input — feel free to edit and re-send.`,
+            timestamp: new Date().toISOString(),
+            metadata: { type: 'restore_confirmation' }
+          }
+        ];
+      });
+
+    } catch (err) {
+      console.error('Restore failed:', err);
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: '❌ Restore failed. Please try again or use the Version History panel.',
+        timestamp: new Date().toISOString(),
+        metadata: { type: 'error' }
+      }]);
+    } finally {
+      setIsRestoring(false);
+      setLoading(false);
+    }
+
     if (!currentProjectId || loading || isDeploying) return;
 
     setIsDeploying(true);
@@ -1840,8 +2159,6 @@ Please suggest improvements or modifications for this element.`;
           role: 'user',
           content: editMessage.content,
           timestamp: editMessage.timestamp
-        }, {
-          headers: { Authorization: `Bearer ${token}` }
         });
       }
     } catch (error) {
@@ -2231,7 +2548,6 @@ Please suggest improvements or modifications for this element.`;
         onNewChat={handleNewChat}
         onCreateProject={handleCreateProject}
         onGitClick={() => setShowGitPanel(true)}
-        onDeploy={handleDeploy}
         isDeploying={isDeploying}
         deployStatus={deployStatus}
         previewCode={previewCode}
@@ -2503,17 +2819,19 @@ Please suggest improvements or modifications for this element.`;
                       }}
                     />
 
-                    {/* Container / Checkpoint loader overlay */}
-                    {(isCheckpointLoading || (isContainerLoading && previewUrl && (verificationStatus !== 'completed' && verificationStatus !== 'failed'))) && (
+                    {/* Container / Checkpoint / Restoring loader overlay */}
+                    {(isRestoring || isCheckpointLoading || (isContainerLoading && previewUrl && (verificationStatus !== 'completed' && verificationStatus !== 'failed'))) && (
                       <div className={`absolute inset-0 z-20 flex flex-col items-center justify-center backdrop-blur-sm ${darkMode ? 'bg-[#0A0A0F]/60' : 'bg-white/60'
                         }`}>
                         {/* Animated rings */}
                         <div className="relative flex items-center justify-center mb-8">
-                          <div className="absolute w-24 h-24 rounded-full border-2 border-purple-500/20 animate-ping" style={{ animationDuration: '2s' }} />
-                          <div className="absolute w-20 h-20 rounded-full border border-purple-400/30 animate-ping" style={{ animationDuration: '1.5s', animationDelay: '0.3s' }} />
-                          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-600 to-pink-600 flex items-center justify-center shadow-lg shadow-purple-500/30 animate-pulse">
+                          <div className={`absolute w-24 h-24 rounded-full border-2 animate-ping ${isRestoring ? 'border-amber-500/20' : 'border-purple-500/20'}`} style={{ animationDuration: '2s' }} />
+                          <div className={`absolute w-20 h-20 rounded-full border animate-ping ${isRestoring ? 'border-amber-400/30' : 'border-purple-400/30'}`} style={{ animationDuration: '1.5s', animationDelay: '0.3s' }} />
+                          <div className={`w-16 h-16 rounded-2xl flex items-center justify-center shadow-lg animate-pulse ${isRestoring ? 'bg-gradient-to-br from-amber-500 to-orange-500 shadow-amber-500/30' : 'bg-gradient-to-br from-purple-600 to-pink-600 shadow-purple-500/30'}`}>
                             <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              {isCheckpointLoading ? (
+                              {isRestoring ? (
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                              ) : isCheckpointLoading ? (
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                               ) : (
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 12h14M12 5l7 7-7 7" />
@@ -2525,12 +2843,16 @@ Please suggest improvements or modifications for this element.`;
                         {/* Spinning arc */}
                         <div className="relative w-12 h-12 mb-6">
                           <svg className="w-12 h-12 animate-spin" viewBox="0 0 48 48" fill="none">
-                            <circle cx="24" cy="24" r="20" stroke="rgba(168,85,247,0.15)" strokeWidth="3" />
-                            <path d="M24 4 A20 20 0 0 1 44 24" stroke="url(#gradLoader)" strokeWidth="3" strokeLinecap="round" />
+                            <circle cx="24" cy="24" r="20" stroke={isRestoring ? 'rgba(245,158,11,0.15)' : 'rgba(168,85,247,0.15)'} strokeWidth="3" />
+                            <path d="M24 4 A20 20 0 0 1 44 24" stroke={`url(#${isRestoring ? 'gradLoaderAmber' : 'gradLoader'})`} strokeWidth="3" strokeLinecap="round" />
                             <defs>
                               <linearGradient id="gradLoader" x1="0%" y1="0%" x2="100%" y2="0%">
                                 <stop offset="0%" stopColor="#a855f7" />
                                 <stop offset="100%" stopColor="#ec4899" />
+                              </linearGradient>
+                              <linearGradient id="gradLoaderAmber" x1="0%" y1="0%" x2="100%" y2="0%">
+                                <stop offset="0%" stopColor="#f59e0b" />
+                                <stop offset="100%" stopColor="#f97316" />
                               </linearGradient>
                             </defs>
                           </svg>
@@ -2538,10 +2860,10 @@ Please suggest improvements or modifications for this element.`;
 
                         {/* Text */}
                         <h3 className={`text-lg font-semibold mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                          {verificationStatus === 'checking' ? 'Verifying deployment' : isCheckpointLoading ? 'Restoring session snapshot' : 'Activating live instance'}
+                          {isRestoring ? 'Restoring...' : verificationStatus === 'checking' ? 'Verifying deployment' : isCheckpointLoading ? 'Restoring session snapshot' : 'Activating live instance'}
                         </h3>
                         <p className={`text-xs ${darkMode ? 'text-[#858585]' : 'text-gray-400'}`}>
-                          {verificationStatus === 'checking' ? 'Checking for errors & matching expectations...' : isCheckpointLoading ? 'Rebuilding environment...' : 'Preparing business preview...'}
+                          {isRestoring ? 'Reverting files to previous state...' : verificationStatus === 'checking' ? 'Checking for errors & matching expectations...' : isCheckpointLoading ? 'Rebuilding environment...' : 'Preparing business preview...'}
                         </p>
 
                         {/* Animated dots progress */}
@@ -2549,7 +2871,7 @@ Please suggest improvements or modifications for this element.`;
                           {[0, 1, 2, 3, 4].map(i => (
                             <div
                               key={i}
-                              className="w-1.5 h-1.5 rounded-full bg-purple-500"
+                              className={`w-1.5 h-1.5 rounded-full ${isRestoring ? 'bg-amber-500' : 'bg-purple-500'}`}
                               style={{
                                 animation: 'containerDotBounce 1.2s ease-in-out infinite',
                                 animationDelay: `${i * 0.15}s`
@@ -2779,7 +3101,7 @@ Please suggest improvements or modifications for this element.`;
 
         {/* Right Panel - Chat */}
         <ChatPanel
-          messages={messages}
+          messages={processedMessages}
           loading={loading}
           input={input}
           setInput={setInput}
@@ -2820,6 +3142,9 @@ Please suggest improvements or modifications for this element.`;
           onExecuteAllTasks={handleExecuteAllTasks}
           onEditTask={handleEditTask}
           executingTaskId={executingTaskId}
+          wsConnected={wsConnected}
+          onRestore={handleRestore}
+          isRestoring={isRestoring}
         />
       </div>
 

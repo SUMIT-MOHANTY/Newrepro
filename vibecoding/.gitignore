@@ -3,6 +3,7 @@ backend/venv/
 backend/.env
 backend/uploads/
 backend/*.db
+backend/.jwt_secret
 __pycache__/
 *.pyc
 

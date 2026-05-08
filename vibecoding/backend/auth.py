@@ -16,7 +16,38 @@ from fastapi import HTTPException, Depends, Header
 from pydantic import BaseModel, EmailStr
 
 # ─── Configuration ──────────────────────────────────────────────────────────────
-JWT_SECRET = os.getenv("JWT_SECRET", secrets.token_hex(32))
+# Persistent JWT secret - stored in a file to survive server restarts
+JWT_SECRET_FILE = os.path.join(os.path.dirname(__file__), ".jwt_secret")
+
+def _get_or_create_jwt_secret():
+    """Get JWT secret from file or create a new one if it doesn't exist."""
+    # First check environment variable
+    env_secret = os.getenv("JWT_SECRET")
+    if env_secret:
+        return env_secret
+    
+    # Try to read from file
+    try:
+        if os.path.exists(JWT_SECRET_FILE):
+            with open(JWT_SECRET_FILE, 'r') as f:
+                secret = f.read().strip()
+                if secret:
+                    return secret
+    except Exception as e:
+        print(f"⚠️ Failed to read JWT secret from file: {e}")
+    
+    # Generate new secret and save it
+    new_secret = secrets.token_hex(32)
+    try:
+        with open(JWT_SECRET_FILE, 'w') as f:
+            f.write(new_secret)
+        print(f"✅ Generated new JWT secret and saved to {JWT_SECRET_FILE}")
+    except Exception as e:
+        print(f"⚠️ Failed to save JWT secret to file: {e}")
+    
+    return new_secret
+
+JWT_SECRET = _get_or_create_jwt_secret()
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
 DB_PATH = os.path.join(os.path.dirname(__file__), "vibecoding_users.db")

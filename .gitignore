@@ -23,6 +23,8 @@ snyk.exe
 frontend/node_modules/
 frontend/.env
 frontend/dist/
+frontend/snyk
+vibecoding/frontend/snyk
 
 # IDE
 .idea/

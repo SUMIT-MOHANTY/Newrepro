@@ -286,6 +286,66 @@ async def fetch_page_content(url: str, max_length: int = 8000) -> str:
 
 
 # ──────────────────────────────────────────────
+# Container Tools
+# ──────────────────────────────────────────────
+
+async def inspect_container_structure(project_id: str) -> str:
+    """Inspect the file structure in the container workspace."""
+    print(f"📁 Inspecting container structure for project {project_id}")
+    try:
+        from project_manager import project_manager
+        structure = project_manager.get_container_workspace_structure(project_id)
+        
+        if structure:
+            print(f"✅ Retrieved container structure")
+            return json.dumps({
+                "status": "success",
+                "project_id": project_id,
+                "structure": structure
+            })
+        else:
+            return json.dumps({
+                "status": "error",
+                "project_id": project_id,
+                "message": "Container not found or not running. The container may not have been created yet."
+            })
+    except Exception as e:
+        print(f"❌ Error inspecting container: {e}")
+        return json.dumps({
+            "status": "error",
+            "project_id": project_id,
+            "message": f"Failed to inspect container: {str(e)}"
+        })
+
+
+async def run_container_command(project_id: str, command: str) -> str:
+    """Run a shell command in the container workspace."""
+    print(f"🔧 Running command in container: {command}")
+    try:
+        from project_manager import project_manager
+        result = project_manager.run_command_in_container(project_id, command)
+        
+        print(f"✅ Command completed with exit code {result.get('exit_code', 'unknown')}")
+        return json.dumps({
+            "status": "success" if result.get("success") else "error",
+            "project_id": project_id,
+            "command": command,
+            "exit_code": result.get("exit_code"),
+            "stdout": result.get("stdout", ""),
+            "stderr": result.get("stderr", ""),
+            "error": result.get("error")
+        })
+    except Exception as e:
+        print(f"❌ Error running command: {e}")
+        return json.dumps({
+            "status": "error",
+            "project_id": project_id,
+            "command": command,
+            "message": f"Failed to run command: {str(e)}"
+        })
+
+
+# ──────────────────────────────────────────────
 # Tool Dispatcher
 # ──────────────────────────────────────────────
 

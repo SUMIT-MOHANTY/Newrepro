@@ -8,14 +8,16 @@ python-jose[cryptography]
 python-multipart
 # docling[vlm]
 httpx
-numpy>=2.0.0
+numpy
 argon2-cffi
-Pillow==10.4.0
+Pillow
 lightrag-hku
-langgraph>=0.6.11,<0.7
-tree-sitter>=0.23.0
+langgraph
+tree-sitter
 tree-sitter-python
 tree-sitter-javascript
 tree-sitter-typescript
 gitpython
 networkx
+msal
+docling

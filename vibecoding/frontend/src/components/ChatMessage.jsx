@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { User, Sparkles, History, CheckCircle2, Copy, RefreshCw, FileText, FileCode, Search, Globe, ChevronDown, ChevronRight } from 'lucide-react';
+import { User, Sparkles, History, CheckCircle2, Copy, RefreshCw, Search, Globe, ChevronDown, ChevronRight, RotateCcw } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Button } from './ui/button';
@@ -28,57 +28,6 @@ const extractFunctionalSummary = (content) => {
   summary = summary.replace(/^(Done|Success|Updated|Changes applied|Implemented|Successfully implemented)[!.]*\s*(Your request has been incorporated|The changes are complete|your requested changes with a focus on functional stability)[!.]*/i, '');
 
   return summary.trim();
-};
-
-// Extract file structure from code — deduped and cleaned
-const extractFileStructure = (code) => {
-  if (!code) return [];
-
-  const isPatchResponse = /\/\/\s*PATCH:\s*/.test(code);
-
-  // For patch responses, extract patched file names from PATCH headers
-  if (isPatchResponse) {
-    const patchFiles = new Map();
-    const patchRegex = /\/\/\s*PATCH:\s*([^\n<]+)/g;
-    let match;
-    while ((match = patchRegex.exec(code)) !== null) {
-      const raw = match[1].trim();
-      const cleaned = raw.replace(/\s*\(Updated\)\s*$/i, '').trim();
-      if (cleaned && !patchFiles.has(cleaned)) {
-        const ext = cleaned.split('.').pop().toLowerCase();
-        patchFiles.set(cleaned, {
-          name: cleaned,
-          type: ext === 'html' ? 'html' : (ext === 'js' || ext === 'jsx') ? 'js' : 'text'
-        });
-      }
-    }
-    if (patchFiles.size > 0) return [...patchFiles.values()];
-  }
-
-  // For FILE-based responses, extract and deduplicate
-  const fileMap = new Map();
-  const fileMarkerRegex = /\/\/\s*FILE:\s*([^\n]+)|#\s*FILE:\s*([^\n]+)|<!--\s*FILE:\s*([^\n]+)\s*-->/g;
-  let match;
-
-  while ((match = fileMarkerRegex.exec(code)) !== null) {
-    const raw = (match[1] || match[2] || match[3]).trim();
-    const cleaned = raw.replace(/\s*\(Updated\)\s*$/i, '').trim();
-    if (!cleaned || cleaned === 'metadata.json') continue;
-    const extension = cleaned.split('.').pop().toLowerCase();
-    fileMap.set(cleaned, {
-      name: cleaned,
-      type: extension === 'html' ? 'html' : (extension === 'js' || extension === 'jsx') ? 'js' : 'text'
-    });
-  }
-
-  if (fileMap.size > 0) return [...fileMap.values()];
-
-  // Fallback to old logic if no markers found (legacy support)
-  if (code.includes('<!DOCTYPE html>') || code.includes('<html')) {
-    return [{ name: 'index.html', type: 'html' }];
-  }
-
-  return [];
 };
 
 // Tool Calls Display Component
@@ -238,7 +187,9 @@ const ChatMessage = ({
   onExecuteTask,
   onExecuteAllTasks,
   onEditTask,
-  executingTaskId
+  executingTaskId,
+  onRestore,
+  messageIndex,
 }) => {
   // Debug: Log message to see what we're receiving
   if (!message.role || message.role === 'assistant') {
@@ -421,23 +372,32 @@ const ChatMessage = ({
                 ))}
               </div>
             )}
-            {/* Tool Calls Display */}
-            {!isUser && message.toolCalls && message.toolCalls.length > 0 && (
-              <ToolCallsDisplay toolCalls={message.toolCalls} darkMode={darkMode} />
-            )}
             
-            {/* Inline Thinking Block - Shows accumulated thinking logs */}
+            {/* Inline Thinking Block - Shows accumulated thinking logs BEFORE main content.
+                Works for both:
+                  - Live WS messages (thinkingLogs array built in memory)
+                  - DB-loaded messages (grouped by _group_log_messages; thinkingLogs comes from backend)
+                  - Legacy single log messages (fall back to content as the sole log entry) */}
             {!isUser && message.thinkingLogs && message.thinkingLogs.length > 0 && (
               <div className="mb-3">
                 <ThinkingBlock
                   logs={message.thinkingLogs}
                   status={message.isThinking ? 'thinking' : 'success'}
-                  title={message.isThinking ? 'Building you app...' : 'Background execution completed'}
+                  title={message.isThinking ? 'Thinking...' : 'Thinking completed'}
                   darkMode={darkMode}
                   autoScroll={message.isThinking}
                 />
               </div>
             )}
+            
+            {/* Tool Calls Display */}
+            {!isUser && message.toolCalls && message.toolCalls.length > 0 && (
+              <ToolCallsDisplay toolCalls={message.toolCalls} darkMode={darkMode} />
+            )}
+            
+            {/* Skip rendering main content for background logs — shown in ThinkingBlock above */}
+            {message.metadata?.is_background_log && message.thinkingLogs && message.thinkingLogs.length > 0 ? null : (
+              <>
             
             {/* Task Breakdown Display */}
             {!isUser && message.metadata?.task_plan && (
@@ -607,67 +567,28 @@ const ChatMessage = ({
           )}
           {message.code && (
               <>
-                {/* File Structure Display */}
-                {(() => {
-                  const fileStructure = extractFileStructure(message.code);
-                  if (fileStructure.length === 0) return null;
-                  return (
-                    <div className={`mt-3 ${message.role === 'user' ? '' : ''}`}>
-                      {showSummaryBox && (
-                        <div className={`mt-3 overflow-hidden rounded-2xl border transition-all duration-500 group/insights ${darkMode
-                          ? 'bg-gradient-to-br from-purple-500/10 via-purple-500/5 to-transparent border-purple-500/20 shadow-[0_4px_20px_rgba(168,85,247,0.1)]'
-                          : 'bg-gradient-to-br from-blue-50/80 via-white to-white border-blue-100 shadow-[0_4px_15px_rgba(59,130,246,0.05)]'
-                          }`}>
-                          <div className="p-4 px-5">
-                            {isSummarizing ? (
-                              <div className="space-y-2">
-                                <div className={`h-3 w-3/4 rounded animate-pulse ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`} />
-                                <div className={`h-3 w-full rounded animate-pulse ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`} />
-                                <div className={`h-3 w-1/2 rounded animate-pulse ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`} />
-                              </div>
-                            ) : (
-                              <p className={`text-sm leading-relaxed font-medium transition-colors ${darkMode ? 'text-gray-300 group-hover/insights:text-white' : 'text-gray-700 group-hover/insights:text-gray-900'
-                                }`}>
-                                {aiSummary || functionalSummary}
-                              </p>
-                            )}
-                          </div>
+                {/* Summary insight box - shown when extra context exists beyond main content */}
+                {showSummaryBox && (
+                  <div className={`mt-3 overflow-hidden rounded-2xl border transition-all duration-500 group/insights ${darkMode
+                    ? 'bg-gradient-to-br from-purple-500/10 via-purple-500/5 to-transparent border-purple-500/20 shadow-[0_4px_20px_rgba(168,85,247,0.1)]'
+                    : 'bg-gradient-to-br from-blue-50/80 via-white to-white border-blue-100 shadow-[0_4px_15px_rgba(59,130,246,0.05)]'
+                    }`}>
+                    <div className="p-4 px-5">
+                      {isSummarizing ? (
+                        <div className="space-y-2">
+                          <div className={`h-3 w-3/4 rounded animate-pulse ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`} />
+                          <div className={`h-3 w-full rounded animate-pulse ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`} />
+                          <div className={`h-3 w-1/2 rounded animate-pulse ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`} />
                         </div>
+                      ) : (
+                        <p className={`text-sm leading-relaxed font-medium transition-colors ${darkMode ? 'text-gray-300 group-hover/insights:text-white' : 'text-gray-700 group-hover/insights:text-gray-900'
+                          }`}>
+                          {aiSummary || functionalSummary}
+                        </p>
                       )}
-
-                      <details className="group">
-                        <summary className={`flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest cursor-pointer select-none mb-2 ${message.role === 'user' ? 'text-white/60' : 'text-gray-500'
-                          }`}>
-                          <ChevronRight className="w-3 h-3 transition-transform group-open:rotate-90" />
-                          System Trace ({fileStructure.length} components updated)
-                        </summary>
-                        <div className={`flex flex-wrap gap-2 ${message.role === 'user'
-                          ? 'text-white/90'
-                          : darkMode ? 'text-[#cccccc]' : 'text-gray-700'
-                          }`}>
-                          {fileStructure.map((file, idx) => (
-                            <div
-                              key={idx}
-                              className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg font-medium transition-all ${message.role === 'user'
-                                ? 'bg-white/10 text-white'
-                                : darkMode
-                                  ? 'bg-[#0A0A0F] text-gray-300 border border-white/5'
-                                  : 'bg-gray-50 text-gray-700 border border-gray-200 shadow-sm'
-                                }`}
-                            >
-                              {file.type === 'html' || file.type === 'js' ? (
-                                <FileCode className={`w-3.5 h-3.5 flex-shrink-0 ${darkMode ? 'text-purple-400' : 'text-purple-600'}`} />
-                              ) : (
-                                <FileText className={`w-3.5 h-3.5 flex-shrink-0 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`} />
-                              )}
-                              <span className="break-all">Updated <span className="font-bold">{file.name}</span></span>
-                            </div>
-                          ))}
-                        </div>
-                      </details>
                     </div>
-                  );
-                })()}
+                  </div>
+                )}
 
                 {/* Code Generated Badge */}
                 <div className={`mt-3 pt-3 border-t flex items-center justify-end ${message.role === 'user'
@@ -691,9 +612,30 @@ const ChatMessage = ({
                 </div>
               </>
             )}
+              </>
+            )}
           </div>
         </div>
       </div>
+
+      {/* Restore link — shown below user messages */}
+      {isUser && onRestore && (
+        <div className="flex justify-end mt-1 mr-11">
+          <button
+            onClick={() => onRestore(message.content, messageIndex)}
+            className={cn(
+              'text-[10px] font-medium flex items-center gap-1 px-1.5 py-0.5 rounded transition-all',
+              'opacity-40 hover:opacity-100 cursor-pointer',
+              darkMode
+                ? 'text-amber-400 hover:bg-amber-500/10'
+                : 'text-amber-600 hover:bg-amber-50'
+            )}
+          >
+            <RotateCcw className="w-2.5 h-2.5" />
+            Restore
+          </button>
+        </div>
+      )}
 
       {/* Suggestions - Only show for assistant messages */}
       {!isUser && message.suggestions && message.suggestions.length > 0 && (
