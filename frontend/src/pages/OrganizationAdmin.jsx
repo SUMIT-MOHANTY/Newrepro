@@ -50,6 +50,25 @@ export default function OrganizationAdmin({ user }) {
     const [success, setSuccess] = useState('');
     const [updatedAt, setUpdatedAt] = useState(null);
 
+    /**
+     * Converts a UTC datetime string from the backend to the user's
+     * local timezone for display. Handles both timezone-aware strings
+     * (e.g. "2024-01-15T10:30:00+00:00") and naive strings that are
+     * actually UTC (e.g. "2024-01-15T10:30:00") by appending 'Z'.
+     */
+    const formatUTCToLocal = (utcDateString) => {
+        if (!utcDateString) return '—';
+        let dateStr = String(utcDateString);
+        // If no timezone indicator is present, assume UTC by appending 'Z'
+        if (!dateStr.endsWith('Z') && !/[+-]\d{2}:\d{2}$/.test(dateStr)) {
+            dateStr = dateStr + 'Z';
+        }
+        return new Date(dateStr).toLocaleString(undefined, {
+            dateStyle: 'medium',
+            timeStyle: 'short',
+        });
+    };
+
     // RBAC roles + invites
     const [pages, setPages] = useState([]);
     const [roles, setRoles] = useState([]);
@@ -326,7 +345,7 @@ export default function OrganizationAdmin({ user }) {
                         </div>
                         {activeTab === 'sso' && updatedAt && (
                             <p className="text-xs text-app-text-light">
-                                Last updated: {new Date(updatedAt).toLocaleString('en-IN')}
+                                Last updated: {formatUTCToLocal(updatedAt)}
                             </p>
                         )}
                         <div className="flex items-center gap-2">
@@ -783,7 +802,7 @@ export default function OrganizationAdmin({ user }) {
                                                                     {inv.email || 'Open invite'} · {inv.role_name}
                                                                 </p>
                                                                 <p className="text-xs text-app-text-muted truncate">
-                                                                    Expires: {inv.expires_at ? new Date(inv.expires_at).toLocaleString('en-IN') : '—'}
+                                                                    Expires: {formatUTCToLocal(inv.expires_at)}
                                                                 </p>
                                                             </div>
                                                             <span className={`text-[11px] font-extrabold px-2 py-1 rounded-full border ${inv.accepted_at
@@ -886,7 +905,7 @@ export default function OrganizationAdmin({ user }) {
                                                             </div>
                                                         </td>
                                                         <td className="px-4 py-4 text-app-text-muted text-xs">
-                                                            {u.last_login ? new Date(u.last_login).toLocaleString('en-IN') : 'Never'}
+                                                            {u.last_login ? formatUTCToLocal(u.last_login) : 'Never'}
                                                         </td>
                                                         <td className="px-4 py-4 text-right">
                                                             <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-emerald-500/10 text-emerald-500 text-[10px] font-bold uppercase border border-emerald-500/20">

@@ -626,7 +626,7 @@ async def login_for_access_token(
     access_token = auth.create_access_token(
         data={"sub": user.email}, expires_delta=access_token_expires
     )
-    user.last_login = datetime.utcnow()
+    user.last_login = datetime.now(timezone.utc)
     db.add(user)
     db.commit()
     return {"access_token": access_token, "token_type": "bearer"}
