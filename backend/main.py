@@ -301,11 +301,11 @@ class _RequirementPageParser(HTMLParser):
         if self.current_tag:
             self.current_text_parts.append(clean)
 
-    def to_requirement_markdown(self, source_url: str, max_lines: int = 120) -> Dict[str, Any]:
+    def to_requirement_markdown(self, source_url: str, max_lines: int = None) -> Dict[str, Any]:
         page_title = re.sub(r"\s+", " ", " ".join(self.title_parts).strip())
-        heading_lines = [f"## {h}" for h in self.headings[:25]]
-        paragraph_lines = self.paragraphs[:70]
-        bullet_lines = [f"- {item}" for item in self.list_items[:70]]
+        heading_lines = [f"## {h}" for h in self.headings]
+        paragraph_lines = self.paragraphs
+        bullet_lines = [f"- {item}" for item in self.list_items]
 
         lines: List[str] = []
         if page_title:
@@ -330,7 +330,8 @@ class _RequirementPageParser(HTMLParser):
                 lines.append("")
                 lines.extend(paragraph_lines)
 
-        if len(lines) > max_lines:
+        # Only truncate if max_lines is explicitly set
+        if max_lines is not None and len(lines) > max_lines:
             lines = lines[:max_lines]
             lines.append("")
             lines.append("... (truncated)")

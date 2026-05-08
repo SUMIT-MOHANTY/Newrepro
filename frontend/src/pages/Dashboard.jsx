@@ -2733,7 +2733,7 @@ const Dashboard = ({
                                                     value={urlRequirements}
                                                     onChange={(e) => setUrlRequirements(e.target.value)}
                                                     placeholder="Click 'Fetch URL' to generate requirement text from the webpage."
-                                                    className="w-full h-64 p-4 border border-app-border rounded-xl focus:ring-2 focus:ring-app-primary focus:border-app-primary text-sm bg-app-bg-page/50 resize-none font-mono"
+                                                    className="w-full min-h-64 max-h-[600px] p-4 border border-app-border rounded-xl focus:ring-2 focus:ring-app-primary focus:border-app-primary text-sm bg-app-bg-page/50 resize-y font-mono overflow-y-auto"
                                                     disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
                                                 />
                                                 {urlFetchSummary && (
