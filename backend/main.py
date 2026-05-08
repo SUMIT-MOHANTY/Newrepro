@@ -636,33 +636,54 @@ async def forgot_password(
     payload: schemas.PasswordResetRequest,
     db: Session = Depends(get_db)
 ):
-    user = db.query(models.User).filter(func.lower(models.User.email) == payload.email.lower()).first()
-    if user:
-        token = secrets.token_urlsafe(32)
-        token_hash = _hash_invite_token(token)
-        expires_at = datetime.utcnow() + timedelta(hours=1)
-        
-        # Deactivate any previous unused reset tokens for this user
-        db.query(models.PasswordReset).filter(
-            models.PasswordReset.user_id == user.id,
-            models.PasswordReset.used_at == None
-        ).update({"expires_at": datetime.utcnow()}, synchronize_session=False)
-        
-        reset = models.PasswordReset(
-            user_id=user.id,
-            token_hash=token_hash,
-            expires_at=expires_at
+    normalized_email = payload.email.strip().lower()
+
+    user = db.query(models.User).filter(func.lower(models.User.email) == normalized_email).first()
+
+    if not user:
+        return {"message": "This email is not registered with us"}
+    
+    token = secrets.token_urlsafe(32)
+    token_hash = _hash_invite_token(token)
+    expires_at = datetime.utcnow() + timedelta(hours=1)
+
+    # Deactivate previous unused tokens
+    db.query(models.PasswordReset).filter(
+        models.PasswordReset.user_id == user.id,
+        models.PasswordReset.used_at == None
+    ).update(
+        {"expires_at": datetime.utcnow()},
+        synchronize_session=False
+    )
+
+    reset = models.PasswordReset(
+        user_id = user.id,
+        token_hash = token_hash,
+        expires_at = expires_at
+    )
+
+    db.add(reset)
+    db.commit()
+
+    reset_url = (
+        f"{settings.frontend_url.rstrip('/')}"
+        f"/reset-password?token={token}"
+    )
+
+    try:
+        email_service.send_password_reset_email(
+            user.email,
+            reset_url
         )
-        db.add(reset)
-        db.commit()
-        
-        reset_url = f"{settings.frontend_url.rstrip('/')}/reset-password?token={token}"
-        try:
-            email_service.send_password_reset_email(user.email, reset_url)
-        except Exception:
-            logger.exception("Failed to send password reset email to %s", user.email)
-            
-    return {"message": "If your email is registered, you will receive a reset link shortly."}
+    except Exception:
+        logger.exception(
+            "Failed to send password reset email to %s",
+            user.email
+        )
+    
+    return {
+        "message": "Password reset email sent successfully."
+    }
 
 @app.post("/auth/reset-password")
 async def reset_password(
