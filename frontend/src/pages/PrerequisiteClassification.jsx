@@ -1365,10 +1365,18 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                             {processMode === 'vibe_coding' ? 'VibeCoding Launched' : 'Prerequisites Acknowledged'}
                         </h2>
                         <p className="text-app-text-muted text-sm mb-6 leading-relaxed max-w-md mx-auto">
-                            {processMode === 'vibe_coding' 
-                                ? `VibeCoding workspace opened with BRD for "${projectName || 'this project'}". Project creation and task execution will begin automatically.`
-                                : `${providedCount} of ${totalItems} prerequisite items have been confirmed for <strong>${projectName || 'this project'}</strong>.`
-                            }
+                            {processMode === 'vibe_coding' ? (
+                                <>
+                                    VibeCoding workspace opened with BRD for{" "}
+                                    <strong>{projectName || 'this project'}</strong>.
+                                    {" "}Project creation and task execution will begin automatically.
+                                </>
+                            ) : (
+                                <>
+                                    {providedCount} of {totalItems} prerequisite items have been confirmed for{" "}
+                                    <strong>{projectName || 'this project'}</strong>.
+                                </>
+                            )}
                         </p>
 
                         <div className="flex items-center justify-center gap-2 text-sm text-app-text-light">

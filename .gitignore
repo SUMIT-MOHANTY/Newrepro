@@ -49,3 +49,5 @@ vibecoding/backend/vibecoding_users.db
 vibecoding/frontend/vite.config.js
 backend/bootstrap_fox.md
 *.md
+response_ai.txt
+backend/add_new_col.py
