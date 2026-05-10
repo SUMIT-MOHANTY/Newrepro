@@ -69,7 +69,7 @@ export async function pollAnalysisStatus(jobId, token) {
  * 
  * @param {string} jobId - The job ID to poll
  * @param {string} token - Auth token
- * @param {function} onProgress - Callback for progress updates (progress, message)
+ * @param {function} onProgress - Callback for progress updates (progress, message, stages)
  * @param {number} pollInterval - Polling interval in milliseconds (default: 2000)
  * @param {number} maxAttempts - Maximum polling attempts (default: 300 = 10 minutes at 2s intervals)
  * @returns {Promise<object>} - The completed analysis result
@@ -89,9 +89,13 @@ export async function pollUntilComplete(
         try {
             const status = await pollAnalysisStatus(jobId, token);
 
-            // Update progress if callback provided
+            // Update progress if callback provided - now includes stages
             if (onProgress && typeof onProgress === 'function') {
-                onProgress(status.progress || 0, status.progress_message || 'Processing...');
+                onProgress(
+                    status.progress || 0, 
+                    status.progress_message || 'Processing...',
+                    status.stages || {}  // Pass stages to callback
+                );
             }
 
             // Check if completed
@@ -102,15 +106,22 @@ export async function pollUntilComplete(
                 return status.result;
             }
 
-            // Check if failed
+            // Check if failed - CRITICAL: This must stop polling
             if (status.status === 'failed') {
-                throw new Error(status.error || 'Analysis failed');
+                const errorMsg = status.error || 'Analysis failed';
+                console.error('Analysis job failed:', errorMsg);
+                throw new Error(errorMsg);
             }
 
             // Wait before next poll
             await new Promise(resolve => setTimeout(resolve, pollInterval));
 
         } catch (error) {
+            // If it's an analysis failure (not a network error), throw immediately
+            if (error.message && !error.message.includes('fetch') && !error.message.includes('network')) {
+                throw error;
+            }
+            
             // If it's a network error or temporary issue, retry
             if (attempts < maxAttempts) {
                 console.warn(`Polling attempt ${attempts} failed, retrying...`, error);
