@@ -148,26 +148,53 @@ Format as table:
 - Justify based on requirements
 - Describe component interaction model
 
-### 3. System Architecture Diagram
-Create a COMPLETE Mermaid `flowchart TB` architecture based on the ACTUAL BRD requirements.
+### 3. User Flow Diagram (Functional View for Business Users)
+Create a COMPLETE Mermaid `flowchart TB` showing the USER JOURNEY and BUSINESS PROCESSES.
 
-The diagram MUST include:
-- client layer
-- API layer
-- auth/security
-- business services
-- data stores
-- async/event systems
-- integrations
-- observability
-- infrastructure
+**CRITICAL**: This is a FUNCTIONAL diagram for business stakeholders, NOT a technical architecture diagram.
 
-Show:
-- write path
-- read path
-- async/background flow
-- auth flow
-- reporting path
+The diagram MUST show:
+- **User Roles**: Different types of users (Admin, Customer, Manager, Guest, etc.)
+- **User Actions**: What users can do (Login, Submit Form, View Dashboard, etc.)
+- **Business Processes**: Key workflows (Order Processing, Approval Flow, Notification, etc.)
+- **Decision Points**: Business rules and conditions (diamond shapes)
+- **System Responses**: What happens after user actions (Success, Error, Notification)
+- **External Touchpoints**: Third-party systems users interact with (Payment Gateway, Email Service)
+
+**Structure Guidelines**:
+```
+Start → User Entry Point → User Action → Decision? → Process → Outcome → End
+```
+
+**Example Pattern**:
+```mermaid
+flowchart TB
+    Start["User Visits Platform"]
+    Start --> Login["User Login"]
+    Login --> Dashboard["View Dashboard"]
+    Dashboard --> Action1["Create New Order"]
+    Dashboard --> Action2["View Reports"]
+    Action1 --> Validate{"Order Valid?"}
+    Validate -->|Yes| Process["Process Payment"]
+    Validate -->|No| Error["Show Error Message"]
+    Process --> Success["Order Confirmed"]
+    Success --> Notify["Send Email Notification"]
+```
+
+**DO NOT include**:
+- Technical components (databases, APIs, servers, microservices)
+- Infrastructure details (load balancers, caching layers)
+- Code-level architecture
+- Technical integration details
+
+**DO include**:
+- User personas and their journeys
+- Business process steps
+- User decisions and actions
+- System feedback to users
+- Business outcomes
+
+Focus on WHAT users do and HOW the system helps them achieve business goals.
 
 ## STRICT Mermaid Safety Rules
 1. Every subgraph must have one matching end
@@ -179,14 +206,14 @@ Show:
 7. Every edge node must exist
 8. Use architecture JSON as source-of-truth
 
-### 4. Architecture JSON
-Provide structured architecture data:
+### 4. Architecture JSON (User Flow Structure)
+Provide structured user flow data:
 {
   "nodes": [
-    {"id": "node_id", "label": "Component Name", "layer": "frontend|backend|data|service", "type": "service|database|cache|ui"}
+    {"id": "node_id", "label": "User Action or Process Step", "layer": "user|process|system|outcome", "type": "action|decision|process|notification|integration"}
   ],
   "edges": [
-    {"from": "source_id", "to": "target_id", "description": "interaction"}
+    {"from": "source_id", "to": "target_id", "description": "user flow or business rule"}
   ]
 }
 
@@ -362,7 +389,16 @@ Create a comprehensive Markdown report with these sections:
 [Synthesize from Stage 2 tech stack rationale]
 
 ## 0.3 Technical Architecture Design
-[Use Stage 2 architecture + Mermaid diagrams]
+[Use Stage 2 architecture + Mermaid user flow diagram]
+
+**IMPORTANT**: The Mermaid diagram should be a FUNCTIONAL USER FLOW diagram showing:
+- User roles and their journeys
+- Business processes and workflows
+- User actions and decisions
+- System responses and notifications
+- Business outcomes
+
+NOT a technical architecture diagram with databases, APIs, and servers.
 
 ## 0.4 Implementation Specifications
 ### 0.4.1 Core Components
@@ -541,6 +577,17 @@ async def analyze_document_chunked(
         stage1_data = _extract_json_from_response(stage1_result)
         logger.info(f"Stage 1 complete: Extracted {len(stage1_data.get('functional_requirements', []))} functional requirements")
         
+        # Save stage 1 result to job
+        if job_id:
+            try:
+                from analysis_job_manager import get_job_manager
+                job_manager = get_job_manager()
+                job = job_manager.get_job(job_id)
+                if job:
+                    job.update_stage("stage1_requirements", stage1_data)
+            except Exception as e:
+                logger.warning(f"Failed to save stage 1 result: {e}")
+        
         # ─────────────────────────────────────────────────────────────────
         # STAGE 2: Architecture Design
         # ─────────────────────────────────────────────────────────────────
@@ -561,6 +608,17 @@ async def analyze_document_chunked(
         
         stage2_data = _extract_json_from_response(stage2_result)
         logger.info(f"Stage 2 complete: Architecture pattern = {stage2_data.get('architecture_pattern', 'N/A')}")
+        
+        # Save stage 2 result to job
+        if job_id:
+            try:
+                from analysis_job_manager import get_job_manager
+                job_manager = get_job_manager()
+                job = job_manager.get_job(job_id)
+                if job:
+                    job.update_stage("stage2_architecture", stage2_data)
+            except Exception as e:
+                logger.warning(f"Failed to save stage 2 result: {e}")
         
         # ─────────────────────────────────────────────────────────────────
         # STAGE 3: Data Models & API Design
@@ -594,6 +652,17 @@ async def analyze_document_chunked(
         stage3_data = _extract_json_from_response(stage3_result)
         logger.info(f"Stage 3 complete: Designed {len(stage3_data.get('api_endpoints', []))} API endpoints")
         
+        # Save stage 3 result to job
+        if job_id:
+            try:
+                from analysis_job_manager import get_job_manager
+                job_manager = get_job_manager()
+                job = job_manager.get_job(job_id)
+                if job:
+                    job.update_stage("stage3_data_api", stage3_data)
+            except Exception as e:
+                logger.warning(f"Failed to save stage 3 result: {e}")
+        
         # ─────────────────────────────────────────────────────────────────
         # STAGE 4: Implementation Plan
         # ─────────────────────────────────────────────────────────────────
@@ -622,6 +691,17 @@ async def analyze_document_chunked(
         
         stage4_data = _extract_json_from_response(stage4_result)
         logger.info(f"Stage 4 complete: Created {len(stage4_data.get('file_creation_plan', []))} file specifications")
+        
+        # Save stage 4 result to job
+        if job_id:
+            try:
+                from analysis_job_manager import get_job_manager
+                job_manager = get_job_manager()
+                job = job_manager.get_job(job_id)
+                if job:
+                    job.update_stage("stage4_implementation", stage4_data)
+            except Exception as e:
+                logger.warning(f"Failed to save stage 4 result: {e}")
         
         # ─────────────────────────────────────────────────────────────────
         # STAGE 5: Final Synthesis
@@ -673,10 +753,23 @@ async def analyze_document_chunked(
         }
     
     except Exception as e:
-        logger.error(f"Chunked analysis failed: {str(e)}")
+        logger.error(f"Chunked analysis failed: {str(e)}", exc_info=True)
+        error_message = str(e) if str(e) else "Unknown error occurred during analysis"
+        
+        # Update job status if job_id is provided
+        if job_id:
+            try:
+                from analysis_job_manager import get_job_manager
+                job_manager = get_job_manager()
+                job = job_manager.get_job(job_id)
+                if job:
+                    job.set_failed(error_message)
+            except Exception as job_err:
+                logger.warning(f"Failed to update job failure status: {job_err}")
+        
         return {
             "status": "error",
-            "error": f"Analysis failed: {str(e)}"
+            "error": f"Analysis failed: {error_message}"
         }
 
 

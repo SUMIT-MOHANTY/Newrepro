@@ -301,6 +301,12 @@ class GovernanceResponse(Base):
 
     # Store roadmap steps data (steps, step_statuses, current_step, etc.)
     steps_data = Column(JSON, nullable=True)
+    
+    # Store claude.md files (always loaded for all agents)
+    claude_md_files = Column(JSON, nullable=True)  # Array of {name, content, uploadedAt}
+    
+    # Store skills.md files (selectively loaded based on task relevance)
+    skills_md_files = Column(JSON, nullable=True)  # Array of {name, content, uploadedAt}
 
     owner = relationship("User", back_populates="governance_responses")
 

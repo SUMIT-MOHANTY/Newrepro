@@ -17765,6 +17765,54 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         "message": f"Dynamic prompt failed ({str(prompt_err)[:60]}), using static prompt"
                     })
 
+            # ── INJECT CLAUDE.MD AND SKILLS.MD CONTEXT ────────────────────
+            # Claude.md: Always loaded for all agents (mandatory context)
+            # Skills.md: Intelligently matched based on task relevance
+            claude_and_skills_context = ""
+            try:
+                import skill_matcher_service
+                from database import SessionLocal
+                
+                _db = SessionLocal()
+                try:
+                    context_blocks = await skill_matcher_service.inject_context_for_task(
+                        task=task,
+                        project_token=project_token or "",
+                        db_session=_db
+                    )
+                    
+                    claude_context = context_blocks.get('claude_context', '')
+                    skills_context = context_blocks.get('skills_context', '')
+                    
+                    if claude_context:
+                        claude_and_skills_context += f"\n\n{claude_context}\n"
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": "📋 Loaded claude.md project context (mandatory)"
+                        })
+                    
+                    if skills_context:
+                        claude_and_skills_context += f"\n\n{skills_context}\n"
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": "🎯 Injected relevant skills.md based on task analysis"
+                        })
+                finally:
+                    _db.close()
+            except Exception as context_err:
+                logger.warning(f"Failed to inject claude.md/skills.md context: {context_err}")
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "warning",
+                    "message": f"⚠️ Could not load context files: {str(context_err)[:100]}"
+                })
+            
+            # Prepend context to dynamic system prompt
+            if claude_and_skills_context:
+                dynamic_system_prompt = f"{claude_and_skills_context}\n\n{dynamic_system_prompt}"
+
             agent["progress"] = 25
             agent["progress_message"] = "AI is generating build script..."
             agent["output_log"].append({

@@ -53,6 +53,8 @@ export const API_ENDPOINTS = {
     GOVERNANCE_REVISION_REASON: (id) => `${API_BASE_URL}/governance/${id}/revision-reason`,
     GOVERNANCE_ROADMAP_STEP: (id) => `${API_BASE_URL}/governance/${id}/roadmap-step`,
     GOVERNANCE_PREREQUISITES_COMPLETE: (id) => `${API_BASE_URL}/governance/${id}/prerequisites-complete`,
+    GOVERNANCE_CLAUDE_MD_FILES: (id) => `${API_BASE_URL}/governance/${id}/claude-md-files`,
+    GOVERNANCE_SKILLS_MD_FILES: (id) => `${API_BASE_URL}/governance/${id}/skills-md-files`,
     GOVERNANCE_QUESTION_ALL: `${API_BASE_URL}/governance/questions/all`,
     GOVERNANCE_QUESTION_CREATE: `${API_BASE_URL}/governance/questions`,
     GOVERNANCE_QUESTION_UPDATE: (id) => `${API_BASE_URL}/governance/questions/${id}`,

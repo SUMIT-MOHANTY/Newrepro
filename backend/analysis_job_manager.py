@@ -31,12 +31,20 @@ class AnalysisJob:
         self.created_at = datetime.utcnow()
         self.updated_at = datetime.utcnow()
         self.completed_at: Optional[datetime] = None
+        # Store intermediate stage results
+        self.stages: Dict[str, Any] = {}
         
     def update_progress(self, progress: int, message: str):
         """Update job progress"""
         self.progress = progress
         self.progress_message = message
         self.updated_at = datetime.utcnow()
+        
+    def update_stage(self, stage_name: str, stage_data: Dict[str, Any]):
+        """Update a specific stage result"""
+        self.stages[stage_name] = stage_data
+        self.updated_at = datetime.utcnow()
+        logger.info(f"Updated stage {stage_name} for job {self.job_id}")
         
     def set_processing(self):
         """Mark job as processing"""
@@ -68,6 +76,7 @@ class AnalysisJob:
             "progress_message": self.progress_message,
             "result": self.result,
             "error": self.error,
+            "stages": self.stages,  # Include stages in response
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,

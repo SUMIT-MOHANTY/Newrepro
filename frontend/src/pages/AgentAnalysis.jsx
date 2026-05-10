@@ -4,7 +4,7 @@ import { API_ENDPOINTS } from '../config';
 import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { FileText, Download, Server, Users, Activity, Clock, Loader2, KeyRound, Plus } from 'lucide-react';
+import { FileText, Download, Server, Users, Activity, Clock, Loader2, KeyRound, Plus, Circle, CheckCircle2 } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
 import ReactFlow, { Background, Controls } from 'reactflow';
 import 'reactflow/dist/style.css';
@@ -266,6 +266,19 @@ const sanitizeHtml = (html) => {
     });
 };
 
+// Utility to clear stale analysis flags from sessionStorage
+const clearStaleAnalysisFlags = () => {
+    const keysToRemove = [];
+    for (let i = 0; i < sessionStorage.length; i++) {
+        const key = sessionStorage.key(i);
+        if (key && (key.startsWith('analysis_started_') || key === 'shouldStartAnalysis')) {
+            keysToRemove.push(key);
+        }
+    }
+    keysToRemove.forEach(key => sessionStorage.removeItem(key));
+    console.log('Cleared stale analysis flags:', keysToRemove);
+};
+
 export default function AgentAnalysis({
     selectedProjectKey,
     projects = [],
@@ -282,6 +295,7 @@ export default function AgentAnalysis({
     const [processing, setProcessing] = useState(false);
     const [progress, setProgress] = useState(0);
     const [progressMessage, setProgressMessage] = useState('');
+    const [completedStages, setCompletedStages] = useState({});  // Track completed stages
     const [aiQuestions, setAiQuestions] = useState([]);
     const [userAnswers, setUserAnswers] = useState({});
     const [userFeedback, setUserFeedback] = useState('');
@@ -357,6 +371,7 @@ export default function AgentAnalysis({
                 ...(newResult.analysis || {}),
                 governanceContext: governanceContext || null,
                 repoContextMeta: repoContextMeta || null,
+                stages: completedStages || {},  // Include completed stages
                 projectMeta: {
                     project_name: project?.name || governanceContext?.project_name || 'Project',
                     project_token: project?.projectToken || taskKey || null,
@@ -381,7 +396,7 @@ export default function AgentAnalysis({
         } catch (e) {
             console.error('History save failed', e);
         }
-    }, [selectedProjectKey, projects, governanceContext, repoContext, persistHistoryDocument, fetchHistory]);
+    }, [selectedProjectKey, projects, governanceContext, repoContext, completedStages, persistHistoryDocument, fetchHistory]);
 
     const fetchAnalysis = useCallback(async (
         payload,
@@ -397,10 +412,14 @@ export default function AgentAnalysis({
             const data = await startAndPollAnalysis(
                 payload,
                 token,
-                (progress, message) => {
+                (progress, message, stages) => {
                     // Update progress in UI
                     setProgress(progress);
                     setProgressMessage(message);
+                    // Update completed stages
+                    if (stages && Object.keys(stages).length > 0) {
+                        setCompletedStages(stages);
+                    }
                 },
                 30000, // Poll every 30 seconds
                 120    // Max 60 minutes (120 * 30s = 3600s)
@@ -434,9 +453,16 @@ export default function AgentAnalysis({
             setProgressMessage('Analysis complete!');
             await saveToHistory(finalResult, selectedProjectKey, effectiveRepoContext);
         } catch (err) {
+            console.error('Analysis error:', err);
             setError(`Analysis Error: ${err.message}`);
             setProgress(0);
             setProgressMessage('');
+            setCompletedStages({});  // Clear stages on error
+            setProcessing(false);  // Stop showing the loader
+            setAnalysisInProgress(false);  // Clear the in-progress flag
+        } finally {
+            setProcessing(false);  // Ensure processing is stopped
+            setAnalysisInProgress(false);  // Ensure flag is cleared
         }
     }, [governanceContext, repoContext, userAnswers, userFeedback, result, selectedProjectKey, saveToHistory]);
 
@@ -529,7 +555,7 @@ export default function AgentAnalysis({
 
             if (!architecture && !analysisOptions.forceArchitectureRetry) {
                 setProgress(92);
-                setProgressMessage('Finalizing architecture diagram...');
+                setProgressMessage('Finalizing user flow diagram...');
                 await fetchAnalysisRef.current(
                     { ...payload, stream: false },
                     token,
@@ -799,48 +825,24 @@ export default function AgentAnalysis({
                 }
 
                 const storedAnalysis = parseStoredDocumentAnalysis(latestDocument);
+                
+                // Check flags first
+                const shouldStartAnalysis = sessionStorage.getItem('shouldStartAnalysis') === 'true';
+                const analysisStartedKey = `analysis_started_${latestDocument.id}`;
+                const alreadyStarted = sessionStorage.getItem(analysisStartedKey) === 'true';
 
-                // Check if analysis is pending - only trigger if user clicked "Proceed to Agent Analysis"
-                if (isPendingGovernanceAnalysis(storedAnalysis)) {
-                    const shouldStartAnalysis = sessionStorage.getItem('shouldStartAnalysis') === 'true';
-                    const analysisStartedKey = `analysis_started_${latestDocument.id}`;
-                    const alreadyStarted = sessionStorage.getItem(analysisStartedKey) === 'true';
-
-                    if (alreadyStarted) {
-                        console.log('Analysis already started for this document, showing loading state...');
-                        setLoading(false);
-                        setProcessing(true);
-                        setProgressMessage('Analysis in progress...');
-                        return;
-                    }
-
-                    if (shouldStartAnalysis && hasGovernanceAssessment) {
-                        // Mark as started to prevent re-triggering
-                        sessionStorage.setItem(analysisStartedKey, 'true');
-                        // Clear the flag so it doesn't trigger again on refresh
-                        sessionStorage.removeItem('shouldStartAnalysis');
-                        await triggerPendingAnalysis(latestDocument, storedAnalysis);
-                    } else if (!hasGovernanceAssessment) {
-                        setError('Governance assessment required before analysis.');
-                        setLoading(false);
-                    } else {
-                        // Analysis is pending but user hasn't clicked proceed yet
-                        // Show a message prompting them to complete governance first
-                        setError('Please complete the governance questionnaire and click "Proceed to Agent Analysis" to start the analysis.');
-                        setLoading(false);
-                    }
-                    return;
-                }
-
+                // Check if analysis is already completed
                 if (hasCompletedDocumentAnalysis(latestDocument)) {
                     // Load questions and answers from stored analysis
                     const questions = storedAnalysis?.questions || [];
                     const savedAnswers = storedAnalysis?.userAnswers || {};
                     const savedFeedback = storedAnalysis?.userFeedback || '';
+                    const savedStages = storedAnalysis?.stages || {};  // Load saved stages
 
                     setAiQuestions(questions);
                     setUserAnswers(savedAnswers);
                     setUserFeedback(savedFeedback);
+                    setCompletedStages(savedStages);  // Restore completed stages
 
                     setResult({
                         id: latestDocument.id,
@@ -855,6 +857,62 @@ export default function AgentAnalysis({
                     });
                     setLoading(false);
                     return;
+                }
+
+                // Check if user clicked "Proceed to Agent Analysis" OR if analysis is pending
+                const isPending = isPendingGovernanceAnalysis(storedAnalysis);
+                
+                if (shouldStartAnalysis || isPending) {
+                    // If user clicked "Proceed to Agent Analysis", start the analysis
+                    if (shouldStartAnalysis && hasGovernanceAssessment) {
+                        // Mark as started to prevent re-triggering
+                        sessionStorage.setItem(analysisStartedKey, 'true');
+                        // Clear the flag so it doesn't trigger again on refresh
+                        sessionStorage.removeItem('shouldStartAnalysis');
+                        await triggerPendingAnalysis(latestDocument, storedAnalysis);
+                        return;
+                    } else if (!hasGovernanceAssessment) {
+                        setError('Governance assessment required before analysis.');
+                        setLoading(false);
+                        return;
+                    } else if (alreadyStarted) {
+                        // Analysis was started previously
+                        // Check if it's currently processing or if it failed
+                        if (processing || analysisInProgress) {
+                            // Analysis is currently running - don't show error
+                            console.log('Analysis is currently running (processing or analysisInProgress)');
+                            setLoading(false);
+                            return;
+                        }
+                        
+                        // Check if there's an active job in the backend
+                        try {
+                            const jobIdPattern = /analysis_\d+_\d+_[a-f0-9]+/;
+                            const potentialJobId = `analysis_${token ? JSON.parse(atob(token.split('.')[1])).user_id : 'unknown'}_`;
+                            
+                            // Try to find if there's an active analysis job
+                            // We'll check if result exists OR if we should just not show error yet
+                            const hasResult = result && result.analysis;
+                            
+                            if (!hasResult) {
+                                // Don't immediately show error - analysis might be starting
+                                // Only show error if we're sure it's not running
+                                console.log('Analysis was marked as started, but no result yet - might still be initializing');
+                                setLoading(false);
+                                // Don't set error here - let the analysis continue
+                                return;
+                            }
+                        } catch (err) {
+                            console.error('Error checking job status:', err);
+                        }
+                        
+                        return;
+                    } else if (isPending) {
+                        // Analysis is pending but user hasn't clicked proceed yet
+                        setError('Please complete the governance questionnaire and click "Proceed to Agent Analysis" to start the analysis.');
+                        setLoading(false);
+                        return;
+                    }
                 }
 
                 const allDocuments = selectedProject.documents || [];
@@ -875,10 +933,12 @@ export default function AgentAnalysis({
                     const questions = foundAnalysis?.questions || [];
                     const savedAnswers = foundAnalysis?.userAnswers || {};
                     const savedFeedback = foundAnalysis?.userFeedback || '';
+                    const savedStages = foundAnalysis?.stages || {};  // Load saved stages
 
                     setAiQuestions(questions);
                     setUserAnswers(savedAnswers);
                     setUserFeedback(savedFeedback);
+                    setCompletedStages(savedStages);  // Restore completed stages
 
                     setResult({
                         id: foundDoc.id,
@@ -901,12 +961,7 @@ export default function AgentAnalysis({
                             const analysisStartedKey = `analysis_started_${doc.id}`;
                             const alreadyStarted = sessionStorage.getItem(analysisStartedKey) === 'true';
 
-                            if (alreadyStarted) {
-                                console.log('Analysis already started for document', doc.id);
-                                setLoading(false);
-                                return;
-                            }
-
+                            // If user clicked "Proceed to Agent Analysis", start the analysis
                             if (shouldStartAnalysis && hasGovernanceAssessment) {
                                 sessionStorage.setItem(analysisStartedKey, 'true');
                                 sessionStorage.removeItem('shouldStartAnalysis');
@@ -916,8 +971,27 @@ export default function AgentAnalysis({
                                 setError('Governance assessment required before analysis.');
                                 setLoading(false);
                                 return;
+                            } else if (alreadyStarted) {
+                                // Analysis was started previously
+                                console.log('Analysis was started but checking status for document', doc.id);
+                                
+                                // Check if it's currently processing
+                                if (processing || analysisInProgress) {
+                                    console.log('Analysis is currently running (processing or analysisInProgress)');
+                                    setLoading(false);
+                                    return;
+                                }
+                                
+                                // Don't immediately show error - analysis might be starting
+                                const hasResult = result && result.analysis;
+                                if (!hasResult) {
+                                    console.log('Analysis was marked as started, but no result yet - might still be initializing');
+                                    setLoading(false);
+                                    // Don't set error or clear flag - let analysis continue
+                                    return;
+                                }
+                                return;
                             } else {
-
                                 setLoading(false);
                                 return;
                             }
@@ -1391,11 +1465,11 @@ export default function AgentAnalysis({
                             doc.setFontSize(10);
                             doc.setFont('helvetica', 'bold');
                             doc.setTextColor(...darkText);
-                            doc.text('[ARCHITECTURE DIAGRAM]', marginLeft + 8, y + 8);
+                            doc.text('[USER FLOW DIAGRAM]', marginLeft + 8, y + 8);
                             doc.setFontSize(8);
                             doc.setFont('helvetica', 'normal');
                             doc.setTextColor(...mutedText);
-                            doc.text('Visual architecture diagram available in the web interface', marginLeft + 8, y + 15);
+                            doc.text('Visual user flow diagram available in the web interface', marginLeft + 8, y + 15);
                             y += 26;
                         }
                     } else if (codeBlockType === 'erDiagram' || codeBlockType.includes('ER') || codeBlockType.includes('schema')) {
@@ -1784,7 +1858,7 @@ export default function AgentAnalysis({
                             <div className="bg-white rounded-xl border border-gray-200 p-5">
                                 <div className="flex items-center justify-between mb-4">
                                     <h3 className="text-base font-bold text-gray-900">
-                                        Application Architecture
+                                        User Flow Diagram
                                     </h3>
                                     <button
                                         type="button"
@@ -1971,18 +2045,134 @@ export default function AgentAnalysis({
                         )}
 
                         <div id="analysis-content" className="bg-transparent space-y-6">
-                            {/* Progress Bar */}
+                            {/* Stage-Based Progress Loader */}
                             {processing && (
-                                <div className="space-y-3 animate-pulse">
-                                    <div className="flex justify-between items-center text-xs uppercase tracking-wider text-app-text-muted font-semibold">
-                                        <span>{progressMessage}</span>
-                                        <span>{progress}%</span>
+                                <div className="bg-app-bg-card rounded-xl border border-app-border p-6 space-y-4">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className="text-lg font-bold text-app-text-main">Analysis in Progress</h3>
+                                        <span className="text-sm font-semibold text-app-primary">{progress}%</span>
                                     </div>
-                                    <div className="w-full bg-app-bg-muted rounded-full h-1.5 overflow-hidden">
-                                        <div
-                                            className="bg-app-primary h-1.5 rounded-full transition-all duration-500 ease-out shadow-[0_0_10px_rgba(37,99,235,0.5)]"
-                                            style={{ width: `${progress}%` }}
-                                        ></div>
+                                    
+                                    {/* Stage Progress */}
+                                    <div className="space-y-3">
+                                        {/* Stage 1 */}
+                                        <div className={`flex items-center gap-3 p-3 rounded-lg transition-all ${
+                                            completedStages.stage1_requirements 
+                                                ? 'bg-app-status-successBg border border-green-200' 
+                                                : progress >= 10 && progress < 35
+                                                ? 'bg-app-primary-light border border-app-primary-ring animate-pulse'
+                                                : 'bg-app-bg-page border border-app-border'
+                                        }`}>
+                                            {completedStages.stage1_requirements ? (
+                                                <CheckCircle2 className="w-5 h-5 text-app-status-success flex-shrink-0" />
+                                            ) : progress >= 10 && progress < 35 ? (
+                                                <Loader2 className="w-5 h-5 text-app-primary animate-spin flex-shrink-0" />
+                                            ) : (
+                                                <Circle className="w-5 h-5 text-app-border flex-shrink-0" />
+                                            )}
+                                            <div className="flex-1">
+                                                <p className="text-sm font-semibold text-app-text-main">Stage 1: Requirements Extraction</p>
+                                                <p className="text-xs text-app-text-muted">Analyzing BRD and extracting functional requirements</p>
+                                            </div>
+                                        </div>
+                                        
+                                        {/* Stage 2 */}
+                                        <div className={`flex items-center gap-3 p-3 rounded-lg transition-all ${
+                                            completedStages.stage2_architecture 
+                                                ? 'bg-app-status-successBg border border-green-200' 
+                                                : progress >= 35 && progress < 55
+                                                ? 'bg-app-primary-light border border-app-primary-ring animate-pulse'
+                                                : 'bg-app-bg-page border border-app-border'
+                                        }`}>
+                                            {completedStages.stage2_architecture ? (
+                                                <CheckCircle2 className="w-5 h-5 text-app-status-success flex-shrink-0" />
+                                            ) : progress >= 35 && progress < 55 ? (
+                                                <Loader2 className="w-5 h-5 text-app-primary animate-spin flex-shrink-0" />
+                                            ) : (
+                                                <Circle className="w-5 h-5 text-app-border flex-shrink-0" />
+                                            )}
+                                            <div className="flex-1">
+                                                <p className="text-sm font-semibold text-app-text-main">Stage 2: Architecture Design</p>
+                                                <p className="text-xs text-app-text-muted">Designing system architecture and user flow diagram</p>
+                                            </div>
+                                        </div>
+                                        
+                                        {/* Stage 3 */}
+                                        <div className={`flex items-center gap-3 p-3 rounded-lg transition-all ${
+                                            completedStages.stage3_data_api 
+                                                ? 'bg-app-status-successBg border border-green-200' 
+                                                : progress >= 55 && progress < 70
+                                                ? 'bg-app-primary-light border border-app-primary-ring animate-pulse'
+                                                : 'bg-app-bg-page border border-app-border'
+                                        }`}>
+                                            {completedStages.stage3_data_api ? (
+                                                <CheckCircle2 className="w-5 h-5 text-app-status-success flex-shrink-0" />
+                                            ) : progress >= 55 && progress < 70 ? (
+                                                <Loader2 className="w-5 h-5 text-app-primary animate-spin flex-shrink-0" />
+                                            ) : (
+                                                <Circle className="w-5 h-5 text-app-border flex-shrink-0" />
+                                            )}
+                                            <div className="flex-1">
+                                                <p className="text-sm font-semibold text-app-text-main">Stage 3: Data Models & API Design</p>
+                                                <p className="text-xs text-app-text-muted">Creating database schemas and API endpoints</p>
+                                            </div>
+                                        </div>
+                                        
+                                        {/* Stage 4 */}
+                                        <div className={`flex items-center gap-3 p-3 rounded-lg transition-all ${
+                                            completedStages.stage4_implementation 
+                                                ? 'bg-app-status-successBg border border-green-200' 
+                                                : progress >= 70 && progress < 85
+                                                ? 'bg-app-primary-light border border-app-primary-ring animate-pulse'
+                                                : 'bg-app-bg-page border border-app-border'
+                                        }`}>
+                                            {completedStages.stage4_implementation ? (
+                                                <CheckCircle2 className="w-5 h-5 text-app-status-success flex-shrink-0" />
+                                            ) : progress >= 70 && progress < 85 ? (
+                                                <Loader2 className="w-5 h-5 text-app-primary animate-spin flex-shrink-0" />
+                                            ) : (
+                                                <Circle className="w-5 h-5 text-app-border flex-shrink-0" />
+                                            )}
+                                            <div className="flex-1">
+                                                <p className="text-sm font-semibold text-app-text-main">Stage 4: Implementation Planning</p>
+                                                <p className="text-xs text-app-text-muted">Creating file structure and implementation plan</p>
+                                            </div>
+                                        </div>
+                                        
+                                        {/* Stage 5 */}
+                                        <div className={`flex items-center gap-3 p-3 rounded-lg transition-all ${
+                                            progress >= 100
+                                                ? 'bg-app-status-successBg border border-green-200' 
+                                                : progress >= 85
+                                                ? 'bg-app-primary-light border border-app-primary-ring animate-pulse'
+                                                : 'bg-app-bg-page border border-app-border'
+                                        }`}>
+                                            {progress >= 100 ? (
+                                                <CheckCircle2 className="w-5 h-5 text-app-status-success flex-shrink-0" />
+                                            ) : progress >= 85 ? (
+                                                <Loader2 className="w-5 h-5 text-app-primary animate-spin flex-shrink-0" />
+                                            ) : (
+                                                <Circle className="w-5 h-5 text-app-border flex-shrink-0" />
+                                            )}
+                                            <div className="flex-1">
+                                                <p className="text-sm font-semibold text-app-text-main">Stage 5: Final Report Generation</p>
+                                                <p className="text-xs text-app-text-muted">Synthesizing comprehensive analysis report</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    {/* Overall Progress Bar */}
+                                    <div className="mt-4 space-y-2">
+                                        <div className="flex justify-between items-center text-xs text-app-text-muted">
+                                            <span>{progressMessage}</span>
+                                            <span className="font-semibold">{progress}%</span>
+                                        </div>
+                                        <div className="w-full bg-app-bg-muted rounded-full h-2 overflow-hidden">
+                                            <div
+                                                className="bg-gradient-to-r from-app-primary to-app-primary-hover h-2 rounded-full transition-all duration-500 ease-out shadow-[0_0_10px_rgba(37,99,235,0.5)]"
+                                                style={{ width: `${progress}%` }}
+                                            ></div>
+                                        </div>
                                     </div>
                                 </div>
                             )}
@@ -2273,7 +2463,7 @@ export default function AgentAnalysis({
                         <div className="relative w-full max-w-6xl h-[80vh] rounded-2xl bg-app-bg-card border border-app-border-light shadow-2xl flex flex-col">
                             <div className="flex items-center justify-between px-4 py-3 border-b border-app-border-light">
                                 <h2 className="text-sm font-bold text-app-text-main">
-                                    Application Architecture (Expanded)
+                                    User Flow Diagram (Business Process View)
                                 </h2>
                                 <button
                                     type="button"

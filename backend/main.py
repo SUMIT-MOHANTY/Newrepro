@@ -3726,6 +3726,98 @@ async def mark_prerequisites_complete(
     return {"status": "ok", "completed_at": governance.prerequisites_completed_at.isoformat()}
 
 
+@app.post("/governance/{identifier}/claude-md-files")
+async def save_claude_md_files(
+    identifier: str,
+    files: List[Dict[str, Any]],
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Save claude.md files for a project (always loaded for all agents)."""
+    query = db.query(models.GovernanceResponse).filter(
+        models.GovernanceResponse.owner_id == current_user.id
+    )
+    if identifier.isdigit():
+        governance = query.filter(models.GovernanceResponse.id == int(identifier)).first()
+    else:
+        governance = query.filter(models.GovernanceResponse.project_token == identifier).first()
+
+    if not governance:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    governance.claude_md_files = files
+    db.commit()
+
+    return {"status": "ok", "files_count": len(files)}
+
+
+@app.get("/governance/{identifier}/claude-md-files")
+async def get_claude_md_files(
+    identifier: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get claude.md files for a project."""
+    query = db.query(models.GovernanceResponse).filter(
+        models.GovernanceResponse.owner_id == current_user.id
+    )
+    if identifier.isdigit():
+        governance = query.filter(models.GovernanceResponse.id == int(identifier)).first()
+    else:
+        governance = query.filter(models.GovernanceResponse.project_token == identifier).first()
+
+    if not governance:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return {"files": governance.claude_md_files or []}
+
+
+@app.post("/governance/{identifier}/skills-md-files")
+async def save_skills_md_files(
+    identifier: str,
+    files: List[Dict[str, Any]],
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Save skills.md files for a project (selectively loaded based on task relevance)."""
+    query = db.query(models.GovernanceResponse).filter(
+        models.GovernanceResponse.owner_id == current_user.id
+    )
+    if identifier.isdigit():
+        governance = query.filter(models.GovernanceResponse.id == int(identifier)).first()
+    else:
+        governance = query.filter(models.GovernanceResponse.project_token == identifier).first()
+
+    if not governance:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    governance.skills_md_files = files
+    db.commit()
+
+    return {"status": "ok", "files_count": len(files)}
+
+
+@app.get("/governance/{identifier}/skills-md-files")
+async def get_skills_md_files(
+    identifier: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get skills.md files for a project."""
+    query = db.query(models.GovernanceResponse).filter(
+        models.GovernanceResponse.owner_id == current_user.id
+    )
+    if identifier.isdigit():
+        governance = query.filter(models.GovernanceResponse.id == int(identifier)).first()
+    else:
+        governance = query.filter(models.GovernanceResponse.project_token == identifier).first()
+
+    if not governance:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return {"files": governance.skills_md_files or []}
+
+
 def _extract_document_analysis_context(doc: models.Document) -> Optional[Dict[str, Any]]:
     """Parse stored analysis JSON and extract project-linking metadata."""
     if not doc.analysis_result:
