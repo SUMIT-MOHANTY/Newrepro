@@ -333,15 +333,16 @@ TECH_SPEC_ARCHITECT_SYSTEM_PROMPT = (
     "Treat the task titles, descriptions, checklists, planned file hints, current repo tree, stack decision, "
     "stack evidence, and workspace contract in that packet as the primary source of truth. "
     "Do not fall back to generic scaffolds when they contradict the packet. "
-    "Never mix mutually exclusive stacks in one response, such as Flask with Express, Flask/Jinja with React/Vite, "
-    "React with Vue, or Next.js with static HTML. "
+    "Never mix mutually exclusive stacks in one response, such as ASP.NET Core with Express, "
+    "Flask with ASP.NET Core, React with Vue, or Next.js with static HTML. "
     "When defining file structure, output exactly one final canonical project tree. "
     "Choose one production-ready structure and commit to it. "
     "Never output alternative roots, conditional structures, migration options, fallback layouts, "
     "or prose such as 'pick one', 'if X then Y', or 'the tree collapses to'. "
     "If the current repository tree already establishes a root, preserve it unless the requirements "
     "clearly force a migration. "
-    "For Flask + Jinja projects, keep templates and static assets inside the Flask application structure "
+    "For .NET projects, follow Clean Architecture with four layers: Api → Infrastructure → Application → Domain. "
+    "For Flask/Jinja projects, keep templates and static assets inside the Flask application structure "
     "instead of inventing a separate Node frontend."
 )
 
@@ -1420,35 +1421,60 @@ Example of CORRECT format:
 #!/usr/bin/env bash
 set -e
 
-mkdir -p frontend/src
-cat <<'EOF' > frontend/src/App.tsx
-import React from 'react';
-export default function App() {
-  return <div>Hello</div>;
+mkdir -p src/Api/Controllers
+cat <<'EOF' > src/Api/Controllers/OrdersController.cs
+namespace Accelerator.Api.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public sealed class OrdersController(ISender sender) : ControllerBase
+{
+    [HttpPost]
+    public async Task<IActionResult> PlaceOrder(
+        [FromBody] PlaceOrderCommand command,
+        CancellationToken cancellationToken)
+    {
+        Result<PlaceOrderResult> result = await sender.Send(command, cancellationToken);
+        return result.IsSuccess ? Ok(result.Value) : Problem();
+    }
 }
 EOF
 
-mkdir -p backend
-cat <<'EOF' > backend/app.py
-from flask import Flask
-app = Flask(__name__)
+mkdir -p src/Domain/OrderAggregate
+cat <<'EOF' > src/Domain/OrderAggregate/Order.cs
+namespace Accelerator.Domain.OrderAggregate;
+
+public sealed class Order : AggregateRoot<OrderId>
+{
+    private readonly List<OrderLineItem> _lineItems = [];
+    
+    public OrderStatus Status { get; private set; }
+    
+    private Order() { }
+    
+    public static Result<Order> Create(Guid customerId)
+    {
+        var order = new Order { Id = new OrderId(Guid.NewGuid()) };
+        return Result<Order>.Success(order);
+    }
+}
 EOF
 
-echo '[CREATED] frontend/src/App.tsx'
-echo '[CREATED] backend/app.py'
+echo '[CREATED] src/Api/Controllers/OrdersController.cs'
+echo '[CREATED] src/Domain/OrderAggregate/Order.cs'
 echo '=== SUMMARY ==='
 echo 'Created 2 files'
 ```
 
 Example of WRONG format (DO NOT DO THIS):
-## 1. App.tsx
-```typescript
-import React from 'react';
+## 1. OrdersController.cs
+```csharp
+namespace Accelerator.Api.Controllers;
 ```
 
-## 2. app.py
-```python
-from flask import Flask
+## 2. Order.cs
+```csharp
+public sealed class Order
 ```
 
 CRITICAL: YOU MUST FOLLOW THE MASTER AGENT'S CANONICAL PROJECT TREE!
@@ -1778,10 +1804,14 @@ For YOUR project, output the exact directory tree with:
 - Every file with its purpose in comments
 - Output exactly one final canonical tree. Do not output alternatives, migrations, conditional variants, or "pick one" instructions.
 - Treat the PLANNING_PACKET_JSON as authoritative. Resolve contradictions in favor of task details, checklist evidence, stack evidence, and the current repo tree.
-- Never mix conflicting stacks in one spec. For example: Flask with Express, Flask/Jinja with React/Vite, React with Vue, or Next.js with static HTML.
+- Never mix conflicting stacks in one spec. For example: ASP.NET Core with Express, Flask with ASP.NET Core, React with Vue, or Next.js with static HTML.
 - Extend the current repo tree when possible instead of inventing alternate roots
 - If the current repo tree already establishes an app root, preserve that root unless the BRD/tasks clearly require a migration
-- Design the directory layout based on the BEST PRACTICES for the chosen tech stack (e.g., Flask typically uses `app/` at the root, Django uses a standard project folder, Next.js uses `src/app/`).
+- Design the directory layout based on the BEST PRACTICES for the chosen tech stack:
+  * .NET: Clean Architecture with src/Api, src/Application, src/Domain, src/Infrastructure, test/UnitTests, test/IntegrationTests
+  * Flask: typically uses `app/` at the root
+  * Django: uses a standard project folder
+  * Next.js: uses `src/app/`
 - Do NOT arbitrarily prefix paths with `backend/` or `frontend/` unless the project is actually a monorepo requiring that separation.
 - Configuration files only when the tasks/spec explicitly require them
 - For static HTML/CSS sites, keep `index.html` and `styles.css` together in the existing canonical static root from the repo/task plan; if no root exists yet, choose one canonical root and keep both files there
@@ -1856,6 +1886,71 @@ def get_technical_spec(project_token: str) -> str:
     """Retrieve the generated technical spec for a project."""
     record = _project_tech_specs.get(project_token, {})
     return record.get("spec", "")
+
+
+def clear_technical_spec(project_token: str) -> bool:
+    """
+    Clear cached technical spec to force regeneration.
+    Call this when BRD analysis is updated.
+    """
+    if project_token in _project_tech_specs:
+        del _project_tech_specs[project_token]
+        logger.info(f"[{project_token}] Technical spec cache cleared")
+        return True
+    return False
+
+
+def refresh_brd_analysis_from_db(project_token: str, user_id: Optional[int] = None) -> Dict[str, Any]:
+    """
+    Reload BRD analysis from database into agent project state.
+    Returns the loaded BRD analysis or empty dict if not found.
+    """
+    try:
+        from database import SessionLocal
+        import models as db_models
+        
+        db = SessionLocal()
+        try:
+            # Try to find document with matching project_token
+            token_pattern = f'%"project_token": "{project_token}"%'
+            query = db.query(db_models.Document).filter(
+                db_models.Document.analysis_result.isnot(None),
+                db_models.Document.analysis_result.like(token_pattern)
+            )
+            
+            # Filter by user_id if provided
+            if user_id:
+                query = query.filter(db_models.Document.owner_id == user_id)
+            
+            document = query.order_by(db_models.Document.upload_date.desc()).first()
+            
+            # Fallback: get latest document with analysis (if user_id provided)
+            if not document and user_id:
+                document = db.query(db_models.Document).filter(
+                    db_models.Document.owner_id == user_id,
+                    db_models.Document.analysis_result.isnot(None)
+                ).order_by(db_models.Document.upload_date.desc()).first()
+            
+            if document and document.analysis_result:
+                brd_analysis = json.loads(document.analysis_result)
+                
+                # Update project state
+                state = _ensure_project_state(project_token)
+                state["brd_analysis"] = brd_analysis
+                
+                # Clear tech spec cache to force regeneration with new BRD
+                clear_technical_spec(project_token)
+                
+                logger.info(f"[{project_token}] BRD analysis refreshed from database ({len(str(brd_analysis))} chars)")
+                return brd_analysis
+            else:
+                logger.warning(f"[{project_token}] No BRD analysis found in database")
+                return {}
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"[{project_token}] Failed to refresh BRD analysis: {e}")
+        return {}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -11201,6 +11296,23 @@ def _build_stack_evidence_summary(
             ),
         },
         "backend": {
+            "aspnet-core": (
+                ".net",
+                "asp.net core",
+                "aspnetcore",
+                "c#",
+                "csharp",
+                ".csproj",
+                "program.cs",
+                "startup.cs",
+                "webapplicationbuilder",
+                "minimal api",
+                "entity framework",
+                "ef core",
+                "clean architecture",
+                "mediator",
+                "fluentvalidation",
+            ),
             "flask": (
                 "flask",
                 "gunicorn",
@@ -17538,8 +17650,60 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         "type": "info",
                         "message": "🏗️ Architect Agent: generating canonical Technical Spec..."
                     })
-                    # Get BRD summary from project state if available
+                    
+                    # ✅ FIX: Load BRD analysis from database if not in state or empty
                     brd_payload = state.get("brd_analysis")
+                    if not brd_payload or not isinstance(brd_payload, dict) or not brd_payload.get("analysis"):
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": "📥 Loading BRD analysis from database..."
+                        })
+                        try:
+                            # Import database models and session
+                            from database import SessionLocal
+                            import models as db_models
+                            
+                            db = SessionLocal()
+                            try:
+                                # Try to find document with matching project_token
+                                token_pattern = f'%"project_token": "{project_token}"%'
+                                document = db.query(db_models.Document).filter(
+                                    db_models.Document.analysis_result.isnot(None),
+                                    db_models.Document.analysis_result.like(token_pattern)
+                                ).order_by(db_models.Document.upload_date.desc()).first()
+                                
+                                # Fallback: get latest document with analysis
+                                if not document:
+                                    document = db.query(db_models.Document).filter(
+                                        db_models.Document.analysis_result.isnot(None)
+                                    ).order_by(db_models.Document.upload_date.desc()).first()
+                                
+                                if document and document.analysis_result:
+                                    brd_payload = json.loads(document.analysis_result)
+                                    state["brd_analysis"] = brd_payload  # Cache it in state
+                                    agent["output_log"].append({
+                                        "time": datetime.utcnow().isoformat(),
+                                        "type": "success",
+                                        "message": f"✅ BRD analysis loaded from database ({len(str(brd_payload))} chars)"
+                                    })
+                                else:
+                                    agent["output_log"].append({
+                                        "time": datetime.utcnow().isoformat(),
+                                        "type": "warning",
+                                        "message": "⚠️ No BRD analysis found in database"
+                                    })
+                            finally:
+                                db.close()
+                        except Exception as brd_load_err:
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "warning",
+                                "message": f"⚠️ Failed to load BRD from database: {str(brd_load_err)[:100]}"
+                            })
+                            logger.error(f"Failed to load BRD analysis from database: {brd_load_err}")
+                    
+                    # Get BRD summary from project state (now loaded from DB if needed)
                     brd_summary = _build_brd_analysis_context(brd_payload)
                     if not brd_summary:
                         if isinstance(brd_payload, dict):
