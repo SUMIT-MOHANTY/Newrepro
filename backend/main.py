@@ -4647,6 +4647,190 @@ async def azure_devops_disconnect(
     return {"status": "disconnected"}
 
 
+class ValidateGitRepoRequest(BaseModel):
+    repo_url: str
+    pat: Optional[str] = None
+    provider: str = "github"  # "github" or "azure-devops"
+
+
+@app.post("/git/validate-connection")
+async def validate_git_connection(
+    payload: ValidateGitRepoRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Validate git repository URL and PAT by attempting a lightweight operation.
+    For Azure DevOps, this normalizes the URL and tests authentication.
+    For GitHub, this tests if the repo is accessible.
+    """
+    try:
+        repo_url = payload.repo_url.strip()
+        pat = (payload.pat or "").strip()
+        provider = payload.provider.lower()
+        
+        if not repo_url:
+            raise HTTPException(status_code=400, detail="Repository URL is required")
+        
+        # Normalize the URL based on provider
+        if provider == "azure-devops":
+            try:
+                # Parse and normalize Azure DevOps URL
+                parsed = azure_devops_service.parse_azure_repo_url(repo_url)
+                normalized_url = parsed["url"]
+                organization = parsed["organization"]
+                project = parsed["project"]
+                repo = parsed["repo"]
+                
+                # If PAT is provided, test the connection
+                if pat:
+                    try:
+                        # Try to list repositories to validate credentials
+                        repos = await azure_devops_service.list_project_repositories(
+                            organization=organization,
+                            project=project,
+                            pat=pat
+                        )
+                        
+                        # Check if the specific repo exists
+                        repo_found = any(r.get("name") == repo for r in repos)
+                        
+                        return {
+                            "valid": True,
+                            "normalized_url": normalized_url,
+                            "provider": "azure-devops",
+                            "organization": organization,
+                            "project": project,
+                            "repo": repo,
+                            "pat_valid": True,
+                            "repo_accessible": repo_found,
+                            "message": f"Connection successful! Repository '{repo}' {'found' if repo_found else 'not found in project'}."
+                        }
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code == 401:
+                            raise HTTPException(
+                                status_code=401,
+                                detail="Invalid PAT. Please check your Personal Access Token has 'Code (Read & Write)' permissions."
+                            )
+                        elif e.response.status_code == 404:
+                            raise HTTPException(
+                                status_code=404,
+                                detail=f"Project '{project}' not found in organization '{organization}'. Please verify the URL."
+                            )
+                        else:
+                            raise HTTPException(
+                                status_code=e.response.status_code,
+                                detail=f"Azure DevOps API error: {e.response.text[:200]}"
+                            )
+                    except Exception as e:
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"Failed to validate Azure DevOps connection: {str(e)[:200]}"
+                        )
+                else:
+                    # No PAT provided, just validate URL format
+                    return {
+                        "valid": True,
+                        "normalized_url": normalized_url,
+                        "provider": "azure-devops",
+                        "organization": organization,
+                        "project": project,
+                        "repo": repo,
+                        "pat_valid": None,
+                        "repo_accessible": None,
+                        "message": "URL format is valid. Provide PAT to test connection."
+                    }
+                    
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid Azure DevOps URL: {str(e)}"
+                )
+        
+        elif provider == "github":
+            # For GitHub, validate URL format
+            if not repo_url.startswith("https://github.com/"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid GitHub URL. Must start with https://github.com/"
+                )
+            
+            # Extract owner/repo from URL
+            parts = repo_url.replace("https://github.com/", "").replace(".git", "").strip("/").split("/")
+            if len(parts) < 2:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid GitHub URL format. Expected: https://github.com/owner/repo"
+                )
+            
+            owner, repo = parts[0], parts[1]
+            
+            # If PAT provided, test connection
+            if pat:
+                try:
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        response = await client.get(
+                            f"https://api.github.com/repos/{owner}/{repo}",
+                            headers={"Authorization": f"token {pat}"}
+                        )
+                        
+                        if response.status_code == 200:
+                            return {
+                                "valid": True,
+                                "normalized_url": f"https://github.com/{owner}/{repo}.git",
+                                "provider": "github",
+                                "owner": owner,
+                                "repo": repo,
+                                "pat_valid": True,
+                                "repo_accessible": True,
+                                "message": f"Connection successful! Repository '{owner}/{repo}' is accessible."
+                            }
+                        elif response.status_code == 401:
+                            raise HTTPException(
+                                status_code=401,
+                                detail="Invalid GitHub token. Please check your Personal Access Token."
+                            )
+                        elif response.status_code == 404:
+                            raise HTTPException(
+                                status_code=404,
+                                detail=f"Repository '{owner}/{repo}' not found or not accessible with this token."
+                            )
+                        else:
+                            raise HTTPException(
+                                status_code=response.status_code,
+                                detail=f"GitHub API error: {response.text[:200]}"
+                            )
+                except httpx.TimeoutException:
+                    raise HTTPException(
+                        status_code=504,
+                        detail="GitHub API request timed out. Please try again."
+                    )
+            else:
+                # No PAT, just validate URL
+                return {
+                    "valid": True,
+                    "normalized_url": f"https://github.com/{owner}/{repo}.git",
+                    "provider": "github",
+                    "owner": owner,
+                    "repo": repo,
+                    "pat_valid": None,
+                    "repo_accessible": None,
+                    "message": "URL format is valid. Provide PAT to test connection."
+                }
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported provider: {provider}. Use 'github' or 'azure-devops'."
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Validation failed: {str(e)[:200]}"
+        )
+
+
 @app.get("/azure-devops/repos")
 async def azure_devops_repos(
     current_user: models.User = Depends(auth.get_current_user),

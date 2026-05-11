@@ -542,6 +542,18 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const [showRedirectionConfirmation, setShowRedirectionConfirmation] = useState(false);
     const [redirectionTarget, setRedirectionTarget] = useState(null);
 
+    // Redirect to new project page if no projects exist
+    useEffect(() => {
+        if (!projects || projects.length === 0) {
+            const timer = setTimeout(() => {
+                if (!projects || projects.length === 0) {
+                    navigate('/new-project');
+                }
+            }, 500);
+            return () => clearTimeout(timer);
+        }
+    }, [projects, navigate]);
+
     const handleConfirmRedirection = async () => {
         if (!redirectionTarget) return;
         try {
@@ -578,6 +590,11 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const [isLoadingGitConfig, setIsLoadingGitConfig] = useState(false);
     const [analysisRepoSuggestion, setAnalysisRepoSuggestion] = useState(null);
     const [repoProvider, setRepoProvider] = useState('github');
+    
+    // Git validation state
+    const [isValidatingGit, setIsValidatingGit] = useState(false);
+    const [gitValidationResult, setGitValidationResult] = useState(null);
+    const [gitValidationError, setGitValidationError] = useState('');
     
     // Claude.md file upload state
     const [claudeMdFiles, setClaudeMdFiles] = useState([]);
@@ -1172,6 +1189,52 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
         });
         return groups;
     }, [prerequisites]);
+
+    // Validate Git connection
+    const handleValidateGitConnection = useCallback(async () => {
+        if (!globalGitRepoUrl.trim()) {
+            setGitValidationError('Please enter a repository URL first');
+            return;
+        }
+
+        setIsValidatingGit(true);
+        setGitValidationError('');
+        setGitValidationResult(null);
+
+        try {
+            const token = localStorage.getItem('token');
+            const response = await fetch(API_ENDPOINTS.GIT_VALIDATE_CONNECTION, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                    repo_url: globalGitRepoUrl.trim(),
+                    pat: globalGitToken.trim() || null,
+                    provider: repoProvider,
+                }),
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.detail || 'Validation failed');
+            }
+
+            setGitValidationResult(data);
+            
+            // If URL was normalized, update the input field
+            if (data.normalized_url && data.normalized_url !== globalGitRepoUrl.trim()) {
+                setGlobalGitRepoUrl(data.normalized_url);
+            }
+        } catch (err) {
+            console.error('Git validation error:', err);
+            setGitValidationError(sanitizeErrorMessage(err));
+        } finally {
+            setIsValidatingGit(false);
+        }
+    }, [globalGitRepoUrl, globalGitToken, repoProvider]);
 
     const totalItems = prerequisites.length;
     const providedCount = prerequisites.filter(p => p.provided).length;
@@ -2247,13 +2310,52 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                     <input
                                         type="text"
                                         value={globalGitRepoUrl}
-                                        onChange={(e) => setGlobalGitRepoUrl(e.target.value)}
+                                        onChange={(e) => {
+                                            setGlobalGitRepoUrl(e.target.value);
+                                            // Clear validation when URL changes
+                                            setGitValidationResult(null);
+                                            setGitValidationError('');
+                                        }}
                                         placeholder={repoProvider === 'azure-devops'
                                             ? 'https://dev.azure.com/ORG/PROJECT/_git/REPO'
                                             : 'https://github.com/org/repo.git'
                                         }
                                         className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-blue-400 text-sm bg-app-bg-card text-app-text-main transition-all duration-200"
                                     />
+                                    
+                                    {/* Validation Result */}
+                                    {gitValidationResult && (
+                                        <div className="mt-3 p-3 rounded-lg border border-emerald-200 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-800">
+                                            <div className="flex items-start gap-2">
+                                                <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 mt-0.5 flex-shrink-0" />
+                                                <div className="flex-1 min-w-0">
+                                                    <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">
+                                                        {gitValidationResult.message}
+                                                    </p>
+                                                    {gitValidationResult.normalized_url && gitValidationResult.normalized_url !== globalGitRepoUrl && (
+                                                        <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">
+                                                            URL normalized to: {gitValidationResult.normalized_url}
+                                                        </p>
+                                                    )}
+                                                    {repoProvider === 'azure-devops' && gitValidationResult.organization && (
+                                                        <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">
+                                                            Organization: {gitValidationResult.organization} | Project: {gitValidationResult.project} | Repo: {gitValidationResult.repo}
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+                                    
+                                    {/* Validation Error */}
+                                    {gitValidationError && (
+                                        <div className="mt-3 p-3 rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/20 dark:border-red-800">
+                                            <div className="flex items-start gap-2">
+                                                <AlertCircle className="w-4 h-4 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
+                                                <p className="text-sm text-red-700 dark:text-red-300">{gitValidationError}</p>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                                 <div>
                                     <label className="block text-[11px] font-bold text-app-text-label mb-2 uppercase tracking-widest">
@@ -2262,7 +2364,12 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                     <input
                                         type="password"
                                         value={globalGitToken}
-                                        onChange={(e) => setGlobalGitToken(e.target.value)}
+                                        onChange={(e) => {
+                                            setGlobalGitToken(e.target.value);
+                                            // Clear validation when token changes
+                                            setGitValidationResult(null);
+                                            setGitValidationError('');
+                                        }}
                                         placeholder={hasSavedGlobalGitToken ? 'Leave blank to keep existing PAT' : 'Optional for public repos (ghp_... or Azure PAT)'}
                                         className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-blue-400 text-sm bg-app-bg-card text-app-text-main transition-all duration-200"
                                     />
@@ -2270,10 +2377,36 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                         {hasSavedGlobalGitToken
                                             ? 'PAT already saved for this project. Enter a new one only if you want to replace it.'
                                             : repoProvider === 'azure-devops'
-                                                ? 'Azure DevOps PAT with Code access (optional for public repos).'
+                                                ? 'Azure DevOps PAT with Code (Read & Write) permissions. Required for pushing code.'
                                                 : 'GitHub PAT with repo scope (optional for public repos).'}
                                     </p>
                                 </div>
+                                
+                                {/* Validate Button */}
+                                <div>
+                                    <button
+                                        type="button"
+                                        onClick={handleValidateGitConnection}
+                                        disabled={isValidatingGit || !globalGitRepoUrl.trim()}
+                                        className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-gradient-to-r from-app-primary to-app-primary-hover rounded-lg hover:shadow-lg transition-all disabled:from-app-border disabled:to-app-text-light disabled:cursor-not-allowed"
+                                    >
+                                        {isValidatingGit ? (
+                                            <>
+                                                <Loader2 className="w-4 h-4 animate-spin" />
+                                                Validating...
+                                            </>
+                                        ) : (
+                                            <>
+                                                <CheckCircle2 className="w-4 h-4" />
+                                                Test Connection
+                                            </>
+                                        )}
+                                    </button>
+                                    <p className="text-xs text-app-text-muted mt-2">
+                                        Click to verify the repository URL and PAT are correct before proceeding.
+                                    </p>
+                                </div>
+                                
                                 {isLoadingGitConfig && (
                                     <p className="text-xs text-app-text-muted">Loading saved Git config...</p>
                                 )}

@@ -4643,30 +4643,81 @@ def _is_azure_devops_url(repo_url: str) -> bool:
     return "dev.azure.com" in repo_url or "visualstudio.com" in repo_url
 
 
+def _normalize_repo_url(repo_url: str) -> str:
+    """
+    Normalize repository URL by removing credentials and trailing slashes.
+    For Azure DevOps URLs, parse and reconstruct to ensure proper format.
+    """
+    import re
+    from urllib.parse import urlparse, unquote
+    
+    repo_url = repo_url.strip().rstrip('/')
+    
+    # Remove any existing credentials from the URL
+    # Pattern matches: https://user@domain or https://user:pass@domain or https://:token@domain
+    repo_url = re.sub(r'https://[^@]*@', 'https://', repo_url)
+    
+    # For Azure DevOps, parse and reconstruct to ensure proper format
+    if _is_azure_devops_url(repo_url):
+        try:
+            # Import the parser from azure_devops_service
+            from azure_devops_service import parse_azure_repo_url
+            parsed = parse_azure_repo_url(repo_url)
+            # Use the normalized URL from the parser
+            return parsed["url"]
+        except Exception as e:
+            _log(f"Warning: Failed to parse Azure DevOps URL, using cleaned URL: {e}")
+            # Fallback: just clean the URL
+            pass
+    
+    return repo_url
+
+
 def _build_git_auth_url(repo_url: str, token: str) -> str:
-    """Insert token into HTTPS git URL for authentication."""
-    repo_url = repo_url.strip()
+    """
+    Build authenticated git URL.
+    For Azure DevOps, returns clean URL (auth should be done via http.extraHeader).
+    For GitHub, embeds token in URL.
+    """
+    # First normalize the URL to remove any existing credentials
+    repo_url = _normalize_repo_url(repo_url)
+    
     if not token:
         return repo_url
     
     token = token.strip()
     
-    # Azure DevOps uses different auth format than GitHub
+    # Azure DevOps: Return clean URL - authentication should be done via http.extraHeader
+    # This prevents malformed URLs and credential escaping issues
     if _is_azure_devops_url(repo_url):
-        # For Azure DevOps, use PAT authentication
-        # Format: https://:PAT@dev.azure.com/org/project/_git/repo
-        # or https://PAT@dev.azure.com/org/project/_git/repo
-        if repo_url.startswith("https://"):
-            # Remove any existing credentials
-            repo_url = repo_url.replace("https://", "https://", 1)
-            # Insert token with colon prefix (standard Basic Auth format for Azure DevOps)
-            return repo_url.replace("https://", f"https://:{token}@", 1)
+        return repo_url
     else:
-        # GitHub and other providers
+        # GitHub and other providers: embed token in URL
         if repo_url.startswith("https://"):
             return repo_url.replace("https://", f"https://{token}@", 1)
     
     return repo_url
+
+
+def _get_git_auth_config(repo_url: str, token: str) -> list:
+    """
+    Get git configuration for authentication.
+    For Azure DevOps, returns http.extraHeader config.
+    For other providers, returns empty list (auth is in URL).
+    """
+    import base64
+    
+    if not token or not _is_azure_devops_url(repo_url):
+        return []
+    
+    # Azure DevOps: Use Basic Auth via http.extraHeader
+    # Format: base64(":PAT")
+    auth_string = f":{token.strip()}"
+    auth_b64 = base64.b64encode(auth_string.encode()).decode()
+    
+    return [
+        "-c", f"http.extraHeader=Authorization: Basic {auth_b64}"
+    ]
 
 
 def _to_single_line(value: str, limit: int = 260) -> str:
@@ -5387,9 +5438,16 @@ async def _refresh_workspace_contract_from_git_repo(
         if not toolchain_result.get("success"):
             return {"success": False, "error": toolchain_result.get("error") or "toolchain verification failed"}
 
-        auth_url = _build_git_auth_url(repo_value, token)
+        clean_url = _normalize_repo_url(repo_value)
+        auth_config = _get_git_auth_config(repo_value, token)
+        
+        # Build git clone command with proper authentication
+        clone_cmd = ["docker", "exec", container_name, "git"]
+        clone_cmd.extend(auth_config)  # Add Azure DevOps auth headers if needed
+        clone_cmd.extend(["clone", "--depth", "1", clean_url, "/workspace"])
+        
         clone = subprocess.run(
-            ["docker", "exec", container_name, "git", "clone", "--depth", "1", auth_url, "/workspace"],
+            clone_cmd,
             capture_output=True,
             text=True,
             timeout=300,
@@ -6349,9 +6407,16 @@ async def _run_integration_check(project_token: Optional[str]) -> None:
             capture_output=True, timeout=30,
         )
 
-        auth_url = _build_git_auth_url(git_repo_url, git_token) if git_token else git_repo_url
+        clean_url = _normalize_repo_url(git_repo_url)
+        auth_config = _get_git_auth_config(git_repo_url, git_token)
+        
+        # Build git clone command with proper authentication
+        clone_cmd = ["docker", "exec", container_name, "git"]
+        clone_cmd.extend(auth_config)  # Add Azure DevOps auth headers if needed
+        clone_cmd.extend(["clone", clean_url, "/workspace"])
+        
         clone = subprocess.run(
-            ["docker", "exec", container_name, "git", "clone", auth_url, "/workspace"],
+            clone_cmd,
             capture_output=True, text=True, timeout=120,
         )
         if clone.returncode != 0:
@@ -6561,9 +6626,17 @@ async def _run_integration_check(project_token: Optional[str]) -> None:
             ["docker", "run", "-d", "--name", container_name, "python:3.11", "sleep", "3600"],
             capture_output=True, timeout=30,
         )
-        auth_url = _build_git_auth_url(git_repo_url, git_token) if git_token else git_repo_url
+        
+        clean_url = _normalize_repo_url(git_repo_url)
+        auth_config = _get_git_auth_config(git_repo_url, git_token)
+        
+        # Build git clone command with proper authentication
+        clone_cmd = ["docker", "exec", container_name, "git"]
+        clone_cmd.extend(auth_config)  # Add Azure DevOps auth headers if needed
+        clone_cmd.extend(["clone", clean_url, "/workspace"])
+        
         clone = subprocess.run(
-            ["docker", "exec", container_name, "git", "clone", auth_url, "/workspace"],
+            clone_cmd,
             capture_output=True, text=True, timeout=120,
         )
         if clone.returncode != 0:
@@ -7542,9 +7615,16 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
             )
 
             # Clone repo only once
-            auth_url = _build_git_auth_url(repo_url, token)
+            clean_url = _normalize_repo_url(repo_url)
+            auth_config = _get_git_auth_config(repo_url, token)
+            
+            # Build git clone command with proper authentication
+            clone_cmd = ["docker", "exec", container_name, "git"]
+            clone_cmd.extend(auth_config)  # Add Azure DevOps auth headers if needed
+            clone_cmd.extend(["clone", clean_url, "/workspace"])
+            
             clone = subprocess.run(
-                ["docker", "exec", container_name, "git", "clone", auth_url, "/workspace"],
+                clone_cmd,
                 capture_output=True, text=True, timeout=300,
             )
             if clone.returncode != 0:
@@ -8225,18 +8305,23 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
             )
 
         # 3. Clone repo into /workspace/
-        # For Azure DevOps, credentials are handled by credential.helper (set above).
-        # For GitHub and other providers, embed the token directly in the URL so
-        # the container (which has no TTY) never needs to prompt for credentials.
-        clone_url = _build_git_auth_url(repo_url, token) if token and not _is_azure_devops_url(repo_url) else repo_url
+        # Use normalized URL and proper authentication method
+        clean_url = _normalize_repo_url(repo_url)
+        auth_config = _get_git_auth_config(repo_url, token)
+        
         subprocess.run(
             ["docker", "exec", container_name, "sh", "-c", "rm -rf /workspace/* /workspace/.* 2>/dev/null || true"],
             capture_output=True, text=True, timeout=10,
         )
+        
         # Try cloning the specific branch directly for efficiency.
         # This ensures non-bootstrap agents clone from the bootstrap branch directly.
+        clone_cmd = ["docker", "exec", container_name, "git"]
+        clone_cmd.extend(auth_config)  # Add Azure DevOps auth headers if needed
+        clone_cmd.extend(["clone", "--branch", branch_name, clean_url, "/workspace"])
+        
         clone = subprocess.run(
-            ["docker", "exec", container_name, "git", "clone", "--branch", branch_name, clone_url, "/workspace"],
+            clone_cmd,
             capture_output=True, text=True, timeout=300,
         )
         if clone.returncode != 0:
@@ -8247,8 +8332,13 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
                 ["docker", "exec", container_name, "sh", "-c", "rm -rf /workspace/* /workspace/.* 2>/dev/null || true"],
                 capture_output=True, text=True, timeout=10,
             )
+            
+            fallback_cmd = ["docker", "exec", container_name, "git"]
+            fallback_cmd.extend(auth_config)  # Add Azure DevOps auth headers if needed
+            fallback_cmd.extend(["clone", clean_url, "/workspace"])
+            
             clone = subprocess.run(
-                ["docker", "exec", container_name, "git", "clone", clone_url, "/workspace"],
+                fallback_cmd,
                 capture_output=True, text=True, timeout=300,
             )
             if clone.returncode != 0:
@@ -11313,6 +11403,28 @@ def _build_stack_evidence_summary(
                 "mediator",
                 "fluentvalidation",
             ),
+            "spring": (
+                "spring boot",
+                "spring",
+                "java",
+                "maven",
+                "gradle",
+                "pom.xml",
+                "build.gradle",
+                ".java",
+                "application.yml",
+                "application.properties",
+                "spring security",
+                "spring data",
+                "jpa",
+                "hibernate",
+                "tomcat",
+                "microservices",
+                "@restcontroller",
+                "@service",
+                "@repository",
+                "@entity",
+            ),
             "flask": (
                 "flask",
                 "gunicorn",
@@ -11491,6 +11603,9 @@ def _build_master_planning_packet(
             "Every planned file must have a home inside the canonical tree.",
             "Prefer extending the current repo tree over inventing parallel roots.",
             "If Flask + Jinja is indicated, keep templates and static assets inside the Flask app structure.",
+            "If Spring Boot + Java is indicated, use Maven/Gradle project structure with src/main/java and src/main/resources.",
+            "If the BRD explicitly specifies a tech stack (e.g., Spring Boot 3.x + Java 17), ALWAYS use that stack. Never override BRD-specified stacks with defaults.",
+            "For Java/Spring Boot projects, use standard Maven structure: src/main/java/com/package/, src/main/resources/, src/test/.",
         ],
     }
     return packet
@@ -11557,6 +11672,12 @@ def _infer_project_stack(
         backend_scores["flask"] += 3
     if any(path.endswith("/app.py") or path.endswith("/__init__.py") for path in contract_manifests):
         backend_scores["flask"] += 1
+    if any(token in path for path in contract_manifests for token in ("pom.xml", "build.gradle", "application.yml", "application.properties")):
+        backend_scores["spring"] += 5
+    if any(path.endswith(".java") for path in contract_manifests):
+        backend_scores["spring"] += 3
+    if any(token in path for path in contract_manifests for token in (".csproj", "program.cs", "startup.cs")):
+        backend_scores["aspnet-core"] += 5
 
     for token in ("next.js", "nextjs", "app router", "next.config"):
         if token in task_text:
@@ -11618,6 +11739,18 @@ def _infer_project_stack(
             backend_scores["express"] += 3
         elif token in combined_text:
             backend_scores["express"] += 2
+    for token in (
+        "spring boot", "spring", "java", "maven", "gradle", "pom.xml",
+        "build.gradle", "application.yml", "application.properties",
+        "spring security", "spring data", "jpa", "hibernate",
+        "microservices", "@restcontroller", "@service", "@repository",
+        "@entity", "tomcat", "java 17", "java 11", "java 21",
+        "spring mvc", "spring cloud", "spring web",
+    ):
+        if token in task_text:
+            backend_scores["spring"] += 4
+        elif token in combined_text:
+            backend_scores["spring"] += 3
 
     # Avoid overfitting stack inference to host repository roots when task evidence exists.
     if not task_text.strip():
@@ -11648,7 +11781,7 @@ def _infer_project_stack(
         for task in (tasks or [])
     ) or any(
         token in task_text
-        for token in ("api", "database", "schema", "model", "auth", "server", "endpoint", "fastapi", "express", "python", "flask", "gunicorn")
+        for token in ("api", "database", "schema", "model", "auth", "server", "endpoint", "fastapi", "express", "python", "flask", "gunicorn", "spring", "java", "maven")
     )
 
     if frontend_scores:
@@ -11666,10 +11799,12 @@ def _infer_project_stack(
 
     if backend_scores:
         backend_priority = {
+            "spring": 6,
             "django": 5,
             "flask": 4,
             "fastapi": 3,
             "express": 2,
+            "aspnet-core": 1,
         }
         backend = sorted(
             backend_scores.items(),
@@ -11774,7 +11909,10 @@ def _infer_project_stack(
         "django": "Django + Python",
         "flask": "Flask + Python",
         "fastapi": "FastAPI + Python",
+        "spring": "Spring Boot + Java",
         "express": "Node.js + Express + TypeScript",
+        "aspnet-core": "ASP.NET Core + C#",
+        "laravel": "Laravel + PHP",
         "none": "None / not required",
     }
     return {
@@ -21051,7 +21189,8 @@ async def deploy_preview(
             raise RuntimeError(toolchain_result.get("error", "Preview runtime toolchain verification failed"))
 
         # 2. Clone the repo (agent/integration branch)
-        auth_url = _build_git_auth_url(git_repo_url, git_token)
+        clean_url = _normalize_repo_url(git_repo_url)
+        auth_config = _get_git_auth_config(git_repo_url, git_token)
         _log(f"Cloning {GIT_INTEGRATION_BRANCH} branch...")
         
         # Configure Git for better performance with large repos
@@ -21071,14 +21210,20 @@ async def deploy_preview(
             capture_output=True, text=True, timeout=10,
         )
         
+        # Build git clone command with proper authentication
+        clone_cmd = ["docker", "exec", "-w", "/", container_name, "git"]
+        clone_cmd.extend(auth_config)  # Add Azure DevOps auth headers if needed
+        clone_cmd.extend([
+            "clone", "--branch", GIT_INTEGRATION_BRANCH, "--depth", "1",
+            "--single-branch", "--no-tags",
+            "-c", "http.postBuffer=524288000",
+            "-c", "pack.windowMemory=256m",
+            "-c", "pack.packSizeLimit=256m",
+            clean_url, "/workspace"
+        ])
+        
         clone = subprocess.run(
-            ["docker", "exec", "-w", "/", container_name,
-             "git", "clone", "--branch", GIT_INTEGRATION_BRANCH, "--depth", "1",
-             "--single-branch", "--no-tags",
-             "-c", "http.postBuffer=524288000",
-             "-c", "pack.windowMemory=256m",
-             "-c", "pack.packSizeLimit=256m",
-             auth_url, "/workspace"],
+            clone_cmd,
             capture_output=True, text=True, timeout=600,  # Increased to 10 minutes
         )
         if clone.returncode != 0:
@@ -21091,13 +21236,19 @@ async def deploy_preview(
                 ["docker", "exec", "-w", "/", container_name, "sh", "-c", "rm -rf /workspace/*"],
                 capture_output=True, text=True, timeout=10,
             )
+            
+            retry_cmd = ["docker", "exec", "-w", "/", container_name, "git"]
+            retry_cmd.extend(auth_config)  # Add Azure DevOps auth headers if needed
+            retry_cmd.extend([
+                "clone", "--branch", GIT_INTEGRATION_BRANCH, "--depth", "1",
+                "--single-branch", "--no-tags",
+                "-c", "core.compression=0",
+                "-c", "pack.windowMemory=512m",
+                clean_url, "/workspace"
+            ])
+            
             clone_retry = subprocess.run(
-                ["docker", "exec", "-w", "/", container_name,
-                 "git", "clone", "--branch", GIT_INTEGRATION_BRANCH, "--depth", "1",
-                 "--single-branch", "--no-tags",
-                 "-c", "core.compression=0",
-                 "-c", "pack.windowMemory=512m",
-                 auth_url, "/workspace"],
+                retry_cmd,
                 capture_output=True, text=True, timeout=900,  # 15 minutes for retry
             )
             if clone_retry.returncode != 0:
@@ -21162,12 +21313,19 @@ async def deploy_preview(
             ["docker", "exec", container_name, "sh", "-c", "rm -rf /workspace/*"],
             capture_output=True, text=True, timeout=10,
         )
+        
+        # Build git clone command with proper authentication
+        clone2_cmd = ["docker", "exec", "-w", "/", container_name, "git"]
+        clone2_cmd.extend(auth_config)  # Add Azure DevOps auth headers if needed
+        clone2_cmd.extend([
+            "clone", "--branch", GIT_INTEGRATION_BRANCH, "--depth", "1",
+            "--single-branch", "--no-tags",
+            "-c", "http.postBuffer=524288000",
+            clean_url, "/workspace"
+        ])
+        
         clone2 = subprocess.run(
-            ["docker", "exec", "-w", "/", container_name,
-             "git", "clone", "--branch", GIT_INTEGRATION_BRANCH, "--depth", "1",
-             "--single-branch", "--no-tags",
-             "-c", "http.postBuffer=524288000",
-             auth_url, "/workspace"],
+            clone2_cmd,
             capture_output=True, text=True, timeout=600,  # Increased to 10 minutes
         )
         if clone2.returncode != 0:

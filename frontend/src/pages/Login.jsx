@@ -62,7 +62,49 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
             const data = await response.json();
             localStorage.setItem('token', data.access_token);
             
-            // Check if user has a saved progress page
+            // First, check if user has any projects (backend or draft)
+            let hasAnyProjects = false;
+            let lastProjectToken = null;
+            
+            try {
+                // Check backend projects
+                const projectsResponse = await fetch(`${API_BASE_URL}/governance/history`, {
+                    headers: { 'Authorization': `Bearer ${data.access_token}` },
+                });
+                
+                if (projectsResponse.ok) {
+                    const projectsData = await projectsResponse.json();
+                    const submissions = projectsData.submissions || [];
+                    hasAnyProjects = submissions.length > 0;
+                }
+                
+                // Check draft projects in localStorage
+                if (!hasAnyProjects) {
+                    const draftProjectsRaw = localStorage.getItem('draft_projects');
+                    if (draftProjectsRaw) {
+                        try {
+                            const draftProjects = JSON.parse(draftProjectsRaw);
+                            hasAnyProjects = Array.isArray(draftProjects) && draftProjects.length > 0;
+                        } catch {
+                            // Ignore parse errors
+                        }
+                    }
+                }
+            } catch (projectCheckError) {
+                console.debug('Could not check projects:', projectCheckError);
+            }
+            
+            // If no projects exist at all, redirect to new project page
+            if (!hasAnyProjects) {
+                if (nextUrl) {
+                    window.location.assign(appendDsuiteToken(nextUrl, data.access_token));
+                    return;
+                }
+                finishNavigate('/new-project');
+                return;
+            }
+            
+            // User has projects - check if they have a saved progress page
             try {
                 const progressResponse = await fetch(`${API_BASE_URL}/users/me/progress`, {
                     headers: {
@@ -73,6 +115,7 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
                 if (progressResponse.ok) {
                     const progressData = await progressResponse.json();
                     const lastPage = progressData.last_page_path;
+                    lastProjectToken = progressData.last_project_token;
                     
                     // If user has a last page and it's not login/signup, redirect there
                     if (lastPage && lastPage !== '/login' && lastPage !== '/signup' && lastPage !== '/') {
@@ -93,6 +136,8 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
                 window.location.assign(appendDsuiteToken(nextUrl, data.access_token));
                 return;
             }
+            
+            // Default: redirect to status dashboard
             finishNavigate('/status-dashboard');
         } catch {
             setError('Invalid email or password. Please try again.');

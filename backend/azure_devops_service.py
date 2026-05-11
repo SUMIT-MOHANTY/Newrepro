@@ -112,12 +112,18 @@ def parse_azure_repo_url(repo_url: str) -> Dict[str, Optional[str]]:
     if is_project_url:
         if not organization or not project:
             raise ValueError("Unable to parse organization/project from Azure DevOps project URL.")
+        
+        # URL-encode the components for git compatibility
+        from urllib.parse import quote
+        org_encoded = quote(organization, safe='')
+        project_encoded = quote(project, safe='')
+        
         return {
             "organization": organization,
             "project": project,
             "repo": None,
             "branch": None,
-            "url": f"https://dev.azure.com/{organization}/{project}",
+            "url": f"https://dev.azure.com/{org_encoded}/{project_encoded}",
             "is_project_url": True,
         }
 
@@ -127,12 +133,18 @@ def parse_azure_repo_url(repo_url: str) -> Dict[str, Optional[str]]:
 
     inferred_branch = _extract_branch_from_query(parse_qs(parsed.query or ""))
 
+    # URL-encode the components for git compatibility (spaces become %20)
+    from urllib.parse import quote
+    org_encoded = quote(organization, safe='')
+    project_encoded = quote(project, safe='')
+    repo_encoded = quote(repo, safe='')
+
     return {
         "organization": organization,
         "project": project,
         "repo": repo,
         "branch": inferred_branch,
-        "url": f"https://dev.azure.com/{organization}/{project}/_git/{repo}",
+        "url": f"https://dev.azure.com/{org_encoded}/{project_encoded}/_git/{repo_encoded}",
         "is_project_url": False,
     }
 
@@ -162,7 +174,7 @@ async def list_project_repositories(
     if access_token:
         headers["Authorization"] = f"Bearer {access_token}"
     
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
         repos_url = f"https://dev.azure.com/{quote(organization, safe='')}/{quote(project, safe='')}/_apis/git/repositories"
         resp = await client.get(
             repos_url,
@@ -220,7 +232,7 @@ async def is_repo_public(
     This checks if the repo metadata is accessible without a PAT.
     """
     url = _repo_api_base(organization, project, repo)
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
         resp = await client.get(
             url,
             params={"api-version": "7.1"},
@@ -245,7 +257,7 @@ async def _get_repo_metadata(
     pat: Optional[str],
 ) -> Dict[str, Any]:
     url = _repo_api_base(organization, project, repo)
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
         resp = await client.get(
             url,
             params={"api-version": "7.1"},
@@ -275,7 +287,7 @@ async def _list_repo_files(
         "api-version": "7.1",
     }
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
         resp = await client.get(url, params=params, headers=_auth_headers(pat))
         resp.raise_for_status()
         payload = resp.json() if "application/json" in (resp.headers.get("content-type") or "") else {}
@@ -334,7 +346,7 @@ async def _get_file_content(
         "api-version": "7.1",
     }
 
-    async with httpx.AsyncClient(timeout=45.0) as client:
+    async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
         resp = await client.get(url, params=params, headers=_auth_headers(pat))
         if resp.status_code != 200:
             return None

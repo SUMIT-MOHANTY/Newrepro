@@ -1234,6 +1234,19 @@ const Dashboard = ({
         setProjects(builtProjects);
     }, [governanceHistory, history, extractProjectMetaFromDocument, setProjects]);
 
+    // Redirect to new project page if no projects exist and not in new project mode
+    useEffect(() => {
+        if (!projectsLoading && projects.length === 0 && !isNewProjectMode) {
+            // Give a small delay to ensure projects have been loaded
+            const timer = setTimeout(() => {
+                if (projects.length === 0) {
+                    navigate('/new-project');
+                }
+            }, 500);
+            return () => clearTimeout(timer);
+        }
+    }, [projects.length, projectsLoading, isNewProjectMode, navigate]);
+
     useEffect(() => {
         if (projects.length === 0) {
             setSelectedProjectKey('');
@@ -3266,7 +3279,7 @@ const Dashboard = ({
                                                     { label: 'Deployment', value: metrics?.deployment || 'TBD', icon: Server, color: 'text-app-primary', bg: 'bg-app-primary-light' },
                                                     { label: 'Resources', value: metrics?.resources || 'TBD', icon: Users, color: 'text-purple-600', bg: 'bg-purple-50' },
                                                     { label: 'Complexity', value: metrics?.complexity || 'TBD', icon: Activity, color: 'text-orange-600', bg: 'bg-orange-50' },
-                                                    { label: 'Timeline ( For Developer Only Mode)', value: metrics?.timeline || 'TBD', icon: Clock, color: 'text-app-status-success', bg: 'bg-app-status-successBg' }
+                                                    { label: 'Timeline (For Developer Only Mode)', value: metrics?.timeline || 'TBD', icon: Clock, color: 'text-app-status-success', bg: 'bg-app-status-successBg' }
                                                 ];
 
                                                 return metricItems.map((metric, idx) => (
