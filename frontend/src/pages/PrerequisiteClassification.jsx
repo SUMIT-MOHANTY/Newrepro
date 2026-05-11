@@ -1962,23 +1962,23 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     </div>
                 )}
 
-                {/* ── CLAUDE.MD UPLOAD SECTION ── */}
+                {/* ── AI CONTEXT FILES UPLOAD SECTION ── */}
                 <div className="bg-app-bg-card/90 backdrop-blur-xl rounded-2xl shadow-sm border border-app-border-light/80 p-6 mb-6 space-y-4">
                     <div className="flex items-center gap-2 mb-1">
                         <div className="w-8 h-8 rounded-lg bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center">
                             <FileKey className="w-4 h-4 text-violet-600 dark:text-violet-400" />
                         </div>
-                        <h3 className="text-base font-bold text-app-text-main">Claude.md Files</h3>
+                        <h3 className="text-base font-bold text-app-text-main">AI Operational Directives</h3>
                     </div>
                     <p className="text-sm text-app-text-muted">
-                        Upload claude.md files that contain project context, guidelines, or documentation. These files will be available for reference during development.
+                        Upload markdown files that contain project context, guidelines, or documentation. These files will be available for reference during development.
                     </p>
                     
                     {/* Upload Button */}
                     <div className="flex items-center gap-3">
                         <label className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-gradient-to-r from-violet-500 to-purple-600 rounded-lg hover:shadow-lg transition-all cursor-pointer">
                             <Package className="w-4 h-4" />
-                            Upload Claude.md
+                            Upload Context Files
                             <input
                                 type="file"
                                 accept=".md"
@@ -2033,7 +2033,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     
                     <div className="flex items-center gap-2 text-[11px] text-violet-600 dark:text-violet-400 font-medium bg-violet-100 dark:bg-violet-900/30 px-3 py-2 rounded-lg italic">
                         <Info className="w-3.5 h-3.5" />
-                        Claude.md files are saved per project and can be referenced during development.
+                        Context files are saved per project and can be referenced during development.
                     </div>
                 </div>
 
@@ -2043,10 +2043,10 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         <div className="w-8 h-8 rounded-lg bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center">
                             <Sparkles className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
                         </div>
-                        <h3 className="text-base font-bold text-app-text-main">Skills.md Files</h3>
+                        <h3 className="text-base font-bold text-app-text-main">Cognitive Skill Modules</h3>
                     </div>
                     <p className="text-sm text-app-text-muted">
-                        Upload multiple skills.md files that define agent capabilities, coding standards, or specialized knowledge. Each skill can be referenced by agents during task execution.
+                        Upload reusable markdown modules files that define agent capabilities, coding standards, or specialized knowledge. Each skill can be referenced by agents during task execution.
                     </p>
                     
                     {/* Upload Button */}
@@ -2112,7 +2112,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     </div>
                 </div>
 
-                {/* ── CLAUDE.MD VIEWER MODAL ── */}
+                {/* ── AI CONTEXT FILE VIEWER MODAL ── */}
                 {showClaudeMdViewer && (
                     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[9999] p-4">
                         <div className="bg-app-bg-card rounded-2xl shadow-2xl border border-app-border max-w-4xl w-full max-h-[80vh] flex flex-col">
@@ -2124,7 +2124,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                     </div>
                                     <div>
                                         <h3 className="text-lg font-bold text-app-text-main">{selectedClaudeMdName}</h3>
-                                        <p className="text-xs text-app-text-muted">Claude.md File Viewer</p>
+                                        <p className="text-xs text-app-text-muted">Context File Viewer</p>
                                     </div>
                                 </div>
                                 <button
