@@ -24,12 +24,16 @@ class GitManager:
     def _run_git_command(self, project_id: str, args: List[str]) -> Dict[str, Any]:
         workspace_dir = self._get_workspace_dir(project_id)
         try:
+            env = os.environ.copy()
+            env["GIT_TERMINAL_PROMPT"] = "0"
+            
             result = subprocess.run(
                 ["git"] + args,
                 cwd=workspace_dir,
                 capture_output=True,
                 text=True,
-                check=False
+                check=False,
+                env=env
             )
             return {
                 "status": "success" if result.returncode == 0 else "error",
@@ -256,7 +260,7 @@ class GitManager:
     def checkout_commit(self, project_id: str, commit_hash: str) -> Dict[str, Any]:
         return self._run_git_command(project_id, ["checkout", commit_hash])
 
-    def add_remote(self, project_id: str, remote_url: str, remote_name: str = "origin") -> Dict[str, Any]:
+    def add_remote(self, project_id: str, remote_url: str, remote_name: str = "origin", username: Optional[str] = None, token: Optional[str] = None) -> Dict[str, Any]:
         # Clean up the URL - remove trailing slashes and ensure .git extension for GitHub/GitLab URLs
         remote_url = remote_url.strip().rstrip('/')
         if remote_url.startswith("https://") and not remote_url.endswith('.git'):
@@ -267,14 +271,23 @@ class GitManager:
         # Check if remote exists
         check_remotes = self._run_git_command(project_id, ["remote"])
         res = {"status": "success"}
-        if remote_name in check_remotes["stdout"].split():
+        if remote_name in check_remotes.get("stdout", "").split():
             res = self._run_git_command(project_id, ["remote", "set-url", remote_name, remote_url])
         else:
             res = self._run_git_command(project_id, ["remote", "add", remote_name, remote_url])
             
-        # Immediately try to fetch (without credentials here, list_branches will do it with PAT later)
+        # Immediately try to fetch
         if res["status"] == "success":
-            self._run_git_command(project_id, ["fetch", remote_name, "--prune"])
+            fetch_command = ["fetch", remote_name, "--prune"]
+            
+            # If token is provided, inject it for this initial fetch
+            if token and remote_url.startswith("https://"):
+                user_part = f"{username}:" if username else ""
+                auth_url = remote_url.replace("https://", f"https://{user_part}{token}@")
+                # Use authenticated URL for one-time fetch to avoid saving token in repo config
+                fetch_command = ["fetch", auth_url, f"+refs/heads/*:refs/remotes/{remote_name}/*", "--prune"]
+            
+            self._run_git_command(project_id, fetch_command)
             
         return res
 

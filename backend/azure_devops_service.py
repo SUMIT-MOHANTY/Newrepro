@@ -225,21 +225,28 @@ async def is_repo_public(
     organization: str,
     project: str,
     repo: str,
+    pat: Optional[str] = None,
 ) -> bool:
-    """Check if an Azure DevOps repository is accessible without authentication.
-    
-    Note: Azure DevOps repositories are typically private by default.
-    This checks if the repo metadata is accessible without a PAT.
-    """
+    """Check if an Azure DevOps repository is accessible without authentication."""
     url = _repo_api_base(organization, project, repo)
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+    
+    has_pat = bool(pat and len(str(pat).strip()) > 0)
+    import logging
+    logger = logging.getLogger("azure_devops_service")
+    logger.info(f"[is_repo_public] Checking {url} (Using PAT: {has_pat})")
+
+    # Use follow_redirects=False to avoid being pushed to the Microsoft login page
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
         resp = await client.get(
             url,
             params={"api-version": "7.1"},
-            headers=_auth_headers(pat=None),  # No PAT
+            headers=_auth_headers(pat),
         )
-        # If we get 200, it's public (very rare for Azure DevOps)
-        # Most likely 401/403 for private repos
+        
+        if resp.status_code != 200:
+            logger.warning(f"[is_repo_public] Repo {repo} returned {resp.status_code}. Public: False")
+        
+        # If we get 200, it's accessible (either public or PAT works)
         return resp.status_code == 200
 
 

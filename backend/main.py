@@ -4879,19 +4879,25 @@ async def list_project_repos(
         
         # Try OAuth token from user's connected account
         user_token = (current_user.azure_devops_token or "").strip()
-        if user_token:
-            access_token = user_token
+        access_token = user_token or None
         
+        # Try project-level PAT if user-level OAuth is empty
+        db_pat = None
         if not access_token:
+            cred = _resolve_project_global_credential(db, current_user.id, payload.project_token)
+            if cred and cred.git_token:
+                db_pat = cred.git_token
+        
+        if not access_token and not db_pat:
             raise HTTPException(
                 status_code=400,
-                detail="Azure DevOps authentication required. Please connect your Azure DevOps account first."
+                detail="Azure DevOps authentication required. Please connect your account or provide a PAT in project settings."
             )
         
         repos = await azure_devops_service.list_project_repositories(
             organization=payload.organization,
             project=payload.project,
-            pat=None,
+            pat=db_pat,
             access_token=access_token,
         )
         
@@ -4925,6 +4931,7 @@ class AzureDevOpsRepoContextRequest(BaseModel):
     repo_url: str
     token: Optional[str] = None
     branch: Optional[str] = None
+    project_token: Optional[str] = None
 
 
 @app.post("/github/repo-context")
@@ -5070,6 +5077,7 @@ async def github_repo_context(
 async def azure_devops_repo_context(
     payload: AzureDevOpsRepoContextRequest,
     current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Fetch Azure DevOps repository source and return a structured context
@@ -5077,7 +5085,21 @@ async def azure_devops_repo_context(
     """
     provided_token = (payload.token or "").strip() or None
     saved_oauth_token = (current_user.azure_devops_token or "").strip() or None
-    token_to_use = provided_token if provided_token else saved_oauth_token
+    
+    # Try to find a project-specific PAT in the database if no token is provided
+    db_pat = None
+    if not provided_token and not saved_oauth_token:
+        project_token = payload.project_token
+        # If no project_token in payload, try to use user's last active project
+        if not project_token and current_user.last_project_token:
+            project_token = current_user.last_project_token
+            
+        if project_token:
+            cred = _resolve_project_global_credential(db, current_user.id, project_token)
+            if cred and cred.git_token:
+                db_pat = cred.git_token
+
+    token_to_use = provided_token or saved_oauth_token or db_pat
     branch = (payload.branch or "").strip() or None
 
     try:
@@ -5904,6 +5926,7 @@ async def _sanitize_agent_for_user_with_public_check(
                         parsed["organization"],
                         parsed["project"],
                         parsed["repo"],
+                        pat=global_cred.git_token if global_cred else None
                     )
         except Exception:
             # If check fails, default to False (assume private for safety)
