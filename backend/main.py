@@ -8529,6 +8529,7 @@ async def generate_tasks_locally(
                 milestone=task_data.get("milestone", "main"),
                 linked_tasks=linked_tasks,
                 checklist=checklist,
+                selected=False,  # User must explicitly select tasks to sync
                 synced_to_nxdune=False
             )
             db.add(task)
@@ -8538,190 +8539,15 @@ async def generate_tasks_locally(
         
         logger.info(f"Generated and stored {len(stored_tasks)} tasks locally for project {request.project_token}")
         
-        # Create multiple sprints and milestones in external API if task token is provided
-        sprint_ids = []
-        milestone_ids = []
-        sprint_names = []
-        milestone_names = []
-        
-        if x_task_token:
-            try:
-                # Extract unique sprints and milestones from tasks
-                unique_sprints = {}
-                unique_milestones = {}
-                
-                for task in tasks:
-                    sprint_name = task.get("sprint", "Sprint 1")
-                    milestone_name = task.get("milestone", "Milestone 1")
-                    
-                    if sprint_name not in unique_sprints:
-                        unique_sprints[sprint_name] = {
-                            "name": sprint_name,
-                            "start_dates": [],
-                            "deadlines": []
-                        }
-                    
-                    if milestone_name not in unique_milestones:
-                        unique_milestones[milestone_name] = {
-                            "name": milestone_name,
-                            "sprint": sprint_name,
-                            "start_dates": [],
-                            "deadlines": []
-                        }
-                    
-                    # Collect dates for each sprint/milestone
-                    if task.get("startdate"):
-                        unique_sprints[sprint_name]["start_dates"].append(task["startdate"])
-                        unique_milestones[milestone_name]["start_dates"].append(task["startdate"])
-                    if task.get("deadline"):
-                        unique_sprints[sprint_name]["deadlines"].append(task["deadline"])
-                        unique_milestones[milestone_name]["deadlines"].append(task["deadline"])
-                
-                # Create sprints in external API
-                sprint_name_to_id = {}
-                for sprint_name, sprint_data in unique_sprints.items():
-                    sprint_start = min(sprint_data["start_dates"]) if sprint_data["start_dates"] else datetime.now().strftime('%Y-%m-%d')
-                    sprint_deadline = max(sprint_data["deadlines"]) if sprint_data["deadlines"] else (datetime.now() + timedelta(days=14)).strftime('%Y-%m-%d')
-                    
-                    logger.info(f"Creating sprint '{sprint_name}' in external API")
-                    sprint_result = await task_service.create_sprint(
-                        {
-                            "name": sprint_name,
-                            "summary": f"AI-generated sprint for {request.project_token}",
-                            "start_date": sprint_start,
-                            "deadline": sprint_deadline,
-                        },
-                        task_token=x_task_token
-                    )
-                    
-                    if isinstance(sprint_result, dict):
-                        sprint_id = sprint_result.get("id") or sprint_result.get("sprint_id")
-                        if sprint_id:
-                            sprint_ids.append(sprint_id)
-                            sprint_names.append(sprint_name)
-                            sprint_name_to_id[sprint_name] = sprint_id
-                            logger.info(f"Created sprint: ID={sprint_id}, Name={sprint_name}")
-                
-                # Create milestones in external API
-                milestone_name_to_id = {}
-                for milestone_name, milestone_data in unique_milestones.items():
-                    milestone_start = min(milestone_data["start_dates"]) if milestone_data["start_dates"] else datetime.now().strftime('%Y-%m-%d')
-                    milestone_deadline = max(milestone_data["deadlines"]) if milestone_data["deadlines"] else (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d')
-                    
-                    # Get sprint ID for this milestone
-                    milestone_sprint_name = milestone_data["sprint"]
-                    milestone_sprint_id = sprint_name_to_id.get(milestone_sprint_name)
-                    
-                    logger.info(f"Creating milestone '{milestone_name}' in external API")
-                    milestone_result = await task_service.create_milestone(
-                        {
-                            "name": milestone_name,
-                            "sprint_id": milestone_sprint_id,
-                            "start_date": milestone_start,
-                            "deadline": milestone_deadline,
-                        },
-                        task_token=x_task_token
-                    )
-                    
-                    if isinstance(milestone_result, dict):
-                        milestone_id = milestone_result.get("id") or milestone_result.get("milestone_id")
-                        if milestone_id:
-                            milestone_ids.append(milestone_id)
-                            milestone_names.append(milestone_name)
-                            milestone_name_to_id[milestone_name] = milestone_id
-                            logger.info(f"Created milestone: ID={milestone_id}, Name={milestone_name}")
-                
-            except Exception as sprint_milestone_error:
-                logger.warning(f"Failed to create sprints/milestones in external API: {sprint_milestone_error}")
-                # Continue with task sync even if sprint/milestone creation fails
-        
-        # Always sync to NXDUNE via batch file upload if task token is provided
-        synced = False
-        sync_error_detail = None
-        if x_task_token:
-            try:
-                import io
-                import json as json_mod
-                import httpx
-
-                nxdune_base = settings.task_api_base_url.rstrip("/")
-                batch_url = f"{nxdune_base}/api/agent/tasks/batch/"
-
-                # Make task_ids unique per project to avoid NXDUNE duplicate conflicts.
-                # Use a short 6-char hash of the project token as prefix: e.g. "a3f9b2_EPIC-01"
-                import hashlib
-                short_hash = hashlib.md5(request.project_token.encode()).hexdigest()[:6]
-
-                # Valid NXDUNE priority values
-                VALID_PRIORITIES = {"low", "medium", "high"}
-                PRIORITY_MAP = {"critical": "high", "urgent": "high", "normal": "medium", "minor": "low"}
-
-                prefixed_tasks = []
-                for t in tasks:
-                    pt = dict(t)
-                    pt["task_id"] = f"{short_hash}_{pt['task_id']}"
-                    if pt.get("linked_tasks"):
-                        pt["linked_tasks"] = [
-                            f"{short_hash}_{lid}" for lid in pt["linked_tasks"]
-                        ]
-                    # Normalize priority to valid NXDUNE values
-                    raw_priority = str(pt.get("priority") or "medium").lower()
-                    pt["priority"] = PRIORITY_MAP.get(raw_priority, raw_priority) if raw_priority not in VALID_PRIORITIES else raw_priority
-                    
-                    # Map sprint/milestone names to IDs if available
-                    task_sprint_name = pt.get("sprint", "")
-                    task_milestone_name = pt.get("milestone", "")
-                    
-                    if task_sprint_name in sprint_name_to_id:
-                        pt["sprint_id"] = sprint_name_to_id[task_sprint_name]
-                    if task_milestone_name in milestone_name_to_id:
-                        pt["milestone_id"] = milestone_name_to_id[task_milestone_name]
-                    
-                    prefixed_tasks.append(pt)
-
-                # Serialize raw array directly — no wrapper key
-                tasks_json_bytes = json_mod.dumps(prefixed_tasks, ensure_ascii=False, indent=2).encode("utf-8")
-                json_file = io.BytesIO(tasks_json_bytes)
-
-                # Debug: log exact payload being sent to NXDUNE
-                logger.info(f"NXDUNE batch sync payload ({len(prefixed_tasks)} tasks):\n{tasks_json_bytes.decode('utf-8')[:2000]}")
-
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    response = await client.post(
-                        batch_url,
-                        headers={"Authorization": f"Bearer {x_task_token}"},
-                        files={"file": ("tasks.json", json_file, "application/json")},
-                    )
-
-                if response.status_code in (200, 201):
-                    for task in stored_tasks:
-                        task.synced_to_nxdune = True
-                    db.commit()
-                    synced = True
-                    # Use prefixed tasks as the canonical response (IDs match NXDUNE)
-                    tasks = prefixed_tasks
-                    logger.info(f"Synced {len(tasks)} tasks to NXDUNE batch API")
-                else:
-                    sync_error_detail = f"NXDUNE returned {response.status_code}: {response.text[:300]}"
-                    logger.warning(f"NXDUNE batch sync failed — {sync_error_detail}")
-            except Exception as sync_error:
-                sync_error_detail = str(sync_error)
-                logger.warning(f"Failed to sync tasks to NXDUNE: {sync_error_detail}")
-                # Tasks are stored locally — continue regardless
-        
+        # Return success - NO AUTO-SYNC to NxDune
+        # User must explicitly select tasks and click "Sync to NxDune" button
         return {
             "status": "success",
-            "message": f"Generated {len(tasks)} tasks successfully",
+            "message": f"Generated {len(tasks)} tasks successfully. Select tasks to sync to NxDune.",
             "tasks": tasks,
             "tasks_created": len(tasks),
-            "synced_to_nxdune": synced,
-            "sync_error": sync_error_detail if not synced and x_task_token else None,
-            "sprints_created": len(sprint_ids) if x_task_token else 0,
-            "sprint_ids": sprint_ids if x_task_token else [],
-            "sprint_names": sprint_names if x_task_token else [],
-            "milestones_created": len(milestone_ids) if x_task_token else 0,
-            "milestone_ids": milestone_ids if x_task_token else [],
-            "milestone_names": milestone_names if x_task_token else [],
+            "synced_to_nxdune": False,
+            "sync_error": None,
         }
     
     except Exception as e:
@@ -8739,23 +8565,29 @@ async def sync_tasks_to_nxdune(
     db: Session = Depends(get_db),
     x_task_token: Optional[str] = Header(None),
 ):
-    """Sync locally stored (unsynced) tasks to NXDUNE."""
+    """
+    Sync SELECTED locally stored tasks to NXDUNE.
+    Only tasks where selected=True and synced_to_nxdune=False will be synced.
+    """
     if not x_task_token:
         raise HTTPException(status_code=400, detail="X-Task-Token header is required.")
     if not project_token:
         raise HTTPException(status_code=400, detail="project_token query param is required.")
 
-    unsynced = db.query(models.Task).filter(
+    # Get only SELECTED and UNSYNCED tasks
+    selected_unsynced = db.query(models.Task).filter(
         models.Task.project_token == project_token,
         models.Task.owner_id == current_user.id,
+        models.Task.selected == True,
         models.Task.synced_to_nxdune == False,
     ).all()
 
-    if not unsynced:
-        return {"status": "success", "message": "All tasks already synced.", "synced": 0, "failed": 0}
+    if not selected_unsynced:
+        return {"status": "success", "message": "No selected tasks to sync.", "synced": 0, "failed": 0}
 
     try:
         import io, json as json_mod, hashlib, httpx
+        from datetime import datetime, timedelta
 
         nxdune_base = settings.task_api_base_url.rstrip("/")
         batch_url = f"{nxdune_base}/api/agent/tasks/batch/"
@@ -8768,13 +8600,131 @@ async def sync_tasks_to_nxdune(
             prefix = f"{project_token}_"
             return task_id[len(prefix):] if task_id.startswith(prefix) else task_id
 
+        # Extract unique sprints and milestones from selected tasks
+        unique_sprints = {}
+        unique_milestones = {}
+        sprint_name_to_id = {}
+        milestone_name_to_id = {}
+        
+        for t in selected_unsynced:
+            sprint_name = t.sprint or "Sprint 1"
+            milestone_name = t.milestone or "Milestone 1"
+            
+            if sprint_name not in unique_sprints:
+                unique_sprints[sprint_name] = {
+                    "name": sprint_name,
+                    "start_dates": [],
+                    "deadlines": []
+                }
+            
+            if milestone_name not in unique_milestones:
+                unique_milestones[milestone_name] = {
+                    "name": milestone_name,
+                    "sprint": sprint_name,
+                    "start_dates": [],
+                    "deadlines": []
+                }
+            
+            # Collect dates for each sprint/milestone
+            if t.startdate:
+                unique_sprints[sprint_name]["start_dates"].append(t.startdate)
+                unique_milestones[milestone_name]["start_dates"].append(t.startdate)
+            if t.deadline:
+                unique_sprints[sprint_name]["deadlines"].append(t.deadline)
+                unique_milestones[milestone_name]["deadlines"].append(t.deadline)
+        
+        # Create sprints in NxDune
+        logger.info(f"Creating {len(unique_sprints)} sprint(s) in NxDune...")
+        for sprint_name, sprint_data in unique_sprints.items():
+            try:
+                sprint_start = min(sprint_data["start_dates"]) if sprint_data["start_dates"] else datetime.now().strftime('%Y-%m-%d')
+                sprint_deadline = max(sprint_data["deadlines"]) if sprint_data["deadlines"] else (datetime.now() + timedelta(days=14)).strftime('%Y-%m-%d')
+                
+                sprint_result = await task_service.create_sprint(
+                    {
+                        "name": sprint_name,
+                        "summary": f"AI-generated sprint for {project_token}",
+                        "start_date": sprint_start,
+                        "deadline": sprint_deadline,
+                    },
+                    task_token=x_task_token
+                )
+                
+                if isinstance(sprint_result, dict):
+                    sprint_id = sprint_result.get("id") or sprint_result.get("sprint_id")
+                    if sprint_id:
+                        sprint_name_to_id[sprint_name] = sprint_id
+                        logger.info(f"✅ Created sprint: ID={sprint_id}, Name={sprint_name}")
+            except Exception as e:
+                # Sprint might already exist - log and continue
+                logger.warning(f"Sprint '{sprint_name}' creation failed (may already exist): {e}")
+        
+        # Create milestones in NxDune
+        logger.info(f"Creating {len(unique_milestones)} milestone(s) in NxDune...")
+        for milestone_name, milestone_data in unique_milestones.items():
+            try:
+                milestone_start = min(milestone_data["start_dates"]) if milestone_data["start_dates"] else datetime.now().strftime('%Y-%m-%d')
+                milestone_deadline = max(milestone_data["deadlines"]) if milestone_data["deadlines"] else (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d')
+                
+                # Get sprint ID and deadline for this milestone
+                milestone_sprint_name = milestone_data["sprint"]
+                milestone_sprint_id = sprint_name_to_id.get(milestone_sprint_name)
+                
+                # Get sprint deadline to ensure milestone doesn't exceed it
+                sprint_deadline = None
+                for sprint_name, sprint_data in unique_sprints.items():
+                    if sprint_name == milestone_sprint_name and sprint_data["deadlines"]:
+                        sprint_deadline = max(sprint_data["deadlines"])
+                        break
+                
+                # Ensure milestone deadline doesn't exceed sprint deadline
+                if sprint_deadline and milestone_deadline > sprint_deadline:
+                    logger.warning(f"Milestone '{milestone_name}' deadline {milestone_deadline} exceeds sprint deadline {sprint_deadline}, adjusting...")
+                    milestone_deadline = sprint_deadline
+                
+                milestone_result = await task_service.create_milestone(
+                    {
+                        "name": milestone_name,
+                        "sprint_id": milestone_sprint_id,
+                        "start_date": milestone_start,
+                        "deadline": milestone_deadline,
+                    },
+                    task_token=x_task_token
+                )
+                
+                if isinstance(milestone_result, dict):
+                    milestone_id = milestone_result.get("id") or milestone_result.get("milestone_id")
+                    if milestone_id:
+                        milestone_name_to_id[milestone_name] = milestone_id
+                        logger.info(f"✅ Created milestone: ID={milestone_id}, Name={milestone_name}")
+            except Exception as e:
+                # Milestone might already exist - log and continue
+                logger.warning(f"Milestone '{milestone_name}' creation failed (may already exist): {e}")
+
+        # Prepare tasks for batch sync
         prefixed_tasks = []
-        for t in unsynced:
+        for t in selected_unsynced:
             clean_id = _strip_prefix(t.task_id)
             raw_priority = str(t.priority or "medium").lower()
             priority = PRIORITY_MAP.get(raw_priority, raw_priority) if raw_priority not in VALID_PRIORITIES else raw_priority
-            linked = [f"{short_hash}_{lid}" for lid in (t.linked_tasks or [])]
-            prefixed_tasks.append({
+            
+            # Parse linked_tasks - it might be a JSON string
+            linked_tasks_raw = t.linked_tasks or []
+            if isinstance(linked_tasks_raw, str):
+                try:
+                    linked_tasks_raw = json_mod.loads(linked_tasks_raw)
+                except Exception:
+                    linked_tasks_raw = []
+            
+            # Filter and prefix valid linked task IDs
+            linked = []
+            for lid in (linked_tasks_raw if isinstance(linked_tasks_raw, list) else []):
+                lid_str = str(lid).strip()
+                # Only include valid task IDs (not empty, not just brackets)
+                if lid_str and lid_str not in ('[', ']', '[]', ''):
+                    linked.append(f"{short_hash}_{lid_str}")
+            
+            task_dict = {
                 "task_id": f"{short_hash}_{clean_id}",
                 "taskName": t.task_name,
                 "task_type": t.task_type,
@@ -8790,9 +8740,20 @@ async def sync_tasks_to_nxdune(
                 "milestone": t.milestone or "main",
                 "linked_tasks": linked,
                 "checklist": t.checklist or "",
-            })
+            }
+            
+            # Add sprint/milestone IDs if available
+            if t.sprint in sprint_name_to_id:
+                task_dict["sprint_id"] = sprint_name_to_id[t.sprint]
+            if t.milestone in milestone_name_to_id:
+                task_dict["milestone_id"] = milestone_name_to_id[t.milestone]
+            
+            prefixed_tasks.append(task_dict)
 
+        # Sync tasks to NxDune via batch API
         tasks_json_bytes = json_mod.dumps(prefixed_tasks, ensure_ascii=False, indent=2).encode("utf-8")
+        logger.info(f"Syncing {len(prefixed_tasks)} selected task(s) to NxDune...")
+        
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 batch_url,
@@ -8801,19 +8762,52 @@ async def sync_tasks_to_nxdune(
             )
 
         if response.status_code in (200, 201):
-            for t in unsynced:
+            # Mark synced tasks
+            for t in selected_unsynced:
                 t.synced_to_nxdune = True
             db.commit()
-            return {"status": "success", "message": f"Synced {len(unsynced)} tasks to NXDUNE.", "synced": len(unsynced), "failed": 0}
+            logger.info(f"✅ Successfully synced {len(selected_unsynced)} task(s) to NxDune")
+            return {
+                "status": "success",
+                "message": f"Synced {len(selected_unsynced)} selected task(s) to NxDune.",
+                "synced": len(selected_unsynced),
+                "failed": 0,
+                "sprints_created": len(sprint_name_to_id),
+                "milestones_created": len(milestone_name_to_id),
+            }
+        elif response.status_code == 400:
+            # Handle duplicate task errors
+            try:
+                error_data = response.json()
+                if "already exists" in str(error_data).lower():
+                    # Tasks already exist in NxDune, mark them as synced
+                    logger.warning(f"Tasks already exist in NxDune, marking as synced: {error_data}")
+                    for t in selected_unsynced:
+                        t.synced_to_nxdune = True
+                    db.commit()
+                    return {
+                        "status": "success",
+                        "message": f"Tasks already exist in NxDune. Marked {len(selected_unsynced)} task(s) as synced.",
+                        "synced": len(selected_unsynced),
+                        "failed": 0,
+                        "sprints_created": len(sprint_name_to_id),
+                        "milestones_created": len(milestone_name_to_id),
+                        "warning": "Tasks were already present in NxDune"
+                    }
+            except Exception:
+                pass
+            error_detail = f"NxDune returned {response.status_code}: {response.text[:400]}"
+            logger.warning(f"Sync failed — {error_detail}")
+            raise HTTPException(status_code=502, detail=error_detail)
         else:
-            error_detail = f"NXDUNE returned {response.status_code}: {response.text[:400]}"
+            error_detail = f"NxDune returned {response.status_code}: {response.text[:400]}"
             logger.warning(f"Sync failed — {error_detail}")
             raise HTTPException(status_code=502, detail=error_detail)
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Sync to NXDUNE failed: {e}")
+        logger.error(f"Sync to NxDune failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -8842,6 +8836,7 @@ async def get_local_tasks(
         if display_id.startswith(prefix):
             display_id = display_id[len(prefix):]
         return {
+            "id": t.id,  # Database ID for updates
             "task_id": display_id,
             "taskName": t.task_name,
             "task_type": t.task_type,
@@ -8857,6 +8852,7 @@ async def get_local_tasks(
             "reported_by": t.reported_by,
             "linked_tasks": t.linked_tasks or [],
             "checklist": t.checklist,
+            "selected": t.selected,  # Include selection status
             "synced_to_nxdune": t.synced_to_nxdune,
             "nxdune_task_id": t.nxdune_task_id,
         }
@@ -8871,6 +8867,45 @@ async def get_local_tasks(
         "previous": f"?project_token={project_token}&page={page - 1}" if has_prev else None,
         "current_page": page,
         "total_pages": max(1, (total + page_size - 1) // page_size),
+    }
+
+
+class TaskSelectionRequest(BaseModel):
+    task_ids: List[int]
+    selected: bool
+    project_token: str
+
+
+@app.patch("/api/agent/tasks/selection/")
+async def update_task_selection(
+    request: TaskSelectionRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Update the selection status of multiple tasks.
+    This allows users to check/uncheck tasks before syncing to NxDune.
+    """
+    if not request.task_ids:
+        raise HTTPException(status_code=400, detail="task_ids list cannot be empty")
+    
+    # Update tasks
+    updated_count = db.query(models.Task).filter(
+        models.Task.id.in_(request.task_ids),
+        models.Task.project_token == request.project_token,
+        models.Task.owner_id == current_user.id
+    ).update(
+        {"selected": request.selected},
+        synchronize_session=False
+    )
+    
+    db.commit()
+    
+    return {
+        "status": "success",
+        "message": f"Updated {updated_count} task(s)",
+        "updated_count": updated_count,
+        "selected": request.selected
     }
 
 

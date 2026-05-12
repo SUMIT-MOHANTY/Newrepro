@@ -369,7 +369,8 @@ class Task(Base):
     # Checklist
     checklist = Column(Text, nullable=True)  # JSON string of checklist items
     
-    # Sync status
+    # Selection and sync status
+    selected = Column(Boolean, default=False)  # User has selected this task for sync
     synced_to_nxdune = Column(Boolean, default=False)
     nxdune_task_id = Column(Integer, nullable=True)  # ID from NXDUNE after sync
     

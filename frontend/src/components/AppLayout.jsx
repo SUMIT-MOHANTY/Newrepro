@@ -832,7 +832,8 @@ export default function AppLayout({ children }) {
             if (showingResults) {
                 return hasSelectedProjectGovernance ? agentIdx : governanceIdx;
             }
-            return hasSelectedProjectGovernance ? agentIdx : reqIdx;
+            // When on dashboard upload form (not showing results), always show Requirement Screening
+            return reqIdx;
         }
 
         // Agent Analysis page should always show Agent Analysis as active

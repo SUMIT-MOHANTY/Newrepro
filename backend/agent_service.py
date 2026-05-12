@@ -576,7 +576,7 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
             "task_claim_lock": _make_asyncio_lock(),
             "task_progress_state": {},
             "timer_log_state": {},
-            "completed_tasks": [],
+            "completed_tasks": set(),
             "tasks": [],
             "master_task_context": [],
             "brd_analysis": {},
