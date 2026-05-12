@@ -248,6 +248,9 @@ class CoordinatedAgentWrapper:
             self._coordination_monitor()
         )
         
+        # Initialize result to a safe default to prevent UnboundLocalError if execution is cancelled
+        result = {"success": False, "tasks_completed": 0, "failed_tasks": 0}
+        
         try:
             # Run the original agent function
             result = await original_run_agent_func(**kwargs)

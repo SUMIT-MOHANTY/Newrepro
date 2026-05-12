@@ -4699,13 +4699,11 @@ def _build_git_auth_url(repo_url: str, token: str) -> str:
 
     token = token.strip()
 
-    if _is_azure_devops_url(repo_url):
-        # Azure DevOps: keep URL clean; credentials go in the header
-        return repo_url
-
-    # GitHub and other HTTPS providers: embed token in URL
+    # Embed token in URL as user:pass for ALL providers (GitHub, Azure DevOps, etc.)
     if repo_url.startswith("https://"):
-        return repo_url.replace("https://", f"https://{token}@", 1)
+        # Format: https://TOKEN:TOKEN@domain.com/...
+        # This ensures a consistent strategy across all providers.
+        return repo_url.replace("https://", f"https://{token}:{token}@", 1)
 
     return repo_url
 
@@ -4713,41 +4711,13 @@ def _build_git_auth_url(repo_url: str, token: str) -> str:
 def _get_git_auth_config(repo_url: str, token: str) -> list:
     """
     Return a list of git "-c key=value" arguments that authenticate the
-    current Git command without a TTY prompt.
+    current Git command.
 
-    Strategy by provider:
-    - Azure DevOps  → injects an HTTP Basic-Auth header using a Base64-encoded
-      PAT.  The header is attached at the *command* level so it works even in
-      headless Docker containers where ~/.gitconfig may not be loaded and
-      credential helpers cannot prompt.
-    - GitHub / other → returns an EMPTY list because GitHub authentication is
-      already baked into the remote URL by _build_git_auth_url().  Callers
-      must ensure they use the URL returned by _build_git_auth_url() (or
-      _normalize_repo_url() + token embedded via `git remote set-url`) when
-      working with GitHub repos.
-
-    Usage pattern:
-        auth_config = _get_git_auth_config(repo_url, token)
-        cmd = ["git"] + auth_config + ["push", remote_url, branch]
+    Strategy: Returns an EMPTY list because authentication is now baked
+    into the remote URL by _build_git_auth_url() for all providers.
     """
-    import base64
-
-    if not token:
-        return []
-
-    token_clean = token.strip()
-
-    if _is_azure_devops_url(repo_url):
-        # Azure DevOps: Basic Auth via http.extraHeader
-        # Azure DevOps requires a NON-EMPTY username — use "pat" as the placeholder.
-        # The actual PAT goes as the password. Format: base64("pat:YOUR_PAT")
-        # Reference: https://learn.microsoft.com/en-us/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate
-        auth_string = f"pat:{token_clean}"
-        auth_b64 = base64.b64encode(auth_string.encode()).decode()
-        return ["-c", f"http.extraHeader=Authorization: Basic {auth_b64}"]
-
-    # GitHub and other providers: no extra git config needed; auth is in the URL.
     return []
+
 
 
 def _to_single_line(value: str, limit: int = 260) -> str:
@@ -5475,13 +5445,13 @@ async def _refresh_workspace_contract_from_git_repo(
         if not toolchain_result.get("success"):
             return {"success": False, "error": toolchain_result.get("error") or "toolchain verification failed"}
 
-        clean_url = _normalize_repo_url(repo_value)
+        auth_url = _build_git_auth_url(repo_value, token)
         auth_config = _get_git_auth_config(repo_value, token)
         
         # Build git clone command with proper authentication
         clone_cmd = ["docker", "exec", container_name, "git"]
-        clone_cmd.extend(auth_config)  # Add Azure DevOps auth headers if needed
-        clone_cmd.extend(["clone", "--depth", "1", clean_url, "/workspace"])
+        clone_cmd.extend(auth_config)
+        clone_cmd.extend(["clone", "--depth", "1", auth_url, "/workspace"])
         
         clone = subprocess.run(
             clone_cmd,
@@ -6450,13 +6420,13 @@ async def _run_integration_check(project_token: Optional[str]) -> None:
             capture_output=True, timeout=30,
         )
 
-        clean_url = _normalize_repo_url(git_repo_url)
+        auth_url = _build_git_auth_url(git_repo_url, git_token)
         auth_config = _get_git_auth_config(git_repo_url, git_token)
         
         # Build git clone command with proper authentication
         clone_cmd = ["docker", "exec", container_name, "git"]
-        clone_cmd.extend(auth_config)  # Add Azure DevOps auth headers if needed
-        clone_cmd.extend(["clone", clean_url, "/workspace"])
+        clone_cmd.extend(auth_config)
+        clone_cmd.extend(["clone", auth_url, "/workspace"])
         
         clone = subprocess.run(
             clone_cmd,
@@ -6583,10 +6553,11 @@ If no issues: output NO_ISSUES_FOUND"""},
                 capture_output=True, text=True, timeout=30,
             )
             if commit.returncode == 0:
+                auth_url = _build_git_auth_url(git_repo_url, git_token)
                 auth_config = _get_git_auth_config(git_repo_url, git_token)
                 push_cmd = ["docker", "exec", "-w", "/workspace", container_name, "git"]
                 push_cmd.extend(auth_config)
-                push_cmd.extend(["push", _normalize_repo_url(git_repo_url), f"HEAD:{GIT_INTEGRATION_BRANCH}"])
+                push_cmd.extend(["push", auth_url, f"HEAD:{GIT_INTEGRATION_BRANCH}"])
                 
                 subprocess.run(
                     push_cmd,
@@ -6673,13 +6644,13 @@ async def _run_integration_check(project_token: Optional[str]) -> None:
             capture_output=True, timeout=30,
         )
         
-        clean_url = _normalize_repo_url(git_repo_url)
+        auth_url = _build_git_auth_url(git_repo_url, git_token)
         auth_config = _get_git_auth_config(git_repo_url, git_token)
         
         # Build git clone command with proper authentication
         clone_cmd = ["docker", "exec", container_name, "git"]
-        clone_cmd.extend(auth_config)  # Add Azure DevOps auth headers if needed
-        clone_cmd.extend(["clone", clean_url, "/workspace"])
+        clone_cmd.extend(auth_config)
+        clone_cmd.extend(["clone", auth_url, "/workspace"])
         
         clone = subprocess.run(
             clone_cmd,
@@ -6796,10 +6767,11 @@ If no issues: output NO_ISSUES_FOUND"""},
                 capture_output=True, text=True, timeout=30,
             )
             if commit.returncode == 0:
+                auth_url = _build_git_auth_url(git_repo_url, git_token)
                 auth_config = _get_git_auth_config(git_repo_url, git_token)
                 push_cmd = ["docker", "exec", "-w", "/workspace", container_name, "git"]
                 push_cmd.extend(auth_config)
-                push_cmd.extend(["push", _normalize_repo_url(git_repo_url), f"HEAD:{GIT_INTEGRATION_BRANCH}"])
+                push_cmd.extend(["push", auth_url, f"HEAD:{GIT_INTEGRATION_BRANCH}"])
                 
                 subprocess.run(
                     push_cmd,
@@ -7664,13 +7636,13 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
             )
 
             # Clone repo only once
-            clean_url = _normalize_repo_url(repo_url)
+            auth_url = _build_git_auth_url(repo_url, token)
             auth_config = _get_git_auth_config(repo_url, token)
             
             # Build git clone command with proper authentication
             clone_cmd = ["docker", "exec", container_name, "git"]
-            clone_cmd.extend(auth_config)  # Add Azure DevOps auth headers if needed
-            clone_cmd.extend(["clone", clean_url, "/workspace"])
+            clone_cmd.extend(auth_config)
+            clone_cmd.extend(["clone", auth_url, "/workspace"])
             
             clone = subprocess.run(
                 clone_cmd,
@@ -8247,9 +8219,10 @@ async def _wait_for_and_rebase_bootstrap_branch(
     while time.time() < deadline:
         try:
             auth_config = _get_git_auth_config(repo_url, token)
+            auth_url = _build_git_auth_url(repo_url, token)
             ls_cmd = ["git"]
             ls_cmd.extend(auth_config)
-            ls_cmd.extend(["ls-remote", "--heads", _normalize_repo_url(repo_url), f"refs/heads/{bootstrap_branch}"])
+            ls_cmd.extend(["ls-remote", "--heads", auth_url, f"refs/heads/{bootstrap_branch}"])
             
             check = subprocess.run(
                 ls_cmd,
@@ -8381,8 +8354,8 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
             )
 
         # 3. Clone repo into /workspace/
-        # Use normalized URL and proper authentication method
-        clean_url = _normalize_repo_url(repo_url)
+        # Use AUTHENTICATED URL to ensure no interactive prompt occurs
+        auth_url = _build_git_auth_url(repo_url, token)
         auth_config = _get_git_auth_config(repo_url, token)
         
         subprocess.run(
@@ -8393,8 +8366,8 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
         # Try cloning the specific branch directly for efficiency.
         # This ensures non-bootstrap agents clone from the bootstrap branch directly.
         clone_cmd = ["docker", "exec", container_name, "git"]
-        clone_cmd.extend(auth_config)  # Add Azure DevOps auth headers if needed
-        clone_cmd.extend(["clone", "--branch", branch_name, clean_url, "/workspace"])
+        clone_cmd.extend(auth_config)
+        clone_cmd.extend(["clone", "--branch", branch_name, auth_url, "/workspace"])
         
         clone = subprocess.run(
             clone_cmd,
@@ -8410,8 +8383,8 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
             )
             
             fallback_cmd = ["docker", "exec", container_name, "git"]
-            fallback_cmd.extend(auth_config)  # Add Azure DevOps auth headers if needed
-            fallback_cmd.extend(["clone", clean_url, "/workspace"])
+            fallback_cmd.extend(auth_config)
+            fallback_cmd.extend(["clone", auth_url, "/workspace"])
             
             clone = subprocess.run(
                 fallback_cmd,
@@ -8421,9 +8394,8 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
                 return {"success": False, "error": f"Git clone failed: {clone.stderr}"}
 
         # Ensure the remote URL has credentials embedded so push works without a TTY.
-        # For Azure DevOps this is handled via credential.helper; for GitHub/others we
-        # set the remote URL directly so git never needs to prompt interactively.
-        if token and not _is_azure_devops_url(repo_url):
+        # This is now standard for all providers to guarantee non-interactive operation.
+        if token:
             auth_url = _build_git_auth_url(repo_url, token)
             subprocess.run(
                 ["docker", "exec", "-w", "/workspace", container_name,
@@ -17621,10 +17593,11 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                             
                             try:
                                 # List ALL remote branches
+                                auth_url = _build_git_auth_url(git_url, git_token)
                                 auth_config = _get_git_auth_config(git_url, git_token)
                                 ls_cmd = ["git"]
                                 ls_cmd.extend(auth_config)
-                                ls_cmd.extend(["ls-remote", "--heads", _normalize_repo_url(git_url)])
+                                ls_cmd.extend(["ls-remote", "--heads", auth_url])
                                 
                                 ls_remote = subprocess.run(
                                     ls_cmd,
@@ -17744,10 +17717,12 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                                         set_bootstrap_branch(project_token, bootstrap_branch)
                                 if not bootstrap_branch and git_url:
                                     try:
-                                        auth_config2 = _get_git_auth_config(git_url, agent.get("git_token", ""))
+                                        _git_token = agent.get("git_token", "")
+                                        auth_url2 = _build_git_auth_url(git_url, _git_token)
+                                        auth_config2 = _get_git_auth_config(git_url, _git_token)
                                         ls_cmd2 = ["git"]
                                         ls_cmd2.extend(auth_config2)
-                                        ls_cmd2.extend(["ls-remote", "--heads", _normalize_repo_url(git_url)])
+                                        ls_cmd2.extend(["ls-remote", "--heads", auth_url2])
                                         
                                         _ls2 = subprocess.run(
                                             ls_cmd2,
@@ -21440,16 +21415,19 @@ async def deploy_preview(
             capture_output=True, text=True, timeout=10,
         )
         
+        auth_url = _build_git_auth_url(git_repo_url, git_token)
+        auth_config = _get_git_auth_config(git_repo_url, git_token)
+        
         # Build git clone command with proper authentication
         clone_cmd = ["docker", "exec", "-w", "/", container_name, "git"]
-        clone_cmd.extend(auth_config)  # Add Azure DevOps auth headers if needed
+        clone_cmd.extend(auth_config)
         clone_cmd.extend([
             "clone", "--branch", GIT_INTEGRATION_BRANCH, "--depth", "1",
             "--single-branch", "--no-tags",
             "-c", "http.postBuffer=524288000",
             "-c", "pack.windowMemory=256m",
             "-c", "pack.packSizeLimit=256m",
-            clean_url, "/workspace"
+            auth_url, "/workspace"
         ])
         
         clone = subprocess.run(
@@ -21467,14 +21445,15 @@ async def deploy_preview(
                 capture_output=True, text=True, timeout=10,
             )
             
+            auth_url = _build_git_auth_url(git_repo_url, git_token)
             retry_cmd = ["docker", "exec", "-w", "/", container_name, "git"]
-            retry_cmd.extend(auth_config)  # Add Azure DevOps auth headers if needed
+            retry_cmd.extend(auth_config)
             retry_cmd.extend([
                 "clone", "--branch", GIT_INTEGRATION_BRANCH, "--depth", "1",
                 "--single-branch", "--no-tags",
                 "-c", "core.compression=0",
                 "-c", "pack.windowMemory=512m",
-                clean_url, "/workspace"
+                auth_url, "/workspace"
             ])
             
             clone_retry = subprocess.run(
@@ -21544,14 +21523,17 @@ async def deploy_preview(
             capture_output=True, text=True, timeout=10,
         )
         
+        auth_url = _build_git_auth_url(git_repo_url, git_token)
+        auth_config = _get_git_auth_config(git_repo_url, git_token)
+        
         # Build git clone command with proper authentication
         clone2_cmd = ["docker", "exec", "-w", "/", container_name, "git"]
-        clone2_cmd.extend(auth_config)  # Add Azure DevOps auth headers if needed
+        clone2_cmd.extend(auth_config)
         clone2_cmd.extend([
             "clone", "--branch", GIT_INTEGRATION_BRANCH, "--depth", "1",
             "--single-branch", "--no-tags",
             "-c", "http.postBuffer=524288000",
-            clean_url, "/workspace"
+            auth_url, "/workspace"
         ])
         
         clone2 = subprocess.run(
