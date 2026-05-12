@@ -2329,7 +2329,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                             <div className="flex items-start gap-2">
                                                 <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 mt-0.5 flex-shrink-0" />
                                                 <div className="flex-1 min-w-0">
-                                                    <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">
+                                                    <p className="text-sm font-semibold text-emerald-700 dark:text-dark-300">
                                                         {gitValidationResult.message}
                                                     </p>
                                                     {gitValidationResult.normalized_url && gitValidationResult.normalized_url !== globalGitRepoUrl && (
