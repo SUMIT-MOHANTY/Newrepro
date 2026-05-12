@@ -5633,6 +5633,17 @@ def _ensure_default_governance_questions(db: Session) -> None:
 
 # Seed sample tasks on startup
 def _startup_init() -> None:
+    # Ensure Docker image is ready before anything else
+    print("🚀 Initializing Docker runtime environment...")
+    img_res = agent_service._ensure_agent_runtime_image()
+    if img_res.get("success"):
+        if img_res.get("built"):
+            print("✅ Docker image built successfully.")
+        else:
+            print("✅ Docker image verified (already exists).")
+    else:
+        print(f"❌ Docker initialization failed: {img_res.get('error')}")
+
     agent_service.seed_sample_tasks()
     db = SessionLocal()
     try:
