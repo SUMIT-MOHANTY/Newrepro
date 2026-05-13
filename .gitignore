@@ -54,3 +54,5 @@ backend/add_new_col.py
 backend/logs/agent_service.txt
 backend/logs/code_generation.txt
 backend/logs/self_review.txt
+vibecoding/backend/vibecoding_users.db-shm
+vibecoding/backend/vibecoding_users.db-wal
