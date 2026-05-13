@@ -3138,11 +3138,19 @@ async def submit_governance_response(
             models.GovernanceResponse.project_token == project_token,
         ).first()
         if not db_response:
+            # Check if another user has this token
             conflicting_response = db.query(models.GovernanceResponse).filter(
                 models.GovernanceResponse.project_token == project_token,
             ).first()
             if conflicting_response and conflicting_response.owner_id != current_user.id:
-                raise HTTPException(status_code=403, detail="Project token is not available for this user")
+                # Generate a new unique token for this user instead of throwing an error
+                # This handles cases where tokens might collide (e.g., cached tokens, incognito mode)
+                project_token = str(uuid.uuid4())
+                # Verify the new token is unique
+                while db.query(models.GovernanceResponse).filter(
+                    models.GovernanceResponse.project_token == project_token
+                ).first():
+                    project_token = str(uuid.uuid4())
 
     if db_response:
         db_response.project_name = request.project_name

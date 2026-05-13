@@ -1449,9 +1449,25 @@ const Dashboard = ({
     };
 
     const handleUpload = async (e) => {
-        const taskKey = selectedProjectKey;
-        const taskFiles = activeTab === 'linked-doc' ? linkedFiles : files;
         e.preventDefault();
+        
+        // CRITICAL FIX: Generate project token if it doesn't exist (new user in incognito mode)
+        let taskKey = selectedProjectKey;
+        if (!taskKey || taskKey.trim() === '') {
+            // Generate a unique project token for this new project
+            taskKey = `proj_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
+            // Set it immediately so it's available for the rest of the flow
+            setSelectedProjectKey(taskKey);
+            
+            // Create a draft project entry immediately
+            upsertDraftProject({
+                key: taskKey,
+                name: governanceContext?.project_name || 'New Project',
+                status: 'initiated',
+            });
+        }
+        
+        const taskFiles = activeTab === 'linked-doc' ? linkedFiles : files;
 
         if (!selectedProject) {
             setError('Select a project from the sidebar before uploading a BRD.');
