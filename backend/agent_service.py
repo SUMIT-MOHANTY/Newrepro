@@ -576,7 +576,7 @@ def _ensure_project_state(project_token: Optional[str]) -> Dict[str, Any]:
             "task_claim_lock": _make_asyncio_lock(),
             "task_progress_state": {},
             "timer_log_state": {},
-            "completed_tasks": set(),
+            "completed_tasks": [],
             "tasks": [],
             "master_task_context": [],
             "brd_analysis": {},
@@ -15638,12 +15638,8 @@ async def _post_task_complete(task: Dict[str, Any], project_token: Optional[str]
             state = _ensure_project_state(resolved_project)
             if task_id not in state.get("completed_tasks", set()):
                 completed = state.setdefault("completed_tasks", [])
-                if isinstance(completed, set):
-                    completed.add(task_id)
-                else:
-                    if task_id not in completed:
-                        completed.append(task_id)
-            
+                if task_id not in completed:
+                    completed.append(task_id)
             # Remove from claimed tasks
             state.get("claimed_task_ids", set()).discard(task_id)
             

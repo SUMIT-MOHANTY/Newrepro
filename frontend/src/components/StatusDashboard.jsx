@@ -2518,14 +2518,15 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                 </div>
                                                 <div>
                                                     <h3 className="text-sm font-bold text-app-text-main uppercase tracking-wide">Vibe Coding Mode</h3>
-                                                    <p className="text-xs text-app-text-light mt-0.5">AI-powered development workspace</p>
+                                                    <p className="text-xs text-app-text-dark mt-0.5">AI-powered development workspace</p>
                                                 </div>
                                             </div>
-                                            <p className="text-xs text-app-text-light mb-4">
+                                            <p className="text-xs text-app-text-dark mb-4">
                                                 Your project is configured for Vibe Coding. Open the VibeCoding workspace to start building with AI assistance.
                                             </p>
                                             <button
                                                 onClick={async () => {
+                                                    const selectedProject = projects.find(p => p.key === selectedProjectKey);
                                                     const baseUrl = `${VIBE_WORKSPACE_URL}/a/${selectedProjectKey}?name=${encodeURIComponent(selectedProject?.name || selectedProjectKey)}&mode=vibe_coding`;
                                                     try {
                                                         const token = localStorage.getItem('token');
