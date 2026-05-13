@@ -20,10 +20,11 @@ mermaid.initialize({
 });
 
 // Mermaid Diagram Component
-const MermaidDiagram = ({ code }) => {
+const MermaidDiagram = ({ code, showDownload = true }) => {
     const containerRef = useRef(null);
     const [svg, setSvg] = useState('');
     const [error, setError] = useState(null);
+    const [downloading, setDownloading] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
@@ -47,6 +48,91 @@ const MermaidDiagram = ({ code }) => {
         return () => { cancelled = true; };
     }, [code]);
 
+    const handleDownloadPNG = async () => {
+        if (!svg || !containerRef.current) return;
+        
+        setDownloading(true);
+        try {
+            // Get the SVG element
+            const svgElement = containerRef.current.querySelector('svg');
+            if (!svgElement) {
+                throw new Error('SVG element not found');
+            }
+
+            // Clone the SVG to avoid modifying the original
+            const clonedSvg = svgElement.cloneNode(true);
+            
+            // Get SVG dimensions
+            const bbox = svgElement.getBBox();
+            const width = bbox.width || svgElement.width.baseVal.value || 800;
+            const height = bbox.height || svgElement.height.baseVal.value || 600;
+            
+            // Set explicit dimensions on cloned SVG
+            clonedSvg.setAttribute('width', width);
+            clonedSvg.setAttribute('height', height);
+            clonedSvg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+            
+            // Convert SVG to string and encode as data URL to avoid CORS issues
+            const svgString = new XMLSerializer().serializeToString(clonedSvg);
+            const svgDataUrl = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgString)));
+
+            // Create an image element
+            const img = new Image();
+            img.onload = () => {
+                try {
+                    // Create canvas
+                    const canvas = document.createElement('canvas');
+                    const scale = 2; // Higher resolution
+                    canvas.width = width * scale;
+                    canvas.height = height * scale;
+                    
+                    const ctx = canvas.getContext('2d');
+                    ctx.scale(scale, scale);
+                    
+                    // Fill white background
+                    ctx.fillStyle = 'white';
+                    ctx.fillRect(0, 0, width, height);
+                    
+                    // Draw the image
+                    ctx.drawImage(img, 0, 0, width, height);
+                    
+                    // Convert to PNG and download
+                    canvas.toBlob((blob) => {
+                        if (!blob) {
+                            throw new Error('Failed to create image blob');
+                        }
+                        const url = URL.createObjectURL(blob);
+                        const link = document.createElement('a');
+                        link.href = url;
+                        link.download = `architecture-diagram-${Date.now()}.png`;
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                        URL.revokeObjectURL(url);
+                        setDownloading(false);
+                    }, 'image/png');
+                } catch (err) {
+                    console.error('Canvas error:', err);
+                    setDownloading(false);
+                    alert('Failed to export diagram. Please try again.');
+                }
+            };
+            
+            img.onerror = (err) => {
+                console.error('Image load error:', err);
+                setDownloading(false);
+                alert('Failed to load diagram for export. Please try again.');
+            };
+            
+            // Use data URL instead of blob URL to avoid CORS issues
+            img.src = svgDataUrl;
+        } catch (err) {
+            console.error('Download error:', err);
+            alert('Failed to download diagram. Please try again.');
+            setDownloading(false);
+        }
+    };
+
     if (error) {
         return (
             <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm font-mono my-4">
@@ -66,6 +152,28 @@ const MermaidDiagram = ({ code }) => {
 
     return (
         <div className="my-6 p-4 bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+            {showDownload && (
+                <div className="flex justify-end mb-2">
+                    <button
+                        onClick={handleDownloadPNG}
+                        disabled={downloading}
+                        className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed rounded-lg shadow-sm transition-all"
+                        title="Download as PNG"
+                    >
+                        {downloading ? (
+                            <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                Downloading...
+                            </>
+                        ) : (
+                            <>
+                                <Download className="w-3.5 h-3.5" />
+                                Download PNG
+                            </>
+                        )}
+                    </button>
+                </div>
+            )}
             <div
                 ref={containerRef}
                 className="flex justify-center [&>svg]:max-w-full"
