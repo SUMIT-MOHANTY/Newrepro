@@ -2527,7 +2527,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                             <button
                                                 onClick={async () => {
                                                     const selectedProject = projects.find(p => p.key === selectedProjectKey);
-                                                    const baseUrl = `${VIBE_WORKSPACE_URL}/a/${selectedProjectKey}?name=${encodeURIComponent(selectedProject?.name || selectedProjectKey)}&mode=vibe_coding`;
+                                                    const workspaceUrl = VIBE_WORKSPACE_URL.endsWith('/') ? VIBE_WORKSPACE_URL.slice(0, -1) : VIBE_WORKSPACE_URL;
+                                                    const baseUrl = `${workspaceUrl}/a/${selectedProjectKey}?name=${encodeURIComponent(selectedProject?.name || selectedProjectKey)}&mode=vibe_coding`;
                                                     try {
                                                         const token = localStorage.getItem('token');
                                                         const res = await fetch(API_ENDPOINTS.VIBECODING_HANDOFF, {
