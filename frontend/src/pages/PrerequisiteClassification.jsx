@@ -1915,11 +1915,30 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
                                                 {/* Content */}
                                                 <div className="flex-1 min-w-0">
-                                                    <div className="flex items-center gap-2 mb-1 flex-wrap">
-                                                        <span className={`text-sm font-semibold ${item.provided ? 'text-app-text-muted' : 'text-app-text-main'}`}>
-                                                            {item.name}
-                                                        </span>
-                                                        <PriorityBadge priority={item.priority} />
+                                                    <div className="flex items-center justify-between gap-2 mb-1 flex-wrap">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className={`text-sm font-semibold ${item.provided ? 'text-app-text-muted' : 'text-app-text-main'}`}>
+                                                                {item.name}
+                                                            </span>
+                                                            <PriorityBadge priority={item.priority} />
+                                                        </div>
+                                                        {/* Secret flag toggle - moved to right side */}
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => toggleSecret(item.id)}
+                                                            className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium transition-colors ${item.containsSecret
+                                                                ? 'border-red-200 bg-app-status-errorBg text-app-status-error'
+                                                                : 'border-app-border bg-app-bg-page text-app-text-label hover:bg-app-bg-muted'
+                                                                }`}
+                                                            title="Mark as sensitive (will be excluded from AI payload)"
+                                                        >
+                                                            {item.containsSecret ? (
+                                                                <CheckCircle2 className="w-3.5 h-3.5 text-app-status-error" />
+                                                            ) : (
+                                                                <Circle className="w-3.5 h-3.5 text-app-text-light" />
+                                                            )}
+                                                            Sensitive
+                                                        </button>
                                                     </div>
                                                     <p className="text-xs text-app-text-muted leading-relaxed mb-2.5 max-w-2xl">
                                                         {item.description}
@@ -1972,24 +1991,6 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                                             )}
                                                         </div>
                                                     )}
-
-                                                    {/* Secret flag toggle */}
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => toggleSecret(item.id)}
-                                                        className={`mt-2 inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium transition-colors ${item.containsSecret
-                                                            ? 'border-red-200 bg-app-status-errorBg text-app-status-error'
-                                                            : 'border-app-border bg-app-bg-page text-app-text-label hover:bg-app-bg-muted'
-                                                            }`}
-                                                        title="Mark as sensitive (will be excluded from AI payload)"
-                                                    >
-                                                        {item.containsSecret ? (
-                                                            <CheckCircle2 className="w-3.5 h-3.5 text-app-status-error" />
-                                                        ) : (
-                                                            <Circle className="w-3.5 h-3.5 text-app-text-light" />
-                                                        )}
-                                                        Sensitive
-                                                    </button>
                                                 </div>
                                             </div>
                                         ))}

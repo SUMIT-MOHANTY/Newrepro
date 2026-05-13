@@ -27,7 +27,7 @@ clear_ports
 
 echo "Starting Backend..."
 cd backend
-source venv/bin/activate
+source venv/Scripts/activate
 uvicorn main:app --reload --port 8000 &
 BACKEND_PID=$!
 cd ..
