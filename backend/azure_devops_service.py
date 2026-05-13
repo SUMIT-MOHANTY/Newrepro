@@ -221,15 +221,32 @@ def _auth_headers(pat: Optional[str]) -> Dict[str, str]:
     return headers
 
 
+import time
+_REPO_PUBLIC_CACHE: Dict[str, Tuple[bool, float]] = {}
+_CACHE_TTL_SECONDS = 600  # 10 minutes
+
 async def is_repo_public(
     organization: str,
     project: str,
     repo: str,
     pat: Optional[str] = None,
 ) -> bool:
-    """Check if an Azure DevOps repository is accessible without authentication."""
+    """
+    Check if an Azure DevOps repository is accessible. 
+    Results are cached permanently for the current PAT/URL combination.
+    """
     url = _repo_api_base(organization, project, repo)
     
+    # Create a unique cache key based on repo and PAT
+    pat_key = str(pat or "")[-8:] # Use last 8 chars of PAT for the key
+    cache_key = f"{url}:{pat_key}"
+    
+    current_time = time.time()
+    # If we have already checked this specific combination, return the cached result
+    if cache_key in _REPO_PUBLIC_CACHE:
+        result, _ = _REPO_PUBLIC_CACHE[cache_key]
+        return result
+
     has_pat = bool(pat and len(str(pat).strip()) > 0)
     import logging
     logger = logging.getLogger("azure_devops_service")
@@ -237,17 +254,24 @@ async def is_repo_public(
 
     # Use follow_redirects=False to avoid being pushed to the Microsoft login page
     async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
-        resp = await client.get(
-            url,
-            params={"api-version": "7.1"},
-            headers=_auth_headers(pat),
-        )
-        
-        if resp.status_code != 200:
-            logger.warning(f"[is_repo_public] Repo {repo} returned {resp.status_code}. Public: False")
-        
-        # If we get 200, it's accessible (either public or PAT works)
-        return resp.status_code == 200
+        try:
+            resp = await client.get(
+                url,
+                params={"api-version": "7.1"},
+                headers=_auth_headers(pat),
+            )
+            
+            is_accessible = (resp.status_code == 200)
+            
+            if not is_accessible:
+                logger.warning(f"[is_repo_public] Repo {repo} returned {resp.status_code}. Accessible: False")
+            
+            # Update cache
+            _REPO_PUBLIC_CACHE[cache_key] = (is_accessible, current_time)
+            return is_accessible
+        except Exception as e:
+            logger.error(f"[is_repo_public] Error checking repo {repo}: {e}")
+            return False
 
 
 def _repo_api_base(organization: str, project: str, repo: str) -> str:

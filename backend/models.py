@@ -2,6 +2,7 @@ from datetime import datetime
 from sqlalchemy import Boolean, Column, Integer, String, ForeignKey, DateTime, Text, JSON, Float, UniqueConstraint
 from sqlalchemy.orm import relationship
 from database import Base
+from models_bootstrap_state import BootstrapState
 
 class User(Base):
     __tablename__ = "users"
@@ -368,7 +369,8 @@ class Task(Base):
     # Checklist
     checklist = Column(Text, nullable=True)  # JSON string of checklist items
     
-    # Sync status
+    # Selection and sync status
+    selected = Column(Boolean, default=False)  # User has selected this task for sync
     synced_to_nxdune = Column(Boolean, default=False)
     nxdune_task_id = Column(Integer, nullable=True)  # ID from NXDUNE after sync
     

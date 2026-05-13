@@ -117,7 +117,7 @@ def _build_registration_email(
                 <!-- Password row -->
                 <tr>
                   <td style="padding:16px 24px 20px;">
-                    <span style="display:block;color:#475569;font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:5px;">Temporary Password</span>
+                    <span style="display:block;color:#475569;font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:5px;">Password</span>
                     <table cellpadding="0" cellspacing="0" border="0">
                       <tr>
                         <td style="background-color:#1e2130;border-radius:6px;padding:8px 14px;border:1px solid #2d3548;">

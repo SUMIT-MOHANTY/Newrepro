@@ -198,6 +198,14 @@ async def acquire_file_lock(
             if existing:
                 age = time.time() - existing.get("acquired_at", 0)
                 holder = existing.get("agent_id", "")
+                
+                # Check if we already hold this lock
+                if holder == agent_id:
+                    # Update timestamp to keep it fresh
+                    existing["acquired_at"] = time.time()
+                    logger.debug(f"[{agent_id}] Renewed existing lock: {file_path}")
+                    return True
+
                 if age > 300 or _is_agent_crashed(project_token, holder):
                     # Stale lock — take it over
                     logger.warning(f"[{agent_id}] Taking over stale lock on {file_path} from {holder}")

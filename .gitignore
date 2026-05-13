@@ -56,3 +56,8 @@ backend/test_azure_auth.py
 backend/logs/ai_service.txt
 backend/logs/stage_summary.json
 backend/logs/agent_service.txt
+backend/logs/agent_service.txt
+backend/logs/code_generation.txt
+backend/logs/self_review.txt
+vibecoding/backend/vibecoding_users.db-shm
+vibecoding/backend/vibecoding_users.db-wal

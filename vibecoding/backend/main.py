@@ -2067,7 +2067,13 @@ async def git_remote(request: GitRequest):
     try:
         if not request.remote_url:
             raise HTTPException(status_code=400, detail="Remote URL is required")
-        result = git_manager.add_remote(request.project_id, request.remote_url, request.remote_name)
+        result = git_manager.add_remote(
+            request.project_id, 
+            request.remote_url, 
+            request.remote_name,
+            request.username,
+            request.token
+        )
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
