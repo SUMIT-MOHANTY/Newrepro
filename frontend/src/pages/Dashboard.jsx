@@ -2439,50 +2439,78 @@ const Dashboard = ({
 
     const handleCreateRevision = async () => {
         if (!selectedProject) return;
-        const reason = await customPrompt(
-            `Provide a reason for creating a new revision for "${selectedProject.name}".`,
-            'Create New Revision',
-            '',
-            'Enter revision reason...'
-        );
-        if (!reason || !reason.trim()) {
-            return;
-        }
-
-        const trimmedReason = reason.trim();
-        const govId = selectedProject.governanceResultId;
-
-        // Save immediately to backend so it persists across logouts
-        if (govId) {
-            try {
-                const token = localStorage.getItem('token');
-                if (token) {
-                    await fetch(API_ENDPOINTS.GOVERNANCE_REVISION_REASON(govId), {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            Authorization: `Bearer ${token}`
-                        },
-                        body: JSON.stringify({ reason: trimmedReason })
-                    });
-                }
-            } catch (e) {
-                console.error("Failed to save revision reason to backend", e);
+        
+        try {
+            const reason = await customPrompt(
+                `Provide a reason for creating a new revision for "${selectedProject.name}".`,
+                'Create New Revision',
+                '',
+                'Enter revision reason...'
+            );
+            
+            // Check if user cancelled or provided empty reason
+            if (!reason || !reason.trim()) {
+                return;
             }
-        }
 
-        setProjectState(selectedProjectKey, {
-            revisionReason: trimmedReason,
-            revisionUnlocked: true,
-            files: [],
-            textInput: '',
-            urlInput: '',
-            urlRequirements: '',
-            urlSource: '',
-            urlFetchSummary: null,
-            urlFetching: false,
-            result: null
-        });
+            const trimmedReason = reason.trim();
+            const govId = selectedProject.governanceResultId;
+
+            // Save immediately to backend so it persists across logouts
+            if (govId) {
+                try {
+                    const token = localStorage.getItem('token');
+                    if (token) {
+                        const response = await fetch(API_ENDPOINTS.GOVERNANCE_REVISION_REASON(govId), {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                Authorization: `Bearer ${token}`
+                            },
+                            body: JSON.stringify({ reason: trimmedReason })
+                        });
+                        
+                        if (!response.ok) {
+                            throw new Error('Failed to save revision reason to backend');
+                        }
+                    }
+                } catch (e) {
+                    console.error("Failed to save revision reason to backend", e);
+                    setError('Failed to save revision reason. Please try again.');
+                    return;
+                }
+            }
+
+            // Update the project state to unlock revision
+            setProjectState(selectedProjectKey, {
+                revisionReason: trimmedReason,
+                revisionUnlocked: true,
+                files: [],
+                linkedFiles: [],
+                textInput: '',
+                urlInput: '',
+                urlRequirements: '',
+                urlSource: '',
+                urlFetchSummary: null,
+                urlFetching: false,
+                result: null,
+                error: ''
+            });
+            
+            // Also refresh projects to ensure the UI is in sync
+            if (refreshProjects) {
+                await refreshProjects();
+            }
+            
+            // Show success message
+            await customAlert(
+                'Revision unlocked successfully. You can now upload a new document.',
+                'Success'
+            );
+        } catch (error) {
+            console.error('Error in handleCreateRevision:', error);
+            setError('Failed to create revision. Please try again.');
+        }
     };
 
     const handleViewLatestProjectAnalysis = () => {
