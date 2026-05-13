@@ -497,7 +497,7 @@ export default function AgentAnalysis({
             let aiReasoning = '';
             let buffer = '';
 
-            setProgress(85);
+            setProgress(0);
             setProgressMessage('Generating comprehensive Agent Action Plan... This may take up to 10 minutes.');
 
             while (true) {
