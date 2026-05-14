@@ -2845,6 +2845,120 @@ def update_document_history(
     db.refresh(db_doc)
     return db_doc
 
+
+# --- Chat Message Endpoints ---
+@app.post("/chat/messages")
+def save_chat_message(
+    message: dict,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Save a chat message to the database"""
+    try:
+        db_message = models.ChatMessage(
+            document_id=message.get("document_id"),
+            user_id=current_user.id,
+            role=message.get("role"),
+            content=message.get("content"),
+            is_error=message.get("is_error", False),
+            is_qa=message.get("is_qa", False),
+            affected_sections=message.get("affected_sections"),
+            change_summary=message.get("change_summary"),
+        )
+        db.add(db_message)
+        db.commit()
+        db.refresh(db_message)
+        
+        return {
+            "id": db_message.id,
+            "document_id": db_message.document_id,
+            "role": db_message.role,
+            "content": db_message.content,
+            "is_error": db_message.is_error,
+            "is_qa": db_message.is_qa,
+            "affected_sections": db_message.affected_sections,
+            "change_summary": db_message.change_summary,
+            "timestamp": db_message.created_at.isoformat() if db_message.created_at else None,
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to save chat message: {str(e)}")
+
+
+@app.get("/chat/messages/{document_id}")
+def get_chat_messages(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Retrieve all chat messages for a specific document"""
+    try:
+        # Verify the document belongs to the current user
+        document = db.query(models.Document).filter(
+            models.Document.id == document_id,
+            models.Document.owner_id == current_user.id
+        ).first()
+        
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # Get all messages for this document, ordered by creation time
+        messages = db.query(models.ChatMessage).filter(
+            models.ChatMessage.document_id == document_id
+        ).order_by(models.ChatMessage.created_at.asc()).all()
+        
+        return [
+            {
+                "id": msg.id,
+                "document_id": msg.document_id,
+                "role": msg.role,
+                "content": msg.content,
+                "is_error": msg.is_error,
+                "is_qa": msg.is_qa,
+                "affected_sections": msg.affected_sections,
+                "change_summary": msg.change_summary,
+                "timestamp": msg.created_at.isoformat() if msg.created_at else None,
+            }
+            for msg in messages
+        ]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve chat messages: {str(e)}")
+
+
+@app.delete("/chat/messages/{document_id}")
+def delete_chat_messages(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Delete all chat messages for a specific document"""
+    try:
+        # Verify the document belongs to the current user
+        document = db.query(models.Document).filter(
+            models.Document.id == document_id,
+            models.Document.owner_id == current_user.id
+        ).first()
+        
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # Delete all messages for this document
+        deleted_count = db.query(models.ChatMessage).filter(
+            models.ChatMessage.document_id == document_id
+        ).delete()
+        
+        db.commit()
+        
+        return {"message": f"Deleted {deleted_count} chat messages", "count": deleted_count}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete chat messages: {str(e)}")
+
+
 @app.post("/documents/upload-and-analyze")
 async def upload_and_analyze_document(
     file: UploadFile = File(...),

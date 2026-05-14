@@ -424,3 +424,29 @@ class HandoffToken(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     expires_at = Column(DateTime, nullable=False, index=True)
     used_at = Column(DateTime, nullable=True)  # Track when token was used
+
+
+class ChatMessage(Base):
+    """Store BRD chat messages for persistent conversation history"""
+    __tablename__ = "chat_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id"), index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    
+    # Message content
+    role = Column(String, nullable=False)  # 'user' or 'assistant'
+    content = Column(Text, nullable=False)
+    
+    # Optional metadata
+    is_error = Column(Boolean, default=False)
+    is_qa = Column(Boolean, default=False)  # Whether this is a Q&A submission
+    affected_sections = Column(JSON, nullable=True)  # Sections affected by this update
+    change_summary = Column(Text, nullable=True)  # Summary of changes made
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    
+    # Relationships
+    document = relationship("Document")
+    user = relationship("User")

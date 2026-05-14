@@ -35,6 +35,11 @@ export const API_ENDPOINTS = {
     DOCUMENTS_UPLOAD_ANALYZE: `${API_BASE_URL}/documents/upload-and-analyze`,
     DOCUMENTS_EXTRACT_URL: `${API_BASE_URL}/documents/extract-from-url`,
 
+    // Chat Messages
+    CHAT_MESSAGES_SAVE: `${API_BASE_URL}/chat/messages`,
+    CHAT_MESSAGES_GET: (documentId) => `${API_BASE_URL}/chat/messages/${documentId}`,
+    CHAT_MESSAGES_DELETE: (documentId) => `${API_BASE_URL}/chat/messages/${documentId}`,
+
     // AI
     AI_CONFIG: `${API_BASE_URL}/ai/config`,
     AI_ANALYZE: `${API_BASE_URL}/ai/analyze`,

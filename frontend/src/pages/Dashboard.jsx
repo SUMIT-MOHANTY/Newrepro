@@ -337,6 +337,43 @@ const hasCompletedStoredAnalysis = (analysis) => {
 
 const hasCompletedDocumentAnalysis = (doc) => hasCompletedStoredAnalysis(parseStoredDocumentAnalysis(doc));
 
+// Format error messages to be user-friendly
+const formatAnalysisError = (error) => {
+    const errorMessage = error?.message || String(error);
+    
+    // Check for specific error patterns and provide custom messages
+    if (errorMessage.includes('Analysis job not found') || errorMessage.includes('job not found')) {
+        return 'The analysis session has expired or was not found. Please try starting the analysis again.';
+    }
+    
+    if (errorMessage.includes('500 INTERNAL SERVER ERROR') || errorMessage.includes('Server error')) {
+        return 'The AI service is currently unavailable. This could be due to high load or maintenance. Please try again in a few moments.';
+    }
+    
+    if (errorMessage.includes('brn-llama.bourntec.com') || errorMessage.includes('api/process')) {
+        return 'Unable to connect to the AI analysis service. Please check your network connection and try again.';
+    }
+    
+    if (errorMessage.includes('Network') || errorMessage.includes('fetch')) {
+        return 'Network connection error. Please check your internet connection and try again.';
+    }
+    
+    if (errorMessage.includes('timeout') || errorMessage.includes('timed out')) {
+        return 'The analysis is taking longer than expected. Please try again or contact support if the issue persists.';
+    }
+    
+    if (errorMessage.includes('401') || errorMessage.includes('Unauthorized')) {
+        return 'Your session has expired. Please log in again to continue.';
+    }
+    
+    if (errorMessage.includes('403') || errorMessage.includes('Forbidden')) {
+        return 'You do not have permission to perform this analysis. Please contact your administrator.';
+    }
+    
+    // Return the original error message if no specific pattern matches
+    return errorMessage;
+};
+
 // Extract file sections from document - with fallback for legacy documents
 const extractDocumentSections = (doc, parsedAnalysis) => {
     // First try to get sections from parsed analysis
@@ -913,10 +950,8 @@ const Dashboard = ({
     const isEnterpriseProject = String(governanceContext?.classification || selectedProject?.classification || '') === 'ENTERPRISE';
 
     // Check if governance assessment exists for current revision
-    // If revisionUnlocked is true, we need new governance for the revision
-    const hasGovernanceAssessment = revisionUnlocked
-        ? false // Revision needs new governance
-        : Boolean(selectedProject?.governanceResultId || governanceContext?.result_id);
+    // Revisions should reuse the existing governance assessment from the original project
+    const hasGovernanceAssessment = Boolean(selectedProject?.governanceResultId || governanceContext?.result_id);
 
     const isEnterpriseUploadBlocked = isEnterpriseProject;
     const getEnterpriseUploadBlockMessage = () => {
@@ -1142,10 +1177,12 @@ const Dashboard = ({
                     client_id: existingDraft?.client_id || project?.client_id || null,
                     client_secret: existingDraft?.client_secret || project?.client_secret || null,
                 });
+                // FIXED: Always keep revisionUnlocked true for unlimited revision creation
+                // User can create new revisions without any restrictions after analysis
                 setProjectState(taskKey, prev => ({
                     result: { ...prev.result, id: savedDoc.id, revisionNumber: nextRevisionNumber },
-                    revisionUnlocked: false,
-                    revisionReason: ''
+                    revisionUnlocked: true,  // Always keep unlocked for unlimited revisions
+                    revisionReason: prev.revisionReason || ''  // Preserve revision reason for next upload
                 }));
                 fetchHistory();
                 refreshProjects?.();
@@ -1860,16 +1897,66 @@ const Dashboard = ({
                 return;
             }
 
-            if (!hasGovernanceAssessment) {
+            // Check if this is a revision upload (project already has documents)
+            const isRevisionUpload = selectedProject.documents.length > 0;
+
+            // For revisions OR first-time uploads without governance, navigate to governance page
+            if (!hasGovernanceAssessment || isRevisionUpload) {
                 setProjectState(taskKey, {
                     progress: 85,
-                    progressMessage: 'Requirement screening complete. Saving BRD before Governance...',
+                    progressMessage: isRevisionUpload 
+                        ? 'Revision content uploaded. Combining with previous content...' 
+                        : 'Requirement screening complete. Saving BRD before Governance...',
                 });
+
+                // If this is a revision, include previous revision content for AI context
+                let finalMarkdownForAnalysis = combinedMarkdown;
+                let finalSectionsForDisplay = [...displaySections];
+
+                if (isRevisionUpload && selectedProject.documents.length > 0) {
+                    // Get all previous documents sorted by revision (oldest to newest)
+                    const previousDocs = [...selectedProject.documents].sort((a, b) => {
+                        const aDate = new Date(a.upload_date || 0).getTime();
+                        const bDate = new Date(b.upload_date || 0).getTime();
+                        return aDate - bDate; // Oldest first
+                    });
+
+                    // Build previous content sections
+                    const previousContentSections = [];
+                    for (const doc of previousDocs) {
+                        if (doc.full_content) {
+                            const docAnalysis = parseStoredDocumentAnalysis(doc);
+                            const revisionNum = docAnalysis?.projectMeta?.revision_number || 'Unknown';
+                            const revisionReason = docAnalysis?.projectMeta?.revision_reason;
+                            
+                            previousContentSections.push({
+                                title: `REVISION ${revisionNum} - ${doc.filename}${revisionReason ? ` (Reason: ${revisionReason})` : ''}`,
+                                content: doc.full_content
+                            });
+                        }
+                    }
+
+                    // Combine previous content with new content
+                    if (previousContentSections.length > 0) {
+                        const previousMarkdown = previousContentSections.map(section =>
+                            `\n\n--- ${section.title} ---\n\n${section.content}`
+                        ).join('');
+
+                        // Add previous content BEFORE new content so AI sees the history first
+                        finalMarkdownForAnalysis = `${previousMarkdown}\n\n--- NEW REVISION ${selectedProject.documents.length + 1} - ${filename} ---\n\n${combinedMarkdown}`;
+                        
+                        // Add to display sections (for UI)
+                        finalSectionsForDisplay = [
+                            ...previousContentSections,
+                            { title: `NEW REVISION ${selectedProject.documents.length + 1}`, content: combinedMarkdown }
+                        ];
+                    }
+                }
 
                 await savePendingScreeningToHistory({
                     filename,
-                    markdown: combinedMarkdown,
-                    sections: displaySections,
+                    markdown: finalMarkdownForAnalysis,
+                    sections: finalSectionsForDisplay,
                     taskKey,
                     repoContextState: repoContext,
                 });
@@ -1877,7 +1964,9 @@ const Dashboard = ({
                 setProjectState(taskKey, {
                     processing: false,
                     progress: 100,
-                    progressMessage: 'Requirement screening complete. Continue with Governance.',
+                    progressMessage: isRevisionUpload 
+                        ? 'Revision uploaded with previous content. Review Governance and proceed to analysis.' 
+                        : 'Requirement screening complete. Continue with Governance.',
                     result: null,
                 });
                 navigate('/new-project/governance');
@@ -1927,7 +2016,8 @@ const Dashboard = ({
             }
 
         } catch (err) {
-            setProjectState(taskKey, { error: err.message });
+            const userFriendlyError = formatAnalysisError(err);
+            setProjectState(taskKey, { error: userFriendlyError });
         } finally {
             setProjectState(taskKey, { processing: false });
         }
@@ -1995,7 +2085,8 @@ const Dashboard = ({
                 fetchRoadmapData(selectedProjectKey);
             }
         } catch (err) {
-            setProjectState(taskKey, { error: `Start Error: ${err.message}` });
+            const userFriendlyError = formatAnalysisError(err);
+            setProjectState(taskKey, { error: `Start Error: ${userFriendlyError}` });
         }
     };
 
@@ -2214,7 +2305,8 @@ const Dashboard = ({
                 fetchRoadmapData(selectedProjectKey);
             }
         } catch (err) {
-            setProjectState(taskKey, { error: `Stream Error: ${err.message}` });
+            const userFriendlyError = formatAnalysisError(err);
+            setProjectState(taskKey, { error: `Stream Error: ${userFriendlyError}` });
         }
     };
     const fetchAnalysisRef = useRef(fetchAnalysis);
@@ -2282,7 +2374,8 @@ const Dashboard = ({
                 await fetchAnalysis(aiPayload, token, taskResult, taskKey);
             }
         } catch (err) {
-            setProjectState(taskKey, { error: err.message });
+            const userFriendlyError = formatAnalysisError(err);
+            setProjectState(taskKey, { error: userFriendlyError });
         } finally {
             setProjectState(taskKey, { processing: false });
         }
@@ -2628,26 +2721,25 @@ const Dashboard = ({
 
 
 
+
+    // handleCreateRevision - Creates a new revision without any restrictions
+    // Once analysis is generated, user can create another revision immediately
     const handleCreateRevision = async () => {
         if (!selectedProject) return;
 
         try {
+            // Get reason for revision (optional - user can skip)
             const reason = await customPrompt(
-                `Provide a reason for creating a new revision for "${selectedProject.name}".`,
+                `Provide an optional reason for creating a new revision for "${selectedProject.name}".`,
                 'Create New Revision',
                 '',
-                'Enter revision reason...'
+                'Enter revision reason (optional)...'
             );
 
-            // Check if user cancelled or provided empty reason
-            if (!reason || !reason.trim()) {
-                return;
-            }
-
-            const trimmedReason = reason.trim();
+            const trimmedReason = reason?.trim() || `Revision ${(selectedProject.documents?.length || 0) + 1}`;
             const govId = selectedProject.governanceResultId;
 
-            // Save immediately to backend so it persists across logouts
+            // Save revision reason to backend if available (but don't fail if it doesn't work)
             if (govId) {
                 try {
                     const token = localStorage.getItem('token');
@@ -2662,22 +2754,23 @@ const Dashboard = ({
                         });
 
                         if (!response.ok) {
-                            throw new Error('Failed to save revision reason to backend');
+                            console.warn('Failed to save revision reason to backend, continuing anyway...');
                         }
                     }
                 } catch (e) {
-                    console.error("Failed to save revision reason to backend", e);
-                    setError('Failed to save revision reason. Please try again.');
-                    return;
+                    // Don't fail the whole operation if backend save fails
+                    console.warn("Failed to save revision reason to backend:", e);
                 }
             }
 
-            // Update the project state to unlock revision
+            // CRITICAL: Always unlock revision for unlimited iterations
+            // No dependencies on any other actions - user can create revisions freely
             setProjectState(selectedProjectKey, {
                 revisionReason: trimmedReason,
-                revisionUnlocked: true,
+                revisionUnlocked: true,  // Always keep unlocked for unlimited revisions
                 files: [],
                 linkedFiles: [],
+                skillFiles: [],  // Clear skills files too
                 textInput: '',
                 urlInput: '',
                 urlRequirements: '',
@@ -2685,7 +2778,13 @@ const Dashboard = ({
                 urlFetchSummary: null,
                 urlFetching: false,
                 result: null,
-                error: ''
+                error: '',
+                processing: false,
+                progress: 0,
+                progressMessage: '',
+                aiQuestions: [],
+                userAnswers: {},
+                userFeedback: ''
             });
 
             // Also refresh projects to ensure the UI is in sync
@@ -2693,16 +2792,16 @@ const Dashboard = ({
                 await refreshProjects();
             }
 
-            // Show success message
-            await customAlert(
-                'Revision unlocked successfully. You can now upload a new document.',
-                'Success'
-            );
+            // Navigate to dashboard to start fresh upload
+            // The user can now upload new documents for the new revision
+            navigate('/dashboard');
+
         } catch (error) {
             console.error('Error in handleCreateRevision:', error);
             setError('Failed to create revision. Please try again.');
         }
     };
+
 
     const handleViewLatestProjectAnalysis = () => {
         if (!selectedProject?.latestDocument) return;

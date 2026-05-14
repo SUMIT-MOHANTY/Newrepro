@@ -19,28 +19,38 @@ mermaid.initialize({
     fontFamily: 'inherit',
 });
 
-// Mermaid Diagram Component
+// Improved Mermaid Diagram Component with smooth animation and expand functionality
 const MermaidDiagram = ({ code, showDownload = true }) => {
     const containerRef = useRef(null);
     const [svg, setSvg] = useState('');
     const [error, setError] = useState(null);
     const [downloading, setDownloading] = useState(false);
+    const [isExpanded, setIsExpanded] = useState(false);
+    const [isRendering, setIsRendering] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
         const renderDiagram = async () => {
+            setIsRendering(true);
             try {
                 const id = `mermaid-${Math.random().toString(36).substr(2, 9)}`;
                 const { svg: renderedSvg } = await mermaid.render(id, code);
                 if (!cancelled) {
-                    setSvg(renderedSvg);
-                    setError(null);
+                    // Add a small delay for smooth transition effect
+                    setTimeout(() => {
+                        if (!cancelled) {
+                            setSvg(renderedSvg);
+                            setError(null);
+                            setIsRendering(false);
+                        }
+                    }, 150);
                 }
             } catch (err) {
                 console.warn('Mermaid render error:', err);
                 if (!cancelled) {
                     setError(err.message || 'Failed to render diagram');
                     setSvg('');
+                    setIsRendering(false);
                 }
             }
         };
@@ -134,6 +144,14 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
         }
     };
 
+    const handleExpand = () => {
+        setIsExpanded(true);
+    };
+
+    const handleCloseExpanded = () => {
+        setIsExpanded(false);
+    };
+
     if (error) {
         return (
             <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm font-mono my-4">
@@ -142,45 +160,116 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
         );
     }
 
-    if (!svg) {
+    if (isRendering || !svg) {
         return (
             <div className="flex items-center justify-center py-8 my-4 bg-gray-50 rounded-lg border border-gray-200">
-                <Loader2 className="w-5 h-5 text-gray-400 animate-spin mr-2" />
-                <span className="text-sm text-gray-500">Rendering diagram...</span>
+                <div className="flex items-center gap-3">
+                    <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                    <span className="text-sm text-gray-500">Rendering diagram...</span>
+                </div>
             </div>
         );
     }
 
     return (
-        <div className="my-6 p-4 bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
-            {showDownload && (
-                <div className="flex justify-end mb-2">
-                    <button
-                        onClick={handleDownloadPNG}
-                        disabled={downloading}
-                        className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed rounded-lg shadow-sm transition-all"
-                        title="Download as PNG"
+        <>
+            {/* Fullscreen Expanded View Modal */}
+            {isExpanded && (
+                <div
+                    className="fixed inset-0 z-[500] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in"
+                    onClick={handleCloseExpanded}
+                >
+                    <div
+                        className="relative w-full max-w-5xl max-h-[90vh] bg-white rounded-2xl shadow-2xl overflow-hidden animate-scale-in"
+                        onClick={(e) => e.stopPropagation()}
                     >
-                        {downloading ? (
-                            <>
-                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                Downloading...
-                            </>
-                        ) : (
-                            <>
-                                <Download className="w-3.5 h-3.5" />
-                                Download PNG
-                            </>
-                        )}
-                    </button>
+                        {/* Modal Header */}
+                        <div className="flex items-center justify-between px-6 py-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white">
+                            <div className="flex items-center gap-3">
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" />
+                                </svg>
+                                <span className="font-semibold">Diagram View</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={handleDownloadPNG}
+                                    disabled={downloading}
+                                    className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium bg-white/20 hover:bg-white/30 disabled:bg-white/10 rounded-lg transition-all"
+                                >
+                                    <Download className="w-4 h-4" />
+                                    {downloading ? 'Saving...' : 'Download PNG'}
+                                </button>
+                                <button
+                                    onClick={handleCloseExpanded}
+                                    className="p-2 hover:bg-white/20 rounded-lg transition-all"
+                                >
+                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Expanded Diagram Content */}
+                        <div className="p-6 bg-gray-50 overflow-auto max-h-[calc(90vh-60px)]">
+                            <div
+                                className="flex justify-center"
+                                dangerouslySetInnerHTML={{ __html: svg }}
+                            />
+                        </div>
+                    </div>
                 </div>
             )}
-            <div
-                ref={containerRef}
-                className="flex justify-center [&>svg]:max-w-full"
-                dangerouslySetInnerHTML={{ __html: svg }}
-            />
-        </div>
+
+            {/* Normal View */}
+            <div className="my-6 p-4 bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+                {/* Action Buttons */}
+                <div className="flex justify-end gap-2 mb-2">
+                    {/* Expand Button */}
+                    <button
+                        onClick={handleExpand}
+                        className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 disabled:bg-gray-100 disabled:cursor-not-allowed rounded-lg shadow-sm transition-all hover:shadow-md"
+                        title="Expand to fullscreen"
+                    >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+                        </svg>
+                        Expand
+                    </button>
+
+                    {/* Download Button */}
+                    {showDownload && (
+                        <button
+                            onClick={handleDownloadPNG}
+                            disabled={downloading}
+                            className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed rounded-lg shadow-sm transition-all"
+                            title="Download as PNG"
+                        >
+                            {downloading ? (
+                                <>
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    Downloading...
+                                </>
+                            ) : (
+                                <>
+                                    <Download className="w-3.5 h-3.5" />
+                                    Download PNG
+                                </>
+                            )}
+                        </button>
+                    )}
+                </div>
+
+                {/* SVG Diagram with smooth fade-in animation */}
+                <div
+                    ref={containerRef}
+                    className="flex justify-center [&>svg]:max-w-full transition-opacity duration-300 ease-out"
+                    style={{ opacity: svg ? 1 : 0 }}
+                    dangerouslySetInnerHTML={{ __html: svg }}
+                />
+            </div>
+        </>
     );
 };
 
@@ -200,6 +289,43 @@ const hasCompletedStoredAnalysis = (analysis) => {
         return false;
     }
     return String(analysis.analysis || '').trim().length > 0;
+};
+
+// Format error messages to be user-friendly
+const formatAnalysisError = (error) => {
+    const errorMessage = error?.message || String(error);
+
+    // Check for specific error patterns and provide custom messages
+    if (errorMessage.includes('Analysis job not found') || errorMessage.includes('job not found')) {
+        return 'The analysis session has expired or was not found. Please try starting the analysis again.';
+    }
+
+    if (errorMessage.includes('500 INTERNAL SERVER ERROR') || errorMessage.includes('Server error')) {
+        return 'The AI service is currently unavailable. This could be due to high load or maintenance. Please try again in a few moments.';
+    }
+
+    if (errorMessage.includes('brn-llama.bourntec.com') || errorMessage.includes('api/process')) {
+        return 'Unable to connect to the AI analysis service. Please check your network connection and try again.';
+    }
+
+    if (errorMessage.includes('Network') || errorMessage.includes('fetch')) {
+        return 'Network connection error. Please check your internet connection and try again.';
+    }
+
+    if (errorMessage.includes('timeout') || errorMessage.includes('timed out')) {
+        return 'The analysis is taking longer than expected. Please try again or contact support if the issue persists.';
+    }
+
+    if (errorMessage.includes('401') || errorMessage.includes('Unauthorized')) {
+        return 'Your session has expired. Please log in again to continue.';
+    }
+
+    if (errorMessage.includes('403') || errorMessage.includes('Forbidden')) {
+        return 'You do not have permission to perform this analysis. Please contact your administrator.';
+    }
+
+    // Return the original error message if no specific pattern matches
+    return errorMessage;
 };
 
 // Utility: layout architecture graph with dagre so nodes don't overlap
@@ -689,7 +815,8 @@ export default function AgentAnalysis({
             await saveToHistory(finalResult, selectedProjectKey, effectiveRepoContext);
         } catch (err) {
             console.error('Analysis error:', err);
-            setError(`Analysis Error: ${err.message}`);
+            const userFriendlyError = formatAnalysisError(err);
+            setError(`Analysis Error: ${userFriendlyError}`);
             setProgress(0);
             setProgressMessage('');
             setCompletedStages({});  // Clear stages on error
@@ -827,7 +954,8 @@ export default function AgentAnalysis({
             setAiQuestions(questions?.length ? questions : []);
             await saveToHistory(finalResult, selectedProjectKey, effectiveRepoContext);
         } catch (err) {
-            setError(`Stream Error: ${err.message}`);
+            const userFriendlyError = formatAnalysisError(err);
+            setError(`Stream Error: ${userFriendlyError}`);
         }
     }, [governanceContext, repoContext, userAnswers, userFeedback, result, selectedProjectKey, saveToHistory]);
 
@@ -915,7 +1043,8 @@ export default function AgentAnalysis({
                 });
             }
         } catch (err) {
-            setError(err.message || 'Repository analysis failed.');
+            const userFriendlyError = formatAnalysisError(err);
+            setError(userFriendlyError || 'Repository analysis failed.');
         } finally {
             setProcessing(false);
             setAnalysisInProgress(false);
@@ -999,7 +1128,8 @@ export default function AgentAnalysis({
                 });
             }
         } catch (err) {
-            setError(err.message || 'Agent Analysis failed.');
+            const userFriendlyError = formatAnalysisError(err);
+            setError(userFriendlyError || 'Agent Analysis failed.');
         } finally {
             setProcessing(false);
             setAnalysisInProgress(false);
@@ -1111,6 +1241,9 @@ export default function AgentAnalysis({
                     };
 
                     setResult(loadedResult);
+
+                    // Load chat messages for this document
+                    await loadChatMessages(latestDocument.id);
 
                     // CRITICAL FIX: Cache the loaded data for this project
                     resultCacheRef.current[selectedProjectKey] = {
@@ -1285,7 +1418,8 @@ export default function AgentAnalysis({
                     }
                 }
             } catch (err) {
-                setError(err.message || 'Failed to load analysis');
+                const userFriendlyError = formatAnalysisError(err);
+                setError(userFriendlyError || 'Failed to load analysis');
             } finally {
                 setLoading(false);
             }
@@ -1367,11 +1501,63 @@ export default function AgentAnalysis({
                 governanceContext: governanceContext,
             });
         } catch (err) {
-            setError(err.message || 'Failed to update analysis');
+            const userFriendlyError = formatAnalysisError(err);
+            setError(userFriendlyError || 'Failed to update analysis');
         } finally {
             setProcessing(false);
         }
     };
+
+    // ── Load chat messages from database ──
+    const loadChatMessages = useCallback(async (documentId) => {
+        if (!documentId || !token) return;
+
+        try {
+            const response = await fetch(API_ENDPOINTS.CHAT_MESSAGES_GET(documentId), {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                },
+            });
+
+            if (response.ok) {
+                const messages = await response.json();
+                setChatMessages(messages);
+                console.log(`Loaded ${messages.length} chat messages for document ${documentId}`);
+            }
+        } catch (err) {
+            console.error('Failed to load chat messages:', err);
+        }
+    }, [token]);
+
+    // ── Save chat message to database ──
+    const saveChatMessage = useCallback(async (message) => {
+        if (!result?.id || !token) return;
+
+        try {
+            const response = await fetch(API_ENDPOINTS.CHAT_MESSAGES_SAVE, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                    document_id: result.id,
+                    role: message.role,
+                    content: message.content,
+                    is_error: message.isError || false,
+                    is_qa: message.isQA || false,
+                    affected_sections: message.affectedSections || null,
+                    change_summary: message.changeSummary || null,
+                }),
+            });
+
+            if (!response.ok) {
+                console.error('Failed to save chat message:', await response.text());
+            }
+        } catch (err) {
+            console.error('Error saving chat message:', err);
+        }
+    }, [result, token]);
 
     // ── Chat-based BRD update handler ──
     const handleChatSend = async () => {
@@ -1390,6 +1576,9 @@ export default function AgentAnalysis({
         setChatInput('');
         setChatSending(true);
 
+        // Save user message to database
+        await saveChatMessage(userMsg);
+
         try {
             await handleRefineAnalysis(message, 'feedback');
 
@@ -1400,9 +1589,13 @@ export default function AgentAnalysis({
                 content: result?.analysis?.change_summary
                     || 'Analysis updated successfully based on your input.',
                 affectedSections: result?.analysis?.affected_sections || [],
+                changeSummary: result?.analysis?.change_summary,
                 timestamp: new Date().toISOString(),
             };
             setChatMessages(prev => [...prev, assistantMsg]);
+
+            // Save assistant message to database
+            await saveChatMessage(assistantMsg);
         } catch (err) {
             const errMsg = {
                 id: `err_${Date.now()}`,
@@ -1412,6 +1605,9 @@ export default function AgentAnalysis({
                 timestamp: new Date().toISOString(),
             };
             setChatMessages(prev => [...prev, errMsg]);
+
+            // Save error message to database
+            await saveChatMessage(errMsg);
         } finally {
             setChatSending(false);
             // Scroll to bottom of chat
@@ -1442,6 +1638,9 @@ export default function AgentAnalysis({
         setChatMessages(prev => [...prev, userMsg]);
         setChatSending(true);
 
+        // Save user message to database
+        await saveChatMessage(userMsg);
+
         try {
             await handleRefineAnalysis(qaPairs, 'qa');
             setUserAnswers({});
@@ -1452,9 +1651,13 @@ export default function AgentAnalysis({
                 content: result?.analysis?.change_summary
                     || 'Analysis updated based on your answers.',
                 affectedSections: result?.analysis?.affected_sections || [],
+                changeSummary: result?.analysis?.change_summary,
                 timestamp: new Date().toISOString(),
             };
             setChatMessages(prev => [...prev, assistantMsg]);
+
+            // Save assistant message to database
+            await saveChatMessage(assistantMsg);
         } catch (err) {
             const errMsg = {
                 id: `qa_err_${Date.now()}`,
@@ -1464,6 +1667,9 @@ export default function AgentAnalysis({
                 timestamp: new Date().toISOString(),
             };
             setChatMessages(prev => [...prev, errMsg]);
+
+            // Save error message to database
+            await saveChatMessage(errMsg);
         } finally {
             setChatSending(false);
             setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
@@ -2213,8 +2419,8 @@ export default function AgentAnalysis({
                 return (
                     <div
                         className={`fixed right-6 top-6 bottom-6 bg-white border border-gray-200 rounded-2xl shadow-2xl transition-all duration-300 z-[260] w-[440px] flex flex-col overflow-hidden ${isSidebarOpen
-                                ? 'translate-x-0 opacity-100'
-                                : 'translate-x-[120%] opacity-0 pointer-events-none'
+                            ? 'translate-x-0 opacity-100'
+                            : 'translate-x-[120%] opacity-0 pointer-events-none'
                             }`}
                     >
 
@@ -2358,10 +2564,16 @@ export default function AgentAnalysis({
                                 {/* Chat Input */}
                                 <div className="px-4 py-4 border-t border-gray-100 bg-white flex-shrink-0">
                                     <div className="flex items-end gap-2">
-                                        <div className="flex-1 relative">
+                                        <div className="flex-1">
                                             <textarea
                                                 value={chatInput}
-                                                onChange={(e) => setChatInput(e.target.value)}
+                                                onChange={(e) => {
+                                                    setChatInput(e.target.value);
+
+                                                    // Auto expand upward
+                                                    e.target.style.height = 'auto';
+                                                    e.target.style.height = `${Math.min(e.target.scrollHeight, 140)}px`;
+                                                }}
                                                 onKeyDown={(e) => {
                                                     if (e.key === 'Enter' && !e.shiftKey) {
                                                         e.preventDefault();
@@ -2369,22 +2581,34 @@ export default function AgentAnalysis({
                                                     }
                                                 }}
                                                 placeholder="Describe what to update in the BRD... (Enter to send)"
-                                                rows={2}
-                                                className="w-full px-3 py-2.5 pr-10 text-xs border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-gray-50 resize-none placeholder-gray-400"
+                                                rows={1}
+                                                className="w-full px-3 py-2.5 text-xs border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-gray-50 resize-none placeholder-gray-400 overflow-y-auto min-h-[42px] max-h-[140px]"
+                                                style={{ height: '42px' }}
                                                 disabled={chatSending || processing}
                                             />
                                         </div>
+
                                         <button
                                             onClick={handleChatSend}
                                             disabled={!chatInput.trim() || chatSending || processing}
                                             className="flex-shrink-0 p-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-200 disabled:cursor-not-allowed text-white rounded-xl transition-colors shadow-sm"
                                         >
-                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                                            <svg
+                                                className="w-4 h-4"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                viewBox="0 0 24 24"
+                                            >
+                                                <path
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                    strokeWidth={2}
+                                                    d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
+                                                />
                                             </svg>
                                         </button>
                                     </div>
-                                
+
                                 </div>
                             </>
                         )}
@@ -2554,7 +2778,7 @@ export default function AgentAnalysis({
                                                 <Download className="w-4 h-4" />
                                                 <span>Download PDF</span>
                                             </button>
-                                            
+
                                             <button
                                                 onClick={handleNewAnalysis}
                                                 className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-gradient-to-r from-blue-600 to-blue-700 rounded-lg hover:from-blue-700 hover:to-blue-800 transition-all"
