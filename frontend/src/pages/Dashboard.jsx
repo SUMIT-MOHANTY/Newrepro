@@ -365,7 +365,7 @@ const extractDocumentSections = (doc, parsedAnalysis) => {
     while ((match = headerRegex.exec(fullContent)) !== null) {
         documentHeaders.push({ title: match[1].trim() });
     }
-    
+
     if (documentHeaders.length > 0) {
         return documentHeaders;
     }
@@ -389,21 +389,21 @@ const ProcessedContentTabs = ({ sections, markdown }) => {
 
     // Parse sections from markdown if not provided as structured data
     let parsedSections = sections || [];
-    
+
     if (!parsedSections || parsedSections.length === 0) {
         // Try to parse sections from markdown using the separator pattern
         if (markdown) {
             const sectionRegex = /---\s*([A-Z\s&()]+)\s*---\s*([\s\S]*?)(?=---\s*[A-Z\s&()]+\s*---|$)/g;
             const tempSections = [];
             let match;
-            
+
             while ((match = sectionRegex.exec(markdown)) !== null) {
                 tempSections.push({
                     title: match[1].trim(),
                     content: match[2].trim()
                 });
             }
-            
+
             if (tempSections.length > 0) {
                 parsedSections = tempSections;
             }
@@ -424,11 +424,10 @@ const ProcessedContentTabs = ({ sections, markdown }) => {
                     <button
                         key={index}
                         onClick={() => setActiveTabIndex(index)}
-                        className={`px-3 py-1.5 text-xs font-medium rounded-t-lg transition-all ${
-                            activeTabIndex === index
+                        className={`px-3 py-1.5 text-xs font-medium rounded-t-lg transition-all ${activeTabIndex === index
                                 ? 'bg-app-primary text-white border-b-2 border-app-primary'
                                 : 'bg-app-bg-page text-app-text-label hover:bg-app-bg-card border border-app-border-light border-b-0'
-                        }`}
+                            }`}
                     >
                         {section.title || `Section ${index + 1}`}
                     </button>
@@ -580,7 +579,7 @@ const Dashboard = ({
     const [showAzureRepoSelector, setShowAzureRepoSelector] = useState(false);
     const [azureProjectUrl, setAzureProjectUrl] = useState('');
     const [isOAuthRepoSelected, setIsOAuthRepoSelected] = useState(false);
-    
+
     // Track if credentials are locked (saved and can only be changed once)
     const [credentialsLocked, setCredentialsLocked] = useState(false);
     const [hasChangedCredentials, setHasChangedCredentials] = useState(false);
@@ -588,7 +587,7 @@ const Dashboard = ({
     const [governanceContext, setGovernanceContext] = useState(null);
     const [repoContext, setRepoContext] = useState(null);
     const selectedProject = projects.find((project) => project.key === selectedProjectKey) || null;
-    
+
     const saveRepoContextToStorage = (context) => {
         try {
             console.log('Saving repo context to storage:', context);
@@ -607,7 +606,7 @@ const Dashboard = ({
             console.warn('Failed to clear repo context from storage:', err);
         }
     };
-    
+
     const persistRepoContextMetaForProject = useCallback((ctx, projectKey = selectedProjectKey) => {
         const repoMeta = buildRepoContextMeta(ctx);
         if (!repoMeta) return;
@@ -668,13 +667,13 @@ const Dashboard = ({
             const agentsRes = await fetch(agentsUrl.toString(), {
                 headers: { Authorization: `Bearer ${authToken}` },
             });
-            
+
             if (!agentsRes.ok) return;
-            
+
             const agentsData = await agentsRes.json().catch(() => ({}));
             const agentList = Array.isArray(agentsData?.agents) ? agentsData.agents : [];
             const targetAgent = agentList.find((a) => a?.id !== 'agent_03' && a?.id !== 'agent_04') || agentList[0];
-            
+
             if (!targetAgent?.id) return;
 
             // Update the agent's Git credentials
@@ -734,7 +733,7 @@ const Dashboard = ({
             }
 
             const validationData = await validateResponse.json();
-            
+
             // Now fetch the actual repo context using the appropriate endpoint
             const endpoint = provider === 'azure-devops'
                 ? API_ENDPOINTS.AZURE_DEVOPS_REPO_CONTEXT
@@ -764,11 +763,11 @@ const Dashboard = ({
             }
 
             const data = await response.json();
-            
+
             // Build repo context from response
             const nextRepoContext = {
-                repo: provider === 'azure-devops' 
-                    ? validationData.repo || data.repo || repoUrl 
+                repo: provider === 'azure-devops'
+                    ? validationData.repo || data.repo || repoUrl
                     : `${validationData.owner}/${validationData.repo}`,
                 branch: data.branch || 'main',
                 context: data.context,
@@ -795,7 +794,7 @@ const Dashboard = ({
                 progressMessage: 'Repository context ready. Continue with Governance.',
                 result: null,
             });
-            
+
             // Save a pending analysis entry for repository-only case
             await savePendingScreeningToHistory({
                 filename: `Repository Analysis - ${repoContext.repo || 'Unknown Repository'}`,
@@ -804,7 +803,7 @@ const Dashboard = ({
                 repoContextState: repoContext,
                 isRepositoryOnly: true,
             });
-            
+
             navigate('/new-project/governance');
             return;
         }
@@ -824,22 +823,22 @@ const Dashboard = ({
             const agentsRes = await fetch(agentsUrl.toString(), {
                 headers: { Authorization: `Bearer ${authToken}` },
             });
-            
+
             if (!agentsRes.ok) return;
-            
+
             const agentsData = await agentsRes.json().catch(() => ({}));
             const agentList = Array.isArray(agentsData?.agents) ? agentsData.agents : [];
-            
+
             // Find first agent with Git credentials
             const agentWithCreds = agentList.find((a) => a?.git_repo_url);
-            
+
             if (agentWithCreds?.git_repo_url) {
                 const repoUrl = agentWithCreds.git_repo_url;
                 const hasToken = agentWithCreds.has_git_token;
-                
+
                 // Determine provider from URL
                 const isAzure = repoUrl.includes('dev.azure.com') || repoUrl.includes('visualstudio.com');
-                
+
                 if (isAzure) {
                     setAzureLinkUrl(repoUrl);
                     setRepoLinkProvider('azure-devops');
@@ -855,7 +854,7 @@ const Dashboard = ({
                         setGithubAuthMode('pat');
                     }
                 }
-                
+
                 // Lock credentials if they were previously saved
                 setCredentialsLocked(true);
             }
@@ -908,13 +907,13 @@ const Dashboard = ({
         return allAnswersSkipped || hasSkipFollowUpDescription;
     })();
     const isEnterpriseProject = String(governanceContext?.classification || selectedProject?.classification || '') === 'ENTERPRISE';
-    
+
     // Check if governance assessment exists for current revision
     // If revisionUnlocked is true, we need new governance for the revision
-    const hasGovernanceAssessment = revisionUnlocked 
+    const hasGovernanceAssessment = revisionUnlocked
         ? false // Revision needs new governance
         : Boolean(selectedProject?.governanceResultId || governanceContext?.result_id);
-    
+
     const isEnterpriseUploadBlocked = isEnterpriseProject && !isAllGovernanceSkippedCase;
     const getEnterpriseUploadBlockMessage = () => {
         const description = String(governanceContext?.classification_description || '').trim();
@@ -1146,7 +1145,7 @@ const Dashboard = ({
                 }));
                 fetchHistory();
                 refreshProjects?.();
-                
+
                 // Always navigate to agent analysis after successful save
                 // The governance check happens in handleUpload before this
                 navigate('/agent-analysis');
@@ -1577,7 +1576,7 @@ const Dashboard = ({
     const handleUpload = async (e) => {
         const taskKey = selectedProjectKey;
         e.preventDefault();
-        
+
         if (!selectedProject) {
             setError('Select a project from the sidebar before uploading a BRD.');
             return;
@@ -1610,7 +1609,7 @@ const Dashboard = ({
             if (repoFromInput) {
                 persistRepoContextMetaForProject(repoFromInput, taskKey);
             }
-            
+
             // Save Git credentials to backend for use by agents
             if (azureLinkUrl && azureLinkToken) {
                 await saveGitCredentialsToBackend(azureLinkUrl, azureLinkToken, taskKey);
@@ -1618,7 +1617,7 @@ const Dashboard = ({
                     setHasChangedCredentials(true);
                 }
                 setCredentialsLocked(true);
-                
+
                 // Fetch repo context if not loaded
                 if (!repoContext) {
                     try {
@@ -1633,7 +1632,7 @@ const Dashboard = ({
             if (repoFromInput) {
                 persistRepoContextMetaForProject(repoFromInput, taskKey);
             }
-            
+
             // Save Git credentials to backend
             const gitToken = githubAuthMode === 'pat' ? githubLinkToken : githubLinkPassword;
             if (githubLinkUrl && gitToken) {
@@ -1642,7 +1641,7 @@ const Dashboard = ({
                     setHasChangedCredentials(true);
                 }
                 setCredentialsLocked(true);
-                
+
                 // Fetch repo context if not loaded
                 if (!repoContext) {
                     try {
@@ -1759,7 +1758,7 @@ const Dashboard = ({
             if (hasUrl) {
                 let urlMarkdown = urlRequirements.trim();
                 let urlSourceUrl = urlSource || urlInput.trim();
-                
+
                 if (!urlMarkdown && urlInput.trim()) {
                     const fetchedData = await fetchRequirementsFromUrl(urlInput, taskKey);
                     if (fetchedData) {
@@ -1816,11 +1815,11 @@ const Dashboard = ({
             }
 
             // 6. Combine all sections (for markdown / AI payload)
-            combinedMarkdown = contentSections.map(section => 
+            combinedMarkdown = contentSections.map(section =>
                 `\n\n--- ${section.title} ---\n\n${section.markdown}`
             ).join('');
 
-            combinedHtml = contentSections.map(section => 
+            combinedHtml = contentSections.map(section =>
                 section.html ? `<div class="document-separator"><h2>${section.title}</h2></div>${section.html}` : ''
             ).filter(Boolean).join('');
 
@@ -2338,7 +2337,7 @@ const Dashboard = ({
             setGithubLinkParsing(true);
             const token = localStorage.getItem('token');
             const providedPat = githubAuthMode === 'pat' ? githubLinkToken.trim() : '';
-            
+
             // First validate the connection using the working endpoint
             const validateResp = await fetch(API_ENDPOINTS.GIT_VALIDATE_CONNECTION, {
                 method: 'POST',
@@ -2352,7 +2351,7 @@ const Dashboard = ({
                     provider: 'github',
                 })
             });
-            
+
             const validateData = await validateResp.json();
             if (!validateResp.ok) {
                 let errMessage = 'Failed to validate repository';
@@ -2365,7 +2364,7 @@ const Dashboard = ({
             // Now fetch the actual repo context
             const providedUsername = githubAuthMode === 'basic' ? String(githubLinkUsername || '').trim() : '';
             const providedPassword = githubAuthMode === 'basic' ? String(githubLinkPassword || '') : '';
-            
+
             const resp = await fetch(API_ENDPOINTS.GITHUB_REPO_CONTEXT, {
                 method: 'POST',
                 headers: {
@@ -2381,7 +2380,7 @@ const Dashboard = ({
                     password: providedPassword || null,
                 })
             });
-            
+
             const data = await resp.json();
             if (!resp.ok) {
                 let errMessage = 'Failed to fetch repository context';
@@ -2627,7 +2626,7 @@ const Dashboard = ({
 
     const handleCreateRevision = async () => {
         if (!selectedProject) return;
-        
+
         try {
             const reason = await customPrompt(
                 `Provide a reason for creating a new revision for "${selectedProject.name}".`,
@@ -2635,7 +2634,7 @@ const Dashboard = ({
                 '',
                 'Enter revision reason...'
             );
-            
+
             // Check if user cancelled or provided empty reason
             if (!reason || !reason.trim()) {
                 return;
@@ -2657,7 +2656,7 @@ const Dashboard = ({
                             },
                             body: JSON.stringify({ reason: trimmedReason })
                         });
-                        
+
                         if (!response.ok) {
                             throw new Error('Failed to save revision reason to backend');
                         }
@@ -2684,12 +2683,12 @@ const Dashboard = ({
                 result: null,
                 error: ''
             });
-            
+
             // Also refresh projects to ensure the UI is in sync
             if (refreshProjects) {
                 await refreshProjects();
             }
-            
+
             // Show success message
             await customAlert(
                 'Revision unlocked successfully. You can now upload a new document.',
@@ -2734,7 +2733,7 @@ const Dashboard = ({
                 </div>
             ) : (
                 <main className="flex-1 h-full overflow-y-auto bg-app-bg-page p-3 sm:p-4 md:p-8 w-full">
-                    <div className="max-w-5xl mx-auto space-y-6">
+                    <div className="max-w-6xl mx-auto space-y-6">
 
                         {error && (
                             <div className="rounded-lg bg-app-status-errorBg p-4 border border-red-200 flex items-start animate-fade-in-down">
@@ -2762,753 +2761,752 @@ const Dashboard = ({
 
 
                         {!result && (
-                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 max-w-7xl mx-auto">
+                            <div className={`grid grid-cols-1 ${selectedProject && selectedProject.documents && selectedProject.documents.length > 0 ? 'lg:grid-cols-3' : ''} gap-2 max-w-7xl mx-auto`}>
                                 {/* Left Column - Upload Form */}
-                                <div className="lg:col-span-2">
+                                <div className={selectedProject && selectedProject.documents && selectedProject.documents.length > 0 ? 'lg:col-span-2' : 'lg:col-span-1 max-w-5xl mx-auto w-full'}>
                                     <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6 md:p-10 transition-shadow hover:shadow-md">
                                         <h2 className="text-xl font-bold text-app-text-main mb-6 flex items-center">
                                             <span className="flex items-center justify-center w-8 h-8 rounded-full bg-app-primary-light text-app-primary mr-3 text-sm font-bold">1</span>
                                             Project BRD Upload
                                         </h2>
 
-                                <form onSubmit={handleUpload} className="space-y-6">
+                                        <form onSubmit={handleUpload} className="space-y-4">
 
-                                    {selectedProject ? (
-                                        <div className="rounded-xl border border-emerald-300/70 bg-app-status-successBg/90 p-4 shadow-sm shadow-emerald-900/20">
-                                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                                                <div>
-                                                    <p className="text-sm font-semibold text-app-text-main">Selected Project</p>
-                                                    <p className="text-xs text-app-text-label mt-1">
-                                                        {selectedProject.name}
-                                                        {selectedProject.classification && selectedProject.classification !== 'N/A' && (
-                                                            <> • {selectedProject.classification}</>
-                                                        )}
-                                                        {selectedProject.weightedScore != null && selectedProject.weightedScore !== 'N/A' && (
-                                                            <> • Score {selectedProject.weightedScore}/10</>
-                                                        )}
-                                                    </p>
-                                                    <p className="text-xs text-app-text-label mt-1">
-                                                        Status: {selectedProject.status === 'analysis_complete'
-                                                            ? 'Analysis Complete (Locked)'
-                                                            : selectedProject.status === 'screening_complete'
-                                                                ? 'Requirement Screening Complete'
-                                                                : 'Ready for Initial Upload'}
-                                                    </p>
-                                                    {isEnterpriseUploadBlocked && (
-                                                        <p className="text-xs text-app-status-error mt-1">
-                                                            Upload blocked: {getEnterpriseUploadBlockMessage()}
-                                                        </p>
-                                                    )}
-                                                    {selectedProject.latestDocument && (
-                                                        <p className="text-xs text-app-text-label mt-1">
-                                                            Latest document: {selectedProject.latestDocument.filename} ({new Date(selectedProject.latestDocument.upload_date).toLocaleString('en-IN')})
-                                                        </p>
-                                                    )}
-                                                </div>
-                                                <div className="flex flex-col items-start sm:items-end gap-2">
-                                                    {selectedProject.latestDocument && hasCompletedDocumentAnalysis(selectedProject.latestDocument) && (
-                                                        <button
-                                                            type="button"
-                                                            onClick={handleViewLatestProjectAnalysis}
-                                                            className="text-xs font-semibold text-app-status-success hover:text-app-status-success/80"
-                                                        >
-                                                            View Latest Analysis
-                                                        </button>
-                                                    )}
-                                                    {selectedProject.documents.length > 0 && !revisionUnlocked && (
-                                                        <button
-                                                            type="button"
-                                                            onClick={handleCreateRevision}
-                                                            disabled={isEnterpriseUploadBlocked}
-                                                            className="text-xs font-semibold text-app-primary-hover hover:text-app-primary-dark disabled:text-app-text-light disabled:cursor-not-allowed"
-                                                        >
-                                                            Create New Revision
-                                                        </button>
-                                                    )}
-                                                </div>
-                                            </div>
-                                            {revisionUnlocked && (
-                                                <div className="mt-3 rounded-lg border border-app-primary-ring/80 bg-app-primary-light/90 p-3">
-                                                    <p className="text-xs font-semibold text-app-primary">Revision unlocked for this upload</p>
-                                                    <p className="text-xs text-app-text-label mt-1">Reason: {revisionReason}</p>
-                                                </div>
-                                            )}
-                                        </div>
-                                    ) : (
-                                        <div className="rounded-xl border border-amber-300/80 bg-app-status-warningBg/90 p-4">
-                                            <p className="text-sm font-semibold text-app-status-warning">Select a project from the left panel to continue.</p>
-                                        </div>
-                                    )}
 
-                                    {/* Tabs */}
-                                    <div className="flex items-center border-b border-app-border mb-6 overflow-x-auto whitespace-nowrap scrollbar-hide py-1">
-                                        <button
-                                            type="button"
-                                            onClick={() => setActiveTab('upload')}
-                                            className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'upload' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
-                                            disabled={!selectedProject}
-                                        >
-                                            Upload File
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => setActiveTab('linked-doc')}
-                                            className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'linked-doc' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
-                                            disabled={!selectedProject}
-                                        >
-                                            Linked Project Document
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => setActiveTab('text')}
-                                            className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'text' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
-                                            disabled={!selectedProject}
-                                        >
-                                            Write Text
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => setActiveTab('url')}
-                                            className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'url' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
-                                            disabled={!selectedProject}
-                                        >
-                                            Upload URL
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => setActiveTab('github-link')}
-                                            className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'github-link' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
-                                            disabled={!selectedProject}
-                                        >
-                                            Repositories
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => setActiveTab('skills')}
-                                            className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'skills' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
-                                            disabled={!selectedProject}
-                                        >
-                                            Skills
-                                        </button>
-                                    </div>
 
-                                    {activeTab === 'upload' ? (
-                                        <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-app-bg-page/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && !isEnterpriseUploadBlocked ? 'border-app-border hover:border-blue-400 cursor-pointer' : 'border-app-border opacity-60'}`}>
-                                            <input
-                                                type="file"
-                                                id={`file-upload-${activeTab}`}
-                                                multiple
-                                                onChange={handleFileChange}
-                                                accept=".pdf,.docx,.pptx,.html,.htm,.png,.jpg,.jpeg,.txt"
-                                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
-                                            />
-                                            <div className="mx-auto w-12 h-12 text-app-text-light mb-3 group-hover:text-app-primary transition-colors">
-                                                <FileText className="w-12 h-12" />
+                                            {/* Tabs */}
+                                            <div className="flex items-center border-b border-app-border mb-6 overflow-x-auto whitespace-nowrap scrollbar-hide py-1">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setActiveTab('upload')}
+                                                    className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'upload' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                    disabled={!selectedProject}
+                                                >
+                                                    Upload File
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setActiveTab('linked-doc')}
+                                                    className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'linked-doc' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                    disabled={!selectedProject}
+                                                >
+                                                    Linked Project Document
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setActiveTab('text')}
+                                                    className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'text' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                    disabled={!selectedProject}
+                                                >
+                                                    Write Text
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setActiveTab('url')}
+                                                    className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'url' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                    disabled={!selectedProject}
+                                                >
+                                                    Upload URL
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setActiveTab('github-link')}
+                                                    className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'github-link' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                    disabled={!selectedProject}
+                                                >
+                                                    Repositories
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setActiveTab('skills')}
+                                                    className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'skills' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                    disabled={!selectedProject}
+                                                >
+                                                    Skills
+                                                </button>
                                             </div>
-                                            <span className="mt-2 block text-sm font-medium text-app-text-main">
-                                                {files.length > 0
-                                                    ? `${files.length} file(s) selected`
-                                                    : "Click to select documents (max 100MB total)"}
-                                            </span>
-                                            {files.length > 0 && (
-                                                <div className="mt-2 text-xs text-app-text-muted flex flex-col items-center">
-                                                    {files.map((f, i) => (
-                                                        <span key={i} className="truncate max-w-[200px]">{f.name}</span>
-                                                    ))}
-                                                </div>
-                                            )}
-                                            <span className="mt-1 block text-xs text-app-text-light">
-                                                PDF, DOCX, PPTX, HTML, Images, Text
-                                            </span>
-                                        </div>
-                                    ) : activeTab === 'linked-doc' ? (
-                                        <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-app-bg-page/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && !isEnterpriseUploadBlocked ? 'border-app-border hover:border-blue-400 cursor-pointer' : 'border-app-border opacity-60'}`}>
-                                            <input
-                                                type="file"
-                                                id={`file-upload-linked`}
-                                                multiple
-                                                onChange={handleFileChange}
-                                                accept=".pdf,.docx,.pptx,.html,.htm,.png,.jpg,.jpeg,.txt"
-                                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
-                                            />
-                                            <div className="mx-auto w-12 h-12 text-app-text-light mb-3 group-hover:text-app-primary transition-colors">
-                                                <FileText className="w-12 h-12" />
-                                            </div>
-                                            <span className="mt-2 block text-sm font-medium text-app-text-main">
-                                                {linkedFiles.length > 0
-                                                    ? `${linkedFiles.length} linked document(s) selected`
-                                                    : "Click to select linked documents (max 100MB total)"}
-                                            </span>
-                                            {linkedFiles.length > 0 && (
-                                                <div className="mt-2 text-xs text-app-text-muted flex flex-col items-center">
-                                                    {linkedFiles.map((f, i) => (
-                                                        <span key={i} className="truncate max-w-[200px]">{f.name}</span>
-                                                    ))}
-                                                </div>
-                                            )}
-                                            <span className="mt-1 block text-xs text-app-text-light">
-                                                PDF, DOCX, PPTX, HTML, Images, Text
-                                            </span>
-                                        </div>
-                                    ) : activeTab === 'text' ? (
-                                        <div className="relative">
-                                            <textarea
-                                                value={textInput}
-                                                onChange={handleTextChange}
-                                                placeholder="Write your requirements here..."
-                                                className="w-full h-64 p-4 border border-app-border rounded-xl focus:ring-2 focus:ring-app-primary focus:border-app-primary text-sm bg-app-bg-page/50 resize-none font-mono"
-                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
-                                            />
-                                        </div>
-                                    ) : activeTab === 'url' ? (
-                                        <div className="space-y-4">
-                                            <div className="rounded-xl border border-app-border bg-app-bg-page/50 p-4">
-                                                <label className="block text-sm font-semibold text-app-text-main mb-2">Website URL</label>
-                                                <div className="flex flex-col sm:flex-row gap-2">
+
+                                            {activeTab === 'upload' ? (
+                                                <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-app-bg-page/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && !isEnterpriseUploadBlocked ? 'border-app-border hover:border-blue-400 cursor-pointer' : 'border-app-border opacity-60'}`}>
                                                     <input
-                                                        type="url"
-                                                        value={urlInput}
-                                                        onChange={handleUrlInputChange}
-                                                        placeholder="https://example.com/requirements"
-                                                        className="flex-1 px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-card"
-                                                        disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || urlFetching}
+                                                        type="file"
+                                                        id={`file-upload-${activeTab}`}
+                                                        multiple
+                                                        onChange={handleFileChange}
+                                                        accept=".pdf,.docx,.pptx,.html,.htm,.png,.jpg,.jpeg,.txt"
+                                                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                                                        disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
                                                     />
-                                                    <button
-                                                        type="button"
-                                                        onClick={handleFetchUrlRequirements}
-                                                        disabled={!urlInput.trim() || !selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || urlFetching}
-                                                        className="px-4 py-2.5 bg-app-text-main text-white text-sm font-semibold rounded-lg hover:bg-app-text-label disabled:opacity-50 transition-colors inline-flex items-center justify-center min-w-[136px]"
-                                                    >
-                                                        {urlFetching ? 'Fetching...' : 'Fetch URL'}
-                                                    </button>
-                                                </div>
-                                                <p className="mt-2 text-xs text-app-text-muted">
-                                                    Fetches webpage content and converts it into requirement text for analysis.
-                                                </p>
-                                            </div>
-                                            <div className="rounded-xl border border-app-border bg-app-bg-card p-4">
-                                                <div className="flex items-center justify-between gap-2 mb-2">
-                                                    <h3 className="text-sm font-semibold text-app-text-main">Extracted Requirements</h3>
-                                                    {urlSource && (
-                                                        <span className="text-[11px] text-app-text-muted truncate max-w-[60%]" title={urlSource}>
-                                                            Source: {urlSource}
-                                                        </span>
-                                                    )}
-                                                </div>
-                                                <textarea
-                                                    value={urlRequirements}
-                                                    onChange={(e) => setUrlRequirements(e.target.value)}
-                                                    placeholder="Click 'Fetch URL' to generate requirement text from the webpage."
-                                                    className="w-full min-h-64 max-h-[600px] p-4 border border-app-border rounded-xl focus:ring-2 focus:ring-app-primary focus:border-app-primary text-sm bg-app-bg-page/50 resize-y font-mono overflow-y-auto"
-                                                    disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
-                                                />
-                                                {urlFetchSummary && (
-                                                    <div className="mt-2 text-xs text-app-text-muted">
-                                                        Parsed headings: {urlFetchSummary.headings_found || 0}, paragraphs: {urlFetchSummary.paragraphs_found || 0}, list items: {urlFetchSummary.list_items_found || 0}
+                                                    <div className="mx-auto w-12 h-12 text-app-text-light mb-3 group-hover:text-app-primary transition-colors">
+                                                        <FileText className="w-12 h-12" />
                                                     </div>
-                                                )}
-                                            </div>
-                                        </div>
-                                    ) : activeTab === 'skills' ? (
-                                        <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-app-bg-page/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && !isEnterpriseUploadBlocked ? 'border-app-border hover:border-blue-400 cursor-pointer' : 'border-app-border opacity-60'}`}>
-                                            <input
-                                                type="file"
-                                                id={`file-upload-skills`}
-                                                multiple
-                                                onChange={handleFileChange}
-                                                accept=".md,.txt"
-                                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
-                                            />
-                                            <div className="mx-auto w-12 h-12 text-app-text-light mb-3 group-hover:text-app-primary transition-colors">
-                                                <FileText className="w-12 h-12" />
-                                            </div>
-                                            <span className="mt-2 block text-sm font-medium text-app-text-main">
-                                                {skillFiles.length > 0
-                                                    ? `${skillFiles.length} skill file(s) selected`
-                                                    : "Click to select skill files (max 100MB total)"}
-                                            </span>
-                                            {skillFiles.length > 0 && (
-                                                <div className="mt-2 text-xs text-app-text-muted flex flex-col items-center">
-                                                    {skillFiles.map((f, i) => (
-                                                        <span key={i} className="truncate max-w-[200px]">{f.name}</span>
-                                                    ))}
-                                                </div>
-                                            )}
-                                            <span className="mt-1 block text-xs text-app-text-light">
-                                                Markdown (.md) and Text (.txt) files only
-                                            </span>
-                                            <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-left">
-                                                <p className="text-xs text-blue-900 font-semibold mb-1">💡 What are Skills?</p>
-                                                <p className="text-xs text-blue-700">
-                                                    Skills are additional context files (guides, documentation, best practices) that help the AI understand your project better and provide more accurate analysis.
-                                                </p>
-                                            </div>
-                                        </div>
-                                    ) : (
-                                        <div className="space-y-6">
-                                            {/* Repository Context Viewer - Show when repo is loaded */}
-                                            {repoContext?.context && (
-                                                <div className="bg-gradient-to-br from-emerald-50 to-teal-50 dark:from-emerald-900/20 dark:to-teal-900/20 border-2 border-emerald-200 dark:border-emerald-800 rounded-xl p-6 shadow-lg">
-                                                    <div className="flex items-start justify-between gap-4 mb-4">
-                                                        <div className="flex items-start gap-3 flex-1">
-                                                            <div className="w-10 h-10 rounded-lg bg-emerald-500 flex items-center justify-center flex-shrink-0">
-                                                                <CheckCircle2 className="w-6 h-6 text-white" />
-                                                            </div>
-                                                            <div className="flex-1 min-w-0">
-                                                                <h3 className="text-lg font-bold text-emerald-900 dark:text-dark-100 mb-1">
-                                                                    Repository Loaded Successfully
-                                                                </h3>
-                                                                <p className="text-sm text-emerald-700 dark:text-dark-300 font-mono truncate">
-                                                                    {repoContext.repo} {repoContext.branch && `(${repoContext.branch})`}
-                                                                </p>
-                                                                <p className="text-xs text-emerald-600 dark:text-dark-400 mt-1">
-                                                                    Provider: {repoContext.provider === 'azure-devops' ? 'Azure DevOps' : 'GitHub'}
-                                                                </p>
-                                                            </div>
-                                                        </div>
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => {
-                                                                setRepoContext(null);
-                                                                clearRepoContextFromStorage();
-                                                                setIsOAuthRepoSelected(false);
-                                                            }}
-                                                            className="px-3 py-1.5 text-xs font-semibold text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors"
-                                                        >
-                                                            Clear
-                                                        </button>
-                                                    </div>
-                                                    
-                                                    {/* Repository Context Preview */}
-                                                    <div className="bg-white dark:bg-gray-900 rounded-lg border border-emerald-200 dark:border-emerald-800 p-4 max-h-96 overflow-y-auto">
-                                                        <div className="flex items-center justify-between mb-3">
-                                                            <h4 className="text-sm font-bold text-gray-900 dark:text-gray-100">Repository Structure</h4>
-                                                            <span className="text-xs text-gray-500 dark:text-gray-400">
-                                                                {repoContext.context.split('\n').filter(line => line.trim().startsWith('src/') || line.trim().startsWith('public/') || line.trim().includes('.')).length} files detected
-                                                            </span>
-                                                        </div>
-                                                        <pre className="text-xs font-mono text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words">
-                                                            {repoContext.context.substring(0, 2000)}{repoContext.context.length > 2000 && '...\n\n[Content truncated for preview]'}
-                                                        </pre>
-                                                    </div>
-                                                    
-                                                    <div className="mt-4 flex items-center gap-2 text-xs text-emerald-700 dark:text-dark-300">
-                                                        <Info className="w-4 h-4" />
-                                                        <span>This repository context will be sent to AI for analysis and planning.</span>
-                                                    </div>
-                                                </div>
-                                            )}
-                                            
-                                            {/* Repository Configuration */}
-                                            <div className="max-w-3xl mx-auto">
-                                                <div className="border border-app-border rounded-xl bg-app-bg-card shadow-sm p-6">
-                                                    <div className="mb-4">
-                                                        <h3 className="text-base font-bold text-app-text-main mb-2">Repository Configuration</h3>
-                                                        <p className="text-xs text-app-text-muted">
-                                                            Provide a repository link from GitHub or Azure DevOps. For private repositories, use PAT.
-                                                        </p>
-                                                    </div>
-                                                
-                                                {/* Show saved credentials indicator - Only show for the saved provider */}
-                                                {credentialsLocked && repoLinkProvider === 'azure-devops' && azureLinkUrl && (
-                                                    <div className="mb-4 p-3 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 border border-blue-200 dark:border-blue-800 rounded-lg shadow-sm">
-                                                        <div className="flex items-start justify-between gap-2">
-                                                            <div className="flex items-start gap-2 flex-1 min-w-0">
-                                                                <CheckCircle2 className="w-5 h-5 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
-                                                                <div className="flex-1 min-w-0">
-                                                                    <p className="text-xs font-bold text-blue-900 dark:text-blue-100 uppercase tracking-wide mb-1">
-                                                                        <span className="flex items-center gap-1.5">
-                                                                            <AzureDevOpsIcon className="w-3.5 h-3.5" />
-                                                                            Azure DevOps Credentials Saved
-                                                                        </span>
-                                                                    </p>
-                                                                    {hasChangedCredentials ? (
-                                                                        <div className="mt-2 inline-flex items-center gap-1.5 px-2 py-1 bg-amber-100 dark:bg-amber-900/30 rounded-md">
-                                                                            <AlertTriangle className="w-3 h-3 text-amber-600 dark:text-amber-400" />
-                                                                            <span className="text-[10px] font-semibold text-amber-800 dark:text-amber-200">
-                                                                                Changed once - Contact support for further changes
-                                                                            </span>
-                                                                        </div>
-                                                                    ) : (
-                                                                        <button
-                                                                            type="button"
-                                                                            onClick={handleChangeCredentials}
-                                                                            className="mt-2 text-[11px] font-semibold text-blue-700 dark:text-blue-300 hover:text-blue-900 dark:hover:text-blue-100 underline underline-offset-2 decoration-2 hover:decoration-blue-500 transition-all flex items-center gap-1"
-                                                                        >
-                                                                            <RefreshCw className="w-3 h-3" />
-                                                                            Change credentials (one-time only)
-                                                                        </button>
-                                                                    )}
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                )}
-                                                
-                                                {credentialsLocked && repoLinkProvider === 'github' && githubLinkUrl && (
-                                                    <div className="mb-4 p-3 bg-gradient-to-r from-gray-50 to-slate-50 dark:from-gray-900/20 dark:to-slate-900/20 border border-gray-200 dark:border-gray-800 rounded-lg shadow-sm">
-                                                        <div className="flex items-start justify-between gap-2">
-                                                            <div className="flex items-start gap-2 flex-1 min-w-0">
-                                                                <CheckCircle2 className="w-5 h-5 text-app-status-success flex-shrink-0 mt-0.5" />
-                                                                <div className="flex-1 min-w-0">
-                                                                    <p className="text-xs font-bold text-app-text-main uppercase tracking-wide mb-1">
-                                                                        <span className="flex items-center gap-1.5">
-                                                                            <GitHubIcon className="w-3.5 h-3.5" />
-                                                                            GitHub Credentials Saved
-                                                                        </span>
-                                                                    </p>
-                                                                    <p className="text-[11px] text-app-text-muted font-mono truncate" title={githubLinkUrl}>
-                                                                        {githubLinkUrl}
-                                                                    </p>
-                                                                    {hasChangedCredentials ? (
-                                                                        <div className="mt-2 inline-flex items-center gap-1.5 px-2 py-1 bg-amber-100 dark:bg-amber-900/30 rounded-md">
-                                                                            <AlertTriangle className="w-3 h-3 text-amber-600 dark:text-amber-400" />
-                                                                            <span className="text-[10px] font-semibold text-amber-800 dark:text-amber-200">
-                                                                                Changed once - Contact support for further changes
-                                                                            </span>
-                                                                        </div>
-                                                                    ) : (
-                                                                        <button
-                                                                            type="button"
-                                                                            onClick={handleChangeCredentials}
-                                                                            className="mt-2 text-[11px] font-semibold text-app-primary hover:text-app-primary-hover underline underline-offset-2 decoration-2 hover:decoration-app-primary transition-all flex items-center gap-1"
-                                                                        >
-                                                                            <RefreshCw className="w-3 h-3" />
-                                                                            Change credentials (one-time only)
-                                                                        </button>
-                                                                    )}
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                )}
-                                                
-                                                <div className="mb-3 inline-flex rounded-lg border border-app-border p-1 bg-app-bg-page/60">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => { setRepoLinkProvider('github'); setAzureLinkError(''); }}
-                                                        className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${repoLinkProvider === 'github' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
-                                                    >
-                                                        <span className="flex items-center gap-1">
-                                                            <GitHubIcon className="w-4 h-4" />
-                                                            <span>GitHub</span>
-                                                        </span>
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => { setRepoLinkProvider('azure-devops'); setGithubLinkError(''); setIsOAuthRepoSelected(false); }}
-                                                        className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${repoLinkProvider === 'azure-devops' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
-                                                    >
-                                                        <span className="flex items-center gap-1">
-                                                            <AzureDevOpsIcon className="w-4 h-4" />
-                                                            <span>Azure DevOps</span>
-                                                        </span>
-                                                    </button>
-                                                </div>
-                                                
-                                                {repoLinkProvider === 'github' && (
-                                                    <div className="mb-3 inline-flex rounded-lg border border-app-border p-1 bg-app-bg-page/60">
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => { setGithubAuthMode('pat'); setGithubLinkError(''); }}
-                                                            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${githubAuthMode === 'pat' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
-                                                        >
-                                                            Use PAT
-                                                        </button>
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => { setGithubAuthMode('basic'); setGithubLinkError(''); }}
-                                                            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${githubAuthMode === 'basic' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
-                                                        >
-                                                            Username + Password
-                                                        </button>
-                                                    </div>
-                                                )}
-                                                <div className="flex flex-col gap-3 mt-auto">
-                                                    <input
-                                                        type="text"
-                                                        value={repoLinkProvider === 'azure-devops' ? azureLinkUrl : githubLinkUrl}
-                                                        onChange={e => handleRepoLinkUrlChange(e.target.value)}
-                                                        placeholder={repoLinkProvider === 'azure-devops' ? 'https://dev.azure.com/org/project/_git/repo or https://dev.azure.com/org/project' : 'https://github.com/owner/repo'}
-                                                        className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
-                                                    />
-                                                    {repoLinkProvider === 'azure-devops' ? (
-                                                        <input
-                                                            type="password"
-                                                            value={azureLinkToken}
-                                                            onChange={e => {
-                                                                setAzureLinkToken(e.target.value);
-                                                                if (repoContext) { setRepoContext(null); clearRepoContextFromStorage(); }
-                                                            }}
-                                                            placeholder="Azure DevOps PAT"
-                                                            className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
-                                                        />
-                                                    ) : githubAuthMode === 'pat' ? (
-                                                        <input
-                                                            type="password"
-                                                            value={githubLinkToken}
-                                                            onChange={e => {
-                                                                setGithubLinkToken(e.target.value);
-                                                                if (repoContext) { setRepoContext(null); clearRepoContextFromStorage(); }
-                                                            }}
-                                                            placeholder="GitHub PAT"
-                                                            className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
-                                                        />
-                                                    ) : (
-                                                        <>
-                                                            <input
-                                                                type="text"
-                                                                value={githubLinkUsername}
-                                                                onChange={e => {
-                                                                    setGithubLinkUsername(e.target.value);
-                                                                    if (repoContext) { setRepoContext(null); clearRepoContextFromStorage(); }
-                                                                }}
-                                                                placeholder="GitHub username"
-                                                                className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
-                                                            />
-                                                            <input
-                                                                type="password"
-                                                                value={githubLinkPassword}
-                                                                onChange={e => {
-                                                                    setGithubLinkPassword(e.target.value);
-                                                                    if (repoContext) { setRepoContext(null); clearRepoContextFromStorage(); }
-                                                                }}
-                                                                placeholder="GitHub password"
-                                                                className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
-                                                            />
-                                                        </>
-                                                    )}
-                                                    <div className="flex items-center gap-2">
-                                                        <button
-                                                            type="button"
-                                                            onClick={repoLinkProvider === 'azure-devops' ? handleLoadAzureDevOpsUrl : handleLoadGithubUrl}
-                                                            disabled={repoLinkProvider === 'azure-devops'
-                                                                ? (!azureLinkUrl || azureLinkParsing || azureProjectReposLoading)
-                                                                : (!githubLinkUrl || githubLinkParsing)}
-                                                            className="flex-1 px-4 py-2 bg-app-text-main text-white text-sm font-semibold rounded-lg hover:bg-app-text-label disabled:opacity-50 transition-colors inline-flex items-center justify-center h-10 shadow-sm"
-                                                        >
-                                                            {(repoLinkProvider === 'azure-devops' ? (azureLinkParsing || azureProjectReposLoading) : githubLinkParsing) ? (
-                                                                <><span className="animate-spin w-3.5 h-3.5 border-2 border-app-bg-card border-t-transparent rounded-full mr-2"></span> Loading...</>
-                                                            ) : 'Load Repository'}
-                                                        </button>
-                                                        {repoContext && repoContext.fromLink && (
-                                                            <button
-                                                                onClick={() => {
-                                                                    setRepoContext(null);
-                                                                    clearRepoContextFromStorage();
-                                                                    setGithubLinkUrl('');
-                                                                    setGithubLinkToken('');
-                                                                    setGithubAuthMode('pat');
-                                                                    setGithubLinkUsername('');
-                                                                    setGithubLinkPassword('');
-                                                                    setGithubLinkError('');
-                                                                    setAzureLinkUrl('');
-                                                                    setAzureLinkToken('');
-                                                                    setAzureLinkBranch('');
-                                                                    setAzureLinkError('');
-                                                                }}
-                                                                className="px-3 py-2 border border-red-200 text-app-status-error bg-app-status-errorBg rounded-lg hover:bg-app-status-errorBg text-sm font-semibold h-10 transition-colors"
-                                                                title="Clear repository"
-                                                            >
-                                                                Clear
-                                                            </button>
-                                                        )}
-                                                    </div>
-                                                </div>
-
-                                                {repoLinkProvider === 'azure-devops'
-                                                    ? (azureLinkError && <p className="text-app-status-error text-[11px] font-medium mt-3 bg-app-status-errorBg p-2.5 rounded border border-app-status-errorBg">{azureLinkError}</p>)
-                                                    : (githubLinkError && <p className="text-app-status-error text-[11px] font-medium mt-3 bg-app-status-errorBg p-2.5 rounded border border-app-status-errorBg">{githubLinkError}</p>)}
-                                                {showAzureRepoSelector && azureProjectRepos.length > 0 && (
-                                                    <div className="mt-3 border border-app-border rounded-lg bg-app-bg-page/50 p-3 max-h-64 overflow-y-auto">
-                                                        <p className="text-xs font-semibold text-app-text-main mb-2">Select a repository:</p>
-                                                        <div className="space-y-1.5">
-                                                            {azureProjectRepos.map((repo) => (
-                                                                <button
-                                                                    key={repo.id || repo.name}
-                                                                    type="button"
-                                                                    onClick={() => handleSelectAzureRepo(repo)}
-                                                                    className="w-full text-left px-3 py-2 rounded-md border border-app-border bg-app-bg-card hover:bg-app-bg-hover hover:border-app-primary transition-colors text-xs"
-                                                                >
-                                                                    <div className="font-semibold text-app-text-main">{repo.name}</div>
-                                                                    {repo.description && (
-                                                                        <div className="text-app-text-muted mt-0.5 truncate">{repo.description}</div>
-                                                                    )}
-                                                                    {repo.default_branch && (
-                                                                        <div className="text-app-text-muted mt-0.5 text-[10px]">Default branch: {repo.default_branch}</div>
-                                                                    )}
-                                                                </button>
+                                                    <span className="mt-2 block text-sm font-medium text-app-text-main">
+                                                        {files.length > 0
+                                                            ? `${files.length} file(s) selected`
+                                                            : "Click to select documents (max 100MB total)"}
+                                                    </span>
+                                                    {files.length > 0 && (
+                                                        <div className="mt-2 text-xs text-app-text-muted flex flex-col items-center">
+                                                            {files.map((f, i) => (
+                                                                <span key={i} className="truncate max-w-[200px]">{f.name}</span>
                                                             ))}
                                                         </div>
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => {
-                                                                setShowAzureRepoSelector(false);
-                                                                setAzureProjectRepos([]);
-                                                                setAzureProjectUrl('');
-                                                            }}
-                                                            className="mt-2 text-xs text-app-text-muted hover:text-app-text-label"
-                                                        >
-                                                            Cancel
-                                                        </button>
+                                                    )}
+                                                    <span className="mt-1 block text-xs text-app-text-light">
+                                                        PDF, DOCX, PPTX, HTML, Images, Text
+                                                    </span>
+                                                </div>
+                                            ) : activeTab === 'linked-doc' ? (
+                                                <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-app-bg-page/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && !isEnterpriseUploadBlocked ? 'border-app-border hover:border-blue-400 cursor-pointer' : 'border-app-border opacity-60'}`}>
+                                                    <input
+                                                        type="file"
+                                                        id={`file-upload-linked`}
+                                                        multiple
+                                                        onChange={handleFileChange}
+                                                        accept=".pdf,.docx,.pptx,.html,.htm,.png,.jpg,.jpeg,.txt"
+                                                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                                                        disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
+                                                    />
+                                                    <div className="mx-auto w-12 h-12 text-app-text-light mb-3 group-hover:text-app-primary transition-colors">
+                                                        <FileText className="w-12 h-12" />
                                                     </div>
-                                                )}
-                                                {repoContext && repoContext.fromLink && (
-                                                    <div className="mt-3 p-2.5 bg-app-status-successBg border border-emerald-200 rounded text-emerald-800 shadow-sm flex items-center text-xs font-semibold">
-                                                        <CheckCircle2 className="w-4 h-4 mr-1.5 flex-shrink-0 text-app-status-success" />
-                                                        <span className="truncate">Loaded: {repoContext.repo} {repoContext.branch ? `(${repoContext.branch})` : ''}</span>
+                                                    <span className="mt-2 block text-sm font-medium text-app-text-main">
+                                                        {linkedFiles.length > 0
+                                                            ? `${linkedFiles.length} linked document(s) selected`
+                                                            : "Click to select linked documents (max 100MB total)"}
+                                                    </span>
+                                                    {linkedFiles.length > 0 && (
+                                                        <div className="mt-2 text-xs text-app-text-muted flex flex-col items-center">
+                                                            {linkedFiles.map((f, i) => (
+                                                                <span key={i} className="truncate max-w-[200px]">{f.name}</span>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                    <span className="mt-1 block text-xs text-app-text-light">
+                                                        PDF, DOCX, PPTX, HTML, Images, Text
+                                                    </span>
+                                                </div>
+                                            ) : activeTab === 'text' ? (
+                                                <div className="relative">
+                                                    <textarea
+                                                        value={textInput}
+                                                        onChange={handleTextChange}
+                                                        placeholder="Write your requirements here..."
+                                                        className="w-full h-64 p-4 border border-app-border rounded-xl focus:ring-2 focus:ring-app-primary focus:border-app-primary text-sm bg-app-bg-page/50 resize-none font-mono"
+                                                        disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
+                                                    />
+                                                </div>
+                                            ) : activeTab === 'url' ? (
+                                                <div className="space-y-4">
+                                                    <div className="rounded-xl border border-app-border bg-app-bg-page/50 p-4">
+                                                        <label className="block text-sm font-semibold text-app-text-main mb-2">Website URL</label>
+                                                        <div className="flex flex-col sm:flex-row gap-2">
+                                                            <input
+                                                                type="url"
+                                                                value={urlInput}
+                                                                onChange={handleUrlInputChange}
+                                                                placeholder="https://example.com/requirements"
+                                                                className="flex-1 px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-card"
+                                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || urlFetching}
+                                                            />
+                                                            <button
+                                                                type="button"
+                                                                onClick={handleFetchUrlRequirements}
+                                                                disabled={!urlInput.trim() || !selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || urlFetching}
+                                                                className="px-4 py-2.5 bg-app-text-main text-white text-sm font-semibold rounded-lg hover:bg-app-text-label disabled:opacity-50 transition-colors inline-flex items-center justify-center min-w-[136px]"
+                                                            >
+                                                                {urlFetching ? 'Fetching...' : 'Fetch URL'}
+                                                            </button>
+                                                        </div>
+                                                        <p className="mt-2 text-xs text-app-text-muted">
+                                                            Fetches webpage content and converts it into requirement text for analysis.
+                                                        </p>
                                                     </div>
-                                                )}
-                                            </div>
-                                        </div>
-                                    </div>
-                                    )}
-
-
-
-                                    {processing && (
-                                        <div className="space-y-3 animate-pulse mt-6">
-                                            <div className="flex justify-between items-center text-xs uppercase tracking-wider text-app-text-muted font-semibold">
-                                                <span>{progressMessage}</span>
-                                                <span>{progress}%</span>
-                                            </div>
-                                            <div className="w-full bg-app-bg-muted rounded-full h-1.5 overflow-hidden">
-                                                <div
-                                                    className="bg-app-primary h-1.5 rounded-full transition-all duration-500 ease-out shadow-[0_0_10px_rgba(37,99,235,0.5)]"
-                                                    style={{ width: `${progress}%` }}
-                                                ></div>
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {error && (
-                                        <div className="mt-4 rounded-lg border border-red-200 bg-app-status-errorBg px-4 py-3">
-                                            <p className="text-sm font-medium text-app-status-error">{error}</p>
-                                        </div>
-                                    )}
-
-                                    <div className="flex justify-end gap-3 pt-6">
-                                        <button
-                                            type="submit"
-                                            disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (files.length === 0 && linkedFiles.length === 0 && !textInput.trim() && !urlInput.trim() && !urlRequirements.trim() && !repoContext?.context && skillFiles.length === 0) || processing || urlFetching}
-                                            className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-white transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (files.length === 0 && linkedFiles.length === 0 && !textInput.trim() && !urlInput.trim() && !urlRequirements.trim() && !repoContext?.context && skillFiles.length === 0) || processing || urlFetching
-                                                ? 'bg-app-border cursor-not-allowed shadow-none'
-                                                : 'bg-app-primary hover:bg-app-primary-hover hover:-translate-y-0.5 hover:shadow-lg'
-                                                }`}
-                                        >
-                                            <Zap className={`w-4 h-4 mr-2 ${processing ? 'animate-pulse' : ''}`} />
-                                            {processing
-                                                ? (hasGovernanceAssessment ? 'Analyzing...' : 'Saving Screening...')
-                                                : selectedProject?.documents.length > 0
-                                                    ? (hasGovernanceAssessment ? 'Start Revision Analysis' : 'Continue to Governance')
-                                                    : (hasGovernanceAssessment ? 'Start Analysis' : 'Complete Requirement Screening')}
-                                        </button>
-                                    </div>
-                                </form>
-                            </div>
-                        </div>
-
-                        {/* Right Column - Revision History */}
-                        <div className="lg:col-span-1">
-                            {selectedProject && selectedProject.documents && selectedProject.documents.length > 0 && (() => {
-                                const [expandedRevision, setExpandedRevision] = useState(null);
-
-                                const sortedDocs = [...selectedProject.documents].sort((a, b) =>
-                                    new Date(b.upload_date || 0) - new Date(a.upload_date || 0)
-                                );
-
-                                return (
-                                    <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light overflow-hidden sticky top-6">
-                                        <div className="px-4 py-3 bg-gradient-to-r from-app-primary/10 to-app-primary/5 border-b border-app-border-light">
-                                            <div className="flex items-center gap-2">
-                                                <History className="w-5 h-5 text-app-primary" />
-                                                <h3 className="text-base font-bold text-app-text-main">Revision History</h3>
-                                                <span className="ml-auto px-2.5 py-0.5 text-xs font-bold bg-app-primary text-white rounded-full">{sortedDocs.length}</span>
-                                            </div>
-                                        </div>
-
-                                        <div className="divide-y divide-app-border-light max-h-[calc(100vh-200px)] overflow-y-auto">
-                                            {sortedDocs.map((doc, idx) => {
-                                                const parsedA = parseStoredDocumentAnalysis(doc);
-                                                const isCompleted = hasCompletedStoredAnalysis(parsedA);
-                                                const isPending = parsedA?.screening_status === 'pending_governance_analysis';
-                                                const revNum = parsedA?.projectMeta?.revision_number || (sortedDocs.length - idx);
-                                                const docSections = extractDocumentSections(doc, parsedA);
-                                                const isExpanded = expandedRevision === doc.id;
-
-                                                return (
-                                                    <div key={doc.id} className="bg-app-bg-card hover:bg-app-bg-page/60 transition-colors">
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => setExpandedRevision(isExpanded ? null : doc.id)}
-                                                            className="w-full flex items-start justify-between px-4 py-3 text-left"
-                                                        >
-                                                            <div className="flex items-start gap-3 min-w-0 flex-1">
-                                                                <div className={`mt-1 w-2 h-2 rounded-full flex-shrink-0 ${isCompleted ? 'bg-app-status-success' : isPending ? 'bg-amber-400' : 'bg-app-text-light'}`} />
-                                                                <div className="min-w-0 flex-1">
-                                                                    <p className="text-sm font-semibold text-app-text-main truncate">Rev {revNum}</p>
-                                                                    <p className="text-xs text-app-text-muted truncate mt-0.5">{doc.filename}</p>
-                                                                    <p className="text-[11px] text-app-text-muted mt-1">
-                                                                        {doc.upload_date ? new Date(doc.upload_date).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' }) : '—'}
-                                                                    </p>
-                                                                    <span className={`inline-block mt-1.5 text-[10px] font-semibold px-2 py-0.5 rounded-full ${isCompleted ? 'bg-app-status-successBg text-app-status-success' : isPending ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'}`}>
-                                                                        {isCompleted ? 'Complete' : isPending ? 'Pending' : 'Draft'}
-                                                                    </span>
-                                                                </div>
-                                                            </div>
-                                                            <div className="flex items-center gap-2 flex-shrink-0 ml-2">
-                                                                {isCompleted && (
-                                                                    <button
-                                                                        type="button"
-                                                                        onClick={e => { e.stopPropagation(); navigate('/agent-analysis'); }}
-                                                                        className="text-[11px] font-semibold text-app-primary hover:underline"
-                                                                    >View</button>
-                                                                )}
-                                                                <svg className={`w-4 h-4 text-app-text-muted transition-transform ${isExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                                                            </div>
-                                                        </button>
-
-                                                        {isExpanded && (
-                                                            <div className="px-4 pb-4 bg-app-bg-page/50 border-t border-app-border-light/50">
-                                                                <p className="text-[11px] font-semibold text-app-text-muted uppercase tracking-wider mt-3 mb-2">Sources Processed</p>
-                                                                {docSections.length > 0 ? (
-                                                                    <div className="flex flex-wrap gap-1.5">
-                                                                        {docSections.map((s, si) => (
-                                                                            <span key={si} className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-app-primary-light text-app-primary border border-app-primary/20">
-                                                                                {s.title}
-                                                                            </span>
-                                                                        ))}
-                                                                    </div>
-                                                                ) : (
-                                                                    <p className="text-xs text-app-text-muted italic">— File info not available</p>
-                                                                )}
-                                                                {isCompleted && parsedA?.metrics && (
-                                                                    <div className="mt-3 grid grid-cols-2 gap-2">
-                                                                        {[
-                                                                            { label: 'Complexity', value: parsedA.metrics.complexity },
-                                                                            { label: 'Timeline', value: parsedA.metrics.timeline },
-                                                                        ].filter(m => m.value).map((m, mi) => (
-                                                                            <div key={mi} className="bg-app-bg-card rounded-lg px-2.5 py-1.5 border border-app-border-light">
-                                                                                <p className="text-[10px] text-app-text-muted uppercase">{m.label}</p>
-                                                                                <p className="text-xs font-semibold text-app-text-main truncate">{m.value}</p>
-                                                                            </div>
-                                                                        ))}
-                                                                    </div>
-                                                                )}
+                                                    <div className="rounded-xl border border-app-border bg-app-bg-card p-4">
+                                                        <div className="flex items-center justify-between gap-2 mb-2">
+                                                            <h3 className="text-sm font-semibold text-app-text-main">Extracted Requirements</h3>
+                                                            {urlSource && (
+                                                                <span className="text-[11px] text-app-text-muted truncate max-w-[60%]" title={urlSource}>
+                                                                    Source: {urlSource}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        <textarea
+                                                            value={urlRequirements}
+                                                            onChange={(e) => setUrlRequirements(e.target.value)}
+                                                            placeholder="Click 'Fetch URL' to generate requirement text from the webpage."
+                                                            className="w-full min-h-64 max-h-[600px] p-4 border border-app-border rounded-xl focus:ring-2 focus:ring-app-primary focus:border-app-primary text-sm bg-app-bg-page/50 resize-y font-mono overflow-y-auto"
+                                                            disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
+                                                        />
+                                                        {urlFetchSummary && (
+                                                            <div className="mt-2 text-xs text-app-text-muted">
+                                                                Parsed headings: {urlFetchSummary.headings_found || 0}, paragraphs: {urlFetchSummary.paragraphs_found || 0}, list items: {urlFetchSummary.list_items_found || 0}
                                                             </div>
                                                         )}
                                                     </div>
-                                                );
-                                            })}
-                                        </div>
+                                                </div>
+                                            ) : activeTab === 'skills' ? (
+                                                <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-app-bg-page/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && !isEnterpriseUploadBlocked ? 'border-app-border hover:border-blue-400 cursor-pointer' : 'border-app-border opacity-60'}`}>
+                                                    <input
+                                                        type="file"
+                                                        id={`file-upload-skills`}
+                                                        multiple
+                                                        onChange={handleFileChange}
+                                                        accept=".md,.txt"
+                                                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                                                        disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
+                                                    />
+                                                    <div className="mx-auto w-12 h-12 text-app-text-light mb-3 group-hover:text-app-primary transition-colors">
+                                                        <FileText className="w-12 h-12" />
+                                                    </div>
+                                                    <span className="mt-2 block text-sm font-medium text-app-text-main">
+                                                        {skillFiles.length > 0
+                                                            ? `${skillFiles.length} skill file(s) selected`
+                                                            : "Click to select skill files (max 100MB total)"}
+                                                    </span>
+                                                    {skillFiles.length > 0 && (
+                                                        <div className="mt-2 text-xs text-app-text-muted flex flex-col items-center">
+                                                            {skillFiles.map((f, i) => (
+                                                                <span key={i} className="truncate max-w-[200px]">{f.name}</span>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                    <span className="mt-1 block text-xs text-app-text-light">
+                                                        Markdown (.md) and Text (.txt) files only
+                                                    </span>
+                                                    <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-left">
+                                                        <p className="text-xs text-blue-900 font-semibold mb-1">💡 What are Skills?</p>
+                                                        <p className="text-xs text-blue-700">
+                                                            Skills are additional context files (guides, documentation, best practices) that help the AI understand your project better and provide more accurate analysis.
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <div className="space-y-6">
+                                                    {/* Repository Context Viewer - Show when repo is loaded */}
+                                                    {repoContext?.context && (
+                                                        <div className="bg-gradient-to-br from-emerald-50 to-teal-50 dark:from-emerald-900/20 dark:to-teal-900/20 border-2 border-emerald-200 dark:border-emerald-800 rounded-xl p-6 shadow-lg">
+                                                            <div className="flex items-start justify-between gap-4 mb-4">
+                                                                <div className="flex items-start gap-3 flex-1">
+                                                                    <div className="w-10 h-10 rounded-lg bg-emerald-500 flex items-center justify-center flex-shrink-0">
+                                                                        <CheckCircle2 className="w-6 h-6 text-white" />
+                                                                    </div>
+                                                                    <div className="flex-1 min-w-0">
+                                                                        <h3 className="text-lg font-bold text-emerald-900 dark:text-dark-100 mb-1">
+                                                                            Repository Loaded Successfully
+                                                                        </h3>
+                                                                        <p className="text-sm text-emerald-700 dark:text-dark-300 font-mono truncate">
+                                                                            {repoContext.repo} {repoContext.branch && `(${repoContext.branch})`}
+                                                                        </p>
+                                                                        <p className="text-xs text-emerald-600 dark:text-dark-400 mt-1">
+                                                                            Provider: {repoContext.provider === 'azure-devops' ? 'Azure DevOps' : 'GitHub'}
+                                                                        </p>
+                                                                    </div>
+                                                                </div>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        setRepoContext(null);
+                                                                        clearRepoContextFromStorage();
+                                                                        setIsOAuthRepoSelected(false);
+                                                                    }}
+                                                                    className="px-3 py-1.5 text-xs font-semibold text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors"
+                                                                >
+                                                                    Clear
+                                                                </button>
+                                                            </div>
+
+                                                            {/* Repository Context Preview */}
+                                                            <div className="bg-white dark:bg-gray-900 rounded-lg border border-emerald-200 dark:border-emerald-800 p-4 max-h-96 overflow-y-auto">
+                                                                <div className="flex items-center justify-between mb-3">
+                                                                    <h4 className="text-sm font-bold text-gray-900 dark:text-gray-100">Repository Structure</h4>
+                                                                    <span className="text-xs text-gray-500 dark:text-gray-400">
+                                                                        {repoContext.context.split('\n').filter(line => line.trim().startsWith('src/') || line.trim().startsWith('public/') || line.trim().includes('.')).length} files detected
+                                                                    </span>
+                                                                </div>
+                                                                <pre className="text-xs font-mono text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words">
+                                                                    {repoContext.context.substring(0, 2000)}{repoContext.context.length > 2000 && '...\n\n[Content truncated for preview]'}
+                                                                </pre>
+                                                            </div>
+
+                                                            <div className="mt-4 flex items-center gap-2 text-xs text-emerald-700 dark:text-dark-300">
+                                                                <Info className="w-4 h-4" />
+                                                                <span>This repository context will be sent to AI for analysis and planning.</span>
+                                                            </div>
+                                                        </div>
+                                                    )}
+
+                                                    {/* Repository Configuration */}
+                                                    <div className="max-w-3xl mx-auto">
+                                                        <div className="border border-app-border rounded-xl bg-app-bg-card shadow-sm p-6">
+                                                            <div className="mb-4">
+                                                                <h3 className="text-base font-bold text-app-text-main mb-2">Repository Configuration</h3>
+                                                                <p className="text-xs text-app-text-muted">
+                                                                    Provide a repository link from GitHub or Azure DevOps. For private repositories, use PAT.
+                                                                </p>
+                                                            </div>
+
+                                                            {/* Show saved credentials indicator - Only show for the saved provider */}
+                                                            {credentialsLocked && repoLinkProvider === 'azure-devops' && azureLinkUrl && (
+                                                                <div className="mb-4 p-3 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 border border-blue-200 dark:border-blue-800 rounded-lg shadow-sm">
+                                                                    <div className="flex items-start justify-between gap-2">
+                                                                        <div className="flex items-start gap-2 flex-1 min-w-0">
+                                                                            <CheckCircle2 className="w-5 h-5 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
+                                                                            <div className="flex-1 min-w-0">
+                                                                                <p className="text-xs font-bold text-blue-900 dark:text-blue-100 uppercase tracking-wide mb-1">
+                                                                                    <span className="flex items-center gap-1.5">
+                                                                                        <AzureDevOpsIcon className="w-3.5 h-3.5" />
+                                                                                        Azure DevOps Credentials Saved
+                                                                                    </span>
+                                                                                </p>
+                                                                                {hasChangedCredentials ? (
+                                                                                    <div className="mt-2 inline-flex items-center gap-1.5 px-2 py-1 bg-amber-100 dark:bg-amber-900/30 rounded-md">
+                                                                                        <AlertTriangle className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+                                                                                        <span className="text-[10px] font-semibold text-amber-800 dark:text-amber-200">
+                                                                                            Changed once - Contact support for further changes
+                                                                                        </span>
+                                                                                    </div>
+                                                                                ) : (
+                                                                                    <button
+                                                                                        type="button"
+                                                                                        onClick={handleChangeCredentials}
+                                                                                        className="mt-2 text-[11px] font-semibold text-blue-700 dark:text-blue-300 hover:text-blue-900 dark:hover:text-blue-100 underline underline-offset-2 decoration-2 hover:decoration-blue-500 transition-all flex items-center gap-1"
+                                                                                    >
+                                                                                        <RefreshCw className="w-3 h-3" />
+                                                                                        Change credentials (one-time only)
+                                                                                    </button>
+                                                                                )}
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            )}
+
+                                                            {credentialsLocked && repoLinkProvider === 'github' && githubLinkUrl && (
+                                                                <div className="mb-4 p-3 bg-gradient-to-r from-gray-50 to-slate-50 dark:from-gray-900/20 dark:to-slate-900/20 border border-gray-200 dark:border-gray-800 rounded-lg shadow-sm">
+                                                                    <div className="flex items-start justify-between gap-2">
+                                                                        <div className="flex items-start gap-2 flex-1 min-w-0">
+                                                                            <CheckCircle2 className="w-5 h-5 text-app-status-success flex-shrink-0 mt-0.5" />
+                                                                            <div className="flex-1 min-w-0">
+                                                                                <p className="text-xs font-bold text-app-text-main uppercase tracking-wide mb-1">
+                                                                                    <span className="flex items-center gap-1.5">
+                                                                                        <GitHubIcon className="w-3.5 h-3.5" />
+                                                                                        GitHub Credentials Saved
+                                                                                    </span>
+                                                                                </p>
+                                                                                <p className="text-[11px] text-app-text-muted font-mono truncate" title={githubLinkUrl}>
+                                                                                    {githubLinkUrl}
+                                                                                </p>
+                                                                                {hasChangedCredentials ? (
+                                                                                    <div className="mt-2 inline-flex items-center gap-1.5 px-2 py-1 bg-amber-100 dark:bg-amber-900/30 rounded-md">
+                                                                                        <AlertTriangle className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+                                                                                        <span className="text-[10px] font-semibold text-amber-800 dark:text-amber-200">
+                                                                                            Changed once - Contact support for further changes
+                                                                                        </span>
+                                                                                    </div>
+                                                                                ) : (
+                                                                                    <button
+                                                                                        type="button"
+                                                                                        onClick={handleChangeCredentials}
+                                                                                        className="mt-2 text-[11px] font-semibold text-app-primary hover:text-app-primary-hover underline underline-offset-2 decoration-2 hover:decoration-app-primary transition-all flex items-center gap-1"
+                                                                                    >
+                                                                                        <RefreshCw className="w-3 h-3" />
+                                                                                        Change credentials (one-time only)
+                                                                                    </button>
+                                                                                )}
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            )}
+
+                                                            <div className="mb-3 inline-flex rounded-lg border border-app-border p-1 bg-app-bg-page/60">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => { setRepoLinkProvider('github'); setAzureLinkError(''); }}
+                                                                    className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${repoLinkProvider === 'github' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                                >
+                                                                    <span className="flex items-center gap-1">
+                                                                        <GitHubIcon className="w-4 h-4" />
+                                                                        <span>GitHub</span>
+                                                                    </span>
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => { setRepoLinkProvider('azure-devops'); setGithubLinkError(''); setIsOAuthRepoSelected(false); }}
+                                                                    className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${repoLinkProvider === 'azure-devops' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                                >
+                                                                    <span className="flex items-center gap-1">
+                                                                        <AzureDevOpsIcon className="w-4 h-4" />
+                                                                        <span>Azure DevOps</span>
+                                                                    </span>
+                                                                </button>
+                                                            </div>
+
+                                                            {repoLinkProvider === 'github' && (
+                                                                <div className="mb-3 inline-flex rounded-lg border border-app-border p-1 bg-app-bg-page/60">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => { setGithubAuthMode('pat'); setGithubLinkError(''); }}
+                                                                        className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${githubAuthMode === 'pat' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                                    >
+                                                                        Use PAT
+                                                                    </button>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => { setGithubAuthMode('basic'); setGithubLinkError(''); }}
+                                                                        className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${githubAuthMode === 'basic' ? 'bg-app-primary text-white' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                                                    >
+                                                                        Username + Password
+                                                                    </button>
+                                                                </div>
+                                                            )}
+                                                            <div className="flex flex-col gap-3 mt-auto">
+                                                                <input
+                                                                    type="text"
+                                                                    value={repoLinkProvider === 'azure-devops' ? azureLinkUrl : githubLinkUrl}
+                                                                    onChange={e => handleRepoLinkUrlChange(e.target.value)}
+                                                                    placeholder={repoLinkProvider === 'azure-devops' ? 'https://dev.azure.com/org/project/_git/repo or https://dev.azure.com/org/project' : 'https://github.com/owner/repo'}
+                                                                    className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
+                                                                />
+                                                                {repoLinkProvider === 'azure-devops' ? (
+                                                                    <input
+                                                                        type="password"
+                                                                        value={azureLinkToken}
+                                                                        onChange={e => {
+                                                                            setAzureLinkToken(e.target.value);
+                                                                            if (repoContext) { setRepoContext(null); clearRepoContextFromStorage(); }
+                                                                        }}
+                                                                        placeholder="Azure DevOps PAT"
+                                                                        className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
+                                                                    />
+                                                                ) : githubAuthMode === 'pat' ? (
+                                                                    <input
+                                                                        type="password"
+                                                                        value={githubLinkToken}
+                                                                        onChange={e => {
+                                                                            setGithubLinkToken(e.target.value);
+                                                                            if (repoContext) { setRepoContext(null); clearRepoContextFromStorage(); }
+                                                                        }}
+                                                                        placeholder="GitHub PAT"
+                                                                        className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
+                                                                    />
+                                                                ) : (
+                                                                    <>
+                                                                        <input
+                                                                            type="text"
+                                                                            value={githubLinkUsername}
+                                                                            onChange={e => {
+                                                                                setGithubLinkUsername(e.target.value);
+                                                                                if (repoContext) { setRepoContext(null); clearRepoContextFromStorage(); }
+                                                                            }}
+                                                                            placeholder="GitHub username"
+                                                                            className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
+                                                                        />
+                                                                        <input
+                                                                            type="password"
+                                                                            value={githubLinkPassword}
+                                                                            onChange={e => {
+                                                                                setGithubLinkPassword(e.target.value);
+                                                                                if (repoContext) { setRepoContext(null); clearRepoContextFromStorage(); }
+                                                                            }}
+                                                                            placeholder="GitHub password"
+                                                                            className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
+                                                                        />
+                                                                    </>
+                                                                )}
+                                                                <div className="flex items-center gap-2">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={repoLinkProvider === 'azure-devops' ? handleLoadAzureDevOpsUrl : handleLoadGithubUrl}
+                                                                        disabled={repoLinkProvider === 'azure-devops'
+                                                                            ? (!azureLinkUrl || azureLinkParsing || azureProjectReposLoading)
+                                                                            : (!githubLinkUrl || githubLinkParsing)}
+                                                                        className="flex-1 px-4 py-2 bg-app-text-main text-white text-sm font-semibold rounded-lg hover:bg-app-text-label disabled:opacity-50 transition-colors inline-flex items-center justify-center h-10 shadow-sm"
+                                                                    >
+                                                                        {(repoLinkProvider === 'azure-devops' ? (azureLinkParsing || azureProjectReposLoading) : githubLinkParsing) ? (
+                                                                            <><span className="animate-spin w-3.5 h-3.5 border-2 border-app-bg-card border-t-transparent rounded-full mr-2"></span> Loading...</>
+                                                                        ) : 'Load Repository'}
+                                                                    </button>
+                                                                    {repoContext && repoContext.fromLink && (
+                                                                        <button
+                                                                            onClick={() => {
+                                                                                setRepoContext(null);
+                                                                                clearRepoContextFromStorage();
+                                                                                setGithubLinkUrl('');
+                                                                                setGithubLinkToken('');
+                                                                                setGithubAuthMode('pat');
+                                                                                setGithubLinkUsername('');
+                                                                                setGithubLinkPassword('');
+                                                                                setGithubLinkError('');
+                                                                                setAzureLinkUrl('');
+                                                                                setAzureLinkToken('');
+                                                                                setAzureLinkBranch('');
+                                                                                setAzureLinkError('');
+                                                                            }}
+                                                                            className="px-3 py-2 border border-red-200 text-app-status-error bg-app-status-errorBg rounded-lg hover:bg-app-status-errorBg text-sm font-semibold h-10 transition-colors"
+                                                                            title="Clear repository"
+                                                                        >
+                                                                            Clear
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+
+                                                            {repoLinkProvider === 'azure-devops'
+                                                                ? (azureLinkError && <p className="text-app-status-error text-[11px] font-medium mt-3 bg-app-status-errorBg p-2.5 rounded border border-app-status-errorBg">{azureLinkError}</p>)
+                                                                : (githubLinkError && <p className="text-app-status-error text-[11px] font-medium mt-3 bg-app-status-errorBg p-2.5 rounded border border-app-status-errorBg">{githubLinkError}</p>)}
+                                                            {showAzureRepoSelector && azureProjectRepos.length > 0 && (
+                                                                <div className="mt-3 border border-app-border rounded-lg bg-app-bg-page/50 p-3 max-h-64 overflow-y-auto">
+                                                                    <p className="text-xs font-semibold text-app-text-main mb-2">Select a repository:</p>
+                                                                    <div className="space-y-1.5">
+                                                                        {azureProjectRepos.map((repo) => (
+                                                                            <button
+                                                                                key={repo.id || repo.name}
+                                                                                type="button"
+                                                                                onClick={() => handleSelectAzureRepo(repo)}
+                                                                                className="w-full text-left px-3 py-2 rounded-md border border-app-border bg-app-bg-card hover:bg-app-bg-hover hover:border-app-primary transition-colors text-xs"
+                                                                            >
+                                                                                <div className="font-semibold text-app-text-main">{repo.name}</div>
+                                                                                {repo.description && (
+                                                                                    <div className="text-app-text-muted mt-0.5 truncate">{repo.description}</div>
+                                                                                )}
+                                                                                {repo.default_branch && (
+                                                                                    <div className="text-app-text-muted mt-0.5 text-[10px]">Default branch: {repo.default_branch}</div>
+                                                                                )}
+                                                                            </button>
+                                                                        ))}
+                                                                    </div>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => {
+                                                                            setShowAzureRepoSelector(false);
+                                                                            setAzureProjectRepos([]);
+                                                                            setAzureProjectUrl('');
+                                                                        }}
+                                                                        className="mt-2 text-xs text-app-text-muted hover:text-app-text-label"
+                                                                    >
+                                                                        Cancel
+                                                                    </button>
+                                                                </div>
+                                                            )}
+                                                            {repoContext && repoContext.fromLink && (
+                                                                <div className="mt-3 p-2.5 bg-app-status-successBg border border-emerald-200 rounded text-emerald-800 shadow-sm flex items-center text-xs font-semibold">
+                                                                    <CheckCircle2 className="w-4 h-4 mr-1.5 flex-shrink-0 text-app-status-success" />
+                                                                    <span className="truncate">Loaded: {repoContext.repo} {repoContext.branch ? `(${repoContext.branch})` : ''}</span>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )}
+
+
+
+                                            {processing && (
+                                                <div className="space-y-3 animate-pulse mt-6">
+                                                    <div className="flex justify-between items-center text-xs uppercase tracking-wider text-app-text-muted font-semibold">
+                                                        <span>{progressMessage}</span>
+                                                        <span>{progress}%</span>
+                                                    </div>
+                                                    <div className="w-full bg-app-bg-muted rounded-full h-1.5 overflow-hidden">
+                                                        <div
+                                                            className="bg-app-primary h-1.5 rounded-full transition-all duration-500 ease-out shadow-[0_0_10px_rgba(37,99,235,0.5)]"
+                                                            style={{ width: `${progress}%` }}
+                                                        ></div>
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                            {error && (
+                                                <div className="mt-4 rounded-lg border border-red-200 bg-app-status-errorBg px-4 py-3">
+                                                    <p className="text-sm font-medium text-app-status-error">{error}</p>
+                                                </div>
+                                            )}
+
+                                            <div className="flex justify-end gap-3 pt-6">
+                                                <button
+                                                    type="submit"
+                                                    disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (files.length === 0 && linkedFiles.length === 0 && !textInput.trim() && !urlInput.trim() && !urlRequirements.trim() && !repoContext?.context && skillFiles.length === 0) || processing || urlFetching}
+                                                    className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-white transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (files.length === 0 && linkedFiles.length === 0 && !textInput.trim() && !urlInput.trim() && !urlRequirements.trim() && !repoContext?.context && skillFiles.length === 0) || processing || urlFetching
+                                                        ? 'bg-app-border cursor-not-allowed shadow-none'
+                                                        : 'bg-app-primary hover:bg-app-primary-hover hover:-translate-y-0.5 hover:shadow-lg'
+                                                        }`}
+                                                >
+                                                    <Zap className={`w-4 h-4 mr-2 ${processing ? 'animate-pulse' : ''}`} />
+                                                    {processing
+                                                        ? (hasGovernanceAssessment ? 'Analyzing...' : 'Saving Screening...')
+                                                        : selectedProject?.documents.length > 0
+                                                            ? (hasGovernanceAssessment ? 'Start Revision Analysis' : 'Continue to Governance')
+                                                            : (hasGovernanceAssessment ? 'Start Analysis' : 'Complete Requirement Screening')}
+                                                </button>
+                                            </div>
+                                        </form>
                                     </div>
-                                );
-                            })()}
-                        </div>
-                    </div>
+                                </div>
+
+                                {/* Right Column - Revision History - Compact Design */}
+                                <div className="lg:col-span-1">
+                                    {selectedProject && selectedProject.documents && selectedProject.documents.length > 0 && (() => {
+                                        const [expandedRevision, setExpandedRevision] = useState(null);
+
+                                        const sortedDocs = [...selectedProject.documents].sort((a, b) =>
+                                            new Date(b.upload_date || 0) - new Date(a.upload_date || 0)
+                                        );
+
+                                        return (
+                                            <div className="bg-app-bg-card rounded-lg shadow-sm border border-app-border-light overflow-hidden sticky top-6">
+                                                {/* Compact Header */}
+                                                {selectedProject ? (
+                                                    <div className="rounded-xl border border-emerald-300/70 bg-app-status-successBg/90 p-4 shadow-sm shadow-emerald-900/20">
+                                                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                                                            <div>
+                                                                <p className="text-sm font-semibold text-app-text-main">Selected Project</p>
+                                                                <p className="text-xs text-app-text-label mt-1">
+                                                                    {selectedProject.name}
+                                                                    {selectedProject.classification && selectedProject.classification !== 'N/A' && (
+                                                                        <> • {selectedProject.classification}</>
+                                                                    )}
+                                                                    {selectedProject.weightedScore != null && selectedProject.weightedScore !== 'N/A' && (
+                                                                        <> • Score {selectedProject.weightedScore}/10</>
+                                                                    )}
+                                                                </p>
+                                                                <p className="text-xs text-app-text-label mt-1">
+                                                                    Status: {selectedProject.status === 'analysis_complete'
+                                                                        ? 'Analysis Complete (Locked)'
+                                                                        : selectedProject.status === 'screening_complete'
+                                                                            ? 'Requirement Screening Complete'
+                                                                            : 'Ready for Initial Upload'}
+                                                                </p>
+                                                                {isEnterpriseUploadBlocked && (
+                                                                    <p className="text-xs text-app-status-error mt-1">
+                                                                        Upload blocked: {getEnterpriseUploadBlockMessage()}
+                                                                    </p>
+                                                                )}
+                                                                
+                                                            </div>
+                                                            <div className="flex flex-col items-start sm:items-end gap-2">
+                                                                {selectedProject.latestDocument && hasCompletedDocumentAnalysis(selectedProject.latestDocument) && (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={handleViewLatestProjectAnalysis}
+                                                                        className="text-xs font-semibold text-app-status-success hover:text-app-status-success/80"
+                                                                    >
+                                                                        View Latest Analysis
+                                                                    </button>
+                                                                )}
+                                                                {selectedProject.documents.length > 0 && !revisionUnlocked && (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={handleCreateRevision}
+                                                                        disabled={isEnterpriseUploadBlocked}
+                                                                        className="text-xs font-semibold text-app-primary-hover hover:text-app-primary-dark disabled:text-app-text-light disabled:cursor-not-allowed"
+                                                                    >
+                                                                        Create New Revision
+                                                                    </button>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                        {revisionUnlocked && (
+                                                            <div className="mt-3 rounded-lg border border-app-primary-ring/80 bg-app-primary-light/90 p-3">
+                                                                <p className="text-xs font-semibold text-app-primary">Revision unlocked for this upload</p>
+                                                                <p className="text-xs text-app-text-label mt-1">Reason: {revisionReason}</p>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                ) : (
+                                                    <div className="rounded-xl border border-amber-300/80 bg-app-status-warningBg/90 p-4">
+                                                        <p className="text-sm font-semibold text-app-status-warning">Select a project from the left panel to continue.</p>
+                                                    </div>
+                                                )}
+                                                    <div className="mt-4 px-2 py-1.5 bg-gradient-to-r from-app-primary/10 to-app-primary/5 border-b border-app-border-light">
+                                                        <div className="flex items-center gap-1.5">
+                                                            <History className="w-3.5 h-3.5 text-app-primary flex-shrink-0" />
+                                                            <h3 className="text-xs font-bold text-app-text-main">Revision History</h3>
+                                                            <span className="ml-auto px-1.5 py-0.5 text-[10px] font-bold bg-app-primary text-white rounded-full">{sortedDocs.length}</span>
+                                                        </div>
+                                                    </div>
+
+                                                {/* Compact List */}
+                                                <div className="divide-y divide-app-border-light max-h-[calc(100vh-200px)] overflow-y-auto">
+                                                    {sortedDocs.map((doc, idx) => {
+                                                        const parsedA = parseStoredDocumentAnalysis(doc);
+                                                        const isCompleted = hasCompletedStoredAnalysis(parsedA);
+                                                        const isPending = parsedA?.screening_status === 'pending_governance_analysis';
+                                                        const revNum = parsedA?.projectMeta?.revision_number || (sortedDocs.length - idx);
+                                                        const docSections = extractDocumentSections(doc, parsedA);
+                                                        const isExpanded = expandedRevision === doc.id;
+
+                                                        return (
+                                                            <div key={doc.id} className="bg-app-bg-card hover:bg-app-bg-page/60 transition-colors">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setExpandedRevision(isExpanded ? null : doc.id)}
+                                                                    className="w-full flex items-start justify-between px-2 py-1.5 text-left"
+                                                                >
+                                                                    <div className="flex items-start gap-1.5 min-w-0 flex-1">
+                                                                        <div className={`mt-0.5 w-1.5 h-1.5 rounded-full flex-shrink-0 ${isCompleted ? 'bg-app-status-success' : isPending ? 'bg-amber-400' : 'bg-app-text-light'}`} />
+                                                                        <div className="min-w-0 flex-1">
+                                                                            <p className="text-[11px] font-semibold text-app-text-main truncate leading-tight">Rev {revNum}</p>
+                                                                            <p className="text-[10px] text-app-text-muted truncate leading-tight mt-0.5">{doc.filename}</p>
+                                                                            <p className="text-[9px] text-app-text-muted leading-tight mt-0.5">
+                                                                                {doc.upload_date ? new Date(doc.upload_date).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' }) : '—'}
+                                                                            </p>
+                                                                            <span className={`inline-block mt-1 text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none ${isCompleted ? 'bg-app-status-successBg text-app-status-success' : isPending ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'}`}>
+                                                                                {isCompleted ? 'Complete' : isPending ? 'Pending' : 'Draft'}
+                                                                            </span>
+                                                                        </div>
+                                                                    </div>
+                                                                    <div className="flex items-center gap-1 flex-shrink-0 ml-1">
+                                                                        {isCompleted && (
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={e => { e.stopPropagation(); navigate('/agent-analysis'); }}
+                                                                                className="text-[10px] font-semibold text-app-primary hover:underline"
+                                                                            >View</button>
+                                                                        )}
+                                                                        <svg className={`w-3 h-3 text-app-text-muted transition-transform ${isExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                                                                    </div>
+                                                                </button>
+
+                                                                {isExpanded && (
+                                                                    <div className="px-2 pb-2 bg-app-bg-page/50 border-t border-app-border-light/50">
+                                                                        <p className="text-[9px] font-semibold text-app-text-muted uppercase tracking-wider mt-1.5 mb-1">Sources</p>
+                                                                        {docSections.length > 0 ? (
+                                                                            <div className="flex flex-wrap gap-1">
+                                                                                {docSections.map((s, si) => (
+                                                                                    <span key={si} className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-semibold bg-app-primary-light text-app-primary border border-app-primary/20 leading-none">
+                                                                                        {s.title.length > 15 ? s.title.substring(0, 15) + '...' : s.title}
+                                                                                    </span>
+                                                                                ))}
+                                                                            </div>
+                                                                        ) : (
+                                                                            <p className="text-[10px] text-app-text-muted italic">— No info</p>
+                                                                        )}
+                                                                        {isCompleted && parsedA?.metrics && (
+                                                                            <div className="mt-1.5 grid grid-cols-2 gap-1">
+                                                                                {[
+                                                                                    { label: 'Complexity', value: parsedA.metrics.complexity },
+                                                                                    { label: 'Timeline', value: parsedA.metrics.timeline },
+                                                                                ].filter(m => m.value).map((m, mi) => (
+                                                                                    <div key={mi} className="bg-app-bg-card rounded px-1.5 py-1 border border-app-border-light">
+                                                                                        <p className="text-[8px] text-app-text-muted uppercase leading-tight">{m.label}</p>
+                                                                                        <p className="text-[10px] font-semibold text-app-text-main truncate leading-tight">{m.value}</p>
+                                                                                    </div>
+                                                                                ))}
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
+                                        );
+                                    })()}
+                                </div>
+                            </div>
                         )}
 
                         {result && (
@@ -3672,12 +3670,12 @@ const Dashboard = ({
                                                             // Check if we have structured sections or need to parse from markdown
                                                             const sections = result.extraction?.sections;
                                                             const markdown = result.extraction?.markdown || '';
-                                                            
+
                                                             // If we have sections OR markdown with section separators, show tabs
                                                             if ((sections && sections.length > 0) || markdown.includes('---')) {
                                                                 return <ProcessedContentTabs sections={sections} markdown={markdown} />;
                                                             }
-                                                            
+
                                                             // Fallback to HTML iframe if available
                                                             if (result.extraction?.html) {
                                                                 return (
@@ -3691,7 +3689,7 @@ const Dashboard = ({
                                                                     </div>
                                                                 );
                                                             }
-                                                            
+
                                                             // Final fallback to plain markdown
                                                             return (
                                                                 <div className="bg-app-bg-page rounded-lg p-4 text-xs font-mono text-app-text-label max-h-96 overflow-y-auto whitespace-pre-wrap border border-app-border-light">

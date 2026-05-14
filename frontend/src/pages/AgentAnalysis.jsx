@@ -473,10 +473,35 @@ export default function AgentAnalysis({
     const [repoContext, setRepoContext] = useState(null);
     const [isArchModalOpen, setIsArchModalOpen] = useState(false);
     const [isSidebarOpen, setIsSidebarOpen] = useState(false); // Start closed by default
+    const [sidebarTab, setSidebarTab] = useState('chat'); // 'chat' | 'clarification'
     const [analysisInProgress, setAnalysisInProgress] = useState(false); // Track if analysis is running
+
+    // Chat-based update history state
+    const [chatMessages, setChatMessages] = useState([]); // [{id, role, content, timestamp, changeSummary, affectedSections}]
+    const [chatInput, setChatInput] = useState('');
+    const [chatSending, setChatSending] = useState(false);
+    const chatEndRef = useRef(null);
+    
+    // Cache results by project key to prevent data loss when switching projects
+    const resultCacheRef = useRef({});
+    const lastLoadedProjectRef = useRef(null);
 
     const selectedProject = projects.find((p) => p.key === selectedProjectKey) || null;
     const hasGovernanceAssessment = Boolean(selectedProject?.governanceResultId || governanceContext?.result_id);
+    
+    // CRITICAL FIX: Update cache whenever state changes for the current project
+    useEffect(() => {
+        if (selectedProjectKey && result) {
+            resultCacheRef.current[selectedProjectKey] = {
+                result,
+                aiQuestions,
+                userAnswers,
+                userFeedback,
+                completedStages,
+                chatMessages,
+            };
+        }
+    }, [selectedProjectKey, result, aiQuestions, userAnswers, userFeedback, completedStages, chatMessages]);
 
     // Load governance context from storage
     useEffect(() => {
@@ -562,6 +587,16 @@ export default function AgentAnalysis({
 
             if (savedDoc) {
                 setResult(prev => ({ ...prev, id: savedDoc.id, revisionNumber: nextRevisionNumber }));
+                
+                // CRITICAL FIX: Update cache when data is saved
+                if (resultCacheRef.current[taskKey]) {
+                    resultCacheRef.current[taskKey].result = {
+                        ...resultCacheRef.current[taskKey].result,
+                        id: savedDoc.id,
+                        revisionNumber: nextRevisionNumber
+                    };
+                }
+                
                 if (fetchHistory) fetchHistory();
             }
         } catch (e) {
@@ -596,7 +631,29 @@ export default function AgentAnalysis({
                 120    // Max 60 minutes (120 * 30s = 3600s)
             );
             
-            const { report, questions, metrics, title, prerequisites, architecture } = parseAIResponse(data.analysis || '');
+            // For targeted updates, the backend returns metrics/questions/architecture directly
+            // alongside the patched report. Merge these with existing data.
+            const isTargetedUpdate = Boolean(data.update_type || data.change_summary);
+            const existingAnalysis = (initialContext || result)?.analysis || {};
+
+            const { report: parsedReport, questions: parsedQuestions, metrics: parsedMetrics,
+                    title, prerequisites: parsedPrereqs, architecture: parsedArch } = parseAIResponse(data.analysis || '');
+
+            const report = parsedReport;
+            // For targeted updates, prefer backend-returned data (already merged with previous)
+            const questions = isTargetedUpdate
+                ? (data.questions?.length > 0 ? data.questions : (parsedQuestions.length > 0 ? parsedQuestions : existingAnalysis.questions || []))
+                : parsedQuestions;
+            const metrics = isTargetedUpdate
+                ? (Object.keys(data.metrics || {}).length > 0 ? data.metrics : (parsedMetrics || existingAnalysis.metrics))
+                : parsedMetrics;
+            const prerequisites = isTargetedUpdate
+                ? (data.prerequisites?.length > 0 ? data.prerequisites : (parsedPrereqs.length > 0 ? parsedPrereqs : existingAnalysis.prerequisites || []))
+                : parsedPrereqs;
+            const architecture = isTargetedUpdate
+                ? (data.architecture && Object.keys(data.architecture).length > 0 ? data.architecture : (parsedArch || existingAnalysis.architecture))
+                : parsedArch;
+
             if (questions.length > 0) setAiQuestions(questions);
 
             const effectiveGovernanceContext = analysisOptions.governanceContext || governanceContext || null;
@@ -607,6 +664,7 @@ export default function AgentAnalysis({
                 ...(initialContext || result),
                 filename: finalFilename,
                 analysis: {
+                    ...existingAnalysis,  // Preserve all existing analysis fields
                     ...data,
                     analysis: report,
                     questions: questions,
@@ -617,6 +675,13 @@ export default function AgentAnalysis({
                     userFeedback: userFeedback,
                     governanceContext: effectiveGovernanceContext,
                     repoContextMeta: buildRepoContextMeta(effectiveRepoContext),
+                    // Store change metadata for chat display
+                    change_summary: data.change_summary || null,
+                    affected_sections: data.affected_sections || [],
+                    // Merge updated stages (from targeted update) preserving previous
+                    stages: isTargetedUpdate && data.stages
+                        ? { ...(existingAnalysis.stages || {}), ...data.stages }
+                        : (data.stages || existingAnalysis.stages || {}),
                 }
             };
             setResult(finalResult);
@@ -963,6 +1028,24 @@ export default function AgentAnalysis({
             return;
         }
 
+        // CRITICAL FIX: Check if we're switching to a different project
+        const isSwitchingProjects = lastLoadedProjectRef.current && lastLoadedProjectRef.current !== selectedProjectKey;
+        
+        // If switching projects, first check if we have cached data for the new project
+        if (isSwitchingProjects && resultCacheRef.current[selectedProjectKey]) {
+            console.log('Restoring cached analysis for project:', selectedProjectKey);
+            const cached = resultCacheRef.current[selectedProjectKey];
+            setResult(cached.result);
+            setAiQuestions(cached.aiQuestions || []);
+            setUserAnswers(cached.userAnswers || {});
+            setUserFeedback(cached.userFeedback || '');
+            setCompletedStages(cached.completedStages || {});
+            setChatMessages(cached.chatMessages || []);
+            setLoading(false);
+            lastLoadedProjectRef.current = selectedProjectKey;
+            return;
+        }
+
         const loadAnalysis = async () => {
             setLoading(true);
             setError('');
@@ -1015,7 +1098,7 @@ export default function AgentAnalysis({
                     setUserFeedback(savedFeedback);
                     setCompletedStages(savedStages);  // Restore completed stages
 
-                    setResult({
+                    const loadedResult = {
                         id: latestDocument.id,
                         filename: latestDocument.filename,
                         extraction: {
@@ -1026,7 +1109,21 @@ export default function AgentAnalysis({
                         },
                         analysis: storedAnalysis,
                         revisionNumber: selectedProject.documents?.length || 1,
-                    });
+                    };
+                    
+                    setResult(loadedResult);
+                    
+                    // CRITICAL FIX: Cache the loaded data for this project
+                    resultCacheRef.current[selectedProjectKey] = {
+                        result: loadedResult,
+                        aiQuestions: questions,
+                        userAnswers: savedAnswers,
+                        userFeedback: savedFeedback,
+                        completedStages: savedStages,
+                        chatMessages: chatMessages, // Preserve chat history
+                    };
+                    lastLoadedProjectRef.current = selectedProjectKey;
+                    
                     setLoading(false);
                     return;
                 }
@@ -1112,7 +1209,7 @@ export default function AgentAnalysis({
                     setUserFeedback(savedFeedback);
                     setCompletedStages(savedStages);  // Restore completed stages
 
-                    setResult({
+                    const loadedResult = {
                         id: foundDoc.id,
                         filename: foundDoc.filename,
                         extraction: {
@@ -1123,7 +1220,20 @@ export default function AgentAnalysis({
                         },
                         analysis: foundAnalysis,
                         revisionNumber: selectedProject.documents?.length || 1,
-                    });
+                    };
+                    
+                    setResult(loadedResult);
+                    
+                    // CRITICAL FIX: Cache the loaded data for this project
+                    resultCacheRef.current[selectedProjectKey] = {
+                        result: loadedResult,
+                        aiQuestions: questions,
+                        userAnswers: savedAnswers,
+                        userFeedback: savedFeedback,
+                        completedStages: savedStages,
+                        chatMessages: chatMessages,
+                    };
+                    lastLoadedProjectRef.current = selectedProjectKey;
                 } else {
                     let hasPendingAnalysis = false;
                     for (const doc of allDocuments) {
@@ -1186,10 +1296,11 @@ export default function AgentAnalysis({
     }, [selectedProjectKey, selectedProject, projectsLoading, token, hasGovernanceAssessment, location.pathname, analysisInProgress]);
     // Removed: repoContext, triggerPendingAnalysis (to prevent unnecessary re-runs)
 
-    const handleRefineAnalysis = async () => {
-        let feedbackToSend = userFeedback;
+    const handleRefineAnalysis = async (overrideFeedback = null, updateType = null) => {
+        let feedbackToSend = overrideFeedback || userFeedback;
 
-        if (aiQuestions.length > 0) {
+        // Build Q&A feedback string if questions are present and no override given
+        if (!overrideFeedback && aiQuestions.length > 0) {
             feedbackToSend = aiQuestions.map((q, i) => {
                 const ans = userAnswers[i] || 'No answer provided';
                 return `Q: ${q}\nA: ${ans}`;
@@ -1200,32 +1311,38 @@ export default function AgentAnalysis({
             }
         }
 
-        // Attach existing architecture so the model can refine instead of replacing it
-        if (result?.analysis?.architecture) {
-            try {
-                const archJson = JSON.stringify(result.analysis.architecture, null, 2);
-                feedbackToSend += `\n\nCURRENT_ARCHITECTURE_JSON (refine, do not radically change unless business requirements demand it):\n${archJson}`;
-            } catch {
-                // ignore serialization errors
-            }
-        }
         if (!result?.extraction?.markdown || !feedbackToSend.trim()) return;
 
         setProcessing(true);
         setError('');
         setProgress(20);
-        setProgressMessage('Submitting feedback and refinements...');
+        setProgressMessage('Identifying what needs to change...');
 
         const token = localStorage.getItem('token');
-
-        // Get AI config from localStorage
         const aiConfigStr = localStorage.getItem('aiConfig');
         let aiConfig = { apiUrl: '', apiKey: '', model: '', stream: false };
         if (aiConfigStr) {
-            try {
-                aiConfig = JSON.parse(aiConfigStr);
-            } catch { }
+            try { aiConfig = JSON.parse(aiConfigStr); } catch { }
         }
+
+        // Build the previous_analysis payload for targeted update
+        const previousAnalysis = (() => {
+            if (!result?.analysis) return undefined;
+            const a = result.analysis;
+            const stages = a.stages || completedStages || {};
+            if (Object.keys(stages).length === 0) return undefined;
+            return {
+                analysis: a.analysis || '',
+                stages,
+                metrics: a.metrics || {},
+                questions: a.questions || [],
+                prerequisites: a.prerequisites || [],
+                architecture: a.architecture || {},
+            };
+        })();
+
+        const detectedUpdateType = updateType
+            || (aiQuestions.length > 0 && Object.keys(userAnswers).length > 0 ? 'qa' : 'feedback');
 
         const aiPayload = {
             document_content: repoContext
@@ -1234,29 +1351,123 @@ export default function AgentAnalysis({
             api_url: aiConfig?.apiUrl || undefined,
             api_key: aiConfig?.apiKey || undefined,
             model: aiConfig?.model || undefined,
-            stream: aiConfig?.stream || false,
+            stream: false,
             user_feedback: feedbackToSend,
-            governance_context: governanceContext || undefined
+            governance_context: governanceContext || undefined,
+            ...(previousAnalysis ? {
+                previous_analysis: previousAnalysis,
+                update_type: detectedUpdateType,
+            } : {}),
         };
 
         try {
-            if (aiConfig?.stream || false) {
-                await streamAnalysisRef.current(aiPayload, token, result, {
-                    repoContext: repoContext,
-                    governanceContext: governanceContext,
-                });
-            } else {
-                setProgress(70);
-                setProgressMessage('Generating refined Agent Action Plan... This may take up to 10 minutes.');
-                await fetchAnalysisRef.current(aiPayload, token, result, {
-                    repoContext: repoContext,
-                    governanceContext: governanceContext,
-                });
-            }
+            setProgress(30);
+            setProgressMessage('Performing targeted update...');
+            await fetchAnalysisRef.current(aiPayload, token, result, {
+                repoContext: repoContext,
+                governanceContext: governanceContext,
+            });
         } catch (err) {
-            setError(err.message || 'Failed to refine analysis');
+            setError(err.message || 'Failed to update analysis');
         } finally {
             setProcessing(false);
+        }
+    };
+
+    // ── Chat-based BRD update handler ──
+    const handleChatSend = async () => {
+        const message = chatInput.trim();
+        if (!message || chatSending || processing) return;
+
+        const msgId = `msg_${Date.now()}`;
+        const userMsg = {
+            id: msgId,
+            role: 'user',
+            content: message,
+            timestamp: new Date().toISOString(),
+        };
+
+        setChatMessages(prev => [...prev, userMsg]);
+        setChatInput('');
+        setChatSending(true);
+
+        try {
+            await handleRefineAnalysis(message, 'feedback');
+
+            // After analysis completes, add an assistant confirmation message
+            const assistantMsg = {
+                id: `resp_${Date.now()}`,
+                role: 'assistant',
+                content: result?.analysis?.change_summary
+                    || 'Analysis updated successfully based on your input.',
+                affectedSections: result?.analysis?.affected_sections || [],
+                timestamp: new Date().toISOString(),
+            };
+            setChatMessages(prev => [...prev, assistantMsg]);
+        } catch (err) {
+            const errMsg = {
+                id: `err_${Date.now()}`,
+                role: 'assistant',
+                content: `Update failed: ${err.message || 'Unknown error'}`,
+                isError: true,
+                timestamp: new Date().toISOString(),
+            };
+            setChatMessages(prev => [...prev, errMsg]);
+        } finally {
+            setChatSending(false);
+            // Scroll to bottom of chat
+            setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+        }
+    };
+
+    // ── Handle Q&A submission as chat ──
+    const handleQASubmit = async () => {
+        const questions = aiQuestions?.length > 0 ? aiQuestions : (result?.analysis?.questions || []);
+        if (questions.length === 0) return;
+
+        const qaPairs = questions.map((q, i) => {
+            const ans = userAnswers[i] || 'No answer provided';
+            return `Q: ${q}\nA: ${ans}`;
+        }).join('\n\n');
+
+        if (!qaPairs.trim()) return;
+
+        const userMsg = {
+            id: `qa_${Date.now()}`,
+            role: 'user',
+            content: `**Answering clarification questions:**\n\n${qaPairs}`,
+            timestamp: new Date().toISOString(),
+            isQA: true,
+        };
+
+        setChatMessages(prev => [...prev, userMsg]);
+        setChatSending(true);
+
+        try {
+            await handleRefineAnalysis(qaPairs, 'qa');
+            setUserAnswers({});
+
+            const assistantMsg = {
+                id: `qa_resp_${Date.now()}`,
+                role: 'assistant',
+                content: result?.analysis?.change_summary
+                    || 'Analysis updated based on your answers.',
+                affectedSections: result?.analysis?.affected_sections || [],
+                timestamp: new Date().toISOString(),
+            };
+            setChatMessages(prev => [...prev, assistantMsg]);
+        } catch (err) {
+            const errMsg = {
+                id: `qa_err_${Date.now()}`,
+                role: 'assistant',
+                content: `Failed to apply answers: ${err.message || 'Unknown error'}`,
+                isError: true,
+                timestamp: new Date().toISOString(),
+            };
+            setChatMessages(prev => [...prev, errMsg]);
+        } finally {
+            setChatSending(false);
+            setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
         }
     };
 
@@ -1996,219 +2207,350 @@ export default function AgentAnalysis({
 
     return (
         <div className="h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
-            {/* Fixed Right Sidebar - Outside main container */}
-            <div className={`fixed right-0 bg-white border-l border-gray-200 shadow-2xl transition-transform duration-300 z-40 ${
-                isSidebarOpen ? 'translate-x-0' : 'translate-x-full'
-            } w-[480px] overflow-hidden`} style={{ top: 'var(--sidebar-top, 0px)', height: 'calc(100vh - var(--sidebar-top, 0px))' }} ref={(el) => {
-                if (el) {
-                    // Calculate the top offset based on header + stepper height
-                    const mainContent = el.closest('.flex-1.min-w-0');
-                    if (mainContent) {
-                        const header = mainContent.querySelector('header');
-                        const stepper = header?.nextElementSibling;
-                        let topOffset = 0;
-                        if (header) topOffset += header.offsetHeight;
-                        if (stepper && stepper.querySelector('[class*="RoadmapHeader"]') !== null || (stepper && !stepper.classList.contains('flex-1'))) {
-                            topOffset += stepper.offsetHeight;
-                        }
-                        el.style.setProperty('--sidebar-top', `${topOffset}px`);
-                    }
-                }
-            }}>
+            {/* Fixed Right Sidebar - Tabbed BRD Chat + Clarification Panel */}
+            {(() => {
+                const clarificationQuestions = aiQuestions?.length > 0 ? aiQuestions : (result?.analysis?.questions || []);
+                const clarificationCount = clarificationQuestions.length;
+                return (
+                <div className={`fixed right-0 top-0 bottom-0 bg-white border-l border-gray-200 shadow-2xl transition-transform duration-300 z-[260] ${
+                    isSidebarOpen ? 'translate-x-0' : 'translate-x-full'
+                } w-[460px] flex flex-col`} style={{ height: '100vh' }}>
 
-                {/* Sidebar Content */}
-                <div className="h-full overflow-y-auto p-6 space-y-6 pt-6">
-                    <div className="flex justify-between items-center pb-2 border-b border-gray-100">
-                        <h2 className="text-base font-bold text-gray-900">Analysis Data</h2>
-                        <button
-                            onClick={() => setIsSidebarOpen(false)}
-                            className="text-xs text-gray-500 hover:text-gray-900 font-semibold flex items-center transition-colors px-2 py-1.5 hover:bg-gray-100 rounded-md"
-                        >
-                            <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
-                            </svg>
-                            Hide Details
-                        </button>
-                    </div>
-                    {result?.analysis?.architecture && (() => {
-                        const arch = result.analysis.architecture || {};
-                        const nodes = Array.isArray(arch.nodes) ? arch.nodes : [];
-                        const edges = Array.isArray(arch.edges) ? arch.edges : [];
-
-                        const rfNodes = layoutArchitectureGraph(nodes, edges, 'TB');
-                        const rfEdges = edges.map((edge, idx) => ({
-                            id: String(edge.id || `e-${idx}`),
-                            source: String(edge.from),
-                            target: String(edge.to),
-                            label: edge.description || undefined,
-                        }));
-
-                        return (
-                            <div className="bg-white rounded-xl border border-gray-200 p-5">
-                                <div className="flex items-center justify-between mb-4">
-                                    <h3 className="text-base font-bold text-gray-900">
-                                        User Flow Diagram
-                                    </h3>
-                                    <button
-                                        type="button"
-                                        onClick={() => setIsArchModalOpen(true)}
-                                        className="text-xs font-semibold text-blue-600 hover:text-blue-800 underline"
-                                    >
-                                        Expand
-                                    </button>
-                                </div>
-
-                                {(() => {
-                                    // Extract mermaid diagram from analysis content
-                                    const analysisContent = result.analysis?.analysis || '';
-                                    const mermaidMatch = analysisContent.match(/```mermaid\s*([\s\S]*?)```/);
-                                    const mermaidCode = mermaidMatch ? mermaidMatch[1].trim() : null;
-
-                                    if (mermaidCode) {
-                                        return (
-                                            <div className="rounded-lg border border-gray-200 bg-gray-50 overflow-hidden">
-                                                <MermaidDiagram code={mermaidCode} />
-                                            </div>
-                                        );
-                                    }
-
-                                    // Fallback to ReactFlow if no mermaid found
-                                    if (rfNodes.length > 0) {
-                                        return (
-                                            <div className="h-80 w-full rounded-lg border border-gray-200 bg-gray-50 overflow-hidden">
-                                                <ReactFlow
-                                                    nodes={rfNodes}
-                                                    edges={rfEdges}
-                                                    fitView
-                                                    nodesDraggable={false}
-                                                    nodesConnectable={false}
-                                                    elementsSelectable={false}
-                                                >
-                                                    <Background gap={16} size={1} />
-                                                    <Controls showInteractive={false} />
-                                                </ReactFlow>
-                                            </div>
-                                        );
-                                    }
-
-                                    return (
-                                        <p className="text-sm text-gray-500 italic">
-                                            Architecture details are not available.
-                                        </p>
-                                    );
-                                })()}
+                    {/* Sidebar Header with tabs */}
+                    <div className="flex-shrink-0 bg-white border-b border-gray-200">
+                        {/* Top bar: title + close */}
+                        <div className="flex items-center justify-between px-5 py-3">
+                            <div className="flex items-center gap-2">
+                                <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
+                                <span className="text-sm font-bold text-gray-900">BRD Assistant</span>
                             </div>
-                        );
-                    })()}
-
-                    {/* Clarification Needed Section */}
-                    <div className="bg-white rounded-xl border border-gray-200 p-5">
-                        <div className="flex items-center mb-4">
-                            <div className="w-2 h-2 rounded-full bg-orange-500 mr-2"></div>
-                            <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide">
-                                Clarification Needed
-                            </h3>
+                            <button
+                                onClick={() => setIsSidebarOpen(false)}
+                                className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 hover:text-gray-900 hover:bg-gray-100 px-3 py-1.5 rounded-lg transition-all"
+                            >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                                Close
+                            </button>
                         </div>
 
-                        <p className="text-xs text-gray-600 mb-6 leading-relaxed">
-                            The AI identified these ambiguous areas. Providing answers will refine the feasibility score.
-                        </p>
-
-                        {(() => {
-                            const questions = aiQuestions?.length > 0
-                                ? aiQuestions
-                                : (result?.analysis?.questions || []);
-
-                            return questions?.length > 0 ? (
-                                <div className="space-y-4 max-h-96 overflow-y-auto pr-2">
-                                    {questions.map((q, i) => (
-                                        <div key={i} className="bg-gray-50 rounded-lg p-3 border border-gray-200">
-                                            <p className="text-xs font-medium text-gray-700 mb-2">{q}</p>
-                                            <input
-                                                type="text"
-                                                value={userAnswers[i] || ''}
-                                                onChange={e => setUserAnswers(prev => ({ ...prev, [i]: e.target.value }))}
-                                                className="w-full px-3 py-2 text-xs border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
-                                                placeholder="Your answer..."
-                                            />
-                                        </div>
-                                    ))}
-                                </div>
-                            ) : (
-                                <p className="text-xs text-gray-500 italic">No clarification questions at this time.</p>
-                            );
-                        })()}
-
-                        <div className="mt-6 pt-4 border-t border-gray-200">
-                            <label className="block text-xs font-medium text-gray-700 mb-2">Additional Context</label>
-                            <textarea
-                                value={userFeedback}
-                                onChange={(e) => setUserFeedback(e.target.value)}
-                                placeholder="Any other details..."
-                                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-h-[80px] text-xs bg-white resize-none"
-                            />
+                        {/* Tab switcher */}
+                        <div className="flex border-t border-gray-100">
                             <button
-                                onClick={handleRefineAnalysis}
-                                disabled={processing || (!(aiQuestions?.length) && !(userFeedback || '').trim())}
-                                className={`w-full mt-4 py-2.5 text-xs font-bold text-white rounded-lg shadow-sm transition-all ${
-                                    processing
-                                        ? 'bg-gray-400 cursor-not-allowed'
-                                        : 'bg-gray-900 hover:bg-gray-800 hover:shadow-md'
+                                onClick={() => setSidebarTab('chat')}
+                                className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold transition-all ${
+                                    sidebarTab === 'chat'
+                                        ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50/50'
+                                        : 'text-gray-500 hover:text-gray-800 hover:bg-gray-50 border-b-2 border-transparent'
                                 }`}
                             >
-                                {processing ? 'Refining...' : 'Update Analysis'}
+                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                </svg>
+                                BRD Chat
+                                {chatMessages.length > 0 && (
+                                    <span className="px-1.5 py-0.5 text-[10px] font-bold bg-blue-600 text-white rounded-full">{chatMessages.length}</span>
+                                )}
+                            </button>
+                            <button
+                                onClick={() => setSidebarTab('clarification')}
+                                className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold transition-all ${
+                                    sidebarTab === 'clarification'
+                                        ? 'text-amber-700 border-b-2 border-amber-600 bg-amber-50/50'
+                                        : 'text-gray-500 hover:text-gray-800 hover:bg-gray-50 border-b-2 border-transparent'
+                                }`}
+                            >
+                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                Clarification
+                                {clarificationCount > 0 && (
+                                    <span className={`px-1.5 py-0.5 text-[10px] font-bold rounded-full ${sidebarTab === 'clarification' ? 'bg-amber-600 text-white' : 'bg-amber-100 text-amber-700'}`}>{clarificationCount}</span>
+                                )}
                             </button>
                         </div>
                     </div>
+
+                    {/* ── BRD Chat Tab ── */}
+                    {sidebarTab === 'chat' && (
+                        <>
+                        {/* Chat Message Thread */}
+                        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4 bg-gray-50">
+                    {/* Welcome message */}
+                    {chatMessages.length === 0 && (
+                        <div className="text-center py-8">
+                            <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center mx-auto mb-3">
+                                <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                </svg>
+                            </div>
+                            <p className="text-sm font-semibold text-gray-700 mb-1">BRD Update Assistant</p>
+                            <p className="text-xs text-gray-500 leading-relaxed max-w-[280px] mx-auto">
+                                Describe what you want to update in the BRD analysis. Changes are applied surgically — only affected sections are updated.
+                            </p>
+                            <div className="mt-4 space-y-2">
+                                {[
+                                    'Add payment gateway integration',
+                                    'Change deployment to AWS Lambda',
+                                    'Include mobile app requirements',
+                                ].map((suggestion, i) => (
+                                    <button
+                                        key={i}
+                                        onClick={() => setChatInput(suggestion)}
+                                        className="block w-full text-left text-xs text-blue-600 hover:text-blue-800 bg-white hover:bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 transition-colors"
+                                    >
+                                        "{suggestion}"
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Chat messages */}
+                    {chatMessages.map((msg) => (
+                        <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                            {/* Label */}
+                            <span className="text-[10px] text-gray-400 mb-1 px-1">
+                                {msg.role === 'user' ? 'You' : 'BRD Assistant'} · {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                            {/* Bubble */}
+                            <div className={`max-w-[85%] rounded-2xl px-4 py-3 text-xs leading-relaxed shadow-sm ${
+                                msg.role === 'user'
+                                    ? 'bg-blue-600 text-white rounded-tr-sm'
+                                    : msg.isError
+                                        ? 'bg-red-50 text-red-700 border border-red-200 rounded-tl-sm'
+                                        : 'bg-white text-gray-800 border border-gray-200 rounded-tl-sm'
+                            }`}>
+                                <div className="prose prose-xs max-w-none">
+                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                        {msg.content}
+                                    </ReactMarkdown>
+                                </div>
+                                {/* Affected sections badge */}
+                                {msg.affectedSections && msg.affectedSections.length > 0 && (
+                                    <div className="mt-2 pt-2 border-t border-gray-100 flex flex-wrap gap-1">
+                                        <span className="text-[10px] text-gray-400 w-full mb-1">Updated sections:</span>
+                                        {msg.affectedSections.map((s, i) => (
+                                            <span key={i} className="inline-block bg-blue-50 text-blue-700 border border-blue-100 rounded-full px-2 py-0.5 text-[10px] font-medium">
+                                                {s}
+                                            </span>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    ))}
+
+                    {/* Typing indicator */}
+                    {(chatSending || processing) && (
+                        <div className="flex items-start gap-2">
+                            <div className="bg-white border border-gray-200 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm">
+                                <div className="flex gap-1 items-center h-4">
+                                    <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0ms'}}></span>
+                                    <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '150ms'}}></span>
+                                    <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '300ms'}}></span>
+                                </div>
+                            </div>
+                            <span className="text-[10px] text-gray-400 self-end mb-1">Updating analysis...</span>
+                        </div>
+                    )}
+
+                    <div ref={chatEndRef} />
                 </div>
-            </div>
+
+                {/* Chat Input */}
+                <div className="px-4 py-4 border-t border-gray-100 bg-white flex-shrink-0">
+                    <div className="flex items-end gap-2">
+                        <div className="flex-1 relative">
+                            <textarea
+                                value={chatInput}
+                                onChange={(e) => setChatInput(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && !e.shiftKey) {
+                                        e.preventDefault();
+                                        handleChatSend();
+                                    }
+                                }}
+                                placeholder="Describe what to update in the BRD... (Enter to send)"
+                                rows={2}
+                                className="w-full px-3 py-2.5 pr-10 text-xs border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-gray-50 resize-none placeholder-gray-400"
+                                disabled={chatSending || processing}
+                            />
+                        </div>
+                        <button
+                            onClick={handleChatSend}
+                            disabled={!chatInput.trim() || chatSending || processing}
+                            className="flex-shrink-0 p-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-200 disabled:cursor-not-allowed text-white rounded-xl transition-colors shadow-sm"
+                        >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                            </svg>
+                        </button>
+                    </div>
+                    <p className="text-[10px] text-gray-400 mt-1.5 text-center">
+                        Only affected sections are updated · Full history preserved
+                    </p>
+                </div>
+                        </>
+                    )}
+
+                    {/* ── Clarification Needed Tab ── */}
+                    {sidebarTab === 'clarification' && (
+                        <div className="flex-1 overflow-y-auto flex flex-col">
+                            {clarificationCount === 0 ? (
+                                <div className="flex-1 flex flex-col items-center justify-center px-6 py-12 text-center">
+                                    <div className="w-14 h-14 rounded-full bg-green-50 flex items-center justify-center mx-auto mb-4">
+                                        <svg className="w-7 h-7 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                        </svg>
+                                    </div>
+                                    <p className="text-sm font-semibold text-gray-700 mb-1">No open questions</p>
+                                    <p className="text-xs text-gray-400 leading-relaxed max-w-[240px]">
+                                        The AI has no pending clarifications. All ambiguities are resolved.
+                                    </p>
+                                </div>
+                            ) : (
+                                <>
+                                    <div className="px-5 py-4 bg-amber-50 border-b border-amber-100 flex-shrink-0">
+                                        <p className="text-xs text-amber-700 leading-relaxed">
+                                            Answer these questions to refine specific sections of the analysis. The AI will surgically update only affected areas.
+                                        </p>
+                                    </div>
+                                    <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3 bg-gray-50">
+                                        {clarificationQuestions.map((q, i) => (
+                                            <div key={i} className="bg-white rounded-xl p-4 border border-amber-100 shadow-sm">
+                                                <div className="flex items-start gap-2 mb-2">
+                                                    <span className="flex-shrink-0 w-5 h-5 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold flex items-center justify-center mt-0.5">{i + 1}</span>
+                                                    <p className="text-xs font-medium text-gray-700 leading-relaxed">{q}</p>
+                                                </div>
+                                                <input
+                                                    type="text"
+                                                    value={userAnswers[i] || ''}
+                                                    onChange={e => setUserAnswers(prev => ({ ...prev, [i]: e.target.value }))}
+                                                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleQASubmit(); }}}
+                                                    className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:ring-2 focus:ring-amber-400 focus:border-amber-400 bg-gray-50 placeholder-gray-400"
+                                                    placeholder="Your answer..."
+                                                />
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="px-5 py-4 border-t border-gray-100 bg-white flex-shrink-0">
+                                        <button
+                                            onClick={handleQASubmit}
+                                            disabled={chatSending || processing}
+                                            className="w-full py-2.5 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+                                        >
+                                            {chatSending || processing ? 'Updating...' : 'Submit Answers & Update Analysis'}
+                                        </button>
+                                        <p className="text-[10px] text-gray-400 mt-2 text-center">Answers are applied surgically to affected sections</p>
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    )}
+                </div>
+                );
+            })()}
 
             {/* Main Content Container */}
-            <div className={`transition-all duration-300 ${isSidebarOpen ? 'lg:mr-[480px]' : 'mr-0'}`}>
+            <div className={`transition-all duration-300 ${isSidebarOpen ? 'lg:mr-[460px]' : 'mr-0'}`}>
                 <div className="max-w-[1100px] mx-auto px-12 py-6 space-y-6">
                 {result && (
                     <div className="space-y-6 animate-fade-in-up">
-                        {/* Result Header */}
-                        <div className="flex flex-col md:flex-row md:items-center justify-between bg-app-bg-card p-4 rounded-xl shadow-sm border border-app-border-light">
-                            <div className="flex items-center mb-4 md:mb-0">
-                                <div className="p-2 bg-app-status-successBg rounded-lg mr-3">
-                                    <FileText className="w-5 h-5 text-app-status-success" />
+                        {/* Result Header - Redesigned */}
+                        <div className="bg-gradient-to-r from-white to-gray-50 rounded-2xl shadow-md border border-gray-200 overflow-hidden">
+                            {/* Top Section - File Info */}
+                            <div className="flex flex-col md:flex-row md:items-center justify-between p-5 border-b border-gray-100">
+                                <div className="flex items-start gap-4 mb-4 md:mb-0">
+                                    <div className="flex-shrink-0 w-12 h-12 bg-gradient-to-br from-emerald-400 to-green-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/30">
+                                        <FileText className="w-6 h-6 text-white" />
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                        <h2 className="text-xl font-bold text-gray-900 truncate mb-1">{result.filename}</h2>
+                                        <div className="flex items-center gap-2 text-sm text-gray-600">
+                                            {selectedProject && (
+                                                <>
+                                                    <span className="font-medium">{selectedProject.name}</span>
+                                                    <span className="text-gray-400">•</span>
+                                                </>
+                                            )}
+                                            <div className="flex items-center gap-1.5">
+                                                <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                                                <span className="font-medium text-emerald-600">Analysis Complete</span>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
-                                <div>
-                                    <h2 className="text-lg font-bold text-app-text-main break-all sm:break-normal">{result.filename}</h2>
-                                    <p className="text-xs text-app-text-muted">
-                                        {selectedProject ? `${selectedProject.name} • Analysis Completed` : 'Analysis Completed'}
-                                    </p>
+                                
+                                {/* Action Buttons - Right Side */}
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        onClick={handleDownloadPDF}
+                                        className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 rounded-lg transition-all hover:shadow-md"
+                                        title="Download PDF Report"
+                                    >
+                                        <Download className="w-4 h-4" />
+                                        <span className="hidden sm:inline">Download PDF</span>
+                                    </button>
+                                    <button
+                                        onClick={handleNewAnalysis}
+                                        className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 rounded-lg transition-all hover:shadow-lg shadow-blue-500/30"
+                                    >
+                                        <Plus className="w-4 h-4" />
+                                        <span className="hidden sm:inline">New Analysis</span>
+                                    </button>
                                 </div>
                             </div>
-                            <div className="flex items-center gap-3 flex-wrap md:flex-nowrap">
+                            
+                            {/* Bottom Section - Interactive Buttons */}
+                            <div className="flex items-center gap-3 px-5 py-3 bg-gray-50/50">
+                                {/* BRD Chat Button */}
                                 <button
-                                    onClick={handleDownloadPDF}
-                                    className="text-sm text-app-text-label hover:text-app-text-main font-medium hover:underline flex items-center transition-colors"
-                                    title="Download PDF Report"
+                                    onClick={() => { setSidebarTab('chat'); setIsSidebarOpen(true); }}
+                                    className={`flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-all ${
+                                        isSidebarOpen && sidebarTab === 'chat' 
+                                            ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/30' 
+                                            : 'bg-white text-blue-600 border border-blue-200 hover:bg-blue-50 hover:border-blue-300'
+                                    }`}
+                                    title="Open BRD Chat"
                                 >
-                                    <Download className="w-4 h-4 mr-1" /> Download PDF
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                    </svg>
+                                    <span>BRD Chat</span>
+                                    {chatMessages.length > 0 && (
+                                        <span className={`px-2 py-0.5 text-xs font-bold rounded-full ${
+                                            isSidebarOpen && sidebarTab === 'chat' ? 'bg-white text-blue-600' : 'bg-blue-600 text-white'
+                                        }`}>{chatMessages.length}</span>
+                                    )}
                                 </button>
-                                <div className="hidden sm:block h-4 w-px bg-app-border"></div>
-                                <button
-                                    onClick={handleNewAnalysis}
-                                    className="text-sm text-app-primary hover:text-app-primary-dark font-medium hover:underline flex items-center"
-                                >
-                                    <Plus className="w-4 h-4 mr-1" /> Analyze Another
-                                </button>
-                                <div className="hidden sm:block h-4 w-px bg-app-border"></div>
-                                {!isSidebarOpen && (
-                                    <button
-                                        onClick={() => setIsSidebarOpen(true)}
-                                        className="text-sm text-app-text-label hover:text-app-text-main font-medium hover:underline flex items-center transition-colors"
-                                        title="Show Details"
-                                    >
-                                        <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
-                                        </svg>
-                                        Show Details
-                                    </button>
-                                )}
+                                
+                                {/* Clarification Button */}
+                                {(() => {
+                                    const qCount = (aiQuestions?.length > 0 ? aiQuestions : (result?.analysis?.questions || [])).length;
+                                    return (
+                                        <button
+                                            onClick={() => { setSidebarTab('clarification'); setIsSidebarOpen(true); }}
+                                            className={`flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-all ${
+                                                isSidebarOpen && sidebarTab === 'clarification' 
+                                                    ? 'bg-amber-600 text-white shadow-lg shadow-amber-500/30' 
+                                                    : 'bg-white text-amber-600 border border-amber-200 hover:bg-amber-50 hover:border-amber-300'
+                                            }`}
+                                            title="Clarification Needed"
+                                        >
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                            </svg>
+                                            <span>Clarification</span>
+                                            {qCount > 0 && (
+                                                <span className={`px-2 py-0.5 text-xs font-bold rounded-full ${
+                                                    isSidebarOpen && sidebarTab === 'clarification' ? 'bg-white text-amber-600' : 'bg-amber-600 text-white'
+                                                }`}>{qCount}</span>
+                                            )}
+                                        </button>
+                                    );
+                                })()}
                             </div>
                         </div>
 

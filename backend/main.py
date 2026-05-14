@@ -221,6 +221,9 @@ class AnalyzeRequest(BaseModel):
     user_feedback: Optional[str] = None
     image_paths: Optional[List[str]] = None
     governance_context: Optional[Dict[str, Any]] = None
+    # Targeted update fields — when present, triggers surgical update instead of full regen
+    previous_analysis: Optional[Dict[str, Any]] = None
+    update_type: Optional[str] = None  # feedback | revision | qa
 
 class AIConfigUpdate(BaseModel):
     api_url: Optional[str] = None
@@ -468,9 +471,27 @@ async def analyze_document_with_ai(
         try:
             job.set_processing()
             job.update_progress(10, "Starting AI analysis...")
-            
-            # Choose between chunked and original analysis
-            if settings.use_chunked_analysis:
+
+            # --- TARGETED UPDATE PATH ---
+            # If a previous_analysis is supplied, perform a surgical diff-based update
+            # instead of regenerating everything from scratch.
+            if request.previous_analysis and isinstance(request.previous_analysis, dict):
+                logger.info(f"Job {job_id}: Performing targeted update (type={request.update_type})")
+                job.update_progress(15, "Analyzing what needs to change...")
+                change_request = request.user_feedback or ""
+                result = await ai_service_chunked.update_analysis_targeted(
+                    previous_analysis=request.previous_analysis,
+                    change_request=change_request,
+                    document_content=request.document_content,
+                    api_url=request.api_url,
+                    api_key=request.api_key,
+                    model=request.model,
+                    governance_context=request.governance_context,
+                    job_id=job_id,
+                    update_type=request.update_type or "feedback",
+                )
+            # --- FULL ANALYSIS PATH ---
+            elif settings.use_chunked_analysis:
                 logger.info(f"Job {job_id}: Using chunked multi-stage analysis")
                 job.update_progress(20, "Stage 1: Extracting requirements...")
                 result = await ai_service_chunked.analyze_document(
@@ -482,7 +503,7 @@ async def analyze_document_with_ai(
                     user_feedback=request.user_feedback,
                     image_paths=request.image_paths,
                     governance_context=request.governance_context,
-                    job_id=job_id,  # Pass job_id for progress tracking
+                    job_id=job_id,
                 )
             else:
                 logger.info(f"Job {job_id}: Using original single-stage analysis")

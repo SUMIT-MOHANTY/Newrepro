@@ -119,7 +119,7 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
         'Project Initiation': '/new-project',
         'Governance': '/new-project/governance',
         'Requirement Screening': '/dashboard',
-        'AI Analysis': '/dashboard',
+        'AI Analysis': '/agent-analysis',
         'Agent Analysis': '/agent-analysis',
         'Prerequisite Classification': '/prerequisites',
         'Task Creation': '/task-creation',
@@ -133,6 +133,22 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
 
         const route = STEP_ROUTES[stepLabel];
         if (!route) return;
+
+        // When navigating to Requirement Screening or earlier steps, clear any stale
+        // analysis trigger flags so Agent Analysis doesn't auto-start unexpectedly.
+        const preAnalysisSteps = ['Project Initiation', 'Governance', 'Requirement Screening'];
+        if (preAnalysisSteps.includes(stepLabel)) {
+            sessionStorage.removeItem('shouldStartAnalysis');
+            // Also clear any analysis_started_ flags to avoid stale state
+            const keysToRemove = [];
+            for (let i = 0; i < sessionStorage.length; i++) {
+                const key = sessionStorage.key(i);
+                if (key && key.startsWith('analysis_started_')) {
+                    keysToRemove.push(key);
+                }
+            }
+            keysToRemove.forEach(key => sessionStorage.removeItem(key));
+        }
 
         // Navigate to the route for the selected project
         // Note: AppLayout will enforce RBAC and display the "No Access" visual directly.

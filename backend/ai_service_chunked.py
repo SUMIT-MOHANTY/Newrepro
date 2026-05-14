@@ -841,6 +841,351 @@ def _format_governance_context(governance_context: Optional[Dict[str, Any]]) -> 
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# TARGETED UPDATE PROMPTS
+# ═══════════════════════════════════════════════════════════════════════════
+
+TARGETED_DIFF_PROMPT = """# ROLE
+You are an expert BRD analyst performing a TARGETED, SURGICAL update to an existing analysis.
+
+## CRITICAL INSTRUCTION - READ THIS CAREFULLY
+You MUST NOT regenerate the entire analysis from scratch.
+You MUST NOT rewrite sections that are not affected by the user's request.
+You MUST preserve the EXACT original wording, technology stack, architecture decisions, and all other content that is NOT directly related to the user's specific change request.
+
+**ABSOLUTE RULE**: If the user asks to change "Project Name from Pegasus Platform to Pegasus Captive Management", you MUST:
+1. ONLY change occurrences of "Pegasus Platform" to "Pegasus Captive Management"
+2. PRESERVE ALL OTHER CONTENT EXACTLY AS-IS including:
+   - Technology stack (ASP.NET Core, React, PostgreSQL, MongoDB, RabbitMQ, Azure, etc.)
+   - Architecture patterns and decisions
+   - Data models and schemas
+   - API specifications
+   - Repository structure
+   - Prerequisites and credentials
+   - Implementation guidelines
+   - All other technical details
+
+Think of this like a "Find and Replace" operation — only what the user explicitly asked to change, not the whole file.
+
+## INPUTS YOU WILL RECEIVE
+1. `previous_analysis`: The full existing BRD analysis (Stage 1-5 data + final report)
+2. `change_request`: What the user wants to update (answers to questions, revision changes, feedback)
+3. `document_content`: The source BRD document (for context only — do NOT re-extract everything)
+
+## YOUR TASK
+1. Read the change_request carefully
+2. Identify which sections of the existing analysis are ACTUALLY AFFECTED
+3. For ONLY those sections, produce updated content
+4. Return a JSON diff object with only the changed fields
+
+## OUTPUT FORMAT
+Return ONLY valid JSON (no markdown fences):
+{
+  "change_summary": "One sentence describing what changed and why",
+  "affected_sections": ["section names that changed"],
+  "stage1_updates": {
+    // Only include fields that actually changed. Omit unchanged fields entirely.
+    // Example: if only clarification_questions changed, only include that field
+    "clarification_questions": ["updated q1", ...],
+    "functional_requirements": null  // null means: keep existing unchanged
+  },
+  "stage2_updates": {
+    // Only include if architecture/tech stack changed due to the update
+    // null means: keep existing unchanged
+  },
+  "stage3_updates": {
+    // Only include if data models or APIs changed
+    // null means: keep existing unchanged
+  },
+  "stage4_updates": {
+    // Only include if implementation plan or prerequisites changed
+    // null means: keep existing unchanged
+  },
+  "report_section_patches": [
+    {
+      "section_heading": "## 0.X Section Title",
+      "replacement_content": "New markdown content for this section only"
+    }
+    // Only sections that need updating. Other sections stay unchanged.
+  ],
+  "metrics_updates": {
+    // Only if metrics changed. null or omit to keep existing.
+    "complexity": null,
+    "timeline": null,
+    "deployment": null,
+    "resources": null
+  }
+}
+
+## RULES - THESE ARE MANDATORY
+- If a field is not affected by the user's specific request, set it to null or omit it entirely
+- If answering a question that doesn't change the architecture, do NOT update stages 2/3/4
+- Preserve ALL existing analysis that is not directly changed - copy it verbatim
+- Be EXTREMELY conservative: when in doubt about whether something changed, leave it unchanged
+- For name changes: ONLY change the name, preserve ALL other content exactly as-is
+- For technology changes: ONLY change the specific technology mentioned, preserve everything else
+- For architecture changes: ONLY change the specific component mentioned, preserve everything else
+- NEVER regenerate or rephrase content that wasn't explicitly requested to change
+- Use ASCII characters only
+
+## EXAMPLES OF CORRECT BEHAVIOR
+**User Request**: "Change project name from Pegasus Platform to Pegasus Captive Management"
+**Correct Response**: Only update "product_name" field and any mentions of "Pegasus Platform" in the report. ALL technology stack, architecture, data models, APIs, etc. remain EXACTLY the same.
+
+**User Request**: "Add payment gateway integration"
+**Correct Response**: Add payment gateway to functional requirements, add payment API endpoints, add payment-related prerequisites. Do NOT change existing tech stack, architecture pattern, or other unrelated sections.
+
+**User Request**: "Change deployment from Azure to AWS"
+**Correct Response**: Update deployment target and cloud-specific services. Preserve application architecture, data models, APIs, and all other non-cloud-specific content."""
+
+TARGETED_REPORT_PATCH_PROMPT = """# ROLE
+You are a technical writer applying targeted patches to a BRD analysis report.
+
+## TASK
+You will receive:
+1. The CURRENT report markdown
+2. A list of section patches (heading + new content)
+3. The change_summary
+
+Apply ONLY the patches listed. Do not modify any other section.
+Return the COMPLETE updated report markdown.
+
+## CRITICAL RULES
+- Only replace the sections listed in the patches
+- Keep all other sections EXACTLY as-is
+- Maintain the same heading structure and numbering
+- Use ASCII characters only"""
+
+
+async def update_analysis_targeted(
+    previous_analysis: Dict[str, Any],
+    change_request: str,
+    document_content: str,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+    governance_context: Optional[Dict[str, Any]] = None,
+    job_id: Optional[str] = None,
+    update_type: str = "feedback",  # "feedback" | "revision" | "qa"
+) -> Dict[str, Any]:
+    """
+    Performs a surgical, targeted update to an existing BRD analysis.
+    
+    Instead of regenerating everything from scratch, it:
+    1. Identifies which parts of the analysis are affected by the change
+    2. Updates ONLY those parts
+    3. Patches the final report with only the changed sections
+    4. Merges the changes back into the full analysis object
+    
+    Args:
+        previous_analysis: The complete existing analysis object (stages + report)
+        change_request: What changed (user answers, revision reason, feedback)
+        document_content: Source BRD document
+        update_type: Type of update for context ("feedback", "revision", "qa")
+    """
+
+    def update_job_progress(progress: int, message: str):
+        if job_id:
+            try:
+                from analysis_job_manager import get_job_manager
+                job_manager = get_job_manager()
+                job = job_manager.get_job(job_id)
+                if job:
+                    job.update_progress(progress, message)
+            except Exception as e:
+                logger.warning(f"Failed to update job progress: {e}")
+
+    if not llm_gateway.check_api_key(api_key):
+        error = "API key not configured. Please set AI_API_KEY in your environment."
+        return {"status": "error", "error": error}
+
+    try:
+        update_job_progress(15, "Analyzing what needs to change...")
+
+        # Extract existing stages from the previous analysis
+        existing_stages = previous_analysis.get("stages", {})
+        existing_report = previous_analysis.get("analysis", "")
+        existing_metrics = previous_analysis.get("metrics", {})
+        existing_questions = previous_analysis.get("questions", [])
+        existing_prerequisites = previous_analysis.get("prerequisites", [])
+        existing_architecture = previous_analysis.get("architecture", {})
+
+        # Build context for the diff prompt
+        update_type_label = {
+            "feedback": "User provided additional feedback/context",
+            "revision": "User uploaded a new revision of the document",
+            "qa": "User answered clarification questions"
+        }.get(update_type, "User requested an update")
+
+        diff_context = {
+            "update_type": update_type_label,
+            "change_request": change_request,
+            "document_snippet": document_content[:3000],  # Small snippet for context
+            "existing_stage1": existing_stages.get("stage1_requirements", {}),
+            "existing_stage2_summary": {
+                "architecture_pattern": existing_stages.get("stage2_architecture", {}).get("architecture_pattern"),
+                "tech_stack_count": len(existing_stages.get("stage2_architecture", {}).get("tech_stack", [])),
+            },
+            "existing_stage3_summary": {
+                "api_count": len(existing_stages.get("stage3_data_api", {}).get("api_endpoints", [])),
+                "has_er_diagram": bool(existing_stages.get("stage3_data_api", {}).get("mermaid_er_diagram")),
+            },
+            "existing_metrics": existing_metrics,
+            "existing_questions": existing_questions,
+        }
+
+        update_job_progress(30, "Identifying affected sections...")
+
+        # Step 1: Get the targeted diff
+        diff_messages = [
+            {"role": "system", "content": TARGETED_DIFF_PROMPT},
+            {"role": "user", "content": f"Apply this targeted update:\n\n{json.dumps(diff_context, indent=2)[:5000]}"}
+        ]
+
+        diff_result = await llm_gateway.call_llm_and_extract(
+            messages=diff_messages,
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            timeout=120.0
+        )
+
+        diff_data = _extract_json_from_response(diff_result)
+        logger.info(f"Targeted diff complete. Affected sections: {diff_data.get('affected_sections', [])}")
+        update_job_progress(55, f"Updating affected sections: {', '.join(diff_data.get('affected_sections', ['analysis']))}...")
+
+        # Step 2: Merge diffs back into existing stages
+        updated_stages = dict(existing_stages)  # Start with a copy
+
+        def _merge_updates(existing: dict, updates: Optional[dict]) -> dict:
+            """Merge non-null updates into existing dict."""
+            if not updates or not isinstance(updates, dict):
+                return existing
+            merged = dict(existing)
+            for key, value in updates.items():
+                if value is not None:  # null means "keep existing"
+                    merged[key] = value
+            return merged
+
+        stage1_updates = diff_data.get("stage1_updates")
+        if stage1_updates and isinstance(stage1_updates, dict):
+            updated_stages["stage1_requirements"] = _merge_updates(
+                updated_stages.get("stage1_requirements", {}), stage1_updates
+            )
+
+        stage2_updates = diff_data.get("stage2_updates")
+        if stage2_updates and isinstance(stage2_updates, dict):
+            updated_stages["stage2_architecture"] = _merge_updates(
+                updated_stages.get("stage2_architecture", {}), stage2_updates
+            )
+
+        stage3_updates = diff_data.get("stage3_updates")
+        if stage3_updates and isinstance(stage3_updates, dict):
+            updated_stages["stage3_data_api"] = _merge_updates(
+                updated_stages.get("stage3_data_api", {}), stage3_updates
+            )
+
+        stage4_updates = diff_data.get("stage4_updates")
+        if stage4_updates and isinstance(stage4_updates, dict):
+            updated_stages["stage4_implementation"] = _merge_updates(
+                updated_stages.get("stage4_implementation", {}), stage4_updates
+            )
+
+        # Step 3: Patch the report markdown
+        update_job_progress(70, "Patching report sections...")
+        report_patches = diff_data.get("report_section_patches", [])
+
+        updated_report = existing_report
+        if report_patches and isinstance(report_patches, list) and len(report_patches) > 0:
+            patch_context = {
+                "current_report": existing_report[:8000],
+                "patches": report_patches,
+                "change_summary": diff_data.get("change_summary", "")
+            }
+
+            patch_messages = [
+                {"role": "system", "content": TARGETED_REPORT_PATCH_PROMPT},
+                {"role": "user", "content": f"Apply these patches:\n\n{json.dumps(patch_context, indent=2)[:6000]}"}
+            ]
+
+            patch_result = await llm_gateway.call_llm_and_extract(
+                messages=patch_messages,
+                api_url=api_url,
+                api_key=api_key,
+                model=model,
+                timeout=180.0
+            )
+
+            # The patched report is the raw text (not JSON)
+            if patch_result and isinstance(patch_result, str) and len(patch_result) > 100:
+                # Strip any JSON that may have been appended
+                clean_report = patch_result
+                # Remove trailing JSON block if present
+                last_fence = clean_report.rfind("```json")
+                if last_fence > 0:
+                    clean_report = clean_report[:last_fence].strip()
+                updated_report = clean_report
+            else:
+                logger.warning("Patch result was too short, keeping original report")
+
+        # Step 4: Merge metrics updates
+        updated_metrics = dict(existing_metrics)
+        metrics_updates = diff_data.get("metrics_updates")
+        if metrics_updates and isinstance(metrics_updates, dict):
+            for key, value in metrics_updates.items():
+                if value is not None:
+                    updated_metrics[key] = value
+
+        # Step 5: Extract updated questions/prerequisites from updated stages
+        updated_questions = (
+            updated_stages.get("stage1_requirements", {}).get("clarification_questions")
+            or existing_questions
+        )
+        updated_prerequisites = (
+            updated_stages.get("stage4_implementation", {}).get("prerequisites")
+            or existing_prerequisites
+        )
+        updated_architecture = (
+            updated_stages.get("stage2_architecture", {}).get("architecture")
+            or existing_architecture
+        )
+
+        update_job_progress(95, "Finalizing updated analysis...")
+
+        change_summary = diff_data.get("change_summary", "Analysis updated based on your input.")
+        affected_sections = diff_data.get("affected_sections", [])
+
+        return {
+            "status": "success",
+            "analysis": updated_report,
+            "model": model or "targeted-update",
+            "change_summary": change_summary,
+            "affected_sections": affected_sections,
+            "stages": updated_stages,
+            "metrics": updated_metrics,
+            "questions": updated_questions,
+            "prerequisites": updated_prerequisites,
+            "architecture": updated_architecture,
+            "update_type": update_type,
+        }
+
+    except Exception as e:
+        logger.error(f"Targeted update failed: {str(e)}", exc_info=True)
+        error_message = str(e) if str(e) else "Unknown error during targeted update"
+
+        if job_id:
+            try:
+                from analysis_job_manager import get_job_manager
+                job_manager = get_job_manager()
+                job = job_manager.get_job(job_id)
+                if job:
+                    job.set_failed(error_message)
+            except Exception:
+                pass
+
+        return {"status": "error", "error": f"Targeted update failed: {error_message}"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # EXPORT MAIN FUNCTION AS analyze_document FOR DROP-IN REPLACEMENT
 # ═══════════════════════════════════════════════════════════════════════════
 
