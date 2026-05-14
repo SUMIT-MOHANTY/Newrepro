@@ -53,58 +53,60 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
         
         setDownloading(true);
         try {
-            // Get the SVG element
             const svgElement = containerRef.current.querySelector('svg');
-            if (!svgElement) {
-                throw new Error('SVG element not found');
+            if (!svgElement) throw new Error('SVG element not found');
+
+            // Clone and force high-resolution dimensions using viewBox
+            const clonedSvg = svgElement.cloneNode(true);
+            const vb = svgElement.getAttribute('viewBox');
+            let targetW = 2400;
+            let targetH = 1200;
+
+            if (vb) {
+                const parts = vb.trim().split(/[\s,]+/);
+                if (parts.length === 4) {
+                    const vbW = parseFloat(parts[2]);
+                    const vbH = parseFloat(parts[3]);
+                    if (vbW > 0 && vbH > 0) {
+                        targetH = Math.round(targetW * (vbH / vbW));
+                    }
+                }
+            } else {
+                const bbox = svgElement.getBBox();
+                const w = bbox.width || svgElement.width.baseVal.value || 800;
+                const h = bbox.height || svgElement.height.baseVal.value || 600;
+                targetH = Math.round(targetW * (h / w));
             }
 
-            // Clone the SVG to avoid modifying the original
-            const clonedSvg = svgElement.cloneNode(true);
-            
-            // Get SVG dimensions
-            const bbox = svgElement.getBBox();
-            const width = bbox.width || svgElement.width.baseVal.value || 800;
-            const height = bbox.height || svgElement.height.baseVal.value || 600;
-            
-            // Set explicit dimensions on cloned SVG
-            clonedSvg.setAttribute('width', width);
-            clonedSvg.setAttribute('height', height);
+            clonedSvg.setAttribute('width', String(targetW));
+            clonedSvg.setAttribute('height', String(targetH));
             clonedSvg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-            
-            // Convert SVG to string and encode as data URL to avoid CORS issues
+
             const svgString = new XMLSerializer().serializeToString(clonedSvg);
             const svgDataUrl = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgString)));
 
-            // Create an image element
             const img = new Image();
             img.onload = () => {
                 try {
-                    // Create canvas
+                    const scale = 2; // 2× on top of the already-large 2400px SVG = 4800px effective
                     const canvas = document.createElement('canvas');
-                    const scale = 2; // Higher resolution
-                    canvas.width = width * scale;
-                    canvas.height = height * scale;
-                    
+                    canvas.width = targetW * scale;
+                    canvas.height = targetH * scale;
+
                     const ctx = canvas.getContext('2d');
                     ctx.scale(scale, scale);
-                    
-                    // Fill white background
                     ctx.fillStyle = 'white';
-                    ctx.fillRect(0, 0, width, height);
-                    
-                    // Draw the image
-                    ctx.drawImage(img, 0, 0, width, height);
-                    
-                    // Convert to PNG and download
+                    ctx.fillRect(0, 0, targetW, targetH);
+                    ctx.imageSmoothingEnabled = true;
+                    ctx.imageSmoothingQuality = 'high';
+                    ctx.drawImage(img, 0, 0, targetW, targetH);
+
                     canvas.toBlob((blob) => {
-                        if (!blob) {
-                            throw new Error('Failed to create image blob');
-                        }
+                        if (!blob) throw new Error('Failed to create image blob');
                         const url = URL.createObjectURL(blob);
                         const link = document.createElement('a');
                         link.href = url;
-                        link.download = `architecture-diagram-${Date.now()}.png`;
+                        link.download = `diagram-${Date.now()}.png`;
                         document.body.appendChild(link);
                         link.click();
                         document.body.removeChild(link);
@@ -117,14 +119,13 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
                     alert('Failed to export diagram. Please try again.');
                 }
             };
-            
+
             img.onerror = (err) => {
                 console.error('Image load error:', err);
                 setDownloading(false);
                 alert('Failed to load diagram for export. Please try again.');
             };
-            
-            // Use data URL instead of blob URL to avoid CORS issues
+
             img.src = svgDataUrl;
         } catch (err) {
             console.error('Download error:', err);
@@ -237,6 +238,67 @@ const layoutArchitectureGraph = (nodes, edges, direction = 'TB') => {
 };
 
 const hasCompletedDocumentAnalysis = (doc) => hasCompletedStoredAnalysis(parseStoredDocumentAnalysis(doc));
+
+// Component to display processed content in tabs
+const ProcessedContentTabs = ({ sections, markdown }) => {
+    const [activeTabIndex, setActiveTabIndex] = useState(0);
+
+    // Parse sections from markdown if not provided as structured data
+    let parsedSections = sections || [];
+    
+    if (!parsedSections || parsedSections.length === 0) {
+        // Try to parse sections from markdown using the separator pattern
+        if (markdown) {
+            const sectionRegex = /---\s*([A-Z\s&()]+)\s*---\s*([\s\S]*?)(?=---\s*[A-Z\s&()]+\s*---|$)/g;
+            const tempSections = [];
+            let match;
+            
+            while ((match = sectionRegex.exec(markdown)) !== null) {
+                tempSections.push({
+                    title: match[1].trim(),
+                    content: match[2].trim()
+                });
+            }
+            
+            if (tempSections.length > 0) {
+                parsedSections = tempSections;
+            }
+        }
+    }
+
+    if (!parsedSections || parsedSections.length === 0) {
+        return <div className="text-xs text-app-text-light">No content available</div>;
+    }
+
+    const activeSection = parsedSections[activeTabIndex] || parsedSections[0];
+
+    return (
+        <div className="space-y-3">
+            {/* Tab Headers */}
+            <div className="flex flex-wrap gap-2 border-b border-app-border-light pb-2">
+                {parsedSections.map((section, index) => (
+                    <button
+                        key={index}
+                        onClick={() => setActiveTabIndex(index)}
+                        className={`px-3 py-1.5 text-xs font-medium rounded-t-lg transition-all ${
+                            activeTabIndex === index
+                                ? 'bg-app-primary text-white border-b-2 border-app-primary'
+                                : 'bg-app-bg-page text-app-text-label hover:bg-app-bg-card border border-app-border-light border-b-0'
+                        }`}
+                    >
+                        {section.title || `Section ${index + 1}`}
+                    </button>
+                ))}
+            </div>
+
+            {/* Tab Content */}
+            <div className="bg-app-bg-page rounded-lg p-4 text-xs font-mono text-app-text-label max-h-96 overflow-y-auto whitespace-pre-wrap border border-app-border-light">
+                {activeSection.content || activeSection.markdown || '(No content)'}
+            </div>
+        </div>
+    );
+};
+
 
 const parseAIResponse = (text) => {
     let source = String(text || '').trim();
@@ -480,6 +542,7 @@ export default function AgentAnalysis({
                 governanceContext: governanceContext || null,
                 repoContextMeta: repoContextMeta || null,
                 stages: completedStages || {},  // Include completed stages
+                sections: newResult.extraction?.sections || [],  // Preserve all input tab sections
                 projectMeta: {
                     project_name: project?.name || governanceContext?.project_name || 'Project',
                     project_token: project?.projectToken || taskKey || null,
@@ -959,6 +1022,7 @@ export default function AgentAnalysis({
                             markdown: latestDocument.full_content || '',
                             html: '',
                             num_pages: null,
+                            sections: storedAnalysis?.sections || [],
                         },
                         analysis: storedAnalysis,
                         revisionNumber: selectedProject.documents?.length || 1,
@@ -1055,6 +1119,7 @@ export default function AgentAnalysis({
                             markdown: foundDoc.full_content || '',
                             html: '',
                             num_pages: null,
+                            sections: foundAnalysis?.sections || [],
                         },
                         analysis: foundAnalysis,
                         revisionNumber: selectedProject.documents?.length || 1,
@@ -1202,9 +1267,45 @@ export default function AgentAnalysis({
             const { svg } = await mermaid.render(uniqueId, mermaidCode);
 
             return await new Promise((resolve) => {
-                // Convert SVG to base64 data URL using FileReader to avoid cross-origin issues
-                // This ensures the canvas doesn't get tainted
-                const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+                // Parse SVG and force high-resolution dimensions before rasterizing
+                const parser = new DOMParser();
+                const svgDoc = parser.parseFromString(svg, 'image/svg+xml');
+                const svgEl = svgDoc.querySelector('svg');
+
+                let targetW = 2400; // target width for high-res
+                let aspectRatio = 0.5; // default fallback
+
+                if (svgEl) {
+                    // Read viewBox to get intrinsic aspect ratio
+                    const vb = svgEl.getAttribute('viewBox');
+                    if (vb) {
+                        const parts = vb.trim().split(/[\s,]+/);
+                        if (parts.length === 4) {
+                            const vbW = parseFloat(parts[2]);
+                            const vbH = parseFloat(parts[3]);
+                            if (vbW > 0 && vbH > 0) {
+                                aspectRatio = vbH / vbW;
+                                // If the diagram is very wide, keep targetW; if very tall, cap aspect ratio
+                                if (aspectRatio > 3) aspectRatio = 3;
+                            }
+                        }
+                    } else {
+                        // Fallback: read explicit width/height attrs
+                        const attrW = parseFloat(svgEl.getAttribute('width') || '0');
+                        const attrH = parseFloat(svgEl.getAttribute('height') || '0');
+                        if (attrW > 0 && attrH > 0) {
+                            aspectRatio = attrH / attrW;
+                        }
+                    }
+                    // Force explicit pixel dimensions so the browser renders at full resolution
+                    const targetH = Math.round(targetW * aspectRatio);
+                    svgEl.setAttribute('width', String(targetW));
+                    svgEl.setAttribute('height', String(targetH));
+                }
+
+                const targetH = Math.round(targetW * aspectRatio);
+                const modifiedSvg = new XMLSerializer().serializeToString(svgDoc);
+                const svgBlob = new Blob([modifiedSvg], { type: 'image/svg+xml;charset=utf-8' });
                 const reader = new FileReader();
 
                 reader.onload = () => {
@@ -1213,60 +1314,40 @@ export default function AgentAnalysis({
 
                     img.onload = () => {
                         try {
-                            const scale = 3; // High retina quality for crisp diagrams (increased from 2)
-                            const naturalW = img.naturalWidth || 800;
-                            const naturalH = img.naturalHeight || 400;
+                            // Render at 2× of the already-large SVG for maximum sharpness
+                            const scale = 2;
+                            const canvasW = (img.naturalWidth || targetW) * scale;
+                            const canvasH = (img.naturalHeight || targetH) * scale;
 
-                            // Create canvas with exact dimensions
                             const canvas = document.createElement('canvas');
-                            canvas.width = naturalW * scale;
-                            canvas.height = naturalH * scale;
+                            canvas.width = canvasW;
+                            canvas.height = canvasH;
 
                             const ctx = canvas.getContext('2d');
-                            if (!ctx) {
-                                resolve(null);
-                                return;
-                            }
+                            if (!ctx) { resolve(null); return; }
 
-                            // Fill with white background
+                            // White background
                             ctx.fillStyle = '#ffffff';
-                            ctx.fillRect(0, 0, canvas.width, canvas.height);
+                            ctx.fillRect(0, 0, canvasW, canvasH);
 
-                            // Enable image smoothing for better quality
                             ctx.imageSmoothingEnabled = true;
                             ctx.imageSmoothingQuality = 'high';
-
-                            // Scale and draw
                             ctx.scale(scale, scale);
-                            ctx.drawImage(img, 0, 0, naturalW, naturalH);
+                            ctx.drawImage(img, 0, 0, img.naturalWidth || targetW, img.naturalHeight || targetH);
 
-                            // Export as PNG data URL with maximum quality
                             const pngDataUrl = canvas.toDataURL('image/png', 1.0);
-
-                            resolve({
-                                dataUrl: pngDataUrl,
-                                aspectRatio: naturalH / naturalW,
-                            });
+                            resolve({ dataUrl: pngDataUrl, aspectRatio });
                         } catch (drawError) {
                             console.warn('Canvas draw error:', drawError);
                             resolve(null);
                         }
                     };
 
-                    img.onerror = () => {
-                        console.warn('Image load error');
-                        resolve(null);
-                    };
-
-                    // Use base64 data URL directly (no cross-origin issues)
+                    img.onerror = () => { console.warn('Image load error'); resolve(null); };
                     img.src = dataUrl;
                 };
 
-                reader.onerror = () => {
-                    console.warn('FileReader error');
-                    resolve(null);
-                };
-
+                reader.onerror = () => { console.warn('FileReader error'); resolve(null); };
                 reader.readAsDataURL(svgBlob);
             });
         } catch (err) {
@@ -1503,12 +1584,12 @@ export default function AgentAnalysis({
         }
         // Also pre-render erDiagram blocks
         {
-            const erRegex = /```(?:erDiagram|er\s*\n[\s\S]*?)```/gi;
+            const erRegex = /```(?:erDiagram|erdiagram)([\s\S]*?)```/gi;
             let erMatch;
             while ((erMatch = erRegex.exec(rawText)) !== null) {
                 const code = erMatch[1].trim();
                 // eslint-disable-next-line no-await-in-loop
-                const imgData = await renderMermaidToPng(code);
+                const imgData = await renderMermaidToPng('erDiagram\n' + code);
                 erDiagramImages.push(imgData);
             }
         }
@@ -2251,9 +2332,6 @@ export default function AgentAnalysis({
                                                             
                                                             // Check if this is a section we want to hide
                                                             const shouldHide = 
-                                                                headerText.includes('data model') ||
-                                                                headerText.includes('database schema') ||
-                                                                headerText.includes('er diagram') ||
                                                                 headerText.includes('api specification') ||
                                                                 headerText.includes('api endpoint') ||
                                                                 headerText.includes('core api') ||
@@ -2265,8 +2343,6 @@ export default function AgentAnalysis({
                                                                 headerText.includes('phase 4:') ||
                                                                 headerText.includes('phase 5:') ||
                                                                 (headerText.match(/^\d+\.\d+/) && (
-                                                                    headerText.includes('data model') ||
-                                                                    headerText.includes('schema') ||
                                                                     headerText.includes('api') ||
                                                                     headerText.includes('deliverable')
                                                                 ));
@@ -2293,21 +2369,6 @@ export default function AgentAnalysis({
                                                                 // Start of code block
                                                                 inCodeBlock = true;
                                                                 codeBlockType = trimmed.substring(3).trim().toLowerCase();
-
-                                                                // Hide erDiagram code blocks in frontend
-                                                                if (codeBlockType === 'erdiagram' || codeBlockType.includes('er')) {
-                                                                    // Skip this entire code block
-                                                                    while (i < lines.length - 1) {
-                                                                        i++;
-                                                                        if (lines[i].trim().startsWith('```')) {
-                                                                            break;
-                                                                        }
-                                                                    }
-                                                                    inCodeBlock = false;
-                                                                    codeBlockType = '';
-                                                                    continue;
-                                                                }
-                                                                
                                                                 result.push(line);
                                                             } else {
                                                                 // End of code block
@@ -2315,11 +2376,6 @@ export default function AgentAnalysis({
                                                                 codeBlockType = '';
                                                                 result.push(line);
                                                             }
-                                                            continue;
-                                                        }
-
-                                                        // Skip content inside code blocks we're hiding
-                                                        if (inCodeBlock && (codeBlockType === 'erdiagram' || codeBlockType.includes('er'))) {
                                                             continue;
                                                         }
 
@@ -2371,11 +2427,11 @@ export default function AgentAnalysis({
                                                                     codeContent.includes('classDiagram') ||
                                                                     codeContent.includes('stateDiagram');
 
-                                                                const isErDiagram = codeContent.includes('[') &&
-                                                                    (codeContent.includes('||') || codeContent.includes('}o') || codeContent.includes('o{'));
+                                                                const isErDiagram = codeContent.startsWith('erDiagram') ||
+                                                                    (codeContent.toLowerCase().startsWith('erdiagram'));
 
-                                                                if (isMermaid) {
-                                                                    return <MermaidDiagram code={codeContent} />;
+                                                                if (isMermaid || isErDiagram) {
+                                                                    return <MermaidDiagram code={codeContent} showDownload={true} />;
                                                                 }
 
                                                                 return <code className="block bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-xs font-mono" {...props}>{children}</code>;
@@ -2418,20 +2474,37 @@ export default function AgentAnalysis({
                                                 </span>
                                             </summary>
                                             <div className="mt-4 pt-4 border-t border-app-bg-page">
-                                                {result.extraction?.html ? (
-                                                    <div className="bg-app-bg-card rounded-lg border border-app-border overflow-hidden">
-                                                        <iframe
-                                                            srcDoc={result.extraction.html}
-                                                            className="w-full h-[420px] sm:h-[520px] lg:h-[600px] border-0"
-                                                            title="Processed Content"
-                                                            sandbox="allow-same-origin allow-scripts"
-                                                        />
-                                                    </div>
-                                                ) : (
-                                                    <div className="bg-app-bg-page rounded-lg p-4 text-xs font-mono text-app-text-label max-h-96 overflow-y-auto whitespace-pre-wrap border border-app-border-light">
-                                                        {result.extraction?.markdown || '(No content extracted)'}
-                                                    </div>
-                                                )}
+                                                {(() => {
+                                                    // Check if we have structured sections
+                                                    const sections = result.analysis?.sections || result.extraction?.sections;
+                                                    const markdown = result.extraction?.markdown || '';
+                                                    
+                                                    // If we have sections OR markdown with section separators, show tabs
+                                                    if ((sections && sections.length > 0) || markdown.includes('---')) {
+                                                        return <ProcessedContentTabs sections={sections} markdown={markdown} />;
+                                                    }
+                                                    
+                                                    // Fallback to HTML iframe if available
+                                                    if (result.extraction?.html) {
+                                                        return (
+                                                            <div className="bg-app-bg-card rounded-lg border border-app-border overflow-hidden">
+                                                                <iframe
+                                                                    srcDoc={result.extraction.html}
+                                                                    className="w-full h-[420px] sm:h-[520px] lg:h-[600px] border-0"
+                                                                    title="Processed Content"
+                                                                    sandbox="allow-same-origin allow-scripts"
+                                                                />
+                                                            </div>
+                                                        );
+                                                    }
+                                                    
+                                                    // Final fallback to plain markdown
+                                                    return (
+                                                        <div className="bg-app-bg-page rounded-lg p-4 text-xs font-mono text-app-text-label max-h-96 overflow-y-auto whitespace-pre-wrap border border-app-border-light">
+                                                            {markdown || '(No content extracted)'}
+                                                        </div>
+                                                    );
+                                                })()}
                                             </div>
                                         </details>
                                     </div>

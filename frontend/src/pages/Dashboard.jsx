@@ -337,6 +337,67 @@ const hasCompletedStoredAnalysis = (analysis) => {
 
 const hasCompletedDocumentAnalysis = (doc) => hasCompletedStoredAnalysis(parseStoredDocumentAnalysis(doc));
 
+// Component to display processed content in tabs
+const ProcessedContentTabs = ({ sections, markdown }) => {
+    const [activeTabIndex, setActiveTabIndex] = useState(0);
+
+    // Parse sections from markdown if not provided as structured data
+    let parsedSections = sections || [];
+    
+    if (!parsedSections || parsedSections.length === 0) {
+        // Try to parse sections from markdown using the separator pattern
+        if (markdown) {
+            const sectionRegex = /---\s*([A-Z\s&()]+)\s*---\s*([\s\S]*?)(?=---\s*[A-Z\s&()]+\s*---|$)/g;
+            const tempSections = [];
+            let match;
+            
+            while ((match = sectionRegex.exec(markdown)) !== null) {
+                tempSections.push({
+                    title: match[1].trim(),
+                    content: match[2].trim()
+                });
+            }
+            
+            if (tempSections.length > 0) {
+                parsedSections = tempSections;
+            }
+        }
+    }
+
+    if (!parsedSections || parsedSections.length === 0) {
+        return <div className="text-xs text-app-text-light">No content available</div>;
+    }
+
+    const activeSection = parsedSections[activeTabIndex] || parsedSections[0];
+
+    return (
+        <div className="space-y-3">
+            {/* Tab Headers */}
+            <div className="flex flex-wrap gap-2 border-b border-app-border-light pb-2">
+                {parsedSections.map((section, index) => (
+                    <button
+                        key={index}
+                        onClick={() => setActiveTabIndex(index)}
+                        className={`px-3 py-1.5 text-xs font-medium rounded-t-lg transition-all ${
+                            activeTabIndex === index
+                                ? 'bg-app-primary text-white border-b-2 border-app-primary'
+                                : 'bg-app-bg-page text-app-text-label hover:bg-app-bg-card border border-app-border-light border-b-0'
+                        }`}
+                    >
+                        {section.title || `Section ${index + 1}`}
+                    </button>
+                ))}
+            </div>
+
+            {/* Tab Content */}
+            <div className="bg-app-bg-page rounded-lg p-4 text-xs font-mono text-app-text-label max-h-96 overflow-y-auto whitespace-pre-wrap border border-app-border-light">
+                {activeSection.content || activeSection.markdown || '(No content)'}
+            </div>
+        </div>
+    );
+};
+
+
 
 
 
@@ -381,12 +442,13 @@ const Dashboard = ({
 
     const getProjectState = (key) => {
         const state = projectStates[key] || {
-            files: [], textInput: '', activeTab: 'upload', processing: false,
+            files: [], linkedFiles: [], textInput: '', activeTab: 'upload', processing: false,
             result: null, error: '', userFeedback: '', aiQuestions: [],
             userAnswers: {}, revisionUnlocked: false, revisionReason: '',
             progress: 0, progressMessage: '',
             urlInput: '', urlRequirements: '', urlSource: '', urlFetchSummary: null,
-            urlFetching: false
+            urlFetching: false,
+            skillFiles: [] // Add skills files state
         };
 
         const proj = projects.find(p => p.key === key);
@@ -418,12 +480,14 @@ const Dashboard = ({
         userFeedback, aiQuestions, userAnswers, revisionUnlocked,
         revisionReason, progress, progressMessage,
         urlInput = '', urlRequirements = '', urlSource = '', urlFetchSummary = null,
-        urlFetching = false
+        urlFetching = false,
+        skillFiles = [] // Add skills files to destructuring
     } = activeState;
 
     // Helpers to update active project state from UI components natively 
     const setFiles = (v) => setProjectState(selectedProjectKey, { files: typeof v === 'function' ? v(activeState.files || []) : v });
     const setLinkedFiles = (v) => setProjectState(selectedProjectKey, { linkedFiles: typeof v === 'function' ? v(activeState.linkedFiles || []) : v });
+    const setSkillFiles = (v) => setProjectState(selectedProjectKey, { skillFiles: typeof v === 'function' ? v(activeState.skillFiles || []) : v });
     const setTextInput = (v) => setProjectState(selectedProjectKey, { textInput: typeof v === 'function' ? v(activeState.textInput) : v });
     const setUrlInput = (v) => setProjectState(selectedProjectKey, { urlInput: typeof v === 'function' ? v(activeState.urlInput) : v });
     const setUrlRequirements = (v) => setProjectState(selectedProjectKey, { urlRequirements: typeof v === 'function' ? v(activeState.urlRequirements) : v });
@@ -798,7 +862,13 @@ const Dashboard = ({
         return allAnswersSkipped || hasSkipFollowUpDescription;
     })();
     const isEnterpriseProject = String(governanceContext?.classification || selectedProject?.classification || '') === 'ENTERPRISE';
-    const hasGovernanceAssessment = Boolean(selectedProject?.governanceResultId || governanceContext?.result_id);
+    
+    // Check if governance assessment exists for current revision
+    // If revisionUnlocked is true, we need new governance for the revision
+    const hasGovernanceAssessment = revisionUnlocked 
+        ? false // Revision needs new governance
+        : Boolean(selectedProject?.governanceResultId || governanceContext?.result_id);
+    
     const isEnterpriseUploadBlocked = isEnterpriseProject && !isAllGovernanceSkippedCase;
     const getEnterpriseUploadBlockMessage = () => {
         const description = String(governanceContext?.classification_description || '').trim();
@@ -990,6 +1060,7 @@ const Dashboard = ({
                 ...(newResult.analysis || {}),
                 governanceContext: governanceContext || null,
                 repoContextMeta: repoContextMeta || null,
+                sections: newResult.extraction?.sections || [], // Store structured sections
                 projectMeta: {
                     project_name: project?.name || governanceContext?.project_name || 'Project',
                     project_token: project?.projectToken || taskKey || null,
@@ -1027,6 +1098,10 @@ const Dashboard = ({
                 }));
                 fetchHistory();
                 refreshProjects?.();
+                
+                // Always navigate to agent analysis after successful save
+                // The governance check happens in handleUpload before this
+                navigate('/agent-analysis');
             }
         } catch (e) {
             console.error('History save failed', e);
@@ -1345,7 +1420,8 @@ const Dashboard = ({
                     filename: doc.filename,
                     extraction: {
                         markdown: doc.full_content || doc.content_preview || '(Content not available)',
-                        num_pages: null
+                        num_pages: null,
+                        sections: parsedAnalysis.sections || [] // Preserve sections from saved analysis
                     },
                     analysis: {
                         ...parsedAnalysis,
@@ -1374,6 +1450,8 @@ const Dashboard = ({
         setError(''); // Clear error if validation passes
         if (activeTab === 'linked-doc') {
             setLinkedFiles(selectedFiles);
+        } else if (activeTab === 'skills') {
+            setSkillFiles(selectedFiles);
         } else {
             setFiles(selectedFiles);
         }
@@ -1450,7 +1528,6 @@ const Dashboard = ({
 
     const handleUpload = async (e) => {
         const taskKey = selectedProjectKey;
-        const taskFiles = activeTab === 'linked-doc' ? linkedFiles : files;
         e.preventDefault();
         
         if (!selectedProject) {
@@ -1466,52 +1543,64 @@ const Dashboard = ({
             return;
         }
 
-        if (activeTab === 'upload' && files.length === 0) {
-            setError('Please select at least one file');
-            return;
-        }
-        if (activeTab === 'linked-doc' && linkedFiles.length === 0) {
-            setError('Please select at least one linked document');
-            return;
-        }
-        if (activeTab === 'text' && !textInput.trim()) {
-            setError('Please enter some text');
-            return;
-        }
-        if (activeTab === 'url' && !urlInput.trim()) {
-            setError('Please enter a website URL');
+        // Check if at least ONE input is provided
+        const hasFiles = files.length > 0;
+        const hasLinkedFiles = linkedFiles.length > 0;
+        const hasText = textInput.trim().length > 0;
+        const hasUrl = urlInput.trim().length > 0 || urlRequirements.trim().length > 0;
+        const hasRepo = repoContext?.context;
+        const hasSkills = skillFiles.length > 0;
+
+        if (!hasFiles && !hasLinkedFiles && !hasText && !hasUrl && !hasRepo && !hasSkills) {
+            setError('Please provide at least one input: upload files, write text, add URL, connect repository, or upload skills.');
             return;
         }
 
-        // Persist repository choice for this project even if user did not click "Fetch Repository".
-        if (activeTab === 'github-link') {
-            const repoFromInput = repoLinkProvider === 'azure-devops'
-                ? parseAzureRepoMetaFromUrl(azureLinkUrl, '')
-                : parseRepoMetaFromUrl(githubLinkUrl);
+        // Persist repository choice for this project
+        if (repoLinkProvider === 'azure-devops' && azureLinkUrl) {
+            const repoFromInput = parseAzureRepoMetaFromUrl(azureLinkUrl, '');
             if (repoFromInput) {
                 persistRepoContextMetaForProject(repoFromInput, taskKey);
             }
             
-            // Also save Git credentials to backend for use by agents
-            const gitTokenToSave = repoLinkProvider === 'azure-devops' ? azureLinkToken : githubLinkToken;
-            const gitUrlToSave = repoLinkProvider === 'azure-devops' ? azureLinkUrl : githubLinkUrl;
-            if (gitUrlToSave && gitTokenToSave) {
-                await saveGitCredentialsToBackend(gitUrlToSave, gitTokenToSave, taskKey);
-                // Only mark as changed if user explicitly clicked the Change button (not on initial save)
+            // Save Git credentials to backend for use by agents
+            if (azureLinkUrl && azureLinkToken) {
+                await saveGitCredentialsToBackend(azureLinkUrl, azureLinkToken, taskKey);
                 if (credentialsLocked) {
-                    // This is a change operation (user clicked "Change" button)
                     setHasChangedCredentials(true);
                 }
-                // Always lock after saving
                 setCredentialsLocked(true);
                 
-                // If repo context is not loaded yet but we have credentials, fetch it now for AI analysis
+                // Fetch repo context if not loaded
                 if (!repoContext) {
                     try {
-                        await fetchRepoContextForAnalysis(gitUrlToSave, gitTokenToSave, repoLinkProvider, taskKey);
+                        await fetchRepoContextForAnalysis(azureLinkUrl, azureLinkToken, 'azure-devops', taskKey);
                     } catch (err) {
                         console.warn('Failed to fetch repo context for analysis:', err);
-                        // Continue without repo context - AI will analyze just the BRD
+                    }
+                }
+            }
+        } else if (repoLinkProvider === 'github' && githubLinkUrl) {
+            const repoFromInput = parseRepoMetaFromUrl(githubLinkUrl);
+            if (repoFromInput) {
+                persistRepoContextMetaForProject(repoFromInput, taskKey);
+            }
+            
+            // Save Git credentials to backend
+            const gitToken = githubAuthMode === 'pat' ? githubLinkToken : githubLinkPassword;
+            if (githubLinkUrl && gitToken) {
+                await saveGitCredentialsToBackend(githubLinkUrl, gitToken, taskKey);
+                if (credentialsLocked) {
+                    setHasChangedCredentials(true);
+                }
+                setCredentialsLocked(true);
+                
+                // Fetch repo context if not loaded
+                if (!repoContext) {
+                    try {
+                        await fetchRepoContextForAnalysis(githubLinkUrl, gitToken, 'github', taskKey);
+                    } catch (err) {
+                        console.warn('Failed to fetch repo context for analysis:', err);
                     }
                 }
             }
@@ -1519,35 +1608,25 @@ const Dashboard = ({
 
         setProjectState(taskKey, { processing: true, error: '', result: null, aiQuestions: [], userAnswers: {}, userFeedback: '' });
 
-
-
-
-
-
         try {
-            const formData = new FormData();
             const token = localStorage.getItem('token');
-            let extractedMarkdown = '';
-            let extractedHtml = '';
+            let combinedMarkdown = '';
+            let combinedHtml = '';
             let filename = '';
+            const contentSections = [];
 
-            const initialProgressMessage = activeTab === 'url'
-                ? `Preparing website content for ${selectedProject.name}...`
-                : `Uploading ${taskFiles.length > 0 ? taskFiles.length : ''} documents for ${selectedProject.name}...`;
-            setProjectState(taskKey, { progress: 10, progressMessage: initialProgressMessage });
+            setProjectState(taskKey, { progress: 10, progressMessage: `Preparing content for ${selectedProject.name}...` });
 
-
-            if (activeTab === 'upload' || activeTab === 'linked-doc') {
-                for (let i = 0; i < taskFiles.length; i++) {
-                    formData.append('files', taskFiles[i]);
+            // 1. Process uploaded files (Upload tab)
+            if (hasFiles) {
+                const formData = new FormData();
+                for (let i = 0; i < files.length; i++) {
+                    formData.append('files', files[i]);
                 }
 
-                // Step 1: Upload and Extract Text (Single Request)
                 const uploadResponse = await fetch(API_ENDPOINTS.DOCUMENTS_UPLOAD, {
                     method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    },
+                    headers: { 'Authorization': `Bearer ${token}` },
                     body: formData
                 });
 
@@ -1556,119 +1635,131 @@ const Dashboard = ({
                     return;
                 }
 
-                if (!uploadResponse.ok) {
-                    const errData = await uploadResponse.json();
-                    throw new Error(errData.detail || 'Upload failed');
+                if (uploadResponse.ok) {
+                    const uploadData = await uploadResponse.json();
+                    contentSections.push({
+                        title: 'UPLOADED DOCUMENTS',
+                        markdown: uploadData.markdown,
+                        html: uploadData.html
+                    });
+                    filename = uploadData.filename;
+                }
+                setProjectState(taskKey, { progress: 20, progressMessage: 'Uploaded files processed...' });
+            }
+
+            // 2. Process linked files (Linked Doc tab)
+            if (hasLinkedFiles) {
+                const formData = new FormData();
+                for (let i = 0; i < linkedFiles.length; i++) {
+                    formData.append('files', linkedFiles[i]);
                 }
 
-                setProjectState(taskKey, { progress: 40, progressMessage: 'Processing documents...' });
+                const uploadResponse = await fetch(API_ENDPOINTS.DOCUMENTS_UPLOAD, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}` },
+                    body: formData
+                });
 
-                const uploadData = await uploadResponse.json();
+                if (uploadResponse.ok) {
+                    const uploadData = await uploadResponse.json();
+                    contentSections.push({
+                        title: 'LINKED PROJECT DOCUMENTS',
+                        markdown: uploadData.markdown,
+                        html: uploadData.html
+                    });
+                    if (!filename) filename = uploadData.filename;
+                }
+                setProjectState(taskKey, { progress: 30, progressMessage: 'Linked documents processed...' });
+            }
 
-                // Backend now returns combined markdown/html
-                extractedMarkdown = uploadData.markdown;
-                extractedHtml = uploadData.html;
-                filename = uploadData.filename; // e.g., "doc1.pdf, doc2.pdf"
+            // 3. Process text input (Text tab)
+            if (hasText) {
+                contentSections.push({
+                    title: 'MANUAL TEXT INPUT',
+                    markdown: textInput,
+                    html: `<pre style="white-space: pre-wrap; font-family: inherit;">${textInput}</pre>`
+                });
+                if (!filename) filename = 'Manual_Input_' + new Date().toISOString().slice(0, 10);
+                setProjectState(taskKey, { progress: 40, progressMessage: 'Text input processed...' });
+            }
 
-            } else {
-                if (activeTab === 'text') {
-                    // Text Input Mode
-                    extractedMarkdown = textInput;
-                    filename = 'Pasted_Text_' + new Date().toISOString().slice(0, 10);
-                    setProjectState(taskKey, { progress: 40, progressMessage: 'Processing documents...' });
-
-                    // If the user also selected files in the Upload tab, merge that content in
-                    if (files.length > 0) {
-                        try {
-                            const fileFormData = new FormData();
-                            for (let i = 0; i < files.length; i++) {
-                                fileFormData.append('files', files[i]);
-                            }
-                            const fileUploadResponse = await fetch(API_ENDPOINTS.DOCUMENTS_UPLOAD, {
-                                method: 'POST',
-                                headers: { 'Authorization': `Bearer ${token}` },
-                                body: fileFormData
-                            });
-                            if (fileUploadResponse.ok) {
-                                const fileData = await fileUploadResponse.json();
-                                if (fileData.markdown) {
-                                    const divider = "\n\n--- UPLOADED DOCUMENT CONTENT ---\n\n";
-                                    extractedMarkdown = `${fileData.markdown}${divider}${textInput}`;
-                                    if (fileData.html) {
-                                        extractedHtml = `${fileData.html}<div class="document-separator"><h2>Manual Text Input</h2></div><pre style="white-space: pre-wrap; font-family: inherit;">${textInput}</pre>`;
-                                    }
-                                    filename = `${fileData.filename} (with notes)`;
-                                }
-                            }
-                        } catch (fileErr) {
-                            console.warn('Could not merge uploaded file content with text:', fileErr);
-                            // Continue with just textInput
-                        }
+            // 4. Process URL (URL tab)
+            if (hasUrl) {
+                let urlMarkdown = urlRequirements.trim();
+                let urlSourceUrl = urlSource || urlInput.trim();
+                
+                if (!urlMarkdown && urlInput.trim()) {
+                    const fetchedData = await fetchRequirementsFromUrl(urlInput, taskKey);
+                    if (fetchedData) {
+                        urlMarkdown = fetchedData.markdown;
+                        urlSourceUrl = fetchedData.url || urlInput.trim();
                     }
-                } else if (activeTab === 'url') {
-                    const fetchedData = urlRequirements.trim()
-                        ? {
-                            markdown: urlRequirements,
-                            filename: `URL_${new Date().toISOString().slice(0, 10)}`,
-                            url: urlSource || urlInput.trim(),
-                        }
-                        : await fetchRequirementsFromUrl(urlInput, taskKey);
+                }
 
-                    if (!fetchedData) {
-                        throw new Error('Unable to process URL requirements.');
-                    }
+                if (urlMarkdown) {
+                    contentSections.push({
+                        title: `WEBSITE REQUIREMENTS (${urlSourceUrl})`,
+                        markdown: urlMarkdown,
+                        html: null
+                    });
+                    if (!filename) filename = 'URL_Requirements_' + new Date().toISOString().slice(0, 10);
+                }
+                setProjectState(taskKey, { progress: 50, progressMessage: 'URL content processed...' });
+            }
 
-                    extractedMarkdown = String(fetchedData.markdown || urlRequirements || '').trim();
-                    filename = fetchedData.filename || 'URL_Requirements_' + new Date().toISOString().slice(0, 10);
+            // 5. Process skill files (Skills tab)
+            if (hasSkills) {
+                const formData = new FormData();
+                for (let i = 0; i < skillFiles.length; i++) {
+                    formData.append('files', skillFiles[i]);
+                }
 
-                    if (!extractedMarkdown) {
-                        throw new Error('No requirement text generated from URL.');
-                    }
-                    setProjectState(taskKey, {
-                        progress: 40,
-                        progressMessage: 'Website requirements ready for analysis.',
-                        urlSource: fetchedData.url || (urlSource || urlInput.trim()),
-                        urlFetchSummary: fetchedData.summary || urlFetchSummary || null,
-                        urlRequirements: extractedMarkdown
+                const uploadResponse = await fetch(API_ENDPOINTS.DOCUMENTS_UPLOAD, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}` },
+                    body: formData
+                });
+
+                if (uploadResponse.ok) {
+                    const uploadData = await uploadResponse.json();
+                    contentSections.push({
+                        title: 'SKILLS & CONTEXT FILES',
+                        markdown: uploadData.markdown,
+                        html: uploadData.html
                     });
                 }
+                setProjectState(taskKey, { progress: 60, progressMessage: 'Skills processed...' });
             }
 
-            // Merge additional text context if provided alongside files/URL source
-            if (activeTab !== 'text' && textInput.trim()) {
-                const noteDivider = "\n\n---  USER NOTES ---\n\n";
-                extractedMarkdown = (extractedMarkdown || '').trim()
-                    ? `${extractedMarkdown}${noteDivider}${textInput}`
-                    : textInput;
+            // 6. Combine all sections
+            combinedMarkdown = contentSections.map(section => 
+                `\n\n--- ${section.title} ---\n\n${section.markdown}`
+            ).join('');
 
-                if (extractedHtml) {
-                    extractedHtml += `<div class="document-separator"><h2> User Notes</h2></div><div style="padding: 1.5rem; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; margin-top: 1.5rem; font-family: ui-sans-serif, system-ui, sans-serif;"><h3 style="margin-top: 0; font-size: 0.875rem; font-weight: 700; color: #1e293b; text-transform: uppercase; letter-spacing: 0.05em;">Manual Notes</h3><pre style="white-space: pre-wrap; font-family: inherit; font-size: 0.875rem; color: #475569; margin: 0; line-height: 1.6;">${textInput}</pre></div>`;
-                }
+            combinedHtml = contentSections.map(section => 
+                section.html ? `<div class="document-separator"><h2>${section.title}</h2></div>${section.html}` : ''
+            ).filter(Boolean).join('');
 
-                const noteSuffix = ' (with notes)';
-                if (!filename) {
-                    filename = 'Project_Context_' + new Date().toISOString().slice(0, 10);
-                } else if (!filename.includes(noteSuffix)) {
-                    filename += noteSuffix;
-                }
+            if (!filename) {
+                filename = 'Combined_Analysis_' + new Date().toISOString().slice(0, 10);
+            } else {
+                filename += ' (Combined)';
             }
 
-            // Handle repository-only analysis (no BRD document)
-            if (activeTab === 'github-link' && repoContext?.context && !extractedMarkdown.trim()) {
+            setProjectState(taskKey, { progress: 70, progressMessage: 'All content combined...' });
+
+            // Handle repository-only analysis (no other content)
+            if (hasRepo && !combinedMarkdown.trim()) {
                 await handleRepositoryOnlyAnalysisInDashboard(taskKey);
                 return;
             }
 
             if (isAllGovernanceSkippedCase && analyzeWithAi) {
-                // Governance was fully skipped and IT follow-up is required.
-                // Do not run BRD analysis; instead jump back to Governance so
-                // the user can see the Sandbox / IT message there.
                 setProjectState(taskKey, {
                     progress: 100,
                     progressMessage: 'Analysis blocked pending IT approval.',
                     error: ''
                 });
-                // Route to Governance results page within the authenticated layout
                 navigate('/new-project/governance');
                 return;
             }
@@ -1681,7 +1772,7 @@ const Dashboard = ({
 
                 await savePendingScreeningToHistory({
                     filename,
-                    markdown: extractedMarkdown,
+                    markdown: combinedMarkdown,
                     taskKey,
                     repoContextState: repoContext,
                 });
@@ -1696,13 +1787,14 @@ const Dashboard = ({
                 return;
             }
 
-            // Set initial result
+            // Set initial result with structured content
             const initialResult = {
                 filename: filename,
                 extraction: {
-                    markdown: extractedMarkdown,
-                    html: extractedHtml,
-                    num_pages: activeTab === 'upload' ? null : 1
+                    markdown: combinedMarkdown,
+                    html: combinedHtml,
+                    num_pages: null,
+                    sections: contentSections.map(s => ({ title: s.title, content: s.markdown })) // Add structured sections
                 },
                 analysis: analyzeWithAi ? { analysis: '', reasoning: '' } : null
             };
@@ -1710,10 +1802,14 @@ const Dashboard = ({
 
             // Step 2: Analyze with AI
             if (analyzeWithAi) {
+                // Combine all content including repository context
+                let finalContent = combinedMarkdown;
+                if (repoContext?.context) {
+                    finalContent += `\n\n--- REPOSITORY CONTEXT ---\n\n${repoContext.context}`;
+                }
+
                 const aiPayload = {
-                    document_content: repoContext
-                        ? `${extractedMarkdown}\n\n${repoContext.context}`
-                        : extractedMarkdown,
+                    document_content: finalContent,
                     api_url: aiConfig?.apiUrl || undefined,
                     api_key: aiConfig?.apiKey || undefined,
                     model: aiConfig?.model || undefined,
@@ -1722,12 +1818,10 @@ const Dashboard = ({
                 };
 
                 if (streamResponse) {
-                    setProjectState(taskKey, { progress: 70, progressMessage: 'Initializing AI task...' });
-
+                    setProjectState(taskKey, { progress: 75, progressMessage: 'Initializing AI task...' });
                     await streamAnalysis(aiPayload, token, initialResult, taskKey);
                 } else {
-                    setProjectState(taskKey, { progress: 70, progressMessage: 'Initializing AI task...' });
-
+                    setProjectState(taskKey, { progress: 75, progressMessage: 'Initializing AI task...' });
                     await fetchAnalysis(aiPayload, token, initialResult, taskKey);
                 }
             } else {
@@ -2691,6 +2785,14 @@ const Dashboard = ({
                                         >
                                             Repositories
                                         </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setActiveTab('skills')}
+                                            className={`pb-3 px-3 text-sm font-medium transition-colors relative ${activeTab === 'skills' ? 'text-app-primary border-b-2 border-app-primary' : 'text-app-text-muted hover:text-app-text-label'}`}
+                                            disabled={!selectedProject}
+                                        >
+                                            Skills
+                                        </button>
                                     </div>
 
                                     {activeTab === 'upload' ? (
@@ -2810,6 +2912,42 @@ const Dashboard = ({
                                                         Parsed headings: {urlFetchSummary.headings_found || 0}, paragraphs: {urlFetchSummary.paragraphs_found || 0}, list items: {urlFetchSummary.list_items_found || 0}
                                                     </div>
                                                 )}
+                                            </div>
+                                        </div>
+                                    ) : activeTab === 'skills' ? (
+                                        <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-app-bg-page/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && !isEnterpriseUploadBlocked ? 'border-app-border hover:border-blue-400 cursor-pointer' : 'border-app-border opacity-60'}`}>
+                                            <input
+                                                type="file"
+                                                id={`file-upload-skills`}
+                                                multiple
+                                                onChange={handleFileChange}
+                                                accept=".md,.txt"
+                                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                                                disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
+                                            />
+                                            <div className="mx-auto w-12 h-12 text-app-text-light mb-3 group-hover:text-app-primary transition-colors">
+                                                <FileText className="w-12 h-12" />
+                                            </div>
+                                            <span className="mt-2 block text-sm font-medium text-app-text-main">
+                                                {skillFiles.length > 0
+                                                    ? `${skillFiles.length} skill file(s) selected`
+                                                    : "Click to select skill files (max 100MB total)"}
+                                            </span>
+                                            {skillFiles.length > 0 && (
+                                                <div className="mt-2 text-xs text-app-text-muted flex flex-col items-center">
+                                                    {skillFiles.map((f, i) => (
+                                                        <span key={i} className="truncate max-w-[200px]">{f.name}</span>
+                                                    ))}
+                                                </div>
+                                            )}
+                                            <span className="mt-1 block text-xs text-app-text-light">
+                                                Markdown (.md) and Text (.txt) files only
+                                            </span>
+                                            <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-left">
+                                                <p className="text-xs text-blue-900 font-semibold mb-1">💡 What are Skills?</p>
+                                                <p className="text-xs text-blue-700">
+                                                    Skills are additional context files (guides, documentation, best practices) that help the AI understand your project better and provide more accurate analysis.
+                                                </p>
                                             </div>
                                         </div>
                                     ) : (
@@ -3158,8 +3296,8 @@ const Dashboard = ({
                                     <div className="flex justify-end gap-3 pt-6">
                                         <button
                                             type="submit"
-                                            disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'linked-doc' && linkedFiles.length === 0) || (activeTab === 'text' && !textInput.trim()) || (activeTab === 'url' && !urlInput.trim()) || (activeTab === 'github-link' && !repoContext?.context) || processing || urlFetching}
-                                            className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-white transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (activeTab === 'upload' && files.length === 0) || (activeTab === 'linked-doc' && linkedFiles.length === 0) || (activeTab === 'text' && !textInput.trim()) || (activeTab === 'url' && !urlInput.trim()) || (activeTab === 'github-link' && !repoContext?.context) || processing || urlFetching
+                                            disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (files.length === 0 && linkedFiles.length === 0 && !textInput.trim() && !urlInput.trim() && !urlRequirements.trim() && !repoContext?.context && skillFiles.length === 0) || processing || urlFetching}
+                                            className={`inline-flex items-center justify-center py-3 px-6 text-sm font-semibold rounded-lg text-white transition-all transform active:scale-95 shadow-md ${!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked || (files.length === 0 && linkedFiles.length === 0 && !textInput.trim() && !urlInput.trim() && !urlRequirements.trim() && !repoContext?.context && skillFiles.length === 0) || processing || urlFetching
                                                 ? 'bg-app-border cursor-not-allowed shadow-none'
                                                 : 'bg-app-primary hover:bg-app-primary-hover hover:-translate-y-0.5 hover:shadow-lg'
                                                 }`}
@@ -3169,9 +3307,7 @@ const Dashboard = ({
                                                 ? (hasGovernanceAssessment ? 'Analyzing...' : 'Saving Screening...')
                                                 : selectedProject?.documents.length > 0
                                                     ? (hasGovernanceAssessment ? 'Start Revision Analysis' : 'Continue to Governance')
-                                                    : activeTab === 'github-link'
-                                                        ? (hasGovernanceAssessment ? 'Analyze Repository' : 'Continue to Governance')
-                                                        : (hasGovernanceAssessment ? 'Start Analysis' : 'Complete Requirement Screening')}
+                                                    : (hasGovernanceAssessment ? 'Start Analysis' : 'Complete Requirement Screening')}
                                         </button>
                                     </div>
                                 </form>
@@ -3335,20 +3471,37 @@ const Dashboard = ({
                                                         </span>
                                                     </summary>
                                                     <div className="mt-4 pt-4 border-t border-app-bg-page">
-                                                        {result.extraction?.html ? (
-                                                            <div className="bg-app-bg-card rounded-lg border border-app-border overflow-hidden">
-                                                                <iframe
-                                                                    srcDoc={result.extraction.html}
-                                                                    className="w-full h-[420px] sm:h-[520px] lg:h-[600px] border-0"
-                                                                    title="Processed Content"
-                                                                    sandbox="allow-same-origin allow-scripts"
-                                                                />
-                                                            </div>
-                                                        ) : (
-                                                            <div className="bg-app-bg-page rounded-lg p-4 text-xs font-mono text-app-text-label max-h-96 overflow-y-auto whitespace-pre-wrap border border-app-border-light">
-                                                                {result.extraction?.markdown || '(No content extracted)'}
-                                                            </div>
-                                                        )}
+                                                        {(() => {
+                                                            // Check if we have structured sections or need to parse from markdown
+                                                            const sections = result.extraction?.sections;
+                                                            const markdown = result.extraction?.markdown || '';
+                                                            
+                                                            // If we have sections OR markdown with section separators, show tabs
+                                                            if ((sections && sections.length > 0) || markdown.includes('---')) {
+                                                                return <ProcessedContentTabs sections={sections} markdown={markdown} />;
+                                                            }
+                                                            
+                                                            // Fallback to HTML iframe if available
+                                                            if (result.extraction?.html) {
+                                                                return (
+                                                                    <div className="bg-app-bg-card rounded-lg border border-app-border overflow-hidden">
+                                                                        <iframe
+                                                                            srcDoc={result.extraction.html}
+                                                                            className="w-full h-[420px] sm:h-[520px] lg:h-[600px] border-0"
+                                                                            title="Processed Content"
+                                                                            sandbox="allow-same-origin allow-scripts"
+                                                                        />
+                                                                    </div>
+                                                                );
+                                                            }
+                                                            
+                                                            // Final fallback to plain markdown
+                                                            return (
+                                                                <div className="bg-app-bg-page rounded-lg p-4 text-xs font-mono text-app-text-label max-h-96 overflow-y-auto whitespace-pre-wrap border border-app-border-light">
+                                                                    {markdown || '(No content extracted)'}
+                                                                </div>
+                                                            );
+                                                        })()}
                                                     </div>
                                                 </details>
                                             </div>
