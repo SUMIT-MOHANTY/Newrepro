@@ -3452,9 +3452,6 @@ const Dashboard = ({
                                                                             <p className="text-[9px] text-app-text-muted leading-tight mt-0.5">
                                                                                 {doc.upload_date ? new Date(doc.upload_date).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' }) : '—'}
                                                                             </p>
-                                                                            <span className={`inline-block mt-1 text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none ${isCompleted ? 'bg-app-status-successBg text-app-status-success' : isPending ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'}`}>
-                                                                                {isCompleted ? 'Complete' : isPending ? 'Pending' : 'Draft'}
-                                                                            </span>
                                                                         </div>
                                                                     </div>
                                                                     <div className="flex items-center gap-1 flex-shrink-0 ml-1">
