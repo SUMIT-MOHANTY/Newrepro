@@ -337,6 +337,52 @@ const hasCompletedStoredAnalysis = (analysis) => {
 
 const hasCompletedDocumentAnalysis = (doc) => hasCompletedStoredAnalysis(parseStoredDocumentAnalysis(doc));
 
+// Extract file sections from document - with fallback for legacy documents
+const extractDocumentSections = (doc, parsedAnalysis) => {
+    // First try to get sections from parsed analysis
+    const sections = parsedAnalysis?.sections || [];
+    if (sections.length > 0) {
+        return sections;
+    }
+
+    // Fallback: Extract from filename field (may contain comma-separated filenames)
+    const filename = doc?.filename || '';
+    if (filename.includes(',')) {
+        // Multiple files were combined
+        return filename.split(',').map(name => ({
+            title: name.trim()
+        }));
+    } else if (filename && filename !== 'Combined_Analysis' && !filename.startsWith('Manual_Input_') && !filename.startsWith('URL_')) {
+        // Single file
+        return [{ title: filename }];
+    }
+
+    // Fallback: Try to extract from markdown content
+    const fullContent = doc?.full_content || '';
+    const documentHeaders = [];
+    const headerRegex = /---\s*DOCUMENT:\s*([^\n]+)\s*---/gi;
+    let match;
+    while ((match = headerRegex.exec(fullContent)) !== null) {
+        documentHeaders.push({ title: match[1].trim() });
+    }
+    
+    if (documentHeaders.length > 0) {
+        return documentHeaders;
+    }
+
+    // Last resort: check for section markers in content
+    const sectionRegex = /---\s*([A-Z\s&()]+)\s*---/g;
+    const sectionHeaders = [];
+    while ((match = sectionRegex.exec(fullContent)) !== null) {
+        const title = match[1].trim();
+        if (title && !sectionHeaders.find(s => s.title === title)) {
+            sectionHeaders.push({ title });
+        }
+    }
+
+    return sectionHeaders.length > 0 ? sectionHeaders : [];
+};
+
 // Component to display processed content in tabs
 const ProcessedContentTabs = ({ sections, markdown }) => {
     const [activeTabIndex, setActiveTabIndex] = useState(0);
@@ -990,6 +1036,7 @@ const Dashboard = ({
     const savePendingScreeningToHistory = useCallback(async ({
         filename,
         markdown,
+        sections = [],
         taskKey = selectedProjectKey,
         repoContextState = repoContext,
     }) => {
@@ -1001,6 +1048,7 @@ const Dashboard = ({
         const repoContextMeta = buildRepoContextMeta(repoContextState);
         const pendingAnalysis = {
             screening_status: 'pending_governance_analysis',
+            sections: sections || [],
             governanceContext: null,
             repoContextState: repoContextState || null,
             repoContextMeta: repoContextMeta || null,
@@ -1637,11 +1685,23 @@ const Dashboard = ({
 
                 if (uploadResponse.ok) {
                     const uploadData = await uploadResponse.json();
-                    contentSections.push({
-                        title: 'UPLOADED DOCUMENTS',
-                        markdown: uploadData.markdown,
-                        html: uploadData.html
-                    });
+                    // Create individual sections for each uploaded file
+                    if (uploadData.filenames && Array.isArray(uploadData.filenames)) {
+                        uploadData.filenames.forEach(fname => {
+                            contentSections.push({
+                                title: fname,
+                                markdown: uploadData.markdown, // Full markdown contains all files
+                                html: uploadData.html
+                            });
+                        });
+                    } else {
+                        // Fallback to single section if filenames not available
+                        contentSections.push({
+                            title: 'UPLOADED DOCUMENTS',
+                            markdown: uploadData.markdown,
+                            html: uploadData.html
+                        });
+                    }
                     filename = uploadData.filename;
                 }
                 setProjectState(taskKey, { progress: 20, progressMessage: 'Uploaded files processed...' });
@@ -1662,11 +1722,23 @@ const Dashboard = ({
 
                 if (uploadResponse.ok) {
                     const uploadData = await uploadResponse.json();
-                    contentSections.push({
-                        title: 'LINKED PROJECT DOCUMENTS',
-                        markdown: uploadData.markdown,
-                        html: uploadData.html
-                    });
+                    // Create individual sections for each linked file
+                    if (uploadData.filenames && Array.isArray(uploadData.filenames)) {
+                        uploadData.filenames.forEach(fname => {
+                            contentSections.push({
+                                title: `${fname} (Linked)`,
+                                markdown: uploadData.markdown,
+                                html: uploadData.html
+                            });
+                        });
+                    } else {
+                        // Fallback to single section if filenames not available
+                        contentSections.push({
+                            title: 'LINKED PROJECT DOCUMENTS',
+                            markdown: uploadData.markdown,
+                            html: uploadData.html
+                        });
+                    }
                     if (!filename) filename = uploadData.filename;
                 }
                 setProjectState(taskKey, { progress: 30, progressMessage: 'Linked documents processed...' });
@@ -1722,16 +1794,28 @@ const Dashboard = ({
 
                 if (uploadResponse.ok) {
                     const uploadData = await uploadResponse.json();
-                    contentSections.push({
-                        title: 'SKILLS & CONTEXT FILES',
-                        markdown: uploadData.markdown,
-                        html: uploadData.html
-                    });
+                    // Create individual sections for each skill file
+                    if (uploadData.filenames && Array.isArray(uploadData.filenames)) {
+                        uploadData.filenames.forEach(fname => {
+                            contentSections.push({
+                                title: `${fname} (Skill)`,
+                                markdown: uploadData.markdown,
+                                html: uploadData.html
+                            });
+                        });
+                    } else {
+                        // Fallback to single section if filenames not available
+                        contentSections.push({
+                            title: 'SKILLS & CONTEXT FILES',
+                            markdown: uploadData.markdown,
+                            html: uploadData.html
+                        });
+                    }
                 }
                 setProjectState(taskKey, { progress: 60, progressMessage: 'Skills processed...' });
             }
 
-            // 6. Combine all sections
+            // 6. Combine all sections (for markdown / AI payload)
             combinedMarkdown = contentSections.map(section => 
                 `\n\n--- ${section.title} ---\n\n${section.markdown}`
             ).join('');
@@ -1747,6 +1831,15 @@ const Dashboard = ({
             }
 
             setProjectState(taskKey, { progress: 70, progressMessage: 'All content combined...' });
+
+            // Build structured sections for UI display (includes repo context as a display-only section)
+            const displaySections = contentSections.map(s => ({ title: s.title, content: s.markdown }));
+            if (repoContext?.context) {
+                displaySections.push({
+                    title: `REPOSITORY CONTEXT (${repoContext.repo || repoContext.provider || 'Git'})`,
+                    content: repoContext.context.substring(0, 8000) + (repoContext.context.length > 8000 ? '\n\n[Truncated – full context sent to AI]' : '')
+                });
+            }
 
             // Handle repository-only analysis (no other content)
             if (hasRepo && !combinedMarkdown.trim()) {
@@ -1773,6 +1866,7 @@ const Dashboard = ({
                 await savePendingScreeningToHistory({
                     filename,
                     markdown: combinedMarkdown,
+                    sections: displaySections,
                     taskKey,
                     repoContextState: repoContext,
                 });
@@ -1787,14 +1881,14 @@ const Dashboard = ({
                 return;
             }
 
-            // Set initial result with structured content
+            // Set initial result with structured content (all sections including repo)
             const initialResult = {
                 filename: filename,
                 extraction: {
                     markdown: combinedMarkdown,
                     html: combinedHtml,
                     num_pages: null,
-                    sections: contentSections.map(s => ({ title: s.title, content: s.markdown })) // Add structured sections
+                    sections: displaySections,
                 },
                 analysis: analyzeWithAi ? { analysis: '', reasoning: '' } : null
             };
@@ -2668,11 +2762,14 @@ const Dashboard = ({
 
 
                         {!result && (
-                            <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6 md:p-10 transition-shadow hover:shadow-md max-w-3xl mx-auto">
-                                <h2 className="text-xl font-bold text-app-text-main mb-6 flex items-center">
-                                    <span className="flex items-center justify-center w-8 h-8 rounded-full bg-app-primary-light text-app-primary mr-3 text-sm font-bold">1</span>
-                                    Project BRD Upload
-                                </h2>
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 max-w-7xl mx-auto">
+                                {/* Left Column - Upload Form */}
+                                <div className="lg:col-span-2">
+                                    <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6 md:p-10 transition-shadow hover:shadow-md">
+                                        <h2 className="text-xl font-bold text-app-text-main mb-6 flex items-center">
+                                            <span className="flex items-center justify-center w-8 h-8 rounded-full bg-app-primary-light text-app-primary mr-3 text-sm font-bold">1</span>
+                                            Project BRD Upload
+                                        </h2>
 
                                 <form onSubmit={handleUpload} className="space-y-6">
 
@@ -3312,6 +3409,106 @@ const Dashboard = ({
                                     </div>
                                 </form>
                             </div>
+                        </div>
+
+                        {/* Right Column - Revision History */}
+                        <div className="lg:col-span-1">
+                            {selectedProject && selectedProject.documents && selectedProject.documents.length > 0 && (() => {
+                                const [expandedRevision, setExpandedRevision] = useState(null);
+
+                                const sortedDocs = [...selectedProject.documents].sort((a, b) =>
+                                    new Date(b.upload_date || 0) - new Date(a.upload_date || 0)
+                                );
+
+                                return (
+                                    <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light overflow-hidden sticky top-6">
+                                        <div className="px-4 py-3 bg-gradient-to-r from-app-primary/10 to-app-primary/5 border-b border-app-border-light">
+                                            <div className="flex items-center gap-2">
+                                                <History className="w-5 h-5 text-app-primary" />
+                                                <h3 className="text-base font-bold text-app-text-main">Revision History</h3>
+                                                <span className="ml-auto px-2.5 py-0.5 text-xs font-bold bg-app-primary text-white rounded-full">{sortedDocs.length}</span>
+                                            </div>
+                                        </div>
+
+                                        <div className="divide-y divide-app-border-light max-h-[calc(100vh-200px)] overflow-y-auto">
+                                            {sortedDocs.map((doc, idx) => {
+                                                const parsedA = parseStoredDocumentAnalysis(doc);
+                                                const isCompleted = hasCompletedStoredAnalysis(parsedA);
+                                                const isPending = parsedA?.screening_status === 'pending_governance_analysis';
+                                                const revNum = parsedA?.projectMeta?.revision_number || (sortedDocs.length - idx);
+                                                const docSections = extractDocumentSections(doc, parsedA);
+                                                const isExpanded = expandedRevision === doc.id;
+
+                                                return (
+                                                    <div key={doc.id} className="bg-app-bg-card hover:bg-app-bg-page/60 transition-colors">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setExpandedRevision(isExpanded ? null : doc.id)}
+                                                            className="w-full flex items-start justify-between px-4 py-3 text-left"
+                                                        >
+                                                            <div className="flex items-start gap-3 min-w-0 flex-1">
+                                                                <div className={`mt-1 w-2 h-2 rounded-full flex-shrink-0 ${isCompleted ? 'bg-app-status-success' : isPending ? 'bg-amber-400' : 'bg-app-text-light'}`} />
+                                                                <div className="min-w-0 flex-1">
+                                                                    <p className="text-sm font-semibold text-app-text-main truncate">Rev {revNum}</p>
+                                                                    <p className="text-xs text-app-text-muted truncate mt-0.5">{doc.filename}</p>
+                                                                    <p className="text-[11px] text-app-text-muted mt-1">
+                                                                        {doc.upload_date ? new Date(doc.upload_date).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' }) : '—'}
+                                                                    </p>
+                                                                    <span className={`inline-block mt-1.5 text-[10px] font-semibold px-2 py-0.5 rounded-full ${isCompleted ? 'bg-app-status-successBg text-app-status-success' : isPending ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'}`}>
+                                                                        {isCompleted ? 'Complete' : isPending ? 'Pending' : 'Draft'}
+                                                                    </span>
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex items-center gap-2 flex-shrink-0 ml-2">
+                                                                {isCompleted && (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={e => { e.stopPropagation(); navigate('/agent-analysis'); }}
+                                                                        className="text-[11px] font-semibold text-app-primary hover:underline"
+                                                                    >View</button>
+                                                                )}
+                                                                <svg className={`w-4 h-4 text-app-text-muted transition-transform ${isExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                                                            </div>
+                                                        </button>
+
+                                                        {isExpanded && (
+                                                            <div className="px-4 pb-4 bg-app-bg-page/50 border-t border-app-border-light/50">
+                                                                <p className="text-[11px] font-semibold text-app-text-muted uppercase tracking-wider mt-3 mb-2">Sources Processed</p>
+                                                                {docSections.length > 0 ? (
+                                                                    <div className="flex flex-wrap gap-1.5">
+                                                                        {docSections.map((s, si) => (
+                                                                            <span key={si} className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-app-primary-light text-app-primary border border-app-primary/20">
+                                                                                {s.title}
+                                                                            </span>
+                                                                        ))}
+                                                                    </div>
+                                                                ) : (
+                                                                    <p className="text-xs text-app-text-muted italic">— File info not available</p>
+                                                                )}
+                                                                {isCompleted && parsedA?.metrics && (
+                                                                    <div className="mt-3 grid grid-cols-2 gap-2">
+                                                                        {[
+                                                                            { label: 'Complexity', value: parsedA.metrics.complexity },
+                                                                            { label: 'Timeline', value: parsedA.metrics.timeline },
+                                                                        ].filter(m => m.value).map((m, mi) => (
+                                                                            <div key={mi} className="bg-app-bg-card rounded-lg px-2.5 py-1.5 border border-app-border-light">
+                                                                                <p className="text-[10px] text-app-text-muted uppercase">{m.label}</p>
+                                                                                <p className="text-xs font-semibold text-app-text-main truncate">{m.value}</p>
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                );
+                            })()}
+                        </div>
+                    </div>
                         )}
 
                         {result && (
