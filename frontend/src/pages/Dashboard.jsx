@@ -496,8 +496,11 @@ const Dashboard = ({
             skillFiles: [] // Add skills files state
         };
 
+        // Only set revisionUnlocked from backend if we don't have explicit state stored
+        // This allows the state to persist after upload completion
         const proj = projects.find(p => p.key === key);
-        if (proj?.pendingRevisionReason) {
+        if (proj?.pendingRevisionReason && !projectStates[key]) {
+            // Only apply pending revision reason if this is a fresh state (no existing state)
             return {
                 ...state,
                 revisionUnlocked: true,
@@ -586,6 +589,7 @@ const Dashboard = ({
 
     const [governanceContext, setGovernanceContext] = useState(null);
     const [repoContext, setRepoContext] = useState(null);
+    const [expandedRevision, setExpandedRevision] = useState(null);
     const selectedProject = projects.find((project) => project.key === selectedProjectKey) || null;
 
     const saveRepoContextToStorage = (context) => {
@@ -914,7 +918,7 @@ const Dashboard = ({
         ? false // Revision needs new governance
         : Boolean(selectedProject?.governanceResultId || governanceContext?.result_id);
 
-    const isEnterpriseUploadBlocked = isEnterpriseProject && !isAllGovernanceSkippedCase;
+    const isEnterpriseUploadBlocked = isEnterpriseProject;
     const getEnterpriseUploadBlockMessage = () => {
         const description = String(governanceContext?.classification_description || '').trim();
         if (description) {
@@ -3348,8 +3352,6 @@ const Dashboard = ({
                                 {/* Right Column - Revision History - Compact Design */}
                                 <div className="lg:col-span-1">
                                     {selectedProject && selectedProject.documents && selectedProject.documents.length > 0 && (() => {
-                                        const [expandedRevision, setExpandedRevision] = useState(null);
-
                                         const sortedDocs = [...selectedProject.documents].sort((a, b) =>
                                             new Date(b.upload_date || 0) - new Date(a.upload_date || 0)
                                         );
@@ -3395,11 +3397,11 @@ const Dashboard = ({
                                                                         View Latest Analysis
                                                                     </button>
                                                                 )}
-                                                                {selectedProject.documents.length > 0 && !revisionUnlocked && (
+                                                                {selectedProject.documents.length > 0 && (
                                                                     <button
                                                                         type="button"
                                                                         onClick={handleCreateRevision}
-                                                                        disabled={isEnterpriseUploadBlocked}
+                                                                       
                                                                         className="text-xs font-semibold text-app-primary-hover hover:text-app-primary-dark disabled:text-app-text-light disabled:cursor-not-allowed"
                                                                     >
                                                                         Create New Revision
@@ -3450,17 +3452,19 @@ const Dashboard = ({
                                                                             <p className="text-[11px] font-semibold text-app-text-main truncate leading-tight">Rev {revNum}</p>
                                                                             <p className="text-[10px] text-app-text-muted truncate leading-tight mt-0.5">{doc.filename}</p>
                                                                             <p className="text-[9px] text-app-text-muted leading-tight mt-0.5">
-                                                                                {doc.upload_date ? new Date(doc.upload_date).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' }) : '—'}
+                                                                                {doc.upload_date ? new Date(doc.upload_date).toLocaleString('en-IN', { dateStyle: 'short'}) : '—'}
                                                                             </p>
                                                                         </div>
                                                                     </div>
                                                                     <div className="flex items-center gap-1 flex-shrink-0 ml-1">
                                                                         {isCompleted && (
-                                                                            <button
-                                                                                type="button"
+                                                                            <span
+                                                                                role="button"
+                                                                                tabIndex={0}
                                                                                 onClick={e => { e.stopPropagation(); navigate('/agent-analysis'); }}
-                                                                                className="text-[10px] font-semibold text-app-primary hover:underline"
-                                                                            >View</button>
+                                                                                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); navigate('/agent-analysis'); } }}
+                                                                                className="text-[10px] font-semibold text-app-primary hover:underline cursor-pointer"
+                                                                            >View</span>
                                                                         )}
                                                                         <svg className={`w-3 h-3 text-app-text-muted transition-transform ${isExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
                                                                     </div>
