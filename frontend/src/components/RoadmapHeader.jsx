@@ -18,6 +18,11 @@ const STEP_ICONS = {
     'Resource Onboarding': UserPlus,
     'On Flight': Bot,
     'Complete': Flag,
+    // Share BRD workflow icons
+    'Upload Documents': FolderOpen,
+    'Configure Access': ShieldCheck,
+    'Share & Invite': UserPlus,
+    'Track Status': Bot,
 };
 
 /* ── inline styles (keeps this self-contained) ───────────────────── */
@@ -126,10 +131,20 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
         'Resource Onboarding': '/resource-onboarding',
         'On Flight': '/status-dashboard',
         'Complete': '/status-dashboard',
+        // Share BRD workflow routes
+        'Upload Documents': '/share-brd?step=1',
+        'Configure Access': '/share-brd?step=2',
+        'Share & Invite': '/share-brd?step=3',
+        'Track Status': '/share-brd?step=4',
     };
 
     const handleStepClick = (stepLabel) => {
         if (!selectedProjectKey) return;
+
+        // Restriction: if we're in share mode and it's step 0 (Project Initiation), don't allow going back there if project exists
+        if (selectedProjectKey.startsWith('share_') && stepLabel === 'Project Initiation') {
+            return;
+        }
 
         const route = STEP_ROUTES[stepLabel];
         if (!route) return;

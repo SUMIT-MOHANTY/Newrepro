@@ -6,6 +6,9 @@ backend/*.db
 __pycache__/
 *.pyc
 backend/snyk
+backend/shared_documents*
+
+
 frontend/snyk
 
 vibecoding/backend/snyk

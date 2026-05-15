@@ -56,6 +56,7 @@ export default function AppLayout({ children }) {
     const [rbac, setRbac] = useState(null);
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const [projects, setProjects] = useState([]);
+    const [shareProjects, setShareProjects] = useState([]);
     const [selectedProjectKey, setSelectedProjectKey] = useState(() => {
         try {
             return localStorage.getItem(PROJECT_STORAGE_KEY) || '';
@@ -149,7 +150,7 @@ export default function AppLayout({ children }) {
     const [authorizedRoles, setAuthorizedRoles] = useState([]);
 
     const invalidateProjects = useInvalidateProjects();
-    
+
     // Track user progress automatically
     useProgressTracking(selectedProjectKey, true);
 
@@ -163,7 +164,16 @@ export default function AppLayout({ children }) {
                                 : location.pathname === '/governance-management' ? 'governanceManagement'
                                     : location.pathname === '/agents' ? 'agents'
                                         : location.pathname === '/plugins' ? 'plugins'
-                                            : 'main';
+                                            : location.pathname.startsWith('/share-brd') ? 'shareBRD'
+                                                : 'main';
+
+    const isShareMode = location.pathname.startsWith('/share-brd');
+
+    // Clear selection when entering/leaving share mode to avoid ID collisions
+    // and ensure user explicitly selects or creates a project.
+    useEffect(() => {
+        setSelectedProjectKey('');
+    }, [isShareMode]);
 
     const getViewLabel = useCallback((view) => {
         switch (view) {
@@ -246,24 +256,24 @@ export default function AppLayout({ children }) {
             })
             .then(data => {
                 setUser(data);
-                
+
                 // Check if user is returning from VibeCoding
                 const returnPath = sessionStorage.getItem('dsuite_return_path');
                 const returnProject = sessionStorage.getItem('dsuite_return_project');
-                
+
                 if (returnPath && returnPath !== '/dashboard' && returnPath !== '/') {
                     console.log('🔙 Returning from VibeCoding, restoring path:', returnPath);
-                    
+
                     // Restore project selection if available
                     if (returnProject) {
                         setSelectedProjectKey(returnProject);
                         localStorage.setItem(PROJECT_STORAGE_KEY, returnProject);
                     }
-                    
+
                     // Clear the flags
                     sessionStorage.removeItem('dsuite_return_path');
                     sessionStorage.removeItem('dsuite_return_project');
-                    
+
                     // Navigate to the saved path
                     navigate(returnPath, { replace: true });
                 }
@@ -292,7 +302,7 @@ export default function AppLayout({ children }) {
         if (!user || !rbac) return false;
 
         const path = location.pathname || '/';
-        if (path === '/app' || path.startsWith('/app/')) return false;
+        if (path === '/app' || path.startsWith('/app/') || path.startsWith('/share-brd')) return false;
         if (rbac?.is_org_admin) return false;
 
         const allowed = Array.isArray(rbac?.allowed_paths) ? rbac.allowed_paths : [];
@@ -345,6 +355,29 @@ export default function AppLayout({ children }) {
         fetchPluginClients();
     }, [fetchPluginClients, user]);
 
+    // Fetch Share Projects if in share mode
+    const fetchShareProjects = useCallback(async () => {
+        const token = localStorage.getItem('token');
+        if (!token) return;
+        try {
+            const response = await fetch(API_ENDPOINTS.SHARE_PROJECTS, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (response.ok) {
+                const data = await response.json();
+                setShareProjects(data);
+            }
+        } catch (error) {
+            console.error('Error loading share projects:', error);
+        }
+    }, []);
+
+    useEffect(() => {
+        if (isShareMode && user) {
+            fetchShareProjects();
+        }
+    }, [isShareMode, user, fetchShareProjects]);
+
     const { data: generatedProjects = [], isLoading: isProjectsLoading, isError: isProjectsError, error: projectsError } = useProjects();
 
     useEffect(() => {
@@ -358,7 +391,7 @@ export default function AppLayout({ children }) {
     }, [generatedProjects, isProjectsError, projectsError, handleLogout]);
 
     useEffect(() => {
-        if (isNewProjectMode) return;
+        if (isNewProjectMode || isShareMode) return;
         if (!projects || projects.length === 0) {
             return;
         }
@@ -490,7 +523,7 @@ export default function AppLayout({ children }) {
             return;
         }
 
-        if (!selectedProjectKey || isNewProjectMode) return;
+        if (!selectedProjectKey || isNewProjectMode || isShareMode) return;
 
         // FIRST: Check if governance was all skipped (score 5) - if so, block ALL navigation
         // This check now relies on roadmapDataResult.classification from the backend
@@ -570,14 +603,14 @@ export default function AppLayout({ children }) {
         const isOnProjectUrl = location.pathname.startsWith('/a/');
         const isOnTargetRoute = location.pathname.startsWith(targetRoute);
         const isOnSpecialPage = ['/agents', '/organization-admin', '/plugins'].includes(location.pathname);
-        
+
         // Don't navigate away from status-dashboard if we're in On Flight or Complete mode
         const isOnStatusDashboard = location.pathname === '/status-dashboard';
         const isOnFlightOrComplete = stepLabel === 'On Flight' || stepLabel === 'Complete';
         if (isOnStatusDashboard && isOnFlightOrComplete) {
             return; // Stay on status dashboard, don't navigate away
         }
-        
+
         // Don't navigate away from any valid step page unless we're on a project URL
         const validStepPages = [
             '/new-project',
@@ -590,7 +623,7 @@ export default function AppLayout({ children }) {
             '/status-dashboard',
         ];
         const isOnValidStepPage = validStepPages.some(page => location.pathname.startsWith(page));
-        
+
         // Only navigate if we're on a project URL or not on the target route
         // Don't navigate if we're already on a valid step page (prevents unwanted redirects on refresh)
         if ((isOnProjectUrl || !isOnTargetRoute) && !isOnSpecialPage && !isOnValidStepPage) {
@@ -601,7 +634,7 @@ export default function AppLayout({ children }) {
             lastNavigatedProjectRef.current = selectedProjectKey;
             navigate(targetRoute);
         }
-    }, [selectedProjectKey, roadmapDataResult, isNewProjectMode, location.pathname, navigate]);
+    }, [selectedProjectKey, roadmapDataResult, isNewProjectMode, isShareMode, location.pathname, navigate]);
 
     // Reset navigation tracking when project changes
     useEffect(() => {
@@ -929,6 +962,41 @@ export default function AppLayout({ children }) {
         }
     };
 
+    const handleSelectShareProject = (project) => {
+        const token = project.project_token || project.key;
+        setSelectedProjectKey(token);
+        if (location.pathname !== '/share-brd') {
+            navigate('/share-brd');
+        }
+    };
+
+    const handleCreateShareProject = async (name) => {
+        const token = localStorage.getItem('token');
+        try {
+            const response = await fetch(API_ENDPOINTS.SHARE_PROJECTS, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    project_name: name,
+                    description: 'Shared Documents'
+                })
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                setShareProjects(prev => [data.project, ...prev]);
+                setSelectedProjectKey(data.project.project_token);
+                return data.project;
+            }
+        } catch (err) {
+            console.error('Failed to create share project:', err);
+        }
+        return null;
+    };
+
     const getProjectSidebarSubtitle = (project) => {
         if (project.classification && project.classification !== 'N/A') return project.classification;
         if (project.latestDocument) return `${project.documents.length} revision${project.documents.length !== 1 ? 's' : ''}`;
@@ -979,6 +1047,13 @@ export default function AppLayout({ children }) {
         isNewProjectMode, setIsNewProjectMode,
         selectedRole, setSelectedRole,
         rbac,
+        isShareMode,
+        handleCreateShareProject,
+        unifiedProjects: (() => {
+            const standard = projects.map(p => ({ ...p, type: 'standard', timestamp: new Date(p.submissionDate || p.createdAt || p.latestDocument?.upload_date || 0).getTime() }));
+            const shared = shareProjects.map(p => ({ ...p, type: 'share', key: p.project_token, name: p.project_name, timestamp: new Date(p.created_at || 0).getTime() }));
+            return [...standard, ...shared].sort((a, b) => b.timestamp - a.timestamp);
+        })(),
     };
 
     return (
@@ -987,10 +1062,10 @@ export default function AppLayout({ children }) {
                 isSidebarOpen={isSidebarOpen}
                 setIsSidebarOpen={setIsSidebarOpen}
                 handleNewProject={handleNewProject}
-                projects={projects}
+                projects={layoutProps.unifiedProjects}
                 selectedProjectKey={selectedProjectKey}
-                handleSelectProject={handleSelectProject}
-                getProjectSidebarSubtitle={getProjectSidebarSubtitle}
+                handleSelectProject={(p) => p.type === 'share' ? handleSelectShareProject(p) : handleSelectProject(p)}
+                getProjectSidebarSubtitle={(p) => p.type === 'share' ? `${p.document_count || 0} docs` : getProjectSidebarSubtitle(p)}
                 currentView={currentView}
                 setCurrentView={setCurrentView}
                 setShowSettings={setShowSettings}
@@ -1001,6 +1076,8 @@ export default function AppLayout({ children }) {
                 handleOpenPlugin={handleOpenPlugin}
                 isDarkMode={isDarkMode}
                 rbac={rbac}
+                isShareMode={isShareMode}
+                handleCreateShareProject={handleCreateShareProject}
             />
 
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden relative w-full bg-app-bg-page h-full transition-all duration-300 ease-in-out">
@@ -1088,7 +1165,7 @@ export default function AppLayout({ children }) {
 
                 {/* ── Project-level Roadmap Stepper — shown on all pages except /agents and /plugins ── */}
                 {
-                    roadmapDataForView && location.pathname !== '/agents' && location.pathname !== '/plugins' && (
+                    roadmapDataForView && location.pathname !== '/agents' && location.pathname !== '/plugins' && location.pathname !== '/share-brd' && (
                         <div className="bg-app-bg-card border-b border-app-border-light shadow-sm shrink-0 overflow-x-auto z-[240] relative">
                             <RoadmapHeader
                                 steps={roadmapDataForView.steps || []}

@@ -450,3 +450,97 @@ class ChatMessage(Base):
     # Relationships
     document = relationship("Document")
     user = relationship("User")
+
+
+class SharedDocument(Base):
+    """Store shared BRD documents with secure access controls"""
+    __tablename__ = "shared_documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    share_token = Column(String, unique=True, index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    share_project_id = Column(Integer, ForeignKey("share_projects.id"), index=True, nullable=True)
+    title = Column(String, nullable=True)
+    access_type = Column(String, default="once")  # 'once' or 'always'
+    expiration_time = Column(String, nullable=True)
+    expires_at = Column(DateTime, nullable=True, index=True)
+    require_password = Column(Boolean, default=False)
+    password_hash = Column(String, nullable=True)
+    access_count = Column(Integer, default=0)
+    can_download = Column(Boolean, default=True)  # Control download permissions
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    # Relationships
+    user = relationship("User")
+    share_project = relationship("ShareProject", back_populates="shared_documents")
+    files = relationship("SharedDocumentFile", back_populates="shared_document", cascade="all, delete-orphan")
+    recipients = relationship("SharedDocumentRecipient", back_populates="shared_document", cascade="all, delete-orphan")
+    access_logs = relationship("SharedDocumentAccessLog", back_populates="shared_document", cascade="all, delete-orphan")
+
+
+class SharedDocumentFile(Base):
+    """Store files associated with shared documents"""
+    __tablename__ = "shared_document_files"
+
+    id = Column(Integer, primary_key=True, index=True)
+    share_id = Column(Integer, ForeignKey("shared_documents.id"), index=True, nullable=False)
+    filename = Column(String, nullable=False)
+    original_filename = Column(String, nullable=False)
+    file_path = Column(String, nullable=False)
+    file_size = Column(Integer, nullable=True)
+    file_type = Column(String, nullable=True)
+    uploaded_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    shared_document = relationship("SharedDocument", back_populates="files")
+
+
+class SharedDocumentRecipient(Base):
+    """Store email recipients for shared documents"""
+    __tablename__ = "shared_document_recipients"
+
+    id = Column(Integer, primary_key=True, index=True)
+    share_id = Column(Integer, ForeignKey("shared_documents.id"), index=True, nullable=False)
+    email = Column(String, nullable=False)
+    notified_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    shared_document = relationship("SharedDocument", back_populates="recipients")
+
+
+class SharedDocumentAccessLog(Base):
+    """Log access attempts to shared documents"""
+    __tablename__ = "shared_document_access_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    share_id = Column(Integer, ForeignKey("shared_documents.id"), index=True, nullable=False)
+    accessed_at = Column(DateTime, default=datetime.utcnow, index=True)
+    ip_address = Column(String, nullable=True)
+    user_agent = Column(String, nullable=True)
+    recipient_email = Column(String, nullable=True) # To track specific recipients
+    action = Column(String, default="view") # 'view' or 'download'
+    filename = Column(String, nullable=True) # Which file was accessed
+
+    # Relationships
+    shared_document = relationship("SharedDocument", back_populates="access_logs")
+
+
+class ShareProject(Base):
+    """Store share document projects - separate from regular governance projects"""
+    __tablename__ = "share_projects"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_token = Column(String, unique=True, index=True, nullable=False)
+    owner_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    project_name = Column(String, nullable=False)
+    description = Column(String, default="Shared Documents")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    current_step = Column(Integer, default=0) # Track last visited step
+    
+    # Relationships
+    owner = relationship("User")
+    shared_documents = relationship("SharedDocument", back_populates="share_project")
+
+
+# Update SharedDocument to include share_project_id

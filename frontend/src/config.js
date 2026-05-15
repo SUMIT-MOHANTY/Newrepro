@@ -34,6 +34,15 @@ export const API_ENDPOINTS = {
     DOCUMENTS_UPLOAD: `${API_BASE_URL}/documents/upload`,
     DOCUMENTS_UPLOAD_ANALYZE: `${API_BASE_URL}/documents/upload-and-analyze`,
     DOCUMENTS_EXTRACT_URL: `${API_BASE_URL}/documents/extract-from-url`,
+    
+    // Share BRD
+    SHARE_BRD: `${API_BASE_URL}/api/share-brd`,
+    SHARE_BRD_STATS: `${API_BASE_URL}/api/share-brd/stats`,
+    SHARE_PROJECTS: `${API_BASE_URL}/api/share-projects`,
+    SHARE_PROJECT: (projectToken) => `${API_BASE_URL}/api/share-projects/${projectToken}`,
+    SHARED_DOCUMENT: (shareToken) => `${API_BASE_URL}/api/shared/${shareToken}`,
+    SHARED_DOCUMENT_DOWNLOAD: (shareToken, fileId) => `${API_BASE_URL}/api/shared/${shareToken}/download/${fileId}`,
+    SHARED_DOCUMENT_VIEW: (shareToken, fileId) => `${API_BASE_URL}/api/shared/${shareToken}/view/${fileId}`,
 
     // Chat Messages
     CHAT_MESSAGES_SAVE: `${API_BASE_URL}/chat/messages`,

@@ -2016,8 +2016,7 @@ const Dashboard = ({
             }
 
         } catch (err) {
-            const userFriendlyError = formatAnalysisError(err);
-            setProjectState(taskKey, { error: userFriendlyError });
+            setProjectState(taskKey, { error: err.message });
         } finally {
             setProjectState(taskKey, { processing: false });
         }
@@ -2085,8 +2084,7 @@ const Dashboard = ({
                 fetchRoadmapData(selectedProjectKey);
             }
         } catch (err) {
-            const userFriendlyError = formatAnalysisError(err);
-            setProjectState(taskKey, { error: `Start Error: ${userFriendlyError}` });
+            setProjectState(taskKey, { error: `Start Error: ${err.message}` });
         }
     };
 
@@ -2305,8 +2303,7 @@ const Dashboard = ({
                 fetchRoadmapData(selectedProjectKey);
             }
         } catch (err) {
-            const userFriendlyError = formatAnalysisError(err);
-            setProjectState(taskKey, { error: `Stream Error: ${userFriendlyError}` });
+            setProjectState(taskKey, { error: `Stream Error: ${err.message}` });
         }
     };
     const fetchAnalysisRef = useRef(fetchAnalysis);
@@ -2374,8 +2371,7 @@ const Dashboard = ({
                 await fetchAnalysis(aiPayload, token, taskResult, taskKey);
             }
         } catch (err) {
-            const userFriendlyError = formatAnalysisError(err);
-            setProjectState(taskKey, { error: userFriendlyError });
+            setProjectState(taskKey, { error: err.message });
         } finally {
             setProjectState(taskKey, { processing: false });
         }

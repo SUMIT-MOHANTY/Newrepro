@@ -21,3 +21,9 @@ gitpython
 networkx
 msal
 docling
+markdown
+python-docx
+pandas
+openpyxl
+xlrd
+python-pptx

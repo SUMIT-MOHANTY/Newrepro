@@ -2846,6 +2846,933 @@ def update_document_history(
     return db_doc
 
 
+# --- Share BRD Endpoints ---
+@app.post("/api/share-brd")
+async def share_brd_documents(
+    files: List[UploadFile] = File(...),
+    config: str = Form(...),
+    recipients: str = Form(...),
+    project_token: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Share BRD documents with external users via secure links.
+    Uploads files, creates a share link, and sends email notifications.
+    """
+    import json
+    import hashlib
+    from datetime import timedelta
+    
+    # Parse configuration and recipients
+    try:
+        share_config = json.loads(config)
+        recipient_list = json.loads(recipients)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid configuration or recipients format")
+    
+    # Validate share project if provided
+    share_project_id = None
+    if project_token:
+        share_project = db.query(models.ShareProject).filter(
+            models.ShareProject.project_token == project_token,
+            models.ShareProject.owner_id == current_user.id
+        ).first()
+        
+        if not share_project:
+            raise HTTPException(status_code=404, detail="Share project not found")
+        
+        share_project_id = share_project.id
+    
+    # Create upload directory if it doesn't exist
+    upload_dir = Path("shared_documents")
+    upload_dir.mkdir(exist_ok=True)
+    
+    # Save uploaded files
+    file_paths = []
+    for file in files:
+        # Generate unique filename
+        file_id = secrets.token_urlsafe(16)
+        file_ext = Path(file.filename).suffix
+        unique_filename = f"{file_id}{file_ext}"
+        file_path = upload_dir / unique_filename
+        
+        # Save file
+        content = await file.read()
+        with open(file_path, "wb") as f:
+            f.write(content)
+        
+        file_paths.append({
+            'filename': unique_filename,
+            'original_filename': file.filename,
+            'path': str(file_path),
+            'size': len(content),
+            'type': file.content_type or ''
+        })
+    
+    # Create shared document entry
+    try:
+        # Generate unique share token
+        share_token = secrets.token_urlsafe(32)
+        
+        # Calculate expiration
+        expires_at = None
+        expiration_time = share_config.get('expirationTime', 'no-expiration')
+        if expiration_time != 'no-expiration':
+            now = datetime.utcnow()
+            if expiration_time == '24h':
+                expires_at = now + timedelta(hours=24)
+            elif expiration_time == '7d':
+                expires_at = now + timedelta(days=7)
+            elif expiration_time == '30d':
+                expires_at = now + timedelta(days=30)
+        
+        # Hash password if required
+        password_hash = None
+        if share_config.get('requirePassword') and share_config.get('password'):
+            password_hash = hashlib.sha256(share_config['password'].encode()).hexdigest()
+        
+        # Create shared document record
+        shared_doc = models.SharedDocument(
+            share_token=share_token,
+            user_id=current_user.id,
+            share_project_id=share_project_id,
+            title=f"Shared Documents - {datetime.utcnow().strftime('%Y-%m-%d')}",
+            access_type=share_config.get('dashboardAccess', 'once'),
+            expiration_time=expiration_time,
+            expires_at=expires_at,
+            require_password=share_config.get('requirePassword', False),
+            password_hash=password_hash,
+            can_download=share_config.get('canDownload', True)
+        )
+        
+        db.add(shared_doc)
+        db.flush()  # Get the ID without committing
+        
+        # Add file records
+        for file_info in file_paths:
+            shared_file = models.SharedDocumentFile(
+                share_id=shared_doc.id,
+                filename=file_info['filename'],
+                original_filename=file_info['original_filename'],
+                file_path=file_info['path'],
+                file_size=file_info.get('size', 0),
+                file_type=file_info.get('type', '')
+            )
+            db.add(shared_file)
+        
+        # Add recipients
+        if recipient_list:
+            for email in recipient_list:
+                if email.strip():
+                    recipient = models.SharedDocumentRecipient(
+                        share_id=shared_doc.id,
+                        email=email.strip()
+                    )
+                    db.add(recipient)
+        
+        db.commit()
+        
+        # Generate share URL
+        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+        share_url = f"{frontend_url}/shared/{share_token}"
+        
+        # Send email notifications
+        if recipient_list:
+            try:
+                from share_brd_service import send_share_notification_emails
+                send_share_notification_emails(
+                    share_url=share_url,
+                    recipients=recipient_list,
+                    sender_name=current_user.email,
+                    document_count=len(files),
+                    config=share_config
+                )
+            except Exception as e:
+                print(f"Failed to send email notifications: {e}")
+        
+        return {
+            'success': True,
+            'share_url': share_url,
+            'share_token': share_token
+        }
+        
+    except Exception as e:
+        db.rollback()
+        # Clean up uploaded files on error
+        for file_info in file_paths:
+            try:
+                Path(file_info['path']).unlink(missing_ok=True)
+            except:
+                pass
+        raise HTTPException(status_code=500, detail=f"Failed to create share: {str(e)}")
+
+
+@app.get("/api/shared/{share_token}")
+async def get_shared_document(
+    share_token: str,
+    password: Optional[str] = None,
+    r: Optional[str] = None,
+    request: Request = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieve shared document information by token.
+    Validates access permissions and logs access.
+    """
+    import hashlib
+    
+    # Get shared document
+    shared_doc = db.query(models.SharedDocument).filter(
+        models.SharedDocument.share_token == share_token
+    ).first()
+    
+    if not shared_doc:
+        raise HTTPException(status_code=404, detail="Share link not found or expired")
+    
+    # Check if expired
+    if shared_doc.expires_at and datetime.utcnow() > shared_doc.expires_at:
+        raise HTTPException(status_code=404, detail="Share link has expired")
+    
+    # Check if access limit reached (for 'once' access type)
+    if shared_doc.access_type == 'once' and shared_doc.access_count > 0:
+        raise HTTPException(status_code=404, detail="Share link has already been accessed")
+    
+    # Check password if required
+    if shared_doc.require_password:
+        if not password:
+            return {
+                'require_password': True,
+                'message': 'Password required to access this share'
+            }
+        
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        if password_hash != shared_doc.password_hash:
+            raise HTTPException(status_code=403, detail="Invalid password")
+    
+    # Log access
+    ip_address = request.client.host if request else None
+    user_agent = request.headers.get('user-agent') if request else None
+    
+    access_log = models.SharedDocumentAccessLog(
+        share_id=shared_doc.id,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        recipient_email=r,
+        action="view",
+        filename="Dashboard"
+    )
+    db.add(access_log)
+    
+    # Increment access count
+    shared_doc.access_count += 1
+    db.commit()
+    
+    # Return share information (without sensitive data)
+    return {
+        'title': shared_doc.title,
+        'files': [
+            {
+                'id': f.id,
+                'filename': f.original_filename,
+                'size': f.file_size,
+                'type': f.file_type,
+                'uploaded_at': f.uploaded_at.isoformat() if f.uploaded_at else None
+            }
+            for f in shared_doc.files
+        ],
+        'created_at': shared_doc.created_at.isoformat() if shared_doc.created_at else None,
+        'access_type': shared_doc.access_type,
+        'can_download': shared_doc.can_download
+    }
+
+
+@app.get("/api/shared/{share_token}/download/{file_id}")
+async def download_shared_file(
+    share_token: str,
+    file_id: int,
+    password: Optional[str] = None,
+    r: Optional[str] = None,
+    request: Request = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Download a specific file from a shared document.
+    """
+    import hashlib
+    from fastapi.responses import FileResponse
+    
+    # Get shared document
+    shared_doc = db.query(models.SharedDocument).filter(
+        models.SharedDocument.share_token == share_token
+    ).first()
+    
+    if not shared_doc:
+        raise HTTPException(status_code=404, detail="Share link not found or expired")
+    
+    # Check if downloads are allowed
+    if not shared_doc.can_download:
+        raise HTTPException(status_code=403, detail="Downloads are not allowed for this share")
+    
+    # Check if expired
+    if shared_doc.expires_at and datetime.utcnow() > shared_doc.expires_at:
+        raise HTTPException(status_code=404, detail="Share link has expired")
+    
+    # Check password if required
+    if shared_doc.require_password:
+        if not password:
+            raise HTTPException(status_code=403, detail="Password required")
+        
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        if password_hash != shared_doc.password_hash:
+            raise HTTPException(status_code=403, detail="Invalid password")
+    
+    # Find the requested file
+    file_info = db.query(models.SharedDocumentFile).filter(
+        models.SharedDocumentFile.share_id == shared_doc.id,
+        models.SharedDocumentFile.id == file_id
+    ).first()
+    
+    if not file_info:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Log download
+    ip_address = request.client.host if request else None
+    user_agent = request.headers.get('user-agent') if request else None
+    
+    access_log = models.SharedDocumentAccessLog(
+        share_id=shared_doc.id,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        recipient_email=r,
+        action="download",
+        filename=file_info.original_filename
+    )
+    db.add(access_log)
+    db.commit()
+    
+    file_path = Path(file_info.file_path)
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File no longer available")
+    
+    return FileResponse(
+        path=str(file_path),
+        filename=file_info.original_filename,
+        media_type=file_info.file_type or 'application/octet-stream'
+    )
+
+
+@app.get("/api/shared/{share_token}/view/{file_id}")
+async def view_shared_file(
+    share_token: str,
+    file_id: int,
+    password: Optional[str] = None,
+    r: Optional[str] = None,
+    request: Request = None,
+    db: Session = Depends(get_db)
+):
+    """
+    View a specific file from a shared document inline.
+    """
+    import hashlib
+    from fastapi.responses import Response
+    
+    # Get shared document
+    shared_doc = db.query(models.SharedDocument).filter(
+        models.SharedDocument.share_token == share_token
+    ).first()
+    
+    if not shared_doc:
+        raise HTTPException(status_code=404, detail="Share link not found or expired")
+    
+    # Check if expired
+    if shared_doc.expires_at and datetime.utcnow() > shared_doc.expires_at:
+        raise HTTPException(status_code=404, detail="Share link has expired")
+    
+    # Check password if required
+    if shared_doc.require_password:
+        if not password:
+            raise HTTPException(status_code=403, detail="Password required")
+        
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        if password_hash != shared_doc.password_hash:
+            raise HTTPException(status_code=403, detail="Invalid password")
+    
+    # Find the requested file
+    file_info = db.query(models.SharedDocumentFile).filter(
+        models.SharedDocumentFile.share_id == shared_doc.id,
+        models.SharedDocumentFile.id == file_id
+    ).first()
+    
+    if not file_info:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Log view
+    ip_address = request.client.host if request else None
+    user_agent = request.headers.get('user-agent') if request else None
+    
+    access_log = models.SharedDocumentAccessLog(
+        share_id=shared_doc.id,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        recipient_email=r,
+        action="view",
+        filename=file_info.original_filename
+    )
+    db.add(access_log)
+    db.commit()
+    
+    file_path = Path(file_info.file_path)
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File no longer available")
+    
+    # Read file content
+    try:
+        with open(file_path, 'rb') as f:
+            content = f.read()
+        
+        # Determine content type and handle different file types
+        file_ext = file_path.suffix.lower()
+        
+        if file_ext in ['.txt', '.md']:
+            # For text and markdown files, return as text with proper encoding
+            try:
+                text_content = content.decode('utf-8')
+                if file_ext == '.md':
+                    # Convert markdown to HTML for better viewing
+                    import markdown
+                    html_content = markdown.markdown(text_content, extensions=['tables', 'fenced_code'])
+                    return Response(
+                        content=f"""
+                        <!DOCTYPE html>
+                        <html>
+                        <head>
+                            <meta charset="UTF-8">
+                            <title>{file_info.original_filename}</title>
+                            <style>
+                                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+                                       max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.6; }}
+                                pre {{ background: #f5f5f5; padding: 10px; border-radius: 5px; overflow-x: auto; }}
+                                code {{ background: #f5f5f5; padding: 2px 4px; border-radius: 3px; }}
+                                table {{ border-collapse: collapse; width: 100%; }}
+                                th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+                                th {{ background-color: #f2f2f2; }}
+                            </style>
+                        </head>
+                        <body>{html_content}</body>
+                        </html>
+                        """,
+                        media_type="text/html"
+                    )
+                else:
+                    return Response(content=text_content, media_type="text/plain; charset=utf-8")
+            except UnicodeDecodeError:
+                return Response(content=content, media_type="application/octet-stream")
+        
+        elif file_ext in ['.html', '.htm']:
+            return Response(content=content, media_type="text/html")
+        
+        elif file_ext == '.pdf':
+            return Response(content=content, media_type="application/pdf")
+        
+        elif file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']:
+            return Response(content=content, media_type=f"image/{file_ext[1:]}")
+        
+        elif file_ext in ['.docx', '.doc']:
+            # For Word documents, try to extract text content with better formatting
+            try:
+                if file_ext == '.docx':
+                    import docx
+                    doc = docx.Document(file_path)
+                    
+                    # Extract content with better formatting
+                    html_content = []
+                    html_content.append('<div style="max-width: 800px; margin: 0 auto; padding: 20px; font-family: \'Times New Roman\', serif; line-height: 1.6;">')
+                    
+                    for paragraph in doc.paragraphs:
+                        if paragraph.text.strip():
+                            # Handle different paragraph styles
+                            style = paragraph.style.name.lower()
+                            if 'heading' in style:
+                                level = '1'
+                                if 'heading 2' in style:
+                                    level = '2'
+                                elif 'heading 3' in style:
+                                    level = '3'
+                                html_content.append(f'<h{level} style="color: #1f2937; margin: 20px 0 10px 0;">{paragraph.text}</h{level}>')
+                            else:
+                                html_content.append(f'<p style="margin: 10px 0; text-align: justify;">{paragraph.text}</p>')
+                    
+                    # Extract tables if any
+                    for table in doc.tables:
+                        html_content.append('<table style="width: 100%; border-collapse: collapse; margin: 20px 0; border: 1px solid #d1d5db;">')
+                        for row in table.rows:
+                            html_content.append('<tr>')
+                            for cell in row.cells:
+                                html_content.append(f'<td style="border: 1px solid #d1d5db; padding: 8px; vertical-align: top;">{cell.text}</td>')
+                            html_content.append('</tr>')
+                        html_content.append('</table>')
+                    
+                    html_content.append('</div>')
+                    
+                    return Response(
+                        content=f"""
+                        <!DOCTYPE html>
+                        <html>
+                        <head>
+                            <meta charset="UTF-8">
+                            <title>{file_info.original_filename}</title>
+                            <style>
+                                body {{ margin: 0; padding: 0; background: #f9fafb; }}
+                                .document-header {{ background: white; padding: 15px 20px; border-bottom: 1px solid #e5e7eb; }}
+                                .document-title {{ font-size: 18px; font-weight: bold; color: #1f2937; }}
+                                .document-content {{ background: white; margin: 20px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
+                            </style>
+                        </head>
+                        <body>
+                            <div class="document-header">
+                                <div class="document-title">{file_info.original_filename}</div>
+                            </div>
+                            <div class="document-content">
+                                {''.join(html_content)}
+                            </div>
+                        </body>
+                        </html>
+                        """,
+                        media_type="text/html"
+                    )
+                else:
+                    # For .doc files, return as download since they're harder to parse
+                    return Response(content=content, media_type="application/msword")
+                
+            except ImportError:
+                # If docx library is not available, return raw content
+                return Response(content=content, media_type="application/octet-stream")
+        
+        elif file_ext in ['.xlsx', '.xls']:
+            # For Excel files, try to convert to HTML table
+            try:
+                import pandas as pd
+                
+                if file_ext == '.xlsx':
+                    # Read all sheets
+                    excel_file = pd.ExcelFile(file_path)
+                    html_content = []
+                    
+                    html_content.append('<div style="max-width: 1200px; margin: 0 auto; padding: 20px; font-family: Arial, sans-serif;">')
+                    
+                    for sheet_name in excel_file.sheet_names:
+                        df = pd.read_excel(file_path, sheet_name=sheet_name)
+                        html_content.append(f'<h3 style="color: #1f2937; margin: 30px 0 15px 0; padding: 10px; background: #f3f4f6; border-left: 4px solid #3b82f6;">Sheet: {sheet_name}</h3>')
+                        
+                        # Convert DataFrame to HTML with styling
+                        table_html = df.to_html(classes='excel-table', table_id=f'sheet-{sheet_name}', escape=False)
+                        html_content.append(table_html)
+                    
+                    html_content.append('</div>')
+                    
+                    return Response(
+                        content=f"""
+                        <!DOCTYPE html>
+                        <html>
+                        <head>
+                            <meta charset="UTF-8">
+                            <title>{file_info.original_filename}</title>
+                            <style>
+                                body {{ margin: 0; padding: 0; background: #f9fafb; }}
+                                .document-header {{ background: white; padding: 15px 20px; border-bottom: 1px solid #e5e7eb; }}
+                                .document-title {{ font-size: 18px; font-weight: bold; color: #1f2937; }}
+                                .excel-table {{ 
+                                    width: 100%; 
+                                    border-collapse: collapse; 
+                                    margin: 10px 0; 
+                                    background: white;
+                                    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+                                }}
+                                .excel-table th {{ 
+                                    background: #f3f4f6; 
+                                    border: 1px solid #d1d5db; 
+                                    padding: 8px; 
+                                    text-align: left; 
+                                    font-weight: bold;
+                                }}
+                                .excel-table td {{ 
+                                    border: 1px solid #d1d5db; 
+                                    padding: 8px; 
+                                    vertical-align: top; 
+                                }}
+                                .excel-table tr:nth-child(even) {{ background: #f9fafb; }}
+                            </style>
+                        </head>
+                        <body>
+                            <div class="document-header">
+                                <div class="document-title">{file_info.original_filename}</div>
+                            </div>
+                            {''.join(html_content)}
+                        </body>
+                        </html>
+                        """,
+                        media_type="text/html"
+                    )
+                else:
+                    # For .xls files, try to read with pandas
+                    df = pd.read_excel(file_path)
+                    table_html = df.to_html(classes='excel-table', escape=False)
+                    
+                    return Response(
+                        content=f"""
+                        <!DOCTYPE html>
+                        <html>
+                        <head>
+                            <meta charset="UTF-8">
+                            <title>{file_info.original_filename}</title>
+                            <style>
+                                body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                                .excel-table {{ width: 100%; border-collapse: collapse; }}
+                                .excel-table th, .excel-table td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+                                .excel-table th {{ background-color: #f2f2f2; }}
+                            </style>
+                        </head>
+                        <body>
+                            <h2>{file_info.original_filename}</h2>
+                            {table_html}
+                        </body>
+                        </html>
+                        """,
+                        media_type="text/html"
+                    )
+                    
+            except ImportError:
+                return Response(content=content, media_type="application/octet-stream")
+        
+        elif file_ext in ['.pptx', '.ppt']:
+            # For PowerPoint files, extract slide content
+            try:
+                if file_ext == '.pptx':
+                    from pptx import Presentation
+                    
+                    prs = Presentation(file_path)
+                    html_content = []
+                    
+                    html_content.append('<div style="max-width: 900px; margin: 0 auto; padding: 20px; font-family: Arial, sans-serif;">')
+                    
+                    for i, slide in enumerate(prs.slides, 1):
+                        html_content.append(f'<div style="margin: 30px 0; padding: 20px; border: 1px solid #e5e7eb; border-radius: 8px; background: white; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">')
+                        html_content.append(f'<h3 style="color: #1f2937; margin: 0 0 15px 0; padding: 10px; background: #f3f4f6; border-radius: 4px;">Slide {i}</h3>')
+                        
+                        for shape in slide.shapes:
+                            if hasattr(shape, "text") and shape.text.strip():
+                                # Determine if it's a title or content
+                                if shape.is_placeholder:
+                                    placeholder = shape.placeholder_format
+                                    if placeholder.type == 1:  # Title placeholder
+                                        html_content.append(f'<h2 style="color: #1f2937; margin: 15px 0;">{shape.text}</h2>')
+                                    else:
+                                        html_content.append(f'<p style="margin: 10px 0; line-height: 1.6;">{shape.text}</p>')
+                                else:
+                                    html_content.append(f'<p style="margin: 10px 0; line-height: 1.6;">{shape.text}</p>')
+                        
+                        html_content.append('</div>')
+                    
+                    html_content.append('</div>')
+                    
+                    return Response(
+                        content=f"""
+                        <!DOCTYPE html>
+                        <html>
+                        <head>
+                            <meta charset="UTF-8">
+                            <title>{file_info.original_filename}</title>
+                            <style>
+                                body {{ margin: 0; padding: 0; background: #f9fafb; }}
+                                .document-header {{ background: white; padding: 15px 20px; border-bottom: 1px solid #e5e7eb; }}
+                                .document-title {{ font-size: 18px; font-weight: bold; color: #1f2937; }}
+                            </style>
+                        </head>
+                        <body>
+                            <div class="document-header">
+                                <div class="document-title">{file_info.original_filename}</div>
+                            </div>
+                            {''.join(html_content)}
+                        </body>
+                        </html>
+                        """,
+                        media_type="text/html"
+                    )
+                else:
+                    # For .ppt files, return as download
+                    return Response(content=content, media_type="application/vnd.ms-powerpoint")
+                    
+            except ImportError:
+                return Response(content=content, media_type="application/octet-stream")
+        
+        else:
+            # For other file types, return as-is
+            return Response(content=content, media_type=file_info.file_type or "application/octet-stream")
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
+
+
+@app.get("/api/share-brd/stats")
+async def get_share_stats(
+    token: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Get statistics for a shared document (access count, access log, etc.)
+    """
+    
+    # Get share data
+    shared_doc = db.query(models.SharedDocument).filter(
+        models.SharedDocument.share_token == token,
+        models.SharedDocument.user_id == current_user.id
+    ).first()
+    
+    if not shared_doc:
+        raise HTTPException(status_code=404, detail="Share not found")
+    
+    # Get access log (limit to 50 most recent)
+    access_logs = db.query(models.SharedDocumentAccessLog).filter(
+        models.SharedDocumentAccessLog.share_id == shared_doc.id
+    ).order_by(models.SharedDocumentAccessLog.accessed_at.desc()).limit(50).all()
+    
+    return {
+        'access_count': shared_doc.access_count,
+        'access_log': [
+            {
+                'id': log.id,
+                'accessed_at': log.accessed_at.replace(tzinfo=timezone.utc).isoformat() if log.accessed_at else None,
+                'ip_address': log.ip_address,
+                'user_agent': log.user_agent,
+                'email': log.recipient_email,
+                'action': log.action,
+                'filename': log.filename
+            }
+            for log in access_logs
+        ],
+        'created_at': shared_doc.created_at.isoformat() if shared_doc.created_at else None,
+        'expires_at': shared_doc.expires_at.isoformat() if shared_doc.expires_at else None
+    }
+
+
+# --- Share Project Endpoints ---
+@app.post("/api/share-projects")
+async def create_share_project(
+    project_data: dict,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Create a new share project for organizing shared documents
+    """
+    import secrets
+    
+    project_name = project_data.get('project_name', '').strip()
+    if not project_name:
+        raise HTTPException(status_code=400, detail="Project name is required")
+    
+    # Generate unique project token
+    project_token = f"share_{secrets.token_urlsafe(16)}"
+    
+    # Create share project
+    share_project = models.ShareProject(
+        project_token=project_token,
+        owner_id=current_user.id,
+        project_name=project_name,
+        description=project_data.get('description', 'Shared Documents')
+    )
+    
+    db.add(share_project)
+    db.commit()
+    db.refresh(share_project)
+    
+    return {
+        'success': True,
+        'project': {
+            'id': share_project.id,
+            'project_token': share_project.project_token,
+            'project_name': share_project.project_name,
+            'description': share_project.description,
+            'created_at': share_project.created_at.isoformat() if share_project.created_at else None,
+            'current_step': share_project.current_step
+        }
+    }
+
+
+@app.get("/api/share-projects")
+async def get_share_projects(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Get all share projects for the current user
+    """
+    share_projects = db.query(models.ShareProject).filter(
+        models.ShareProject.owner_id == current_user.id
+    ).order_by(models.ShareProject.created_at.desc()).all()
+    
+    # Get document counts for each project
+    result = []
+    for project in share_projects:
+        doc_count = db.query(models.SharedDocument).filter(
+            models.SharedDocument.share_project_id == project.id
+        ).count()
+        
+        result.append({
+            'id': project.id,
+            'project_token': project.project_token,
+            'project_name': project.project_name,
+            'description': project.description,
+            'document_count': doc_count,
+            'created_at': project.created_at.isoformat() if project.created_at else None,
+            'updated_at': project.updated_at.isoformat() if project.updated_at else None,
+            'current_step': project.current_step
+        })
+    
+    return result
+
+
+@app.get("/api/share-projects/{project_token}")
+async def get_share_project(
+    project_token: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Get a specific share project with its documents
+    """
+    share_project = db.query(models.ShareProject).filter(
+        models.ShareProject.project_token == project_token,
+        models.ShareProject.owner_id == current_user.id
+    ).first()
+    
+    if not share_project:
+        raise HTTPException(status_code=404, detail="Share project not found")
+    
+    # Get all shared documents for this project
+    shared_docs = db.query(models.SharedDocument).filter(
+        models.SharedDocument.share_project_id == share_project.id
+    ).order_by(models.SharedDocument.created_at.desc()).all()
+    
+    documents = []
+    for doc in shared_docs:
+        # Get files
+        files = db.query(models.SharedDocumentFile).filter(
+            models.SharedDocumentFile.share_id == doc.id
+        ).all()
+        
+        # Get recipients
+        recipients = db.query(models.SharedDocumentRecipient).filter(
+            models.SharedDocumentRecipient.share_id == doc.id
+        ).all()
+        
+        documents.append({
+            'id': doc.id,
+            'share_token': doc.share_token,
+            'title': doc.title,
+            'access_type': doc.access_type,
+            'access_count': doc.access_count,
+            'can_download': doc.can_download,
+            'created_at': doc.created_at.isoformat() if doc.created_at else None,
+            'expires_at': doc.expires_at.isoformat() if doc.expires_at else None,
+            'files': [{
+                'id': f.id,
+                'filename': f.filename,
+                'original_filename': f.original_filename,
+                'file_size': f.file_size,
+                'file_type': f.file_type
+            } for f in files],
+            'recipients': [r.email for r in recipients]
+        })
+    
+    return {
+        'project': {
+            'id': share_project.id,
+            'project_token': share_project.project_token,
+            'project_name': share_project.project_name,
+            'description': share_project.description,
+            'created_at': share_project.created_at.isoformat() if share_project.created_at else None,
+            'updated_at': share_project.updated_at.isoformat() if share_project.updated_at else None,
+            'current_step': share_project.current_step
+        },
+        'documents': documents
+    }
+
+
+@app.patch("/api/share-projects/{project_token}")
+async def update_share_project(
+    project_token: str,
+    project_data: dict,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Update a share project (e.g. current_step)
+    """
+    share_project = db.query(models.ShareProject).filter(
+        models.ShareProject.project_token == project_token,
+        models.ShareProject.owner_id == current_user.id
+    ).first()
+    
+    if not share_project:
+        raise HTTPException(status_code=404, detail="Share project not found")
+    
+    if 'current_step' in project_data:
+        share_project.current_step = project_data['current_step']
+    
+    if 'project_name' in project_data:
+        share_project.project_name = project_data['project_name']
+        
+    if 'description' in project_data:
+        share_project.description = project_data['description']
+        
+    db.commit()
+    db.refresh(share_project)
+    
+    return {
+        'success': True,
+        'project': {
+            'id': share_project.id,
+            'project_token': share_project.project_token,
+            'project_name': share_project.project_name,
+            'current_step': share_project.current_step
+        }
+    }
+
+
+@app.delete("/api/share-projects/{project_token}")
+async def delete_share_project(
+    project_token: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Delete a share project and all its associated documents
+    """
+    share_project = db.query(models.ShareProject).filter(
+        models.ShareProject.project_token == project_token,
+        models.ShareProject.owner_id == current_user.id
+    ).first()
+    
+    if not share_project:
+        raise HTTPException(status_code=404, detail="Share project not found")
+    
+    # Delete all associated shared documents (cascade will handle files, recipients, logs)
+    db.query(models.SharedDocument).filter(
+        models.SharedDocument.share_project_id == share_project.id
+    ).delete()
+    
+    # Delete the project
+    db.delete(share_project)
+    db.commit()
+    
+    return {'success': True, 'message': 'Share project deleted successfully'}
+
+
 # --- Chat Message Endpoints ---
 @app.post("/chat/messages")
 def save_chat_message(

@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { X, Plus, FileCheck, History, Activity, Settings, User, LogOut, Trash2, Users, ShieldCheck, Globe } from 'lucide-react';
+import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
+import { X, Plus, FileCheck, History, Activity, Settings, User, LogOut, Trash2, Users, ShieldCheck, Globe, Check, Share2 } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
 import { API_ENDPOINTS } from '../config';
+import NewProjectModal from './NewProjectModal';
+import ShareBRDModal from './ShareBRDModal';
 
 export default function Sidebar({
     isSidebarOpen,
@@ -21,15 +23,30 @@ export default function Sidebar({
     deletingProjectKey,
     isDarkMode = false,
     rbac,
+    isShareMode = false,
+    handleCreateShareProject,
 }) {
     const navigate = useNavigate();
     const location = useLocation();
+    const [searchParams, setSearchParams] = useSearchParams();
     const [navExpanded, setNavExpanded] = useState(true);
     // Agents state
     const [agents, setAgents] = useState([]);
     const [agentsLoading, setAgentsLoading] = useState(false);
     const [agentsError, setAgentsError] = useState(null);
     const [agentsExpanded, setAgentsExpanded] = useState(false);
+
+    const [showNewProjectModal, setShowNewProjectModal] = useState(false);
+    const [showShareBRDModal, setShowShareBRDModal] = useState(false);
+
+    useEffect(() => {
+        if (isShareMode && searchParams.get('create') === 'true') {
+            // Clear the param
+            const newParams = new URLSearchParams(searchParams);
+            newParams.delete('create');
+            setSearchParams(newParams, { replace: true });
+        }
+    }, [isShareMode, searchParams, setSearchParams]);
 
     useEffect(() => {
         if (!agentsExpanded) return;
@@ -123,17 +140,23 @@ export default function Sidebar({
 
                 <div className="flex-1 overflow-y-auto px-4 py-6 custom-scrollbar">
                     {canAccess('/new-project') && (
-                        <button
-                            onClick={handleNewProject}
-                            className="flex items-center w-full px-4 py-3 mb-6 text-sm font-bold text-white bg-app-primary rounded-lg hover:bg-app-primary-hover shadow-lg shadow-app-primary-dark/20 transition-all active:scale-95"
-                        >
-                            <Plus className="w-5 h-5 mr-2" />
-                            New Project
-                        </button>
+                        <div className="mb-6">
+                            <button
+                                onClick={() => setShowNewProjectModal(true)}
+                                className="flex items-center w-full px-4 py-3 text-sm font-bold text-white bg-app-primary rounded-lg hover:bg-app-primary-hover shadow-lg shadow-app-primary-dark/20 transition-all active:scale-95"
+                            >
+                                <Plus className="w-5 h-5 mr-2" />
+                                New Project
+                            </button>
+                        </div>
                     )}
 
                     <div className="mb-6">
-                        <h3 className="text-xs font-semibold text-app-text-muted uppercase tracking-wider mb-3 px-2">Projects</h3>
+                        <div className="flex items-center justify-between mb-3 px-2">
+                            <h3 className="text-xs font-semibold text-app-text-muted uppercase tracking-wider">
+                                All Projects
+                            </h3>
+                        </div>
                         <div className="space-y-1">
                             {projects.length === 0 ? (
                                 <p className="text-xs text-app-text-label px-2 italic">No projects yet.</p>
@@ -141,18 +164,22 @@ export default function Sidebar({
                                 projects.map((project) => {
                                     const canDelete = Boolean(project.projectToken || project.governanceResultId);
                                     return (
-                                        <div key={project.key} className="flex items-center gap-1">
+                                        <div key={project.key || project.project_token} className="flex items-center gap-1">
                                             <button
                                                 onClick={() => handleSelectProject(project)}
                                                 className={`flex-1 flex items-center px-2 py-2 text-sm font-medium rounded-md group transition-all text-left border ${selectedProjectKey === project.key ? 'bg-app-primary-dark/40 text-app-primary-light border-app-primary-dark' : 'border-transparent text-app-text-light hover:bg-app-text-label hover:text-app-bg-card'}
                                                 `}
                                                 title={project.name}
                                             >
-                                                <History className={`w-4 h-4 mr-3 flex-shrink-0 transition-colors ${selectedProjectKey === project.key && (currentView === 'main' || currentView === 'taskCreation') ? 'text-blue-400' : 'text-app-text-label group-hover:text-blue-400'}`} />
+                                                {project.type === 'share' ? (
+                                                    <Share2 className={`w-4 h-4 mr-3 flex-shrink-0 transition-colors ${selectedProjectKey === project.key ? 'text-purple-400' : 'text-app-text-label group-hover:text-purple-400'}`} />
+                                                ) : (
+                                                    <History className={`w-4 h-4 mr-3 flex-shrink-0 transition-colors ${selectedProjectKey === project.key ? 'text-blue-400' : 'text-app-text-label group-hover:text-blue-400'}`} />
+                                                )}
                                                 <div className="min-w-0">
                                                     <p className="truncate">{project.name}</p>
                                                     <p className="text-[11px] text-app-text-muted truncate">
-                                                        {project.status === 'analysis_complete'
+                                                        {project.type === 'standard' && project.status === 'analysis_complete'
                                                             ? `Locked - ${getProjectSidebarSubtitle(project)}`
                                                             : getProjectSidebarSubtitle(project)}
                                                     </p>
@@ -193,92 +220,117 @@ export default function Sidebar({
                         </svg>
                     </button>
                     <div className={`overflow-hidden transition-all duration-300 ease-in-out ${navExpanded ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0'}`}>
-                    <div className="px-4 pb-4">
-                    {canAccess('/status-dashboard') && (
-                        <button
-                            onClick={() => setCurrentView('statusDashboard')}
-                            className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'statusDashboard'
-                                ? 'bg-app-primary-dark/40 text-app-primary-light border border-app-primary-dark'
-                                : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
-                        >
-                            <Activity className="w-4 h-4 mr-3" />
-                            Status Dashboard
-                        </button>
-                    )}
-                    {user?.is_org_admin && canAccess('/organization-admin') && (
-                        <button
-                            onClick={() => {
-                                setCurrentView('organizationAdmin');
-                            }}
-                            className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'organizationAdmin'
-                                ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
-                                : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
-                        >
-                            <ShieldCheck className="w-4 h-4 mr-3" />
-                            Organization Admin
-                        </button>
-                    )}
-                    {user?.is_org_admin && canAccess('/governance-management') && (
-                        <button
-                            onClick={() => {
-                                navigate('/governance-management');
-                            }}
-                            className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname === '/governance-management'
-                                ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
-                                : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
-                        >
-                            <FileCheck className="w-4 h-4 mr-3" />
-                            Governance
-                        </button>
-                    )}
-                    {canAccess('/agents') && (
-                        <button
-                            onClick={() => {
-                                navigate('/agents');
-                            }}
-                            className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname.startsWith('/agents')
-                                ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
-                                : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
-                        >
-                            <Users className="w-4 h-4 mr-3" />
-                            Agents
-                        </button>
-                    )}
-                    {canAccess('/plugins') && (
-                        <button
-                            onClick={() => {
-                                navigate('/plugins');
-                            }}
-                            className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname.startsWith('/plugins')
-                                ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
-                                : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
-                        >
-                            <Globe className="w-4 h-4 mr-3" />
-                            Plugins
-                        </button>
-                    )}
-                    <button
-                        onClick={() => setShowSettings(true)}
-                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md hover:bg-app-text-label hover:text-white transition-colors mb-2 ${isDarkMode ? 'text-app-text-label' : 'text-app-border'}`}
-                    >
-                        <Settings className="w-4 h-4 mr-3" />
-                        Settings
-                    </button>
-                    {user && (
-                        <div className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md hover:bg-app-text-label transition-colors justify-between bg-white/5 border border-white/10 ${isDarkMode ? 'text-app-text-label' : 'text-app-border'}`}>
-                            <div className="flex items-center overflow-hidden">
-                                <User className="w-4 h-4 mr-3 flex-shrink-0" />
-                                <span className="truncate w-24 text-xs" title={user.email}>{user.email}</span>
-                            </div>
-                            <button onClick={handleLogout} className="text-red-400 hover:text-red-300 p-1" title="Logout">
-                                <LogOut className="w-4 h-4" />
+                        <div className="px-4 pb-4">
+                            {canAccess('/status-dashboard') && (
+                                <button
+                                    onClick={() => setCurrentView('statusDashboard')}
+                                    className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'statusDashboard'
+                                        ? 'bg-app-primary-dark/40 text-app-primary-light border border-app-primary-dark'
+                                        : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
+                                >
+                                    <Activity className="w-4 h-4 mr-3" />
+                                    Status Dashboard
+                                </button>
+                            )}
+                            {user?.is_org_admin && canAccess('/organization-admin') && (
+                                <button
+                                    onClick={() => {
+                                        setCurrentView('organizationAdmin');
+                                    }}
+                                    className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'organizationAdmin'
+                                        ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
+                                        : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
+                                >
+                                    <ShieldCheck className="w-4 h-4 mr-3" />
+                                    Organization Admin
+                                </button>
+                            )}
+                            {user?.is_org_admin && canAccess('/governance-management') && (
+                                <button
+                                    onClick={() => {
+                                        navigate('/governance-management');
+                                    }}
+                                    className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname === '/governance-management'
+                                        ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
+                                        : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
+                                >
+                                    <FileCheck className="w-4 h-4 mr-3" />
+                                    Governance
+                                </button>
+                            )}
+                            {canAccess('/agents') && (
+                                <button
+                                    onClick={() => {
+                                        navigate('/agents');
+                                    }}
+                                    className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname.startsWith('/agents')
+                                        ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
+                                        : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
+                                >
+                                    <Users className="w-4 h-4 mr-3" />
+                                    Agents
+                                </button>
+                            )}
+                            {canAccess('/plugins') && (
+                                <button
+                                    onClick={() => {
+                                        navigate('/plugins');
+                                    }}
+                                    className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname.startsWith('/plugins')
+                                        ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
+                                        : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
+                                >
+                                    <Globe className="w-4 h-4 mr-3" />
+                                    Plugins
+                                </button>
+                            )}
+                            <button
+                                onClick={() => setShowSettings(true)}
+                                className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md hover:bg-app-text-label hover:text-white transition-colors mb-2 ${isDarkMode ? 'text-app-text-label' : 'text-app-border'}`}
+                            >
+                                <Settings className="w-4 h-4 mr-3" />
+                                Settings
                             </button>
+                            {user && (
+                                <div className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md hover:bg-app-text-label transition-colors justify-between bg-white/5 border border-white/10 ${isDarkMode ? 'text-app-text-label' : 'text-app-border'}`}>
+                                    <div className="flex items-center overflow-hidden">
+                                        <User className="w-4 h-4 mr-3 flex-shrink-0" />
+                                        <span className="truncate w-24 text-xs" title={user.email}>{user.email}</span>
+                                    </div>
+                                    <button onClick={handleLogout} className="text-red-400 hover:text-red-300 p-1" title="Logout">
+                                        <LogOut className="w-4 h-4" />
+                                    </button>
+                                </div>
+                            )}
+
+
                         </div>
-                    )}
-                    </div>
                     </div>
                 </div>
             </div>
+
+            {/* Modals - Rendered outside sidebar to appear centered on screen */}
+            <NewProjectModal
+                isOpen={showNewProjectModal}
+                onClose={() => setShowNewProjectModal(false)}
+                onStartWithBRD={() => {
+                    setShowNewProjectModal(false);
+                    if (handleNewProject) {
+                        handleNewProject();
+                    } else {
+                        navigate('/new-project');
+                    }
+                }}
+                onShareBRD={() => {
+                    navigate('/share-brd?create=true');
+                    setShowNewProjectModal(false);
+                }}
+            />
+
+            <ShareBRDModal
+                isOpen={showShareBRDModal}
+                onClose={() => setShowShareBRDModal(false)}
+            />
         </>
     );
 }
