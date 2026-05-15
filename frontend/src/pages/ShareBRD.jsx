@@ -4,7 +4,7 @@ import {
     Upload, Settings as SettingsIcon, Mail, Activity, FileText, Trash2, Calendar, Lock,
     Eye, EyeOff, CheckCircle, X, Download, ExternalLink, FolderPlus, Folder,
     PlusCircle, ArrowRight, Copy, RefreshCw, TrendingUp, Users, BarChart2,
-    Clock, Globe, Shield, AlertCircle, ChevronDown, ChevronUp, Link2
+    Clock, Globe, Shield, AlertCircle, ChevronDown, ChevronUp, Link2, Send
 } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 import RoadmapHeader from '../components/RoadmapHeader';
@@ -41,7 +41,7 @@ const ShareBRD = ({ selectedProjectKey, handleCreateShareProject: parentHandleCr
     const [recipientEmails, setRecipientEmails] = useState([]);
     const [emailInput, setEmailInput] = useState('');
     const [selectedFiles, setSelectedFiles] = useState([]);
-    const [sending, setSending] = useState(false);
+    const [sharing, setSharing] = useState(false);
     const [shareLink, setShareLink] = useState('');
     const [shareToken, setShareToken] = useState('');
     const [copySuccess, setCopySuccess] = useState(false);
@@ -62,22 +62,25 @@ const ShareBRD = ({ selectedProjectKey, handleCreateShareProject: parentHandleCr
     useEffect(() => {
         if (selectedProjectKey) {
             setSelectedProjectToken(selectedProjectKey);
-            
-            // Try to find the project to restore its last step
-            const project = shareProjects.find(p => p.project_token === selectedProjectKey);
-            
-            if (project) {
-                if (typeof project.current_step === 'number' && project.current_step > 0) {
-                    setCurrentStep(project.current_step);
-                } else {
-                    setCurrentStep(1);
+
+            // Only restore project step if no step is specified in URL
+            if (stepParam === 0) {
+                const project = shareProjects.find(p => p.project_token === selectedProjectKey);
+                if (project) {
+                    if (typeof project.current_step === 'number' && project.current_step > 0) {
+                        setCurrentStep(project.current_step);
+                    } else {
+                        setCurrentStep(1);
+                    }
                 }
             }
         } else {
             setSelectedProjectToken('');
-            setCurrentStep(0);
+            if (stepParam === 0) {
+                setCurrentStep(0);
+            }
         }
-    }, [selectedProjectKey]);
+    }, [selectedProjectKey, shareProjects]);
 
     // Update currentStep once shareProjects are loaded if they weren't before
     useEffect(() => {
@@ -87,7 +90,7 @@ const ShareBRD = ({ selectedProjectKey, handleCreateShareProject: parentHandleCr
                 setCurrentStep(project.current_step);
             }
         }
-    }, [shareProjects]);
+    }, [selectedProjectKey, shareProjects.length, currentStep]);
 
     // Persist current step to backend
     useEffect(() => {
@@ -164,7 +167,7 @@ const ShareBRD = ({ selectedProjectKey, handleCreateShareProject: parentHandleCr
                             dashboardAccess: latestDoc.access_type || 'once',
                             canDownload: latestDoc.can_download !== undefined ? latestDoc.can_download : true
                         }));
-                        
+
                         const frontendUrl = window.location.origin;
                         setShareLink(`${frontendUrl}/shared/${latestDoc.share_token}`);
                         setShareToken(latestDoc.share_token);
@@ -278,8 +281,8 @@ const ShareBRD = ({ selectedProjectKey, handleCreateShareProject: parentHandleCr
         setRecipientEmails(prev => prev.filter((_, i) => i !== index));
     };
 
-    const handleGenerateLink = async () => {
-        setSending(true);
+    const handleShare = async () => {
+        setSharing(true);
         try {
             const token = localStorage.getItem('token');
             const formData = new FormData();
@@ -299,12 +302,12 @@ const ShareBRD = ({ selectedProjectKey, handleCreateShareProject: parentHandleCr
             const data = await response.json();
             setShareLink(data.share_url);
             setShareToken(data.share_token);
-            navigate('/share-brd?step=4');
+            goToStep(4);
         } catch (error) {
             console.error('Error generating share link:', error);
             alert('Failed to generate share link. Please try again.');
         } finally {
-            setSending(false);
+            setSharing(false);
         }
     };
 
@@ -345,7 +348,14 @@ const ShareBRD = ({ selectedProjectKey, handleCreateShareProject: parentHandleCr
         }
     }, [currentStep, shareToken]);
 
-    const goToStep = (step) => navigate(`/share-brd?step=${step}`);
+    const goToStep = (step) => {
+        const params = new URLSearchParams();
+        params.set('step', step.toString());
+        if (selectedProjectToken) {
+            params.set('project', selectedProjectToken);
+        }
+        navigate(`/share-brd?${params.toString()}`);
+    };
 
     const formatTimeAgo = (dateString) => {
         if (!dateString) return 'Never';
@@ -374,6 +384,7 @@ const ShareBRD = ({ selectedProjectKey, handleCreateShareProject: parentHandleCr
 
         if (shareStats?.access_log) {
             shareStats.access_log.forEach(log => {
+                if (log.filename === 'Dashboard') return; // Skip dashboard views
                 const email = log.email || log.user_email;
                 if (email && statsMap[email]) {
                     if (log.action === 'download') {
@@ -393,7 +404,7 @@ const ShareBRD = ({ selectedProjectKey, handleCreateShareProject: parentHandleCr
         return statsMap;
     };
 
-    const totalViews = shareStats?.access_count || 0;
+    const totalViews = (shareStats?.access_log || []).filter(l => l.action === 'view' && l.filename !== 'Dashboard').length;
     const totalDownloads = shareStats?.download_count || 0;
     const recipientStats = getRecipientStats();
     const engagedCount = Object.values(recipientStats).filter(s => s.views > 0 || s.downloads > 0).length;
@@ -460,54 +471,60 @@ const ShareBRD = ({ selectedProjectKey, handleCreateShareProject: parentHandleCr
 
                 {/* Step 1: Upload Documents */}
                 {currentStep === 1 && (
-                    <div className="space-y-6">
-                        <div>
-                            <h2 className="text-2xl font-bold text-app-text-main mb-2">Upload Your Documents</h2>
-                            <p className="text-sm text-app-text-muted">Upload your Business Requirements Documents or any related files you want to share</p>
+                    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-400">
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <h2 className="text-xl font-bold text-app-text-main">Upload Documents</h2>
+                                <p className="text-xs text-app-text-muted">Attach files you want to share with recipients</p>
+                            </div>
                         </div>
+
                         <div
                             onDragOver={handleDragOver}
                             onDragLeave={handleDragLeave}
                             onDrop={handleDrop}
-                            className={`border-2 border-dashed rounded-xl p-8 text-center transition-all ${isDragging ? 'border-app-primary bg-app-primary/5' : 'border-app-border bg-app-bg-card hover:border-app-primary/50'}`}
+                            className={`border-2 border-dashed rounded-xl p-6 text-center transition-all ${isDragging ? 'border-app-primary bg-app-primary/5' : 'border-app-border bg-app-bg-card hover:border-app-primary/40'}`}
                         >
-                            <Upload className="w-20 h-20 mx-auto mb-4 text-app-text-muted" />
-                            <p className="text-xl font-semibold text-app-text-main mb-2">Drop your files here</p>
-                            <p className="text-sm text-app-text-muted mb-4">or click to browse</p>
+                            <Upload className="w-12 h-12 mx-auto mb-3 text-app-text-muted opacity-60" />
+                            <p className="text-base font-semibold text-app-text-main mb-1">Drop files here or click to browse</p>
                             <input type="file" multiple onChange={handleFileInput} className="hidden" id="file-upload" accept=".pdf,.doc,.docx,.txt,.md,.xlsx,.xls,.ppt,.pptx" />
-                            <label htmlFor="file-upload" className="inline-flex items-center px-8 py-4 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover transition-colors cursor-pointer font-medium text-lg">
-                                <Upload className="w-6 h-6 mr-2" />Choose Files
+                            <label htmlFor="file-upload" className="inline-flex items-center px-5 py-2.5 bg-app-primary/10 text-app-primary border border-app-primary/20 rounded-lg hover:bg-app-primary hover:text-white transition-all cursor-pointer font-bold text-sm mt-2">
+                                <Upload className="w-4 h-4 mr-2" />Select Files
                             </label>
-                            <p className="text-xs text-app-text-muted mt-6">Supports: PDF, DOC, DOCX, TXT, MD, XLSX, XLS, PPT, PPTX</p>
+                            <p className="text-[10px] text-app-text-muted mt-4 opacity-70 italic">Supports: PDF, DOCX, TXT, Excel, PPT</p>
                         </div>
+
                         {uploadedFiles.length > 0 && (
-                            <div className="bg-app-bg-card rounded-xl border border-app-border p-6">
-                                <h3 className="text-lg font-semibold text-app-text-main mb-4">Uploaded Files ({uploadedFiles.length})</h3>
-                                <div className="space-y-3">
+                            <div className="bg-app-bg-card rounded-xl border border-app-border p-4">
+                                <h3 className="text-xs font-bold text-app-text-muted uppercase tracking-wider mb-3">Attached Files ({uploadedFiles.length})</h3>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                                     {uploadedFiles.map(file => (
-                                        <div key={file.id} className="flex items-center justify-between p-4 bg-app-bg-page rounded-lg border border-app-border hover:border-app-primary transition-colors">
-                                            <div className="flex items-center space-x-4 flex-1 min-w-0">
-                                                <FileText className="w-6 h-6 text-app-primary flex-shrink-0" />
-                                                <div className="flex-1 min-w-0">
-                                                    <p className="text-sm font-medium text-app-text-main truncate">{file.name}</p>
-                                                    <p className="text-xs text-app-text-muted">{formatFileSize(file.size)}</p>
+                                        <div key={file.id} className="flex items-center justify-between px-3 py-2 bg-app-bg-page border border-app-border rounded-lg group hover:border-app-primary/40 transition-colors">
+                                            <div className="flex items-center gap-2.5 min-w-0">
+                                                <div className="w-8 h-8 rounded-lg bg-app-primary/5 flex items-center justify-center flex-shrink-0">
+                                                    <FileText className="w-4 h-4 text-app-primary" />
+                                                </div>
+                                                <div className="min-w-0">
+                                                    <p className="text-xs font-semibold text-app-text-main truncate max-w-[120px]">{file.name}</p>
+                                                    <p className="text-[10px] text-app-text-muted">{formatFileSize(file.size)}</p>
                                                 </div>
                                             </div>
-                                            <button onClick={() => removeFile(file.id)} className="p-2 text-red-400 hover:text-red-300 hover:bg-red-400/10 rounded-lg transition-colors">
-                                                <Trash2 className="w-5 h-5" />
+                                            <button onClick={() => removeFile(file.id)} className="p-1.5 text-app-text-muted hover:text-red-400 hover:bg-red-400/10 rounded-md transition-colors opacity-0 group-hover:opacity-100">
+                                                <Trash2 className="w-3.5 h-3.5" />
                                             </button>
                                         </div>
                                     ))}
                                 </div>
                             </div>
                         )}
-                        <div className="flex justify-end">
+
+                        <div className="flex justify-end pt-2">
                             <button
                                 onClick={() => goToStep(2)}
                                 disabled={uploadedFiles.length === 0}
-                                className="px-8 py-3 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                                className="px-6 py-2.5 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover transition-all font-bold text-sm shadow-md shadow-app-primary/20 disabled:opacity-50 disabled:grayscale"
                             >
-                                Next: Configure Access
+                                Continue to Access Control
                             </button>
                         </div>
                     </div>
@@ -515,150 +532,180 @@ const ShareBRD = ({ selectedProjectKey, handleCreateShareProject: parentHandleCr
 
                 {/* Step 2: Configure Access */}
                 {currentStep === 2 && (
-                    <div className="space-y-6">
+                    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-400">
                         <div>
-                            <h2 className="text-2xl font-bold text-app-text-main mb-2">Configure Access Settings</h2>
-                            <p className="text-sm text-app-text-muted">Set access permissions and security options for your shared documents</p>
+                            <h2 className="text-xl font-bold text-app-text-main">Access Control</h2>
+                            <p className="text-xs text-app-text-muted">Define how recipients can interact with your shared documents</p>
                         </div>
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                            <div className="bg-app-bg-card p-6 rounded-xl border border-app-border">
-                                <label className="block text-base font-semibold text-app-text-main mb-4">
-                                    <Eye className="w-5 h-5 inline mr-2" />Share Dashboard Access
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {/* Dashboard Access */}
+                            <div className="bg-app-bg-card p-4 rounded-xl border border-app-border flex flex-col">
+                                <label className="text-xs font-bold text-app-text-muted uppercase tracking-widest mb-3 flex items-center gap-2">
+                                    <Eye className="w-3.5 h-3.5 text-app-primary" /> Share Persistence
                                 </label>
-                                <div className="space-y-3">
+                                <div className="grid grid-cols-1 gap-2">
                                     {[
-                                        { value: 'once', label: 'Accessible only once', desc: 'Link expires after first access' },
-                                        { value: 'always', label: 'Accessible always', desc: 'Link remains active until expiration' }
+                                        { value: 'once', label: 'One-time View', desc: 'Expires after first visit' },
+                                        { value: 'always', label: 'Continuous', desc: 'Stays active until expiry' }
                                     ].map(opt => (
-                                        <label key={opt.value} className="flex items-start space-x-3 p-4 rounded-lg border-2 border-app-border hover:bg-app-bg-hover cursor-pointer transition-colors">
+                                        <label key={opt.value} className={`flex items-start gap-3 p-3 rounded-lg border transition-all cursor-pointer ${shareConfig.dashboardAccess === opt.value ? 'bg-app-primary/5 border-app-primary/30' : 'bg-app-bg-page border-app-border hover:border-app-primary/20'}`}>
                                             <input type="radio" name="dashboardAccess" value={opt.value} checked={shareConfig.dashboardAccess === opt.value}
                                                 onChange={(e) => setShareConfig(prev => ({ ...prev, dashboardAccess: e.target.value }))}
-                                                className="w-5 h-5 text-app-primary mt-0.5" />
-                                            <div className="flex-1">
-                                                <p className="text-sm font-medium text-app-text-main">{opt.label}</p>
-                                                <p className="text-xs text-app-text-muted mt-1">{opt.desc}</p>
+                                                className="w-4 h-4 text-app-primary mt-0.5" />
+                                            <div>
+                                                <p className="text-xs font-semibold text-app-text-main">{opt.label}</p>
+                                                <p className="text-[10px] text-app-text-muted">{opt.desc}</p>
                                             </div>
                                         </label>
                                     ))}
                                 </div>
                             </div>
-                            <div className="bg-app-bg-card p-6 rounded-xl border border-app-border">
-                                <label className="block text-base font-semibold text-app-text-main mb-4">
-                                    <Calendar className="w-5 h-5 inline mr-2" />Expiration Time
-                                </label>
-                                <select
-                                    value={shareConfig.expirationTime}
-                                    onChange={(e) => setShareConfig(prev => ({ ...prev, expirationTime: e.target.value }))}
-                                    className="w-full px-4 py-3 bg-app-bg-page border border-app-border rounded-lg text-app-text-main focus:outline-none focus:ring-2 focus:ring-app-primary focus:border-app-primary"
-                                >
-                                    <option value="no-expiration">No Expiration</option>
-                                    <option value="24h">24 Hours</option>
-                                    <option value="7d">7 Days</option>
-                                    <option value="30d">30 Days</option>
-                                </select>
-                            </div>
-                            <div className="bg-app-bg-card p-6 rounded-xl border border-app-border">
-                                <label className="flex items-center justify-between mb-4">
-                                    <span className="text-base font-semibold text-app-text-main">
-                                        <Lock className="w-5 h-5 inline mr-2" />Password Protection
-                                    </span>
-                                    <button
-                                        onClick={() => setShareConfig(prev => ({ ...prev, requirePassword: !prev.requirePassword }))}
-                                        className={`relative inline-flex h-7 w-14 items-center rounded-full transition-colors ${shareConfig.requirePassword ? 'bg-app-primary' : 'bg-app-border'}`}
+
+                            {/* Settings Group */}
+                            <div className="bg-app-bg-card p-4 rounded-xl border border-app-border space-y-4">
+                                <div>
+                                    <label className="text-xs font-bold text-app-text-muted uppercase tracking-widest mb-2 flex items-center gap-2">
+                                        <Calendar className="w-3.5 h-3.5 text-app-primary" /> Auto-Expiration
+                                    </label>
+                                    <select
+                                        value={shareConfig.expirationTime}
+                                        onChange={(e) => setShareConfig(prev => ({ ...prev, expirationTime: e.target.value }))}
+                                        className="w-full px-3 py-2 bg-app-bg-page border border-app-border rounded-lg text-xs text-app-text-main font-medium focus:ring-2 focus:ring-app-primary/20 transition-all"
                                     >
-                                        <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${shareConfig.requirePassword ? 'translate-x-8' : 'translate-x-1'}`} />
-                                    </button>
-                                </label>
-                                {shareConfig.requirePassword && (
-                                    <input type="text" value={shareConfig.password}
-                                        onChange={(e) => setShareConfig(prev => ({ ...prev, password: e.target.value }))}
-                                        placeholder="Enter password"
-                                        className="w-full px-4 py-3 bg-app-bg-page border border-app-border rounded-lg text-app-text-main placeholder-app-text-muted focus:outline-none focus:ring-2 focus:ring-app-primary focus:border-app-primary"
-                                    />
-                                )}
-                            </div>
-                            <div className="bg-app-bg-card p-6 rounded-xl border border-app-border">
-                                <label className="flex items-center justify-between mb-4">
-                                    <span className="text-base font-semibold text-app-text-main">
-                                        <Download className="w-5 h-5 inline mr-2" />Allow Downloads
-                                    </span>
-                                    <button
-                                        onClick={() => setShareConfig(prev => ({ ...prev, canDownload: !prev.canDownload }))}
-                                        className={`relative inline-flex h-7 w-14 items-center rounded-full transition-colors ${shareConfig.canDownload ? 'bg-app-primary' : 'bg-app-border'}`}
-                                    >
-                                        <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${shareConfig.canDownload ? 'translate-x-8' : 'translate-x-1'}`} />
-                                    </button>
-                                </label>
-                                <p className="text-sm text-app-text-muted">
-                                    {shareConfig.canDownload ? 'Recipients can download files to their device' : 'Recipients can only view files online, downloads are disabled'}
-                                </p>
+                                        <option value="no-expiration">Infinite / No Expiration</option>
+                                        <option value="24h">24 Hours</option>
+                                        <option value="7d">7 Days</option>
+                                        <option value="30d">30 Days</option>
+                                    </select>
+                                </div>
+
+                                <div className="space-y-3 pt-2">
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-2">
+                                            <Download className="w-3.5 h-3.5 text-app-primary" />
+                                            <span className="text-xs font-semibold text-app-text-main">Enable Downloads</span>
+                                        </div>
+                                        <button
+                                            onClick={() => setShareConfig(prev => ({ ...prev, canDownload: !prev.canDownload }))}
+                                            className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors ${shareConfig.canDownload ? 'bg-app-primary' : 'bg-app-border'}`}
+                                        >
+                                            <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${shareConfig.canDownload ? 'translate-x-5' : 'translate-x-1'}`} />
+                                        </button>
+                                    </div>
+
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-2">
+                                            <Lock className="w-3.5 h-3.5 text-app-primary" />
+                                            <span className="text-xs font-semibold text-app-text-main">Password Protection</span>
+                                        </div>
+                                        <button
+                                            onClick={() => setShareConfig(prev => ({ ...prev, requirePassword: !prev.requirePassword }))}
+                                            className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors ${shareConfig.requirePassword ? 'bg-app-primary' : 'bg-app-border'}`}
+                                        >
+                                            <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${shareConfig.requirePassword ? 'translate-x-5' : 'translate-x-1'}`} />
+                                        </button>
+                                    </div>
+
+                                    {shareConfig.requirePassword && (
+                                        <input type="text" value={shareConfig.password}
+                                            onChange={(e) => setShareConfig(prev => ({ ...prev, password: e.target.value }))}
+                                            placeholder="Set Access Password"
+                                            className="w-full px-3 py-2 bg-app-bg-page border border-app-border rounded-lg text-xs text-app-text-main font-mono placeholder:font-sans focus:ring-2 focus:ring-app-primary/20"
+                                        />
+                                    )}
+                                </div>
                             </div>
                         </div>
-                        <div className="flex justify-between">
-                            <button onClick={() => goToStep(1)} className="px-8 py-3 border border-app-border text-app-text-main rounded-lg hover:bg-app-bg-hover transition-colors font-medium">Back</button>
-                            <button onClick={() => goToStep(3)} className="px-8 py-3 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover transition-colors font-medium">Next: Share & Invite</button>
+
+                        <div className="flex justify-between items-center pt-2">
+                            <button onClick={() => goToStep(1)} className="px-5 py-2 text-xs font-bold text-app-text-muted hover:text-app-text-main transition-colors flex items-center gap-2">
+                                <ArrowRight className="w-3.5 h-3.5 rotate-180" /> Back
+                            </button>
+                            <button onClick={() => goToStep(3)} className="px-6 py-2.5 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover transition-all font-bold text-sm shadow-md shadow-app-primary/20">
+                                Continue to Invite
+                            </button>
                         </div>
                     </div>
                 )}
 
                 {/* Step 3: Share & Invite */}
                 {currentStep === 3 && (
-                    <div className="space-y-6">
+                    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-400">
                         <div>
-                            <h2 className="text-2xl font-bold text-app-text-main mb-2">Share with Recipients</h2>
-                            <p className="text-sm text-app-text-muted">Enter email addresses of people you want to share these documents with</p>
+                            <h2 className="text-xl font-bold text-app-text-main">Invite Recipients</h2>
+                            <p className="text-xs text-app-text-muted">Send unique tracking links to your team or clients</p>
                         </div>
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                            <div className="bg-app-bg-card p-6 rounded-xl border border-app-border">
-                                <h3 className="text-base font-semibold text-app-text-main mb-4">Documents to Share ({selectedFiles.length})</h3>
-                                <div className="space-y-2 max-h-80 overflow-y-auto">
-                                    {uploadedFiles.filter(f => selectedFiles.includes(f.id)).map(file => (
-                                        <div key={file.id} className="flex items-center space-x-3 p-3 bg-app-bg-page rounded-lg">
-                                            <FileText className="w-5 h-5 text-app-primary flex-shrink-0" />
-                                            <div className="flex-1 min-w-0">
-                                                <p className="text-sm text-app-text-main truncate">{file.name}</p>
-                                                <p className="text-xs text-app-text-muted">{formatFileSize(file.size)}</p>
-                                            </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+                            {/* Email Input & List */}
+                            <div className="md:col-span-7 space-y-4">
+                                <div className="bg-app-bg-card p-4 rounded-xl border border-app-border">
+                                    <label className="text-xs font-bold text-app-text-muted uppercase tracking-widest mb-3 flex items-center gap-2">
+                                        <Mail className="w-3.5 h-3.5 text-app-primary" /> Recipient List
+                                    </label>
+                                    <div className="flex gap-2 mb-3">
+                                        <input type="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)}
+                                            onKeyPress={(e) => e.key === 'Enter' && addEmailRecipient()}
+                                            placeholder="Enter email address..."
+                                            className="flex-1 px-3 py-2 bg-app-bg-page border border-app-border rounded-lg text-xs text-app-text-main placeholder:text-app-text-muted/50 focus:ring-2 focus:ring-app-primary/20"
+                                        />
+                                        <button onClick={addEmailRecipient} className="px-4 py-2 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover transition-all font-bold text-xs">Add</button>
+                                    </div>
+
+                                    {recipientEmails.length > 0 ? (
+                                        <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
+                                            {recipientEmails.map((email, index) => (
+                                                <div key={index} className="flex items-center justify-between p-2.5 bg-app-bg-page/50 border border-app-border rounded-lg group">
+                                                    <div className="flex items-center gap-2 min-w-0">
+                                                        <div className="w-6 h-6 rounded-full bg-app-primary/10 flex items-center justify-center text-[10px] font-bold text-app-primary">
+                                                            {email[0].toUpperCase()}
+                                                        </div>
+                                                        <span className="text-xs text-app-text-main truncate">{email}</span>
+                                                    </div>
+                                                    <button onClick={() => removeEmailRecipient(index)} className="p-1 text-app-text-muted hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all">
+                                                        <X className="w-3.5 h-3.5" />
+                                                    </button>
+                                                </div>
+                                            ))}
                                         </div>
-                                    ))}
+                                    ) : (
+                                        <div className="py-8 text-center border border-dashed border-app-border rounded-lg bg-app-bg-page/30">
+                                            <p className="text-xs text-app-text-muted">No recipients added yet</p>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
-                            <div className="bg-app-bg-card p-6 rounded-xl border border-app-border">
-                                <label className="block text-base font-semibold text-app-text-main mb-4">
-                                    <Mail className="w-5 h-5 inline mr-2" />Recipient Email Addresses
-                                </label>
-                                <div className="flex space-x-2 mb-4">
-                                    <input type="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)}
-                                        onKeyPress={(e) => e.key === 'Enter' && addEmailRecipient()}
-                                        placeholder="Enter email address"
-                                        className="flex-1 px-4 py-3 bg-app-bg-page border border-app-border rounded-lg text-app-text-main placeholder-app-text-muted focus:outline-none focus:ring-2 focus:ring-app-primary focus:border-app-primary"
-                                    />
-                                    <button onClick={addEmailRecipient} className="px-6 py-3 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover transition-colors font-medium">Add</button>
-                                </div>
-                                {recipientEmails.length > 0 && (
-                                    <div className="space-y-2 max-h-60 overflow-y-auto">
-                                        <p className="text-xs text-app-text-muted mb-2">Recipients ({recipientEmails.length}):</p>
-                                        {recipientEmails.map((email, index) => (
-                                            <div key={index} className="flex items-center justify-between p-3 bg-app-bg-page rounded-lg">
-                                                <span className="text-sm text-app-text-main">{email}</span>
-                                                <button onClick={() => removeEmailRecipient(index)} className="p-1 text-red-400 hover:text-red-300 hover:bg-red-400/10 rounded transition-colors">
-                                                    <X className="w-4 h-4" />
-                                                </button>
+
+                            {/* Summary & Files */}
+                            <div className="md:col-span-5">
+                                <div className="bg-app-bg-card p-4 rounded-xl border border-app-border h-full flex flex-col">
+                                    <h3 className="text-xs font-bold text-app-text-muted uppercase tracking-wider mb-3">Documents to Share ({selectedFiles.length})</h3>
+                                    <div className="space-y-2 flex-1 max-h-64 overflow-y-auto pr-1 custom-scrollbar">
+                                        {uploadedFiles.filter(f => selectedFiles.includes(f.id)).map(file => (
+                                            <div key={file.id} className="flex items-center gap-2.5 p-2 bg-app-bg-page/50 border border-app-border rounded-lg">
+                                                <FileText className="w-3.5 h-3.5 text-app-primary flex-shrink-0" />
+                                                <span className="text-xs text-app-text-main truncate">{file.name}</span>
                                             </div>
                                         ))}
                                     </div>
-                                )}
+                                    <div className="mt-4 pt-3 border-t border-app-border">
+                                        <p className="text-[10px] text-app-text-muted italic mb-3">Recipients will receive unique links with the configured access rules.</p>
+                                        <div className="flex flex-col gap-2">
+                                            <button
+                                                onClick={handleShare}
+                                                disabled={sharing || (recipientEmails.length === 0 && shareConfig.dashboardAccess === 'once')}
+                                                className="w-full py-2.5 bg-green-500 hover:bg-green-600 text-white rounded-lg transition-all font-bold text-sm shadow-lg shadow-green-500/20 flex items-center justify-center gap-2"
+                                            >
+                                                {sharing ? <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" /> : <><Send className="w-3.5 h-3.5" /> Share & Invite Now</>}
+                                            </button>
+                                            <button onClick={() => goToStep(2)} className="w-full py-2 text-xs font-bold text-app-text-muted hover:text-app-text-main transition-colors">
+                                                Back to Settings
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
-                        </div>
-                        <div className="flex justify-between">
-                            <button onClick={() => goToStep(2)} className="px-8 py-3 border border-app-border text-app-text-main rounded-lg hover:bg-app-bg-hover transition-colors font-medium">Back</button>
-                            <button
-                                onClick={handleGenerateLink}
-                                disabled={sending || uploadedFiles.length === 0}
-                                className="px-8 py-3 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                                {sending ? 'Generating...' : 'Generate Link & Send Invites'}
-                            </button>
                         </div>
                     </div>
                 )}
@@ -709,7 +756,7 @@ const ShareBRD = ({ selectedProjectKey, handleCreateShareProject: parentHandleCr
                         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                             {[
                                 {
-                                    label: 'Documents', value: selectedFiles.length,
+                                    label: 'Documents', value: uploadedFiles.length,
                                     icon: FileText, color: 'text-blue-400', bg: 'bg-blue-400/10'
                                 },
                                 {
@@ -722,17 +769,19 @@ const ShareBRD = ({ selectedProjectKey, handleCreateShareProject: parentHandleCr
                                     sub: `${engagedCount} engaged`
                                 },
                                 {
-                                    label: 'Downloads', value: totalDownloads,
-                                    icon: Download, color: 'text-amber-400', bg: 'bg-amber-400/10',
-                                    hidden: !shareConfig.canDownload
+                                    label: 'Downloads',
+                                    value: !shareConfig.canDownload ? 'Blocked' : totalDownloads,
+                                    icon: !shareConfig.canDownload ? Lock : Download,
+                                    color: !shareConfig.canDownload ? 'text-red-400' : 'text-amber-400',
+                                    bg: !shareConfig.canDownload ? 'bg-red-400/10' : 'bg-amber-400/10'
                                 },
-                            ].filter(m => !m.hidden).map((metric) => (
+                            ].map((metric) => (
                                 <div key={metric.label} className="bg-app-bg-card border border-app-border rounded-xl p-4 flex items-center gap-3">
                                     <div className={`w-10 h-10 ${metric.bg} rounded-lg flex items-center justify-center flex-shrink-0`}>
                                         <metric.icon className={`w-5 h-5 ${metric.color}`} />
                                     </div>
                                     <div className="min-w-0">
-                                        <p className="text-2xl font-bold text-app-text-main leading-none">{metric.value}</p>
+                                        <p className={`font-bold text-app-text-main leading-none ${metric.value === 'Blocked' ? 'text-lg' : 'text-2xl'}`}>{metric.value}</p>
                                         <p className="text-xs text-app-text-muted mt-0.5">{metric.label}</p>
                                         {metric.sub && <p className="text-[10px] text-app-text-muted mt-0.5 opacity-70">{metric.sub}</p>}
                                     </div>
@@ -760,13 +809,11 @@ const ShareBRD = ({ selectedProjectKey, handleCreateShareProject: parentHandleCr
                                 </button>
                             </div>
 
-                            {/* Table header */}
                             <div className="grid grid-cols-12 px-5 py-2 bg-app-bg-page/50 border-b border-app-border text-[10px] font-bold uppercase tracking-wider text-app-text-muted">
                                 <div className="col-span-5">Recipient</div>
                                 <div className="col-span-2 text-center">Status</div>
                                 <div className="col-span-2 text-center">Views</div>
-                                {shareConfig.canDownload && <div className="col-span-2 text-center">Downloads</div>}
-                                <div className={`${shareConfig.canDownload ? 'col-span-1' : 'col-span-3'} text-right`}>Last Seen</div>
+                                <div className="col-span-3 text-center">Downloads</div>
                             </div>
 
                             {/* Table rows */}
@@ -775,12 +822,12 @@ const ShareBRD = ({ selectedProjectKey, handleCreateShareProject: parentHandleCr
                                     const entities = [...recipientEmails];
                                     const hasAnonymous = (shareStats?.access_log || []).some(l => !l.email);
                                     if (hasAnonymous) entities.push('Anonymous');
-                                    
+
                                     return entities.map((identity, index) => {
                                         const isAnonymous = identity === 'Anonymous';
-                                        const stats = isAnonymous 
+                                        const stats = isAnonymous
                                             ? (shareStats?.access_log || [])
-                                                .filter(l => !l.email)
+                                                .filter(l => !l.email && l.filename !== 'Dashboard')
                                                 .reduce((acc, curr) => ({
                                                     views: acc.views + (curr.action === 'view' ? 1 : 0),
                                                     downloads: acc.downloads + (curr.action === 'download' ? 1 : 0),
@@ -793,95 +840,92 @@ const ShareBRD = ({ selectedProjectKey, handleCreateShareProject: parentHandleCr
 
                                         // Get this entity's log entries
                                         const recipientLog = (shareStats?.access_log || [])
-                                            .filter(l => isAnonymous ? !l.email : (l.email === identity))
+                                            .filter(l => (isAnonymous ? !l.email : (l.email === identity)) && l.filename !== 'Dashboard')
                                             .sort((a, b) => new Date(b.accessed_at) - new Date(a.accessed_at))
                                             .slice(0, 5);
-                                        
+
                                         const label = isAnonymous ? 'Public / Anonymous' : identity;
                                         const email = isAnonymous ? null : identity;
 
-                                    return (
-                                        <div key={index}>
-                                            <div
-                                                className="grid grid-cols-12 px-5 py-3 items-center hover:bg-app-bg-hover/40 transition-colors cursor-pointer"
-                                                onClick={() => setExpandedRecipient(isExpanded ? null : email)}
-                                            >
-                                                {/* Email */}
-                                                <div className="col-span-5 flex items-center gap-2.5 min-w-0">
-                                                    <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${isActive ? 'bg-app-primary/10 text-app-primary' : 'bg-app-bg-page text-app-text-muted'}`}>
-                                                        {email ? email[0].toUpperCase() : '?'}
+                                        return (
+                                            <div key={index}>
+                                                <div
+                                                    className="grid grid-cols-12 px-5 py-3 items-center hover:bg-app-bg-hover/40 transition-colors cursor-pointer"
+                                                    onClick={() => setExpandedRecipient(isExpanded ? null : email)}
+                                                >
+                                                    {/* Email */}
+                                                    <div className="col-span-5 flex items-center gap-2.5 min-w-0">
+                                                        <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${isActive ? 'bg-app-primary/10 text-app-primary' : 'bg-app-bg-page text-app-text-muted'}`}>
+                                                            {email ? email[0].toUpperCase() : '?'}
+                                                        </div>
+                                                        <div className="min-w-0">
+                                                            <p className="text-xs font-medium text-app-text-main truncate">{label}</p>
+                                                            {stats.locations && stats.locations.length > 0 && (
+                                                                <p className="text-[10px] text-app-text-muted flex items-center gap-1">
+                                                                    <Globe className="w-2.5 h-2.5" />{stats.locations[0]}
+                                                                </p>
+                                                            )}
+                                                        </div>
                                                     </div>
-                                                    <div className="min-w-0">
-                                                        <p className="text-xs font-medium text-app-text-main truncate">{label}</p>
-                                                        {stats.locations && stats.locations.length > 0 && (
-                                                            <p className="text-[10px] text-app-text-muted flex items-center gap-1">
-                                                                <Globe className="w-2.5 h-2.5" />{stats.locations[0]}
-                                                            </p>
+
+                                                    {/* Status */}
+                                                    <div className="col-span-2 flex justify-center">
+                                                        {isActive ? (
+                                                            <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-500/10 border border-green-500/20 text-green-400 text-[10px] font-medium rounded-full">
+                                                                <span className="w-1.5 h-1.5 rounded-full bg-green-400 inline-block" />Viewed
+                                                            </span>
+                                                        ) : (
+                                                            <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-app-bg-page border border-app-border text-app-text-muted text-[10px] font-medium rounded-full">
+                                                                <span className="w-1.5 h-1.5 rounded-full bg-app-text-muted inline-block opacity-50" />Invited
+                                                            </span>
+                                                        )}
+                                                    </div>
+
+                                                    {/* Views */}
+                                                    <div className="col-span-2 text-center">
+                                                        <span className={`text-sm font-semibold ${stats.views > 0 ? 'text-emerald-400' : 'text-app-text-muted'}`}>
+                                                            {stats.views}
+                                                        </span>
+                                                    </div>
+
+                                                    {/* Downloads */}
+                                                    <div className="col-span-3 text-center">
+                                                        {!shareConfig.canDownload ? (
+                                                            <span className="inline-flex items-center gap-1 text-[10px] font-medium text-red-400/80 bg-red-400/5 px-2 py-0.5 rounded-lg border border-red-400/10">
+                                                                <Lock className="w-2.5 h-2.5" /> Blocked
+                                                            </span>
+                                                        ) : (
+                                                            <span className={`text-sm font-semibold ${stats.downloads > 0 ? 'text-amber-400' : 'text-app-text-muted'}`}>
+                                                                {stats.downloads}
+                                                            </span>
                                                         )}
                                                     </div>
                                                 </div>
 
-                                                {/* Status */}
-                                                <div className="col-span-2 flex justify-center">
-                                                    {isActive ? (
-                                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-500/10 border border-green-500/20 text-green-400 text-[10px] font-medium rounded-full">
-                                                            <span className="w-1.5 h-1.5 rounded-full bg-green-400 inline-block" />Viewed
-                                                        </span>
-                                                    ) : (
-                                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-app-bg-page border border-app-border text-app-text-muted text-[10px] font-medium rounded-full">
-                                                            <span className="w-1.5 h-1.5 rounded-full bg-app-text-muted inline-block opacity-50" />Invited
-                                                        </span>
-                                                    )}
-                                                </div>
-
-                                                {/* Views */}
-                                                <div className="col-span-2 text-center">
-                                                    <span className={`text-sm font-semibold ${stats.views > 0 ? 'text-emerald-400' : 'text-app-text-muted'}`}>
-                                                        {stats.views}
-                                                    </span>
-                                                </div>
-
-                                                {/* Downloads */}
-                                                {shareConfig.canDownload && (
-                                                    <div className="col-span-2 text-center">
-                                                        <span className={`text-sm font-semibold ${stats.downloads > 0 ? 'text-amber-400' : 'text-app-text-muted'}`}>
-                                                            {stats.downloads}
-                                                        </span>
+                                                {/* Expanded per-recipient log */}
+                                                {isExpanded && recipientLog.length > 0 && (
+                                                    <div className="mx-5 mb-3 rounded-lg border border-app-border overflow-hidden">
+                                                        <div className="bg-app-bg-page px-4 py-2 text-[10px] font-bold uppercase tracking-wider text-app-text-muted border-b border-app-border grid grid-cols-3">
+                                                            <span>Action</span>
+                                                            <span>File</span>
+                                                            <span className="text-right">Time</span>
+                                                        </div>
+                                                        {recipientLog.map((log, li) => (
+                                                            <div key={li} className="grid grid-cols-3 px-4 py-2 text-xs border-b border-app-border/50 last:border-0 hover:bg-app-bg-hover/30 transition-colors">
+                                                                <span className={`flex items-center gap-1.5 font-medium ${log.action === 'download' ? 'text-amber-400' : 'text-emerald-400'}`}>
+                                                                    {log.action === 'download' ? <Download className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                                                                    {log.action === 'download' ? 'Downloaded' : 'Viewed'}
+                                                                </span>
+                                                                <span className="text-app-text-muted truncate">{log.filename || '—'}</span>
+                                                                <span className="text-app-text-muted text-right">{formatDateTime(log.accessed_at)}</span>
+                                                            </div>
+                                                        ))}
                                                     </div>
                                                 )}
-
-                                                {/* Last seen */}
-                                                <div className={`${shareConfig.canDownload ? 'col-span-1' : 'col-span-3'} text-right flex items-center justify-end gap-1`}>
-                                                    <span className="text-[10px] text-app-text-muted">{formatTimeAgo(stats.lastAccess)}</span>
-                                                    {recipientLog.length > 0 && (
-                                                        isExpanded ? <ChevronUp className="w-3 h-3 text-app-text-muted" /> : <ChevronDown className="w-3 h-3 text-app-text-muted" />
-                                                    )}
-                                                </div>
                                             </div>
-
-                                            {/* Expanded per-recipient log */}
-                                            {isExpanded && recipientLog.length > 0 && (
-                                                <div className="mx-5 mb-3 rounded-lg border border-app-border overflow-hidden">
-                                                    <div className="bg-app-bg-page px-4 py-2 text-[10px] font-bold uppercase tracking-wider text-app-text-muted border-b border-app-border grid grid-cols-3">
-                                                        <span>Action</span>
-                                                        <span>File</span>
-                                                        <span className="text-right">Time</span>
-                                                    </div>
-                                                    {recipientLog.map((log, li) => (
-                                                        <div key={li} className="grid grid-cols-3 px-4 py-2 text-xs border-b border-app-border/50 last:border-0 hover:bg-app-bg-hover/30 transition-colors">
-                                                            <span className={`flex items-center gap-1.5 font-medium ${log.action === 'download' ? 'text-amber-400' : 'text-emerald-400'}`}>
-                                                                {log.action === 'download' ? <Download className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                                                                {log.action === 'download' ? 'Downloaded' : 'Viewed'}
-                                                            </span>
-                                                            <span className="text-app-text-muted truncate">{log.filename || '—'}</span>
-                                                            <span className="text-app-text-muted text-right">{formatDateTime(log.accessed_at)}</span>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            )}
-                                        </div>
-                                    );
-                                })})()}
+                                        );
+                                    })
+                                })()}
                             </div>
                         </div>
 
@@ -894,6 +938,7 @@ const ShareBRD = ({ selectedProjectKey, handleCreateShareProject: parentHandleCr
                                 </div>
                                 <div className="divide-y divide-app-border max-h-52 overflow-y-auto">
                                     {[...shareStats.access_log]
+                                        .filter(l => l.filename !== 'Dashboard')
                                         .sort((a, b) => new Date(b.accessed_at) - new Date(a.accessed_at))
                                         .slice(0, 10)
                                         .map((log, index) => (
