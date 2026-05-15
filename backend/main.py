@@ -2846,18 +2846,19 @@ def update_document_history(
     return db_doc
 
 
-# --- Share BRD Endpoints ---
-@app.post("/api/share-brd")
-async def share_brd_documents(
-    files: List[UploadFile] = File(...),
+# --- Share Document Endpoints ---
+@app.post("/api/share-doc")
+async def share_doc_documents(
+    files: List[UploadFile] = File([]),
     config: str = Form(...),
     recipients: str = Form(...),
-    project_token: Optional[str] = Form(None),
+    project_token: str = Form(None),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
+    print(f"DEBUG: share_doc_documents called with project_token={project_token}")
     """
-    Share BRD documents with external users via secure links.
+    Share Document documents with external users via secure links.
     Uploads files, creates a share link, and sends email notifications.
     """
     import json
@@ -2883,6 +2884,15 @@ async def share_brd_documents(
             raise HTTPException(status_code=404, detail="Share project not found")
         
         share_project_id = share_project.id
+        
+        # Expire old documents for this project to ensure only the latest is active
+        try:
+            db.query(models.SharedDocument).filter(
+                models.SharedDocument.share_project_id == share_project_id
+            ).update({"expires_at": datetime.utcnow() - timedelta(seconds=1)})
+            db.flush()
+        except Exception as e:
+            print(f"Warning: Failed to expire old documents: {e}")
     
     # Create upload directory if it doesn't exist
     upload_dir = Path("shared_documents")
@@ -2890,25 +2900,42 @@ async def share_brd_documents(
     
     # Save uploaded files
     file_paths = []
-    for file in files:
-        # Generate unique filename
-        file_id = secrets.token_urlsafe(16)
-        file_ext = Path(file.filename).suffix
-        unique_filename = f"{file_id}{file_ext}"
-        file_path = upload_dir / unique_filename
+    if files:
+        for file in files:
+            # Generate unique filename
+            file_id = secrets.token_urlsafe(16)
+            file_ext = Path(file.filename).suffix
+            unique_filename = f"{file_id}{file_ext}"
+            file_path = upload_dir / unique_filename
+            
+            # Save file
+            content = await file.read()
+            with open(file_path, "wb") as f:
+                f.write(content)
+            
+            file_paths.append({
+                'filename': unique_filename,
+                'original_filename': file.filename,
+                'path': str(file_path),
+                'size': len(content),
+                'type': file.content_type or ''
+            })
+    
+    # If no new files but project token provided, get existing files from latest share
+    if not file_paths and share_project_id:
+        latest_share = db.query(models.SharedDocument).filter(
+            models.SharedDocument.share_project_id == share_project_id
+        ).order_by(models.SharedDocument.created_at.desc()).first()
         
-        # Save file
-        content = await file.read()
-        with open(file_path, "wb") as f:
-            f.write(content)
-        
-        file_paths.append({
-            'filename': unique_filename,
-            'original_filename': file.filename,
-            'path': str(file_path),
-            'size': len(content),
-            'type': file.content_type or ''
-        })
+        if latest_share and latest_share.files:
+            for f in latest_share.files:
+                file_paths.append({
+                    'filename': f.filename,
+                    'original_filename': f.original_filename,
+                    'path': f.file_path,
+                    'size': f.file_size,
+                    'type': f.file_type
+                })
     
     # Create shared document entry
     try:
@@ -2918,8 +2945,26 @@ async def share_brd_documents(
         # Calculate expiration
         expires_at = None
         expiration_time = share_config.get('expirationTime', 'no-expiration')
-        if expiration_time != 'no-expiration':
-            now = datetime.utcnow()
+        expiration_days = share_config.get('expirationDays')
+        expiration_date = share_config.get('expirationDate')
+        
+        now = datetime.utcnow()
+        
+        if expiration_date:
+            try:
+                # Expecting YYYY-MM-DD
+                expires_at = datetime.fromisoformat(expiration_date).replace(hour=23, minute=59, second=59)
+            except (ValueError, TypeError):
+                pass
+        
+        if not expires_at and share_config.get('dashboardAccess') == 'once':
+            # Handle Limited View days
+            try:
+                days = int(expiration_days) if expiration_days else 7
+            except (ValueError, TypeError):
+                days = 7
+            expires_at = now + timedelta(days=days)
+        elif not expires_at and expiration_time != 'no-expiration':
             if expiration_time == '24h':
                 expires_at = now + timedelta(hours=24)
             elif expiration_time == '7d':
@@ -2943,7 +2988,9 @@ async def share_brd_documents(
             expires_at=expires_at,
             require_password=share_config.get('requirePassword', False),
             password_hash=password_hash,
-            can_download=share_config.get('canDownload', True)
+            view_limit=share_config.get('viewLimit') if share_config.get('dashboardAccess') == 'once' else None,
+            can_download=share_config.get('canDownload', True),
+            allow_anonymous=share_config.get('allowAnonymous', True)
         )
         
         db.add(shared_doc)
@@ -2961,15 +3008,26 @@ async def share_brd_documents(
             )
             db.add(shared_file)
         
-        # Add recipients
+        # Add recipients with individual tokens
+        recipient_data = []
         if recipient_list:
-            for email in recipient_list:
-                if email.strip():
+            for item in recipient_list:
+                email = item.get('email', '').strip() if isinstance(item, dict) else item.strip()
+                access_level = item.get('access_level', 'view') if isinstance(item, dict) else 'view'
+                if email:
+                    token = secrets.token_urlsafe(32)
                     recipient = models.SharedDocumentRecipient(
                         share_id=shared_doc.id,
-                        email=email.strip()
+                        email=email,
+                        share_token=token,
+                        access_level=access_level
                     )
                     db.add(recipient)
+                    recipient_data.append({
+                        'email': email,
+                        'share_token': token,
+                        'access_level': access_level
+                    })
         
         db.commit()
         
@@ -2977,13 +3035,13 @@ async def share_brd_documents(
         frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
         share_url = f"{frontend_url}/shared/{share_token}"
         
-        # Send email notifications
-        if recipient_list:
+        # Send email notifications using individual links
+        if recipient_data:
             try:
-                from share_brd_service import send_share_notification_emails
+                from share_document_service import send_share_notification_emails
                 send_share_notification_emails(
-                    share_url=share_url,
-                    recipients=recipient_list,
+                    share_id=shared_doc.id,
+                    recipients_data=recipient_data,
                     sender_name=current_user.email,
                     document_count=len(files),
                     config=share_config
@@ -3022,21 +3080,41 @@ async def get_shared_document(
     """
     import hashlib
     
-    # Get shared document
+    # Get shared document - check base token OR individual recipient token
     shared_doc = db.query(models.SharedDocument).filter(
         models.SharedDocument.share_token == share_token
     ).first()
     
+    recipient_email = r
+    individual_access_level = None
+    
     if not shared_doc:
-        raise HTTPException(status_code=404, detail="Share link not found or expired")
+        # Check individual recipient token
+        recipient = db.query(models.SharedDocumentRecipient).filter(
+            models.SharedDocumentRecipient.share_token == share_token
+        ).first()
+        
+        if not recipient:
+            raise HTTPException(status_code=404, detail="Share link not found or expired")
+        
+        shared_doc = recipient.shared_document
+        recipient_email = recipient.email
+        individual_access_level = recipient.access_level
+    else:
+        # If base token, check if anonymous access is allowed
+        if not shared_doc.allow_anonymous:
+            raise HTTPException(status_code=403, detail="Anonymous access is disabled for this share")
     
     # Check if expired
     if shared_doc.expires_at and datetime.utcnow() > shared_doc.expires_at:
         raise HTTPException(status_code=404, detail="Share link has expired")
     
     # Check if access limit reached (for 'once' access type)
-    if shared_doc.access_type == 'once' and shared_doc.access_count > 0:
-        raise HTTPException(status_code=404, detail="Share link has already been accessed")
+    # If view_limit is set, we check against the total access_count
+    if shared_doc.access_type == 'once':
+        limit = shared_doc.view_limit or 1 # Default to 1 if not set but type is 'once'
+        if shared_doc.access_count >= limit:
+            raise HTTPException(status_code=404, detail=f"Share link has reached its access limit of {limit} views")
     
     # Check password if required
     if shared_doc.require_password:
@@ -3050,23 +3128,40 @@ async def get_shared_document(
         if password_hash != shared_doc.password_hash:
             raise HTTPException(status_code=403, detail="Invalid password")
     
-    # Log access
+    # Log access - prevent duplicate logs within a short timeframe (e.g., 10 seconds)
+    # to handle React StrictMode double-mounting or browser pre-fetching
     ip_address = request.client.host if request else None
     user_agent = request.headers.get('user-agent') if request else None
     
-    access_log = models.SharedDocumentAccessLog(
-        share_id=shared_doc.id,
-        ip_address=ip_address,
-        user_agent=user_agent,
-        recipient_email=r,
-        action="view",
-        filename="Dashboard"
-    )
-    db.add(access_log)
+    # Check for recent identical log (last 10 seconds)
+    recent_log = db.query(models.SharedDocumentAccessLog).filter(
+        models.SharedDocumentAccessLog.share_id == shared_doc.id,
+        models.SharedDocumentAccessLog.ip_address == ip_address,
+        models.SharedDocumentAccessLog.recipient_email == recipient_email,
+        models.SharedDocumentAccessLog.action == "view",
+        models.SharedDocumentAccessLog.accessed_at >= datetime.utcnow() - timedelta(seconds=10)
+    ).first()
     
-    # Increment access count
-    shared_doc.access_count += 1
+    if not recent_log:
+        access_log = models.SharedDocumentAccessLog(
+            share_id=shared_doc.id,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            recipient_email=recipient_email,
+            action="view",
+            filename="Dashboard"
+        )
+        db.add(access_log)
+        
+        # Increment access count
+        shared_doc.access_count += 1
+    
     db.commit()
+    
+    # Determine download permission based on global setting AND individual level
+    can_download = shared_doc.can_download
+    if individual_access_level == 'view':
+        can_download = False
     
     # Return share information (without sensitive data)
     return {
@@ -3077,13 +3172,14 @@ async def get_shared_document(
                 'filename': f.original_filename,
                 'size': f.file_size,
                 'type': f.file_type,
-                'uploaded_at': f.uploaded_at.isoformat() if f.uploaded_at else None
+                'uploaded_at': (f.uploaded_at.isoformat() + 'Z') if f.uploaded_at else None
             }
             for f in shared_doc.files
         ],
-        'created_at': shared_doc.created_at.isoformat() if shared_doc.created_at else None,
+        'created_at': (shared_doc.created_at.isoformat() + 'Z') if shared_doc.created_at else None,
         'access_type': shared_doc.access_type,
-        'can_download': shared_doc.can_download
+        'can_download': can_download,
+        'recipient_email': recipient_email
     }
 
 
@@ -3102,16 +3198,37 @@ async def download_shared_file(
     import hashlib
     from fastapi.responses import FileResponse
     
-    # Get shared document
+    # Get shared document - check base token OR individual recipient token
     shared_doc = db.query(models.SharedDocument).filter(
         models.SharedDocument.share_token == share_token
     ).first()
     
-    if not shared_doc:
-        raise HTTPException(status_code=404, detail="Share link not found or expired")
+    recipient_email = r
+    individual_access_level = None
     
-    # Check if downloads are allowed
-    if not shared_doc.can_download:
+    if not shared_doc:
+        # Check individual recipient token
+        recipient = db.query(models.SharedDocumentRecipient).filter(
+            models.SharedDocumentRecipient.share_token == share_token
+        ).first()
+        
+        if not recipient:
+            raise HTTPException(status_code=404, detail="Share link not found or expired")
+        
+        shared_doc = recipient.shared_document
+        recipient_email = recipient.email
+        individual_access_level = recipient.access_level
+    else:
+        # If base token, check if anonymous access is allowed
+        if not shared_doc.allow_anonymous:
+            raise HTTPException(status_code=403, detail="Anonymous access is disabled for this share")
+    
+    # Determine download permission based on global setting AND individual level
+    can_download = shared_doc.can_download
+    if individual_access_level == 'view':
+        can_download = False
+        
+    if not can_download:
         raise HTTPException(status_code=403, detail="Downloads are not allowed for this share")
     
     # Check if expired
@@ -3144,7 +3261,7 @@ async def download_shared_file(
         share_id=shared_doc.id,
         ip_address=ip_address,
         user_agent=user_agent,
-        recipient_email=r,
+        recipient_email=recipient_email,
         action="download",
         filename=file_info.original_filename
     )
@@ -3178,13 +3295,30 @@ async def view_shared_file(
     import hashlib
     from fastapi.responses import Response
     
-    # Get shared document
+    # Get shared document - check base token OR individual recipient token
     shared_doc = db.query(models.SharedDocument).filter(
         models.SharedDocument.share_token == share_token
     ).first()
     
+    recipient_email = r
+    individual_access_level = None
+    
     if not shared_doc:
-        raise HTTPException(status_code=404, detail="Share link not found or expired")
+        # Check individual recipient token
+        recipient = db.query(models.SharedDocumentRecipient).filter(
+            models.SharedDocumentRecipient.share_token == share_token
+        ).first()
+        
+        if not recipient:
+            raise HTTPException(status_code=404, detail="Share link not found or expired")
+        
+        shared_doc = recipient.shared_document
+        recipient_email = recipient.email
+        individual_access_level = recipient.access_level
+    else:
+        # If base token, check if anonymous access is allowed
+        if not shared_doc.allow_anonymous:
+            raise HTTPException(status_code=403, detail="Anonymous access is disabled for this share")
     
     # Check if expired
     if shared_doc.expires_at and datetime.utcnow() > shared_doc.expires_at:
@@ -3216,7 +3350,7 @@ async def view_shared_file(
         share_id=shared_doc.id,
         ip_address=ip_address,
         user_agent=user_agent,
-        recipient_email=r,
+        recipient_email=recipient_email,
         action="view",
         filename=file_info.original_filename
     )
@@ -3516,7 +3650,38 @@ async def view_shared_file(
         raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
 
 
-@app.get("/api/share-brd/stats")
+@app.get("/api/share-doc/{share_id}/recipients", response_model=List[Dict[str, Any]])
+async def get_share_doc_recipients(
+    share_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """Get all recipients for a share with their tokens and access levels."""
+    # Verify ownership
+    share = db.query(models.SharedDocument).filter(
+        models.SharedDocument.id == share_id,
+        models.SharedDocument.user_id == current_user.id
+    ).first()
+    
+    if not share:
+        raise HTTPException(status_code=404, detail="Share not found")
+        
+    recipients = db.query(models.SharedDocumentRecipient).filter(
+        models.SharedDocumentRecipient.share_id == share_id
+    ).all()
+    
+    return [
+        {
+            'email': r.email,
+            'share_token': r.share_token,
+            'access_level': r.access_level,
+            'notified_at': r.notified_at.isoformat() if r.notified_at else None
+        }
+        for r in recipients
+    ]
+
+
+@app.get("/api/share-doc/stats")
 async def get_share_stats(
     token: str,
     db: Session = Depends(get_db),
@@ -3545,7 +3710,7 @@ async def get_share_stats(
         'access_log': [
             {
                 'id': log.id,
-                'accessed_at': log.accessed_at.replace(tzinfo=timezone.utc).isoformat() if log.accessed_at else None,
+                'accessed_at': (log.accessed_at.isoformat() + 'Z') if log.accessed_at else None,
                 'ip_address': log.ip_address,
                 'user_agent': log.user_agent,
                 'email': log.recipient_email,
@@ -3554,8 +3719,8 @@ async def get_share_stats(
             }
             for log in access_logs
         ],
-        'created_at': shared_doc.created_at.isoformat() if shared_doc.created_at else None,
-        'expires_at': shared_doc.expires_at.isoformat() if shared_doc.expires_at else None
+        'created_at': (shared_doc.created_at.isoformat() + 'Z') if shared_doc.created_at else None,
+        'expires_at': (shared_doc.expires_at.isoformat() + 'Z') if shared_doc.expires_at else None
     }
 
 
@@ -3618,9 +3783,9 @@ async def get_share_projects(
     # Get document counts for each project
     result = []
     for project in share_projects:
-        doc_count = db.query(models.SharedDocument).filter(
+        doc_count = db.query(func.count(models.SharedDocumentFile.original_filename.distinct())).join(models.SharedDocument).filter(
             models.SharedDocument.share_project_id == project.id
-        ).count()
+        ).scalar() or 0
         
         result.append({
             'id': project.id,
@@ -3628,8 +3793,8 @@ async def get_share_projects(
             'project_name': project.project_name,
             'description': project.description,
             'document_count': doc_count,
-            'created_at': project.created_at.isoformat() if project.created_at else None,
-            'updated_at': project.updated_at.isoformat() if project.updated_at else None,
+            'created_at': (project.created_at.isoformat() + 'Z') if project.created_at else None,
+            'updated_at': (project.updated_at.isoformat() + 'Z') if project.updated_at else None,
             'current_step': project.current_step
         })
     
@@ -3677,8 +3842,10 @@ async def get_share_project(
             'access_type': doc.access_type,
             'access_count': doc.access_count,
             'can_download': doc.can_download,
-            'created_at': doc.created_at.isoformat() if doc.created_at else None,
-            'expires_at': doc.expires_at.isoformat() if doc.expires_at else None,
+            'allow_anonymous': doc.allow_anonymous,
+            'view_limit': doc.view_limit,
+            'created_at': (doc.created_at.isoformat() + 'Z') if doc.created_at else None,
+            'expires_at': (doc.expires_at.isoformat() + 'Z') if doc.expires_at else None,
             'files': [{
                 'id': f.id,
                 'filename': f.filename,
@@ -3686,7 +3853,10 @@ async def get_share_project(
                 'file_size': f.file_size,
                 'file_type': f.file_type
             } for f in files],
-            'recipients': [r.email for r in recipients]
+            'recipients': [{
+                'email': r.email,
+                'access_level': r.access_level
+            } for r in recipients]
         })
     
     return {
@@ -3695,8 +3865,8 @@ async def get_share_project(
             'project_token': share_project.project_token,
             'project_name': share_project.project_name,
             'description': share_project.description,
-            'created_at': share_project.created_at.isoformat() if share_project.created_at else None,
-            'updated_at': share_project.updated_at.isoformat() if share_project.updated_at else None,
+            'created_at': (share_project.created_at.isoformat() + 'Z') if share_project.created_at else None,
+            'updated_at': (share_project.updated_at.isoformat() + 'Z') if share_project.updated_at else None,
             'current_step': share_project.current_step
         },
         'documents': documents

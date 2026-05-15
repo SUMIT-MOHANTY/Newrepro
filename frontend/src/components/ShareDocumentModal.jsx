@@ -2,7 +2,7 @@ import { useState, useCallback } from 'react';
 import { X, Upload, Settings as SettingsIcon, Send, CheckCircle, FileText, Trash2, Eye, EyeOff, Calendar, Lock, Unlock, Mail } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 
-const ShareBRDModal = ({ isOpen, onClose }) => {
+const ShareDocumentModal = ({ isOpen, onClose }) => {
     const [currentStep, setCurrentStep] = useState(1);
     const [uploadedFiles, setUploadedFiles] = useState([]);
     const [isDragging, setIsDragging] = useState(false);
@@ -102,7 +102,7 @@ const ShareBRDModal = ({ isOpen, onClose }) => {
             formData.append('config', JSON.stringify(shareConfig));
             formData.append('recipients', JSON.stringify(recipientEmails.filter(e => e.trim())));
             
-            const response = await fetch(API_ENDPOINTS.SHARE_BRD || '/api/share-brd', {
+            const response = await fetch(API_ENDPOINTS.SHARE_DOC || '/api/share-doc', {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${token}`
@@ -155,7 +155,7 @@ const ShareBRDModal = ({ isOpen, onClose }) => {
     };
 
     const steps = [
-        { number: 1, label: 'Upload BRD', icon: Upload },
+        { number: 1, label: 'Upload Document', icon: Upload },
         { number: 2, label: 'Configure', icon: SettingsIcon },
         { number: 3, label: 'Share', icon: Mail },
         { number: 4, label: 'On Flight', icon: Send }
@@ -179,7 +179,7 @@ const ShareBRDModal = ({ isOpen, onClose }) => {
             >
                 {/* Header */}
                 <div className="flex items-center justify-between px-6 py-4 border-b border-app-border bg-gradient-to-r from-app-primary/10 to-app-primary-dark/10 flex-shrink-0">
-                    <h2 className="text-xl font-bold text-app-text-main">Share Your BRD</h2>
+                    <h2 className="text-xl font-bold text-app-text-main">Share Your Document</h2>
                     <button
                         onClick={handleClose}
                         className="p-2 rounded-lg text-app-text-light hover:text-app-text-main hover:bg-app-bg-hover transition-colors"
@@ -231,7 +231,7 @@ const ShareBRDModal = ({ isOpen, onClose }) => {
 
                 {/* Content */}
                 <div className="flex-1 overflow-y-auto p-6">
-                    {/* Step 1: Upload BRD */}
+                    {/* Step 1: Upload Document */}
                     {currentStep === 1 && (
                         <div className="space-y-6">
                             <div>
@@ -612,4 +612,4 @@ const ShareBRDModal = ({ isOpen, onClose }) => {
     );
 };
 
-export default ShareBRDModal;
+export default ShareDocumentModal;

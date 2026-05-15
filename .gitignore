@@ -59,3 +59,15 @@ backend/logs/code_generation.txt
 backend/logs/self_review.txt
 vibecoding/backend/vibecoding_users.db-shm
 vibecoding/backend/vibecoding_users.db-wal
+
+
+
+*.log
+test*
+*.kiro
+*.corrupt*
+*.db*
+*.txt
+*.sh
+*.bat
+*copy*

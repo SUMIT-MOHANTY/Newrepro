@@ -467,7 +467,9 @@ class SharedDocument(Base):
     require_password = Column(Boolean, default=False)
     password_hash = Column(String, nullable=True)
     access_count = Column(Integer, default=0)
+    view_limit = Column(Integer, nullable=True)  # Limit number of views
     can_download = Column(Boolean, default=True)  # Control download permissions
+    allow_anonymous = Column(Boolean, default=True)  # Allow public access without individual token
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
     # Relationships
@@ -502,6 +504,8 @@ class SharedDocumentRecipient(Base):
     id = Column(Integer, primary_key=True, index=True)
     share_id = Column(Integer, ForeignKey("shared_documents.id"), index=True, nullable=False)
     email = Column(String, nullable=False)
+    share_token = Column(String, unique=True, index=True, nullable=True) # Unique token for this recipient
+    access_level = Column(String, default="view") # 'view' or 'download' (if global allows)
     notified_at = Column(DateTime, default=datetime.utcnow)
 
     # Relationships

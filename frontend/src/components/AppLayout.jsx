@@ -64,6 +64,12 @@ export default function AppLayout({ children }) {
             return '';
         }
     });
+
+    const unifiedProjects = useMemo(() => {
+        const standard = projects.map(p => ({ ...p, type: 'standard', timestamp: new Date(p.submissionDate || p.createdAt || p.latestDocument?.upload_date || 0).getTime() }));
+        const shared = shareProjects.map(p => ({ ...p, type: 'share', key: p.project_token, name: p.project_name, timestamp: new Date(p.created_at || 0).getTime() }));
+        return [...standard, ...shared].sort((a, b) => b.timestamp - a.timestamp);
+    }, [projects, shareProjects]);
     const [showSettings, setShowSettings] = useState(false);
     const [isNewProjectMode, setIsNewProjectMode] = useState(false);
     const [pluginClients, setPluginClients] = useState([]);
@@ -164,16 +170,12 @@ export default function AppLayout({ children }) {
                                 : location.pathname === '/governance-management' ? 'governanceManagement'
                                     : location.pathname === '/agents' ? 'agents'
                                         : location.pathname === '/plugins' ? 'plugins'
-                                            : location.pathname.startsWith('/share-brd') ? 'shareBRD'
+                                            : location.pathname.startsWith('/share-doc') ? 'shareDoc'
                                                 : 'main';
 
-    const isShareMode = location.pathname.startsWith('/share-brd');
+    const isShareMode = location.pathname.startsWith('/share-doc');
 
-    // Clear selection when entering/leaving share mode to avoid ID collisions
-    // and ensure user explicitly selects or creates a project.
-    useEffect(() => {
-        setSelectedProjectKey('');
-    }, [isShareMode]);
+
 
     const getViewLabel = useCallback((view) => {
         switch (view) {
@@ -261,7 +263,7 @@ export default function AppLayout({ children }) {
                 const returnPath = sessionStorage.getItem('dsuite_return_path');
                 const returnProject = sessionStorage.getItem('dsuite_return_project');
 
-                if (returnPath && returnPath !== '/dashboard' && returnPath !== '/') {
+                if (returnPath && returnPath !== '/dashboard' && returnPath !== '/' && returnPath !== '/share-brd') {
                     console.log('🔙 Returning from VibeCoding, restoring path:', returnPath);
 
                     // Restore project selection if available
@@ -302,7 +304,7 @@ export default function AppLayout({ children }) {
         if (!user || !rbac) return false;
 
         const path = location.pathname || '/';
-        if (path === '/app' || path.startsWith('/app/') || path.startsWith('/share-brd')) return false;
+        if (path === '/app' || path.startsWith('/app/') || path.startsWith('/share-doc')) return false;
         if (rbac?.is_org_admin) return false;
 
         const allowed = Array.isArray(rbac?.allowed_paths) ? rbac.allowed_paths : [];
@@ -355,7 +357,6 @@ export default function AppLayout({ children }) {
         fetchPluginClients();
     }, [fetchPluginClients, user]);
 
-    // Fetch Share Projects if in share mode
     const fetchShareProjects = useCallback(async () => {
         const token = localStorage.getItem('token');
         if (!token) return;
@@ -371,6 +372,14 @@ export default function AppLayout({ children }) {
             console.error('Error loading share projects:', error);
         }
     }, []);
+
+    // Handle share mode detection
+    useEffect(() => {
+        if (isShareMode) {
+            // If we're in share mode, make sure the sidebar project list is refreshed
+            fetchShareProjects();
+        }
+    }, [isShareMode, fetchShareProjects]);
 
     useEffect(() => {
         if (isShareMode && user) {
@@ -391,8 +400,8 @@ export default function AppLayout({ children }) {
     }, [generatedProjects, isProjectsError, projectsError, handleLogout]);
 
     useEffect(() => {
-        if (isNewProjectMode || isShareMode) return;
-        if (!projects || projects.length === 0) {
+        if (isNewProjectMode) return;
+        if ((!projects || projects.length === 0) && (!shareProjects || shareProjects.length === 0)) {
             return;
         }
 
@@ -402,11 +411,18 @@ export default function AppLayout({ children }) {
 
         const projectTokenFromPath = (() => {
             const match = location.pathname.match(/^\/a\/([^/?#]+)/);
-            return match ? decodeURIComponent(match[1]) : '';
+            if (match) return decodeURIComponent(match[1]);
+            
+            // For share mode, check search params
+            if (isShareMode) {
+                const params = new URLSearchParams(location.search);
+                return params.get('project') || '';
+            }
+            return '';
         })();
 
         const byPath = projectTokenFromPath
-            ? projects.find(
+            ? unifiedProjects.find(
                 (project) =>
                     project.key === projectTokenFromPath ||
                     project.projectToken === projectTokenFromPath
@@ -426,7 +442,7 @@ export default function AppLayout({ children }) {
             return;
         }
 
-        if (selectedProjectKey && projects.some((project) => project.key === selectedProjectKey)) {
+        if (selectedProjectKey && unifiedProjects.some((project) => project.key === selectedProjectKey)) {
             return;
         }
 
@@ -564,6 +580,11 @@ export default function AppLayout({ children }) {
             'Resource Onboarding': '/resource-onboarding',
             'On Flight': '/status-dashboard',
             'Complete': '/status-dashboard',
+            // Share Document workflow
+            'Upload Documents': '/share-doc?step=1',
+            'Configure Access': '/share-doc?step=2',
+            'Share & Invite': '/share-doc?step=3',
+            'Track Status': '/share-doc?step=4',
         };
 
         const targetRoute = stepLabelToRoute[stepLabel];
@@ -940,6 +961,11 @@ export default function AppLayout({ children }) {
                     'Resource Onboarding': '/resource-onboarding',
                     'On Flight': '/status-dashboard',
                     'Complete': '/status-dashboard',
+                    // Share Document workflow
+                    'Upload Documents': '/share-doc?step=1',
+                    'Configure Access': '/share-doc?step=2',
+                    'Share & Invite': '/share-doc?step=3',
+                    'Track Status': '/share-doc?step=4',
                 };
                 const targetRoute = stepLabelToRoute[stepLabel];
                 if (targetRoute) {
@@ -964,10 +990,13 @@ export default function AppLayout({ children }) {
 
     const handleSelectShareProject = (project) => {
         const token = project.project_token || project.key;
+        if (!token) return;
+        
         setSelectedProjectKey(token);
-        if (location.pathname !== '/share-brd') {
-            navigate('/share-brd');
-        }
+        
+        // Determine target step (default to 1 if not set)
+        const step = project.current_step || 1;
+        navigate(`/share-doc?step=${step}&project=${token}`);
     };
 
     const handleCreateShareProject = async (name) => {
@@ -1049,11 +1078,7 @@ export default function AppLayout({ children }) {
         rbac,
         isShareMode,
         handleCreateShareProject,
-        unifiedProjects: (() => {
-            const standard = projects.map(p => ({ ...p, type: 'standard', timestamp: new Date(p.submissionDate || p.createdAt || p.latestDocument?.upload_date || 0).getTime() }));
-            const shared = shareProjects.map(p => ({ ...p, type: 'share', key: p.project_token, name: p.project_name, timestamp: new Date(p.created_at || 0).getTime() }));
-            return [...standard, ...shared].sort((a, b) => b.timestamp - a.timestamp);
-        })(),
+        unifiedProjects,
     };
 
     return (
@@ -1104,7 +1129,8 @@ export default function AppLayout({ children }) {
                                                     currentView === 'taskCreation' ? 'Task Creation Planner' :
                                                         currentView === 'resourceOnboarding' ? 'Resource Onboarding' :
                                                             currentView === 'agentAnalysis' ? 'Agent Analysis' :
-                                                                'Requirements Analyzer'}
+                                                                currentView === 'shareDoc' ? 'Secure Document Share' :
+                                                                    'Requirements Analyzer'}
                                 </h1>
                                 <h2 className="text-[10px] md:text-sm italic text-white/60 mt-0.5 md:mt-1 truncate">
                                     {currentView === 'statusDashboard' ? '' :
@@ -1114,21 +1140,26 @@ export default function AppLayout({ children }) {
                                                     currentView === 'taskCreation' ? 'Sprint, Milestone, and Task Generation' :
                                                         currentView === 'resourceOnboarding' ? 'Onboard AI agents for this project' :
                                                             currentView === 'agentAnalysis' ? 'Executive Summary & Agent Analysis' :
-                                                                'Project Insight & AI Assessment'}
+                                                                    currentView === 'shareDoc' ? 'Upload, Manage, and Share Project Documents' :
+                                                                        'Project Insight & AI Assessment'}
                                 </h2>
                             </div>
 
                             {/* Right-side Controls Group */}
                             <div className="flex items-center gap-4 ml-4 shrink-0">
-                                {(currentView === 'statusDashboard' || currentView === 'prerequisites' || currentView === 'governance' || currentView === 'taskCreation' || currentView === 'resourceOnboarding' || currentView === 'agentAnalysis' || currentView === 'main') && location.pathname !== '/agents' && location.pathname !== '/plugins' && (
+                                {(currentView === 'statusDashboard' || currentView === 'prerequisites' || currentView === 'governance' || currentView === 'taskCreation' || currentView === 'resourceOnboarding' || currentView === 'agentAnalysis' || currentView === 'main' || currentView === 'shareDoc') && location.pathname !== '/agents' && location.pathname !== '/plugins' && (
                                     <div className="flex flex-row-reverse gap-3 items-center bg-white/10 p-1.5 rounded-lg border border-white/20">
                                         <div className="w-48 sm:w-56">
                                             <ProjectDropdown
-                                                projects={projects}
+                                                projects={layoutProps.unifiedProjects}
                                                 selectedKey={selectedProjectKey}
                                                 onSelect={(proj) => {
                                                     if (!proj?.key || proj.key === selectedProjectKey) return;
-                                                    handleSelectProject(proj);
+                                                    if (proj.type === 'share') {
+                                                        handleSelectShareProject(proj);
+                                                    } else {
+                                                        handleSelectProject(proj);
+                                                    }
                                                 }}
                                                 theme="dark"
                                             />
@@ -1165,7 +1196,7 @@ export default function AppLayout({ children }) {
 
                 {/* ── Project-level Roadmap Stepper — shown on all pages except /agents and /plugins ── */}
                 {
-                    roadmapDataForView && location.pathname !== '/agents' && location.pathname !== '/plugins' && location.pathname !== '/share-brd' && (
+                    roadmapDataForView && location.pathname !== '/agents' && location.pathname !== '/plugins' && location.pathname !== '/share-doc' && (
                         <div className="bg-app-bg-card border-b border-app-border-light shadow-sm shrink-0 overflow-x-auto z-[240] relative">
                             <RoadmapHeader
                                 steps={roadmapDataForView.steps || []}

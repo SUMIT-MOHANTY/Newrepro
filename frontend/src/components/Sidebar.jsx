@@ -4,7 +4,7 @@ import { X, Plus, FileCheck, History, Activity, Settings, User, LogOut, Trash2, 
 import bourntecLogo from '../assets/bourntec_logo.png';
 import { API_ENDPOINTS } from '../config';
 import NewProjectModal from './NewProjectModal';
-import ShareBRDModal from './ShareBRDModal';
+import ShareDocumentModal from './ShareDocumentModal';
 
 export default function Sidebar({
     isSidebarOpen,
@@ -37,7 +37,7 @@ export default function Sidebar({
     const [agentsExpanded, setAgentsExpanded] = useState(false);
 
     const [showNewProjectModal, setShowNewProjectModal] = useState(false);
-    const [showShareBRDModal, setShowShareBRDModal] = useState(false);
+    const [showShareDocumentModal, setShowShareDocumentModal] = useState(false);
 
     useEffect(() => {
         if (isShareMode && searchParams.get('create') === 'true') {
@@ -321,15 +321,15 @@ export default function Sidebar({
                         navigate('/new-project');
                     }
                 }}
-                onShareBRD={() => {
-                    navigate('/share-brd?create=true');
+                onShareDocument={() => {
+                    navigate('/share-doc?create=true');
                     setShowNewProjectModal(false);
                 }}
             />
 
-            <ShareBRDModal
-                isOpen={showShareBRDModal}
-                onClose={() => setShowShareBRDModal(false)}
+            <ShareDocumentModal
+                isOpen={showShareDocumentModal}
+                onClose={() => setShowShareDocumentModal(false)}
             />
         </>
     );

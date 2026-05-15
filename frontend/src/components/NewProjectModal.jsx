@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { X, FileText, Share2, Upload, Settings as SettingsIcon, Send, CheckCircle } from 'lucide-react';
 
-const NewProjectModal = ({ isOpen, onClose, onStartWithBRD, onShareBRD }) => {
+const NewProjectModal = ({ isOpen, onClose, onStartWithBRD, onShareDocument }) => {
     if (!isOpen) return null;
 
     return (
@@ -63,7 +63,7 @@ const NewProjectModal = ({ isOpen, onClose, onStartWithBRD, onShareBRD }) => {
                         {/* Share Your BRD Option */}
                         <button
                             onClick={() => {
-                                onShareBRD();
+                                onShareDocument();
                                 // Don't close modal here - let the parent handle navigation
                             }}
                             className="group relative p-6 rounded-xl border-2 border-app-border hover:border-app-primary bg-app-bg-page hover:bg-app-bg-card transition-all duration-300 text-left"
@@ -74,7 +74,7 @@ const NewProjectModal = ({ isOpen, onClose, onStartWithBRD, onShareBRD }) => {
                                 </div>
                                 <div>
                                     <h3 className="text-lg font-bold text-app-text-main mb-2">
-                                        Share Your BRD
+                                        Share Your Document
                                     </h3>
                                     <p className="text-sm text-app-text-muted">
                                         Upload and share your documents with team members or stakeholders via secure links

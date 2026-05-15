@@ -35,9 +35,9 @@ export const API_ENDPOINTS = {
     DOCUMENTS_UPLOAD_ANALYZE: `${API_BASE_URL}/documents/upload-and-analyze`,
     DOCUMENTS_EXTRACT_URL: `${API_BASE_URL}/documents/extract-from-url`,
     
-    // Share BRD
-    SHARE_BRD: `${API_BASE_URL}/api/share-brd`,
-    SHARE_BRD_STATS: `${API_BASE_URL}/api/share-brd/stats`,
+    // Share Document
+    SHARE_DOC: `${API_BASE_URL}/api/share-doc`,
+    SHARE_DOC_STATS: `${API_BASE_URL}/api/share-doc/stats`,
     SHARE_PROJECTS: `${API_BASE_URL}/api/share-projects`,
     SHARE_PROJECT: (projectToken) => `${API_BASE_URL}/api/share-projects/${projectToken}`,
     SHARED_DOCUMENT: (shareToken) => `${API_BASE_URL}/api/shared/${shareToken}`,

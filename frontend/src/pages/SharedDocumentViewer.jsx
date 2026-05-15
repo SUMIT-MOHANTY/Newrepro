@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { 
-    FileText, 
-    Download, 
-    Lock, 
-    AlertCircle, 
-    CheckCircle, 
-    Calendar, 
-    Eye, 
-    X, 
+import {
+    FileText,
+    Download,
+    Lock,
+    AlertCircle,
+    CheckCircle,
+    Calendar,
+    Eye,
+    X,
     File,
     FileSpreadsheet,
     Presentation,
@@ -24,7 +24,7 @@ const SharedDocumentViewer = () => {
     const navigate = useNavigate();
     const sessionTimeoutRef = useRef(null);
     const devToolsCheckRef = useRef(null);
-    
+
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
     const [requirePassword, setRequirePassword] = useState(false);
@@ -59,15 +59,15 @@ const SharedDocumentViewer = () => {
         const disableKeyboardShortcuts = (e) => {
             // Disable common shortcuts for copying, saving, printing, etc.
             if (
-                (e.ctrlKey || e.metaKey) && 
-                (e.key === 'c' || e.key === 'a' || e.key === 's' || e.key === 'p' || 
-                 e.key === 'u' || e.key === 'i' || e.key === 'j' || e.key === 'k' ||
-                 e.key === 'h' || e.key === 'r' || e.key === 'f' || e.key === 'g')
+                (e.ctrlKey || e.metaKey) &&
+                (e.key === 'c' || e.key === 'a' || e.key === 's' || e.key === 'p' ||
+                    e.key === 'u' || e.key === 'i' || e.key === 'j' || e.key === 'k' ||
+                    e.key === 'h' || e.key === 'r' || e.key === 'f' || e.key === 'g')
             ) {
                 e.preventDefault();
                 return false;
             }
-            
+
             // Disable F12, F11, Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+U
             if (
                 e.key === 'F12' || e.key === 'F11' ||
@@ -110,7 +110,7 @@ const SharedDocumentViewer = () => {
     useEffect(() => {
         const detectDevTools = () => {
             const threshold = 160;
-            
+
             if (
                 window.outerHeight - window.innerHeight > threshold ||
                 window.outerWidth - window.innerWidth > threshold
@@ -118,26 +118,26 @@ const SharedDocumentViewer = () => {
                 setDevToolsDetected(true);
                 return true;
             }
-            
+
             // Additional detection methods
             let devtools = {
                 open: false,
                 orientation: null
             };
-            
+
             // Use a different approach for devtools detection
             try {
                 const element = document.createElement('div');
                 Object.defineProperty(element, 'id', {
-                    get: function() {
+                    get: function () {
                         devtools.open = true;
                         return '';
                     }
                 });
-                
+
                 console.log('%c', element);
                 console.clear();
-                
+
                 if (devtools.open) {
                     setDevToolsDetected(true);
                     return true;
@@ -145,14 +145,15 @@ const SharedDocumentViewer = () => {
             } catch (e) {
                 // Fallback detection method
                 const start = performance.now();
-                debugger;
+                // Simple timing check
+                for (let i = 0; i < 100; i++) { }
                 const end = performance.now();
-                if (end - start > 100) {
+                if (end - start > 50) { // Large delay indicates debugger/throttling
                     setDevToolsDetected(true);
                     return true;
                 }
             }
-            
+
             return false;
         };
 
@@ -176,7 +177,7 @@ const SharedDocumentViewer = () => {
             if (sessionTimeoutRef.current) {
                 clearTimeout(sessionTimeoutRef.current);
             }
-            
+
             sessionTimeoutRef.current = setTimeout(() => {
                 setSessionExpired(true);
             }, SESSION_TIMEOUT);
@@ -242,15 +243,15 @@ const SharedDocumentViewer = () => {
     const loadShareData = async (pwd = null) => {
         setLoading(true);
         setError('');
-        
+
         try {
-            const url = pwd 
+            const url = pwd
                 ? `${API_ENDPOINTS.SHARED_DOCUMENT(shareToken)}?password=${encodeURIComponent(pwd)}`
                 : API_ENDPOINTS.SHARED_DOCUMENT(shareToken);
-            
+
             const response = await fetch(url);
             const data = await response.json();
-            
+
             if (!response.ok) {
                 if (response.status === 403) {
                     setError('Invalid password. Please try again.');
@@ -263,13 +264,13 @@ const SharedDocumentViewer = () => {
                 setLoading(false);
                 return;
             }
-            
+
             if (data.require_password) {
                 setRequirePassword(true);
                 setLoading(false);
                 return;
             }
-            
+
             setShareData(data);
             setRequirePassword(false);
             setLoading(false);
@@ -286,7 +287,7 @@ const SharedDocumentViewer = () => {
             setError('Please enter a password');
             return;
         }
-        
+
         setVerifying(true);
         await loadShareData(password);
         setVerifying(false);
@@ -300,37 +301,37 @@ const SharedDocumentViewer = () => {
         setHtmlCanvasUrl('');
         setOfficeViewerError(false);
         setUseGoogleViewer(false);
-        
+
         try {
-            const url = password 
+            const url = password
                 ? `${API_ENDPOINTS.SHARED_DOCUMENT_VIEW(shareToken, file.id)}?password=${encodeURIComponent(password)}`
                 : API_ENDPOINTS.SHARED_DOCUMENT_VIEW(shareToken, file.id);
-            
+
             const ext = file.filename.split('.').pop()?.toLowerCase();
-            
+
             // For PDF files, we'll handle them differently in the render
             if (ext === 'pdf') {
                 setFileContent(''); // We'll use object/iframe for PDF
                 setLoadingFile(false);
                 return;
             }
-            
+
             const response = await fetch(url);
-            
+
             if (!response.ok) {
                 throw new Error('Failed to load file');
             }
-            
+
             // Check if it's a viewable content type
             const contentType = response.headers.get('content-type');
-            
+
             if (contentType?.includes('text/html')) {
                 const htmlContent = await response.text();
-                
+
                 // For HTML files, we'll use iframe with srcdoc for proper rendering
                 // Canvas rendering for HTML is complex and may not preserve interactivity
                 setFileContent(htmlContent);
-                
+
             } else if (contentType?.includes('text/plain')) {
                 const textContent = await response.text();
                 setFileContent(`
@@ -342,18 +343,18 @@ const SharedDocumentViewer = () => {
                 // For images, use canvas rendering to prevent direct access
                 const blob = await response.blob();
                 const imageUrl = URL.createObjectURL(blob);
-                
+
                 // Create canvas-based image viewer
                 const img = document.createElement('img');
-                
+
                 img.onload = () => {
                     const canvas = document.createElement('canvas');
                     const ctx = canvas.getContext('2d');
-                    
+
                     canvas.width = img.width;
                     canvas.height = img.height;
                     ctx.drawImage(img, 0, 0);
-                    
+
                     // Convert canvas to base64 and display
                     const canvasDataUrl = canvas.toDataURL();
                     setFileContent(`
@@ -368,7 +369,7 @@ const SharedDocumentViewer = () => {
                     `);
                     URL.revokeObjectURL(imageUrl);
                 };
-                
+
                 img.onerror = () => {
                     URL.revokeObjectURL(imageUrl);
                     setFileContent(`
@@ -378,7 +379,7 @@ const SharedDocumentViewer = () => {
                         </div>
                     `);
                 };
-                
+
                 img.src = imageUrl;
             } else {
                 // For other file types, show a message
@@ -421,18 +422,18 @@ const SharedDocumentViewer = () => {
             alert('Downloads are not allowed for this share.');
             return;
         }
-        
+
         try {
-            const url = password 
+            const url = password
                 ? `${API_ENDPOINTS.SHARED_DOCUMENT_DOWNLOAD(shareToken, fileId)}?password=${encodeURIComponent(password)}`
                 : API_ENDPOINTS.SHARED_DOCUMENT_DOWNLOAD(shareToken, fileId);
-            
+
             const response = await fetch(url);
-            
+
             if (!response.ok) {
                 throw new Error('Download failed');
             }
-            
+
             const blob = await response.blob();
             const downloadUrl = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -459,9 +460,9 @@ const SharedDocumentViewer = () => {
     const formatDate = (dateString) => {
         if (!dateString) return '';
         const date = new Date(dateString);
-        return date.toLocaleDateString('en-US', { 
-            year: 'numeric', 
-            month: 'long', 
+        return date.toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'long',
             day: 'numeric',
             hour: '2-digit',
             minute: '2-digit'
@@ -470,49 +471,49 @@ const SharedDocumentViewer = () => {
 
     const getFileIcon = (filename) => {
         const ext = filename.split('.').pop()?.toLowerCase();
-        
+
         // Document files
         if (['pdf'].includes(ext)) return FileText;
         if (['doc', 'docx'].includes(ext)) return FileText;
         if (['txt', 'md', 'rtf'].includes(ext)) return FileCode;
-        
+
         // Spreadsheet files
         if (['xlsx', 'xls', 'csv'].includes(ext)) return FileSpreadsheet;
-        
+
         // Presentation files
         if (['pptx', 'ppt'].includes(ext)) return Presentation;
-        
+
         // Web files
         if (['html', 'htm'].includes(ext)) return Globe;
-        
+
         // Image files
         if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'].includes(ext)) return Image;
-        
+
         // Default file icon
         return File;
     };
 
     const getFileIconColor = (filename) => {
         const ext = filename.split('.').pop()?.toLowerCase();
-        
+
         // Document files - blue
         if (['pdf', 'doc', 'docx'].includes(ext)) return 'text-blue-500';
-        
+
         // Text files - gray
         if (['txt', 'md', 'rtf'].includes(ext)) return 'text-gray-500';
-        
+
         // Spreadsheet files - green
         if (['xlsx', 'xls', 'csv'].includes(ext)) return 'text-green-500';
-        
+
         // Presentation files - orange
         if (['pptx', 'ppt'].includes(ext)) return 'text-orange-500';
-        
+
         // Web files - purple
         if (['html', 'htm'].includes(ext)) return 'text-purple-500';
-        
+
         // Image files - pink
         if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'].includes(ext)) return 'text-pink-500';
-        
+
         // Default - gray
         return 'text-gray-400';
     };
@@ -520,7 +521,7 @@ const SharedDocumentViewer = () => {
     const isViewableFile = (filename) => {
         const ext = filename.split('.').pop()?.toLowerCase();
         return [
-            'pdf', 'txt', 'md', 'html', 'htm', 'doc', 'docx', 
+            'pdf', 'txt', 'md', 'html', 'htm', 'doc', 'docx',
             'xlsx', 'xls', 'pptx', 'ppt', 'csv',
             'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'
         ].includes(ext);
@@ -544,14 +545,14 @@ const SharedDocumentViewer = () => {
                         <div className="w-16 h-16 bg-orange-500/10 rounded-full flex items-center justify-center mx-auto mb-6">
                             <AlertCircle className="w-8 h-8 text-orange-400" />
                         </div>
-                        
+
                         <h1 className="text-2xl font-bold text-app-text-main mb-2">
                             Session Expired
                         </h1>
                         <p className="text-sm text-app-text-muted mb-6">
                             Your viewing session has expired for security reasons. Please refresh to continue.
                         </p>
-                        
+
                         <button
                             onClick={() => window.location.reload()}
                             className="px-6 py-3 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover transition-colors font-medium"
@@ -572,14 +573,14 @@ const SharedDocumentViewer = () => {
                         <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-6">
                             <Shield className="w-8 h-8 text-red-400" />
                         </div>
-                        
+
                         <h1 className="text-2xl font-bold text-app-text-main mb-2">
                             Security Alert
                         </h1>
                         <p className="text-sm text-app-text-muted mb-6">
                             Developer tools have been detected. Access has been restricted for security reasons.
                         </p>
-                        
+
                         <button
                             onClick={() => navigate('/')}
                             className="px-6 py-3 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors font-medium"
@@ -611,21 +612,21 @@ const SharedDocumentViewer = () => {
                         <div className="w-16 h-16 bg-app-primary/10 rounded-full flex items-center justify-center mx-auto mb-6">
                             <Lock className="w-8 h-8 text-app-primary" />
                         </div>
-                        
+
                         <h1 className="text-2xl font-bold text-app-text-main text-center mb-2">
                             Password Required
                         </h1>
                         <p className="text-sm text-app-text-muted text-center mb-6">
                             This share is password protected. Please enter the password to continue.
                         </p>
-                        
+
                         {error && (
                             <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded-lg flex items-start space-x-2">
                                 <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
                                 <p className="text-sm text-red-400">{error}</p>
                             </div>
                         )}
-                        
+
                         <form onSubmit={handlePasswordSubmit} className="space-y-4">
                             <div>
                                 <input
@@ -637,7 +638,7 @@ const SharedDocumentViewer = () => {
                                     autoFocus
                                 />
                             </div>
-                            
+
                             <button
                                 type="submit"
                                 disabled={verifying}
@@ -660,14 +661,14 @@ const SharedDocumentViewer = () => {
                         <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-6">
                             <AlertCircle className="w-8 h-8 text-red-400" />
                         </div>
-                        
+
                         <h1 className="text-2xl font-bold text-app-text-main mb-2">
                             Unable to Access
                         </h1>
                         <p className="text-sm text-app-text-muted mb-6">
                             {error}
                         </p>
-                        
+
                         <button
                             onClick={() => navigate('/')}
                             className="px-6 py-3 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover transition-colors font-medium"
@@ -708,7 +709,7 @@ const SharedDocumentViewer = () => {
                                     </p>
                                 </div>
                             </div>
-                            
+
                             <div className="flex items-center space-x-2 flex-shrink-0 ml-4">
                                 {shareData?.can_download && (
                                     <button
@@ -738,35 +739,35 @@ const SharedDocumentViewer = () => {
                             {selectedFile && (
                                 (() => {
                                     const ext = selectedFile.filename.split('.').pop()?.toLowerCase();
-                                    const fileUrl = password 
+                                    const fileUrl = password
                                         ? `${API_ENDPOINTS.SHARED_DOCUMENT_VIEW(shareToken, selectedFile.id)}?password=${encodeURIComponent(password)}`
                                         : API_ENDPOINTS.SHARED_DOCUMENT_VIEW(shareToken, selectedFile.id);
-                                    
+
                                     // For Microsoft Office files, use Microsoft Office Online Viewer
                                     if (isMicrosoftOfficeFile(selectedFile.filename)) {
                                         // Get the full URL (need absolute URL for Microsoft viewer)
-                                        const absoluteFileUrl = fileUrl.startsWith('http') 
-                                            ? fileUrl 
+                                        const absoluteFileUrl = fileUrl.startsWith('http')
+                                            ? fileUrl
                                             : `${window.location.origin}${fileUrl}`;
-                                        
+
                                         const viewerUrl = getMicrosoftViewerUrl(absoluteFileUrl);
-                                        
+
                                         return (
-                                                <iframe
-                                                    src={viewerUrl}
-                                                    width="100%"
-                                                    height="100%"
-                                                    style={{ 
-                                                        border: 'none',
-                                                        display: 'block',
-                                                        backgroundColor: 'white'
-                                                    }}
-                                                    title={selectedFile.filename}
-                                                    allowFullScreen
+                                            <iframe
+                                                src={viewerUrl}
+                                                width="100%"
+                                                height="100%"
+                                                style={{
+                                                    border: 'none',
+                                                    display: 'block',
+                                                    backgroundColor: 'white'
+                                                }}
+                                                title={selectedFile.filename}
+                                                allowFullScreen
                                             />
                                         );
                                     }
-                                    
+
                                     // For PDF files, use object embed for better compatibility
                                     if (ext === 'pdf') {
                                         return (
@@ -775,7 +776,7 @@ const SharedDocumentViewer = () => {
                                                 type="application/pdf"
                                                 width="100%"
                                                 height="100%"
-                                                style={{ 
+                                                style={{
                                                     display: 'block',
                                                     userSelect: 'none',
                                                     WebkitUserSelect: 'none'
@@ -785,7 +786,7 @@ const SharedDocumentViewer = () => {
                                                     src={fileUrl}
                                                     width="100%"
                                                     height="100%"
-                                                    style={{ 
+                                                    style={{
                                                         border: 'none',
                                                         userSelect: 'none',
                                                         WebkitUserSelect: 'none'
@@ -796,7 +797,7 @@ const SharedDocumentViewer = () => {
                                             </object>
                                         );
                                     }
-                                    
+
                                     // For HTML files, use iframe with srcdoc for original rendering
                                     if (ext === 'html' || ext === 'htm') {
                                         return (
@@ -804,7 +805,7 @@ const SharedDocumentViewer = () => {
                                                 srcDoc={fileContent}
                                                 width="100%"
                                                 height="100%"
-                                                style={{ 
+                                                style={{
                                                     border: 'none',
                                                     backgroundColor: 'white',
                                                     display: 'block'
@@ -814,11 +815,11 @@ const SharedDocumentViewer = () => {
                                             />
                                         );
                                     }
-                                    
+
                                     // For other files, use the HTML content
                                     return (
-                                        <div 
-                                            style={{ 
+                                        <div
+                                            style={{
                                                 width: '100%',
                                                 height: '100%',
                                                 userSelect: 'none',
@@ -869,7 +870,7 @@ const SharedDocumentViewer = () => {
                                 )}
                             </div>
                         </div>
-                        
+
                         <div className="flex items-center space-x-2 flex-shrink-0 ml-4">
                             <div className="px-3 py-1.5 bg-green-500/10 border border-green-500/20 rounded-lg">
                                 <div className="flex items-center space-x-1.5">
@@ -887,110 +888,110 @@ const SharedDocumentViewer = () => {
             {/* Content with Scroll - Takes remaining viewport height */}
             <div style={{ flex: 1, overflow: 'auto' }}>
                 <div className="max-w-6xl mx-auto px-4 py-6">
-                {shareData?.access_type === 'once' && (
-                    <div className="mb-6 p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-xl">
-                        <div className="flex items-start space-x-3">
-                            <AlertCircle className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
-                            <div>
-                                <p className="text-sm font-medium text-yellow-400 mb-1">
-                                    One-Time Access Link
-                                </p>
-                                <p className="text-sm text-yellow-400/80">
-                                    This link can only be accessed once. Make sure to download all documents you need before leaving this page.
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-                )}
-
-                {!shareData?.can_download && (
-                    <div className="mb-6 p-4 bg-orange-500/10 border border-orange-500/20 rounded-xl">
-                        <div className="flex items-start space-x-3">
-                            <Lock className="w-5 h-5 text-orange-400 flex-shrink-0 mt-0.5" />
-                            <div>
-                                <p className="text-sm font-medium text-orange-400 mb-1">
-                                    View Only Mode
-                                </p>
-                                <p className="text-sm text-orange-400/80">
-                                    Downloads are disabled for this share. You can only view the documents online.
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-                )}
-
-                <div className="bg-app-bg-card rounded-2xl shadow-lg border border-app-border overflow-hidden">
-                    <div className="p-6 border-b border-app-border">
-                        <h2 className="text-lg font-bold text-app-text-main">Documents</h2>
-                    </div>
-                    
-                    <div className="divide-y divide-app-border">
-                        {shareData?.files?.map((file) => (
-                            <div
-                                key={file.id}
-                                className="p-6 hover:bg-app-bg-hover transition-colors"
-                                style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
-                                onContextMenu={(e) => e.preventDefault()}
-                                onDragStart={(e) => e.preventDefault()}
-                            >
-                                <div className="flex items-center justify-between">
-                                    <div className="flex items-center space-x-4 flex-1 min-w-0">
-                                        <div className="w-12 h-12 bg-app-primary/10 rounded-lg flex items-center justify-center flex-shrink-0">
-                                            {(() => {
-                                                const IconComponent = getFileIcon(file.filename);
-                                                const iconColor = getFileIconColor(file.filename);
-                                                return <IconComponent className={`w-6 h-6 ${iconColor}`} />;
-                                            })()}
-                                        </div>
-                                        
-                                        <div className="flex-1 min-w-0">
-                                            <h3 className="text-base font-semibold text-app-text-main truncate mb-1">
-                                                {file.filename}
-                                            </h3>
-                                            <div className="flex items-center space-x-3 text-sm text-app-text-muted">
-                                                <span>{formatFileSize(file.size)}</span>
-                                                {file.type && (
-                                                    <>
-                                                        <span>•</span>
-                                                        <span>{file.type}</span>
-                                                    </>
-                                                )}
-                                                {file.uploaded_at && (
-                                                    <>
-                                                        <span>•</span>
-                                                        <span>{formatDate(file.uploaded_at)}</span>
-                                                    </>
-                                                )}
-                                            </div>
-                                        </div>
-                                    </div>
-                                    
-                                    <div className="flex items-center space-x-2 ml-4">
-                                        {isViewableFile(file.filename) && (
-                                            <button
-                                                onClick={() => handleViewFile(file)}
-                                                className="px-4 py-2 border border-app-border text-app-text-main rounded-lg hover:bg-app-bg-hover transition-colors font-medium flex items-center space-x-2"
-                                            >
-                                                <Eye className="w-4 h-4" />
-                                                <span>View</span>
-                                            </button>
-                                        )}
-                                        
-                                        {shareData?.can_download && (
-                                            <button
-                                                onClick={() => handleDownload(file.id, file.filename)}
-                                                className="px-4 py-2 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover transition-colors font-medium flex items-center space-x-2"
-                                            >
-                                                <Download className="w-4 h-4" />
-                                                <span>Download</span>
-                                            </button>
-                                        )}
-                                    </div>
+                    {shareData?.access_type === 'once' && (
+                        <div className="mb-6 p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-xl">
+                            <div className="flex items-start space-x-3">
+                                <AlertCircle className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
+                                <div>
+                                    <p className="text-sm font-medium text-yellow-400 mb-1">
+                                        One-Time Access Link
+                                    </p>
+                                    <p className="text-sm text-yellow-400/80">
+                                        This link can only be accessed once. Make sure to download all documents you need before leaving this page.
+                                    </p>
                                 </div>
                             </div>
-                        ))}
+                        </div>
+                    )}
+
+                    {!shareData?.can_download && (
+                        <div className="mb-6 p-4 bg-orange-500/10 border border-orange-500/20 rounded-xl">
+                            <div className="flex items-start space-x-3">
+                                <Lock className="w-5 h-5 text-orange-400 flex-shrink-0 mt-0.5" />
+                                <div>
+                                    <p className="text-sm font-medium text-orange-400 mb-1">
+                                        View Only Mode
+                                    </p>
+                                    <p className="text-sm text-orange-400/80">
+                                        Downloads are disabled for this share. You can only view the documents online.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="bg-app-bg-card rounded-2xl shadow-lg border border-app-border overflow-hidden">
+                        <div className="p-6 border-b border-app-border">
+                            <h2 className="text-lg font-bold text-app-text-main">Documents</h2>
+                        </div>
+
+                        <div className="divide-y divide-app-border">
+                            {shareData?.files?.map((file) => (
+                                <div
+                                    key={file.id}
+                                    className="p-6 hover:bg-app-bg-hover transition-colors"
+                                    style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
+                                    onContextMenu={(e) => e.preventDefault()}
+                                    onDragStart={(e) => e.preventDefault()}
+                                >
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex items-center space-x-4 flex-1 min-w-0">
+                                            <div className="w-12 h-12 bg-app-primary/10 rounded-lg flex items-center justify-center flex-shrink-0">
+                                                {(() => {
+                                                    const IconComponent = getFileIcon(file.filename);
+                                                    const iconColor = getFileIconColor(file.filename);
+                                                    return <IconComponent className={`w-6 h-6 ${iconColor}`} />;
+                                                })()}
+                                            </div>
+
+                                            <div className="flex-1 min-w-0">
+                                                <h3 className="text-base font-semibold text-app-text-main truncate mb-1">
+                                                    {file.filename}
+                                                </h3>
+                                                <div className="flex items-center space-x-3 text-sm text-app-text-muted">
+                                                    <span>{formatFileSize(file.size)}</span>
+                                                    {file.type && (
+                                                        <>
+                                                            <span>•</span>
+                                                            <span>{file.type}</span>
+                                                        </>
+                                                    )}
+                                                    {file.uploaded_at && (
+                                                        <>
+                                                            <span>•</span>
+                                                            <span>{formatDate(file.uploaded_at)}</span>
+                                                        </>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="flex items-center space-x-2 ml-4">
+                                            {isViewableFile(file.filename) && (
+                                                <button
+                                                    onClick={() => handleViewFile(file)}
+                                                    className="px-4 py-2 border border-app-border text-app-text-main rounded-lg hover:bg-app-bg-hover transition-colors font-medium flex items-center space-x-2"
+                                                >
+                                                    <Eye className="w-4 h-4" />
+                                                    <span>View</span>
+                                                </button>
+                                            )}
+
+                                            {shareData?.can_download && (
+                                                <button
+                                                    onClick={() => handleDownload(file.id, file.filename)}
+                                                    className="px-4 py-2 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover transition-colors font-medium flex items-center space-x-2"
+                                                >
+                                                    <Download className="w-4 h-4" />
+                                                    <span>Download</span>
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
                     </div>
-                </div>
 
                     {/* Footer */}
                     <div className="mt-8 text-center pb-4">

@@ -23,7 +23,7 @@ import Plugins from './pages/Plugins';
 import InviteSignup from './pages/InviteSignup';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
-import ShareBRD from './pages/ShareBRD';
+import ShareDocument from './pages/ShareDocument';
 import SharedDocumentViewer from './pages/SharedDocumentViewer';
 
 function App() {
@@ -111,9 +111,9 @@ function App() {
             {(layoutProps) => <GovernanceManagement {...layoutProps} />}
           </AppLayout>
         } />
-        <Route path="/share-brd" element={
+        <Route path="/share-doc" element={
           <AppLayout>
-            {(layoutProps) => <ShareBRD {...layoutProps} />}
+            {(layoutProps) => <ShareDocument {...layoutProps} />}
           </AppLayout>
         } />
         <Route path="/app/:projectId" element={

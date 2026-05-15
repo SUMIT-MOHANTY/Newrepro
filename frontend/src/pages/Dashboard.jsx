@@ -340,36 +340,36 @@ const hasCompletedDocumentAnalysis = (doc) => hasCompletedStoredAnalysis(parseSt
 // Format error messages to be user-friendly
 const formatAnalysisError = (error) => {
     const errorMessage = error?.message || String(error);
-    
+
     // Check for specific error patterns and provide custom messages
     if (errorMessage.includes('Analysis job not found') || errorMessage.includes('job not found')) {
         return 'The analysis session has expired or was not found. Please try starting the analysis again.';
     }
-    
+
     if (errorMessage.includes('500 INTERNAL SERVER ERROR') || errorMessage.includes('Server error')) {
         return 'The AI service is currently unavailable. This could be due to high load or maintenance. Please try again in a few moments.';
     }
-    
+
     if (errorMessage.includes('brn-llama.bourntec.com') || errorMessage.includes('api/process')) {
         return 'Unable to connect to the AI analysis service. Please check your network connection and try again.';
     }
-    
+
     if (errorMessage.includes('Network') || errorMessage.includes('fetch')) {
         return 'Network connection error. Please check your internet connection and try again.';
     }
-    
+
     if (errorMessage.includes('timeout') || errorMessage.includes('timed out')) {
         return 'The analysis is taking longer than expected. Please try again or contact support if the issue persists.';
     }
-    
+
     if (errorMessage.includes('401') || errorMessage.includes('Unauthorized')) {
         return 'Your session has expired. Please log in again to continue.';
     }
-    
+
     if (errorMessage.includes('403') || errorMessage.includes('Forbidden')) {
         return 'You do not have permission to perform this analysis. Please contact your administrator.';
     }
-    
+
     // Return the original error message if no specific pattern matches
     return errorMessage;
 };
@@ -462,8 +462,8 @@ const ProcessedContentTabs = ({ sections, markdown }) => {
                         key={index}
                         onClick={() => setActiveTabIndex(index)}
                         className={`px-3 py-1.5 text-xs font-medium rounded-t-lg transition-all ${activeTabIndex === index
-                                ? 'bg-app-primary text-white border-b-2 border-app-primary'
-                                : 'bg-app-bg-page text-app-text-label hover:bg-app-bg-card border border-app-border-light border-b-0'
+                            ? 'bg-app-primary text-white border-b-2 border-app-primary'
+                            : 'bg-app-bg-page text-app-text-label hover:bg-app-bg-card border border-app-border-light border-b-0'
                             }`}
                     >
                         {section.title || `Section ${index + 1}`}
@@ -1619,7 +1619,7 @@ const Dashboard = ({
         e.preventDefault();
 
         if (!selectedProject) {
-            setError('Select a project from the sidebar before uploading a BRD.');
+            setError('Select a project from the sidebar before uploading any Document.');
             return;
         }
         if (isEnterpriseUploadBlocked) {
@@ -1904,9 +1904,9 @@ const Dashboard = ({
             if (!hasGovernanceAssessment || isRevisionUpload) {
                 setProjectState(taskKey, {
                     progress: 85,
-                    progressMessage: isRevisionUpload 
-                        ? 'Revision content uploaded. Combining with previous content...' 
-                        : 'Requirement screening complete. Saving BRD before Governance...',
+                    progressMessage: isRevisionUpload
+                        ? 'Revision content uploaded. Combining with previous content...'
+                        : 'Requirement screening complete. Saving Document before Governance...',
                 });
 
                 // If this is a revision, include previous revision content for AI context
@@ -1928,7 +1928,7 @@ const Dashboard = ({
                             const docAnalysis = parseStoredDocumentAnalysis(doc);
                             const revisionNum = docAnalysis?.projectMeta?.revision_number || 'Unknown';
                             const revisionReason = docAnalysis?.projectMeta?.revision_reason;
-                            
+
                             previousContentSections.push({
                                 title: `REVISION ${revisionNum} - ${doc.filename}${revisionReason ? ` (Reason: ${revisionReason})` : ''}`,
                                 content: doc.full_content
@@ -1944,7 +1944,7 @@ const Dashboard = ({
 
                         // Add previous content BEFORE new content so AI sees the history first
                         finalMarkdownForAnalysis = `${previousMarkdown}\n\n--- NEW REVISION ${selectedProject.documents.length + 1} - ${filename} ---\n\n${combinedMarkdown}`;
-                        
+
                         // Add to display sections (for UI)
                         finalSectionsForDisplay = [
                             ...previousContentSections,
@@ -1964,8 +1964,8 @@ const Dashboard = ({
                 setProjectState(taskKey, {
                     processing: false,
                     progress: 100,
-                    progressMessage: isRevisionUpload 
-                        ? 'Revision uploaded with previous content. Review Governance and proceed to analysis.' 
+                    progressMessage: isRevisionUpload
+                        ? 'Revision uploaded with previous content. Review Governance and proceed to analysis.'
                         : 'Requirement screening complete. Continue with Governance.',
                     result: null,
                 });
@@ -2397,7 +2397,7 @@ const Dashboard = ({
             // Generate robust PDF (AI-model-agnostic)
             generateRobustPDF(result, {
                 filename: result.filename || 'Report',
-                title: 'BRD Analysis Report',
+                title: 'Document Analysis Report',
                 metrics: metrics,
                 questions: questions,
                 answers: answers,
@@ -2850,7 +2850,7 @@ const Dashboard = ({
                         {!result && (
                             <div className="text-center mb-10 animate-fade-in-down">
                                 <h1 className="text-3xl font-extrabold text-app-text-main tracking-tight sm:text-4xl mb-3">
-                                    AI-Powered BRD Analysis
+                                    AI-Powered Document Analysis
                                 </h1>
                                 <p className="text-lg text-app-text-label max-w-2xl mx-auto">
                                     Upload your Business Requirements Document to get instant feasibility analysis, targeted technical questions, and a go/no-go recommendation.
@@ -2866,7 +2866,7 @@ const Dashboard = ({
                                     <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6 md:p-10 transition-shadow hover:shadow-md">
                                         <h2 className="text-xl font-bold text-app-text-main mb-6 flex items-center">
                                             <span className="flex items-center justify-center w-8 h-8 rounded-full bg-app-primary-light text-app-primary mr-3 text-sm font-bold">1</span>
-                                            Project BRD Upload
+                                            Project Document Upload
                                         </h2>
 
                                         <form onSubmit={handleUpload} className="space-y-4">
@@ -3480,7 +3480,7 @@ const Dashboard = ({
                                                                         Upload blocked: {getEnterpriseUploadBlockMessage()}
                                                                     </p>
                                                                 )}
-                                                                
+
                                                             </div>
                                                             <div className="flex flex-col items-start sm:items-end gap-2">
                                                                 {selectedProject.latestDocument && hasCompletedDocumentAnalysis(selectedProject.latestDocument) && (
@@ -3496,7 +3496,7 @@ const Dashboard = ({
                                                                     <button
                                                                         type="button"
                                                                         onClick={handleCreateRevision}
-                                                                       
+
                                                                         className="text-xs font-semibold text-app-primary-hover hover:text-app-primary-dark disabled:text-app-text-light disabled:cursor-not-allowed"
                                                                     >
                                                                         Create New Revision
@@ -3516,13 +3516,13 @@ const Dashboard = ({
                                                         <p className="text-sm font-semibold text-app-status-warning">Select a project from the left panel to continue.</p>
                                                     </div>
                                                 )}
-                                                    <div className="mt-4 px-2 py-1.5 bg-gradient-to-r from-app-primary/10 to-app-primary/5 border-b border-app-border-light">
-                                                        <div className="flex items-center gap-1.5">
-                                                            <History className="w-3.5 h-3.5 text-app-primary flex-shrink-0" />
-                                                            <h3 className="text-xs font-bold text-app-text-main">Revision History</h3>
-                                                            <span className="ml-auto px-1.5 py-0.5 text-[10px] font-bold bg-app-primary text-white rounded-full">{sortedDocs.length}</span>
-                                                        </div>
+                                                <div className="mt-4 px-2 py-1.5 bg-gradient-to-r from-app-primary/10 to-app-primary/5 border-b border-app-border-light">
+                                                    <div className="flex items-center gap-1.5">
+                                                        <History className="w-3.5 h-3.5 text-app-primary flex-shrink-0" />
+                                                        <h3 className="text-xs font-bold text-app-text-main">Revision History</h3>
+                                                        <span className="ml-auto px-1.5 py-0.5 text-[10px] font-bold bg-app-primary text-white rounded-full">{sortedDocs.length}</span>
                                                     </div>
+                                                </div>
 
                                                 {/* Compact List */}
                                                 <div className="divide-y divide-app-border-light max-h-[calc(100vh-200px)] overflow-y-auto">
@@ -3547,7 +3547,7 @@ const Dashboard = ({
                                                                             <p className="text-[11px] font-semibold text-app-text-main truncate leading-tight">Rev {revNum}</p>
                                                                             <p className="text-[10px] text-app-text-muted truncate leading-tight mt-0.5">{doc.filename}</p>
                                                                             <p className="text-[9px] text-app-text-muted leading-tight mt-0.5">
-                                                                                {doc.upload_date ? new Date(doc.upload_date).toLocaleString('en-IN', { dateStyle: 'short'}) : '—'}
+                                                                                {doc.upload_date ? new Date(doc.upload_date).toLocaleString('en-IN', { dateStyle: 'short' }) : '—'}
                                                                             </p>
                                                                         </div>
                                                                     </div>

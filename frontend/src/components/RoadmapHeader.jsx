@@ -18,7 +18,7 @@ const STEP_ICONS = {
     'Resource Onboarding': UserPlus,
     'On Flight': Bot,
     'Complete': Flag,
-    // Share BRD workflow icons
+    // Share Document workflow icons
     'Upload Documents': FolderOpen,
     'Configure Access': ShieldCheck,
     'Share & Invite': UserPlus,
@@ -131,11 +131,11 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
         'Resource Onboarding': '/resource-onboarding',
         'On Flight': '/status-dashboard',
         'Complete': '/status-dashboard',
-        // Share BRD workflow routes
-        'Upload Documents': '/share-brd?step=1',
-        'Configure Access': '/share-brd?step=2',
-        'Share & Invite': '/share-brd?step=3',
-        'Track Status': '/share-brd?step=4',
+        // Share Document workflow routes
+        'Upload Documents': '/share-doc?step=1',
+        'Configure Access': '/share-doc?step=2',
+        'Share & Invite': '/share-doc?step=3',
+        'Track Status': '/share-doc?step=4',
     };
 
     const handleStepClick = (stepLabel) => {
@@ -146,8 +146,14 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
             return;
         }
 
-        const route = STEP_ROUTES[stepLabel];
+        let route = STEP_ROUTES[stepLabel];
         if (!route) return;
+
+        // Append project key if it's a share-doc route
+        if (route.includes('/share-doc')) {
+            const separator = route.includes('?') ? '&' : '?';
+            route = `${route}${separator}project=${selectedProjectKey}`;
+        }
 
         // When navigating to Requirement Screening or earlier steps, clear any stale
         // analysis trigger flags so Agent Analysis doesn't auto-start unexpectedly.
