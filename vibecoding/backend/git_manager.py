@@ -5,6 +5,8 @@ from typing import List, Dict, Optional, Any
 import logging
 import shutil
 import re
+import httpx
+import asyncio
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -73,6 +75,93 @@ class GitManager:
 
     def init_repo(self, project_id: str) -> Dict[str, Any]:
         return self._run_git_command(project_id, ["init"])
+
+    async def validate_github_connection(self, repo_url: str, pat: Optional[str] = None) -> Dict[str, Any]:
+        """Validate GitHub repository URL and PAT using GitHub API."""
+        if not repo_url.startswith("https://github.com/"):
+            return {"status": "error", "message": "Invalid GitHub URL. Must start with https://github.com/"}
+        
+        # Extract owner/repo from URL
+        parts = repo_url.replace("https://github.com/", "").replace(".git", "").strip("/").split("/")
+        if len(parts) < 2:
+            return {"status": "error", "message": "Invalid GitHub URL format. Expected: https://github.com/owner/repo"}
+        
+        owner, repo = parts[0], parts[1]
+        
+        if pat:
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.get(
+                        f"https://api.github.com/repos/{owner}/{repo}",
+                        headers={"Authorization": f"token {pat}", "Accept": "application/vnd.github+json"}
+                    )
+                    
+                    if response.status_code == 200:
+                        return {
+                            "status": "success",
+                            "valid": True,
+                            "normalized_url": f"https://github.com/{owner}/{repo}.git",
+                            "owner": owner,
+                            "repo": repo,
+                            "message": f"Connection successful! Repository '{owner}/{repo}' is accessible."
+                        }
+                    elif response.status_code == 401:
+                        return {"status": "error", "message": "Invalid GitHub token. Please check your Personal Access Token."}
+                    elif response.status_code == 404:
+                        return {"status": "error", "message": f"Repository '{owner}/{repo}' not found or not accessible with this token."}
+                    else:
+                        return {"status": "error", "message": f"GitHub API error: {response.status_code}"}
+            except Exception as e:
+                return {"status": "error", "message": f"Connection failed: {str(e)}"}
+        else:
+            return {
+                "status": "success",
+                "valid": True,
+                "normalized_url": f"https://github.com/{owner}/{repo}.git",
+                "owner": owner,
+                "repo": repo,
+                "message": "URL format is valid. Provide PAT to test connection."
+            }
+
+    def clone_repo(self, project_id: str, repo_url: str, pat: Optional[str] = None) -> Dict[str, Any]:
+        """Clone a remote repository into the project workspace."""
+        workspace_dir = self._get_workspace_dir(project_id)
+        
+        # Clear workspace if it exists (except .git if somehow there)
+        if workspace_dir.exists():
+            for item in workspace_dir.iterdir():
+                if item.is_dir():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink()
+        
+        # Prepare URL with PAT if provided
+        clone_url = repo_url
+        if pat:
+            # https://token@github.com/owner/repo.git
+            clone_url = repo_url.replace("https://", f"https://{pat}@")
+            
+        # Run clone command
+        # Since workspace_dir already exists, we clone INTO it using "."
+        # Git clone requires the directory to be empty or doesn't exist
+        # Alternative: clone to a temp dir and move, or just run git clone url .
+        try:
+            result = subprocess.run(
+                ["git", "clone", clone_url, "."],
+                cwd=workspace_dir,
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            
+            if result.returncode == 0:
+                # Add the remote url without PAT to the local config for future use
+                self._run_git_command(project_id, ["remote", "set-url", "origin", repo_url])
+                return {"status": "success", "message": "Repository cloned successfully"}
+            else:
+                return {"status": "error", "message": result.stderr or "Clone failed"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
     def get_status(self, project_id: str) -> Dict[str, Any]:
         workspace_dir = self._get_workspace_dir(project_id)

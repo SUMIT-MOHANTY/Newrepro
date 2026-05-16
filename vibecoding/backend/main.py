@@ -1923,7 +1923,37 @@ async def git_status(request: GitRequest):
 @app.post("/vibecoding/api/git/init")
 async def git_init(request: GitRequest):
     try:
-        result = git_manager.init_repo(request.project_id)
+        # If remote_url is provided, we clone instead of just init
+        if request.remote_url:
+            # 1. Validate connection first
+            val_res = await git_manager.validate_github_connection(request.remote_url, request.token)
+            if val_res["status"] == "error":
+                return val_res
+            
+            # 2. Clone the repo
+            result = git_manager.clone_repo(request.project_id, request.remote_url, request.token)
+            
+            # 3. If clone successful, initialize project workspace metadata
+            if result["status"] == "success":
+                workspace_dir = project_manager.artifacts_dir / request.project_id / "workspace"
+                project_manager._ensure_workspace_metadata(request.project_id, workspace_dir, "initial_clone")
+                # Also notify the manager to sync or prepare for code serving
+                await project_manager.switch_to_workspace(request.project_id)
+            
+            return result
+        else:
+            # Default behavior: git init
+            result = git_manager.init_repo(request.project_id)
+            return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/vibecoding/api/git/validate")
+async def git_validate(request: GitRequest):
+    try:
+        if not request.remote_url:
+            raise HTTPException(status_code=400, detail="Remote URL is required")
+        result = await git_manager.validate_github_connection(request.remote_url, request.token)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

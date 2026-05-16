@@ -7,6 +7,10 @@ __pycache__/
 *.pyc
 backend/snyk
 vibecoding/backend/snyk
+vibecoding/backend/snyk
+backend/shared_documents*
+vibecoding/backend/ai_logs*
+backend/logs*
 
 # Frontend
 frontend/node_modules/
@@ -38,3 +42,6 @@ vibecoding/backend/vibecoding_users.db
 vibecoding/frontend/vite.config.js
 backend/bootstrap_fox.md
 *.md
+backend/sql_app.db-shm
+backend/sql_app.db-wal
+vibecoding/backend/.jwt_secret
