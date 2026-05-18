@@ -65,19 +65,73 @@ class WorkspaceGit:
 
     # Directories to always exclude
     GITIGNORE_CONTENT = """# VibeCoding agent managed
+
+# General
+.DS_Store
+Thumbs.db
+*.log
+.env
+.cache/
+metadata.json
+
+# VibeCoding Specific
+.vibecoding/deploy_cache.json
+
+# Node.js / Frontend
 node_modules/
 dist/
 build/
 .next/
 out/
+.vite/
+.nuxt/
+
+# Python
 __pycache__/
 *.pyc
-.venv/
+*.pyo
+*.pyd
+.Python
+env/
 venv/
-.env
-.vibecoding/deploy_cache.json
-*.log
-.DS_Store
+.venv/
+env.bak/
+venv.bak/
+
+# .NET / C#
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Java
+target/
+*.class
+.idea/
+*.iml
+.gradle/
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Rust
+target/
+**/*.rs.bk
+
+# C / C++
+*.o
+*.obj
+*.out
+*.app
 """
 
     def __init__(self, workspace_dir: str, log_func=None):
@@ -88,6 +142,16 @@ venv/
     # INITIALIZATION
     # ─────────────────────────────────────────────────────────────────────
 
+    def cleanup_git_lock(self):
+        """Remove stale git index.lock if it exists to prevent git commands from hanging or failing."""
+        lock_file = self.ws / ".git" / "index.lock"
+        if lock_file.exists():
+            try:
+                lock_file.unlink()
+                self._log("🧹 Removed stale .git/index.lock file")
+            except Exception as e:
+                self._log(f"⚠️ Failed to remove stale .git/index.lock: {e}")
+
     def ensure_repo(self) -> bool:
         """
         Initialize the workspace as a git repo if it isn't already.
@@ -97,6 +161,16 @@ venv/
         if not self.ws.exists():
             self._log("Workspace does not exist yet — skipping git init")
             return False
+
+        # ALWAYS ensure .gitignore exists, even if repo is already initialized.
+        # This prevents massive directories like node_modules from freezing git operations.
+        gitignore = self.ws / ".gitignore"
+        if not gitignore.exists():
+            try:
+                gitignore.write_text(self.GITIGNORE_CONTENT)
+                self._log("✅ Created robust .gitignore")
+            except Exception as e:
+                self._log(f"⚠️ Failed to write .gitignore: {e}")
 
         git_dir = self.ws / ".git"
         if git_dir.exists():
@@ -109,11 +183,6 @@ venv/
             self._run_git("config", "user.email", self.GIT_USER_EMAIL)
             # Disable advice messages
             self._run_git("config", "advice.detachedHead", "false")
-
-            # Write .gitignore
-            gitignore = self.ws / ".gitignore"
-            if not gitignore.exists():
-                gitignore.write_text(self.GITIGNORE_CONTENT)
 
             # Initial commit (even if workspace is empty)
             self._run_git("add", "-A")
@@ -139,6 +208,7 @@ venv/
         Returns:
             snapshot_id (str) — the commit hash to rollback to
         """
+        self.cleanup_git_lock()
         try:
             # Stage everything and commit
             self._run_git("add", "-A")
@@ -189,6 +259,7 @@ venv/
         Returns:
             commit_hash of the new commit
         """
+        self.cleanup_git_lock()
         try:
             self._run_git("add", "-A")
 

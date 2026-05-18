@@ -25,7 +25,86 @@ class GitManager:
     def _get_workspace_dir(self, project_id: str) -> Path:
         workspace_dir = self._get_workspace_path_raw(project_id)
         workspace_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        # ALWAYS ensure .gitignore exists, even if repo is already initialized.
+        # This prevents massive directories like node_modules from freezing git operations.
+        gitignore_path = workspace_dir / ".gitignore"
+        gitignore_content = """# VibeCoding agent managed
+
+# General
+.DS_Store
+Thumbs.db
+*.log
+.env
+.cache/
+metadata.json
+
+# VibeCoding Specific
+.vibecoding/deploy_cache.json
+
+# Node.js / Frontend
+node_modules/
+dist/
+build/
+.next/
+out/
+.vite/
+.nuxt/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+env.bak/
+venv.bak/
+
+# .NET / C#
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Java
+target/
+*.class
+.idea/
+*.iml
+.gradle/
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Rust
+target/
+**/*.rs.bk
+
+# C / C++
+*.o
+*.obj
+*.out
+*.app
+"""
+        if not gitignore_path.exists():
+            try:
+                gitignore_path.write_text(gitignore_content)
+                logger.info(f"Created robust .gitignore for project: {project_id}")
+            except Exception as e:
+                logger.warning(f"Failed to write .gitignore: {e}")
+
         # Ensure git is initialized locally even if no remote is connected
         if not (workspace_dir / ".git").exists():
             # Use _run_git_command_raw to avoid recursion
@@ -38,6 +117,16 @@ class GitManager:
 
     def _run_git_command_raw(self, workspace_dir: Path, args: List[str]) -> Dict[str, Any]:
         """Low-level git command execution without path resolution logic."""
+        # Clean up stale lock if modifying repo
+        if args and args[0] in ("add", "commit", "checkout", "stash", "reset", "clean", "rm", "merge", "rebase"):
+            lock_file = workspace_dir / ".git" / "index.lock"
+            if lock_file.exists():
+                try:
+                    lock_file.unlink()
+                    logger.info("🧹 Removed stale .git/index.lock file")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to remove stale index.lock: {e}")
+
         try:
             result = subprocess.run(
                 ["git"] + args,

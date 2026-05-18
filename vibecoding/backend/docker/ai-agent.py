@@ -170,7 +170,7 @@ issues: list of strings describing anything wrong or missing.
 # ─────────────────────────────────────────────────────────────────────────────
 
 _SKIP_DIRS  = {"node_modules", ".git", "dist", "build", "__pycache__", ".vibecoding"}
-_SKIP_FILES = {".DS_Store", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "metadata.json"}
+_SKIP_FILES = {".DS_Store", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "metadata.json", ".gitignore"}
 _TEXT_EXTS  = {
     ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte",
     ".py", ".go", ".rs", ".java", ".kt", ".swift", ".c", ".cpp", ".cs",
@@ -2235,8 +2235,8 @@ def _git_diff_to_search_replace(diff_segment: str, original_content: str) -> str
 
 
 def read_workspace_files() -> dict:
-    skip_dirs  = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next'}
-    skip_files = {'metadata.json'}
+    skip_dirs  = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next', '.vibecoding'}
+    skip_files = {'metadata.json', '.gitignore', '.DS_Store'}
     files = {}
     if not WORKSPACE_DIR.exists():
         return files
