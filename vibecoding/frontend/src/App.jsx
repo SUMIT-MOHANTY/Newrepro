@@ -2488,10 +2488,139 @@ Please suggest improvements or modifications for this element.`;
     };
     const htmlFromTree = findHtml(fileTree);
     if (htmlFromTree) return htmlFromTree;
-    // If fullCode looks like HTML, use it; otherwise show a waiting message
+    // If fullCode looks like HTML, use it; otherwise show a waiting/welcome message
     if (fullCode && (fullCode.includes('<html') || fullCode.includes('<!DOCTYPE'))) {
       return fullCode;
     }
+    
+    // Check if the user has sent a prompt yet in this project
+    const hasSentPrompt = messages && messages.some(m => m.role === 'user');
+    if (!hasSentPrompt) {
+      return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body {
+      margin: 0;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(circle at center, #151525 0%, #080810 100%);
+      color: #a0aec0;
+      font-family: 'Outfit', system-ui, -apple-system, sans-serif;
+      text-align: center;
+      overflow: hidden;
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.03);
+      backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 24px;
+      padding: 3rem 2.5rem;
+      max-width: 420px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
+      transform: translateY(0);
+      animation: float 6s ease-in-out infinite;
+    }
+    @keyframes float {
+      0%, 100% { transform: translateY(0px); }
+      50% { transform: translateY(-10px); }
+    }
+    .icon-container {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 80px;
+      height: 80px;
+      border-radius: 20px;
+      background: linear-gradient(135deg, #805ad5 0%, #d53f8c 100%);
+      box-shadow: 0 10px 25px rgba(128, 90, 213, 0.4);
+      margin-bottom: 2rem;
+      animation: pulse 3s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 10px 25px rgba(128, 90, 213, 0.4); }
+      50% { box-shadow: 0 10px 35px rgba(128, 90, 213, 0.7); }
+    }
+    .logo-glow {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      background: inherit;
+      border-radius: inherit;
+      filter: blur(8px);
+      opacity: 0.7;
+      z-index: -1;
+    }
+    .logo-icon {
+      font-size: 2.5rem;
+      animation: rotate 8s linear infinite;
+    }
+    @keyframes rotate {
+      100% { transform: rotate(360deg); }
+    }
+    h2 {
+      color: #ffffff;
+      font-size: 1.6rem;
+      font-weight: 700;
+      margin: 0 0 0.75rem;
+      background: linear-gradient(135deg, #ffffff 0%, #cbd5e0 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    p {
+      font-size: 0.95rem;
+      line-height: 1.6;
+      color: #a0aec0;
+      margin: 0 0 2rem;
+    }
+    .hint {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: rgba(255, 255, 255, 0.05);
+      padding: 0.6rem 1.2rem;
+      border-radius: 12px;
+      font-size: 0.85rem;
+      color: #cbd5e0;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      font-weight: 500;
+    }
+    .hint span {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      background: #48bb78;
+      border-radius: 50%;
+      box-shadow: 0 0 8px #48bb78;
+      animation: blink 1.5s infinite;
+    }
+    @keyframes blink {
+      0%, 100% { opacity: 0.3; }
+      50% { opacity: 1; }
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon-container">
+      <div class="logo-glow"></div>
+      <div class="logo-icon">✨</div>
+    </div>
+    <h2>VibeCoding Workspace</h2>
+    <p>Your workspace is ready. Type your prompt below to start building your application in real-time!</p>
+    <div class="hint">
+      <span></span>
+      Ready for input
+    </div>
+  </div>
+</body>
+</html>`;
+    }
+
     return `<!DOCTYPE html><html><head><style>
       body { margin:0; height:100vh; display:flex; align-items:center; justify-content:center;
              background:#0A0A0F; color:#9ca3af; font-family:system-ui,sans-serif; text-align:center; }

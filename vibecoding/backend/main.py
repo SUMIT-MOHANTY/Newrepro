@@ -1683,7 +1683,7 @@ async def start_project_container(project_id: str, background_tasks: BackgroundT
         workspace_dir = project_manager.artifacts_dir / project_id / "workspace"
         has_files = workspace_dir.exists() and any(
             f for f in workspace_dir.rglob("*")
-            if f.is_file() and f.name != "metadata.json" and ".git" not in f.parts
+            if f.is_file() and f.name not in ("metadata.json", ".gitignore") and ".git" not in f.parts
         )
 
         preview_url = project_manager.get_preview_url(project_id)

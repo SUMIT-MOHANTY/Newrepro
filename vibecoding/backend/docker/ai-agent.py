@@ -223,6 +223,7 @@ class EditEngine:
             "error":            str | None,
         }
         """
+        report(f"Analyzing your request: '{user_prompt[:60]}...'", message_type="thinking")
         intent = self._classify(user_prompt)
         mode   = intent.get("mode", "ADD_FEATURE")
 
@@ -239,6 +240,8 @@ class EditEngine:
                 "verify_ok": True, "verify_issues": [], "error": None,
             }
 
+        report(f"Detected task: {mode} — {intent.get('reasoning', '')}", message_type="thinking")
+
         # ── explanation only ─────────────────────────────────────────────────
         if mode == "EXPLAIN":
             return {
@@ -251,9 +254,16 @@ class EditEngine:
 
         # ── edit / add / fix path ────────────────────────────────────────────
         try:
+            report("Scanning codebase and building context...", message_type="thinking")
             context      = self._build_context(user_prompt, intent)
+            
+            report("Creating surgical implementation plan...", message_type="thinking")
             plan         = self._plan_changes(user_prompt, intent, context)
+            
+            report(f"Applying changes to files: {plan.get('plan_summary', 'Applying edits')}...", message_type="thinking")
             files_changed = self._execute_ops(plan["operations"])
+            
+            report("Verifying changed files for correctness...", message_type="thinking")
             verify        = self._verify(user_prompt, plan["operations"], files_changed)
 
             return {
@@ -922,6 +932,65 @@ MAILBOX         = Path('/tmp/vibe_prompt')
 def log(msg: str):
     print(f'🛠️  [Agent] {msg}', flush=True)
 
+def kill_process_listening_on_port(port: int):
+    """
+    Find process listening on TCP port by reading /proc/net/tcp and /proc/net/tcp6
+    and kill it. Completely robust, native Python.
+    """
+    try:
+        port_hex = f'{port:04X}'
+        inodes = set()
+        
+        # 1. Read /proc/net/tcp and /proc/net/tcp6
+        for net_file in ['/proc/net/tcp', '/proc/net/tcp6']:
+            if not os.path.exists(net_file):
+                continue
+            with open(net_file, 'r') as f:
+                lines = f.readlines()
+            for line in lines[1:]:
+                parts = line.strip().split()
+                if len(parts) >= 10:
+                    local_addr = parts[1]
+                    inode = parts[9]
+                    # Format: IP:PORT
+                    if local_addr.endswith(':' + port_hex):
+                        inodes.add(inode)
+        
+        if not inodes:
+            log(f"No active sockets found on port {port}")
+            return
+            
+        log(f"Found socket inodes on port {port}: {inodes}")
+        
+        # 2. Find processes referencing these inodes in /proc/<pid>/fd/
+        killed_any = False
+        for pid_dir in os.listdir('/proc'):
+            if not pid_dir.isdigit():
+                continue
+            pid = int(pid_dir)
+            fd_dir = f'/proc/{pid}/fd'
+            if not os.path.exists(fd_dir):
+                continue
+            try:
+                for fd in os.listdir(fd_dir):
+                    fd_path = os.path.join(fd_dir, fd)
+                    if os.path.islink(fd_path):
+                        target = os.readlink(fd_path)
+                        # Format is usually 'socket:[inode]'
+                        if target.startswith('socket:[') and target.endswith(']'):
+                            inode = target[8:-1]
+                            if inode in inodes:
+                                log(f"👉 Killing process {pid} listening on port {port} (found socket inode {inode})")
+                                subprocess.run(['kill', '-9', str(pid)], capture_output=True)
+                                killed_any = True
+            except Exception:
+                continue
+        if not killed_any:
+            log(f"Could not associate socket inodes on port {port} to any running PID.")
+    except Exception as e:
+        log(f"Error in kill_process_listening_on_port: {e}")
+
+
 # ── Robustness modules (global singletons) ────────────────────────────────────
 # These are initialized once and used throughout the agent lifecycle.
 workspace_git     = WorkspaceGit(str(WORKSPACE_DIR), log_func=log)
@@ -1044,7 +1113,7 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
     
     # Also broadcast via WebSocket for real-time updates (optional)
     try:
-        ws_url = f'https://dsuite-backend.bourntec.com/vibecoding/api/broadcast/{PROJECT_ID}'
+        ws_url = f'{backend_url}/vibecoding/api/broadcast/{PROJECT_ID}'
         ws_payload = {
             'content': clean,
             'type': meta.get('type'),
@@ -2837,6 +2906,14 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
         script = strategy.get('deployment_script', '')
         app_port = strategy.get('app_port', None)
         log(f'App will use internal port: {app_port}')
+        
+        if app_port:
+            try:
+                kill_process_listening_on_port(int(app_port))
+                time.sleep(1)
+            except Exception as pe:
+                log(f"Warning: failed to kill process on port {app_port}: {pe}")
+
 
         if script:
             # ═══════════════════════════════════════════════════════════════
@@ -4489,7 +4566,7 @@ Output ONLY valid JSON, no explanations."""
             response_body = '\n'.join(lines[:-1]) if len(lines) > 1 else ''
             
             log(f'Response status: {status_code}')
-            log(f'Response body preview: {response_body[:200]}')
+            log(f'Response body preview (first 200 chars):\n{response_body[:200]}\n[... TRUNCATED FOR LOGGING/DISPLAY - ACTUAL RESPONSE IS FULL/COMPLETE ON DISK ...]')
             
             # Verify status code
             if status_code != str(expected_status):
@@ -4499,7 +4576,7 @@ Output ONLY valid JSON, no explanations."""
                     'test': test['description'],
                     'status': 'failed',
                     'reason': f'Status code mismatch: expected {expected_status}, got {status_code}',
-                    'response': response_body[:500]
+                    'response': f"{response_body[:500]}\n[... TRUNCATED FOR LOGGING - ACTUAL RESPONSE IS FULL/COMPLETE ON DISK ...]" if len(response_body) > 500 else response_body
                 })
                 continue
             
@@ -4516,7 +4593,7 @@ Output ONLY valid JSON, no explanations."""
                     'test': test['description'],
                     'status': 'failed',
                     'reason': f'Expected content not found in response',
-                    'response': response_body[:500]
+                    'response': f"{response_body[:500]}\n[... TRUNCATED FOR LOGGING - ACTUAL RESPONSE IS FULL/COMPLETE ON DISK ...]" if len(response_body) > 500 else response_body
                 })
                 continue
             
@@ -4526,7 +4603,7 @@ Output ONLY valid JSON, no explanations."""
             test_results.append({
                 'test': test['description'],
                 'status': 'passed',
-                'response': response_body[:200]
+                'response': f"{response_body[:200]}\n[... TRUNCATED FOR LOGGING ...]" if len(response_body) > 200 else response_body
             })
             
         except Exception as e:
@@ -5214,7 +5291,9 @@ class Agent:
             # The VibeCoding backend should be accessible from the container
             # Try multiple possible backend URLs
 
+            backend_url = os.environ.get('BACKEND_URL', 'http://host.docker.internal:8001')
             backend_urls = [
+                f"{backend_url}/vibecoding/api/projects/{project_id}/brd-context",
                 f"https://dsuite-backend.bourntec.com/vibecoding/api/projects/{project_id}/brd-context",  # VibeCoding on 8001
                 f"http://host.docker.internal:8001/vibecoding/api/projects/{project_id}/brd-context"
             ]
