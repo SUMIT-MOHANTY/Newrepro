@@ -29,6 +29,8 @@ const ChatPanel = ({
   onEditTask,
   executingTaskId,
   wsConnected = false,
+  onRestore,
+  isRestoring = false,
 }) => {
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
@@ -51,10 +53,10 @@ const ChatPanel = ({
   // Detect if user is manually scrolling
   const handleScroll = React.useCallback(() => {
     if (!messagesContainerRef.current) return;
-    
+
     const { scrollTop, scrollHeight, clientHeight } = messagesContainerRef.current;
     const isAtBottom = scrollHeight - scrollTop - clientHeight < 50; // 50px threshold
-    
+
     setIsUserScrolling(!isAtBottom);
   }, []);
 
@@ -62,11 +64,11 @@ const ChatPanel = ({
   React.useEffect(() => {
     const messageCount = messages.length;
     const hasNewMessages = messageCount > lastMessageCountRef.current;
-    
+
     if (hasNewMessages && !isUserScrolling) {
       scrollToBottom();
     }
-    
+
     lastMessageCountRef.current = messageCount;
   }, [messages, isUserScrolling]);
 
@@ -97,7 +99,7 @@ const ChatPanel = ({
 
       // Check if this is a thinking/background log message
       const isThinkingMsg = message.metadata?.is_background_log || message.metadata?.type === 'thinking';
-      
+
       if (isThinkingMsg) {
         // Accumulate thinking logs
         pendingThinkingLogs.push({
@@ -107,8 +109,8 @@ const ChatPanel = ({
         });
       } else {
         // Non-thinking message - attach any pending thinking logs BEFORE this message
-        const processedMsg = { 
-          ...message, 
+        const processedMsg = {
+          ...message,
           thinkingLogs: pendingThinkingLogs.length > 0 ? [...pendingThinkingLogs] : [],
           isThinking: false
         };
@@ -156,7 +158,7 @@ const ChatPanel = ({
 
   const handleMouseMove = React.useCallback((e) => {
     if (!isResizing.current) return;
-    
+
     // Use requestAnimationFrame for smoother UI updates
     requestAnimationFrame(() => {
       if (!isResizing.current) return;
@@ -231,39 +233,11 @@ const ChatPanel = ({
           </div>
         </div>
         <div className="flex items-center gap-1">
-          {/* {messages.length > 0 && (
-            <Button
-              onClick={onClearHistory}
-              variant="ghost"
-              size="icon"
-              className={cn(
-                'rounded-lg',
-                darkMode
-                  ? 'hover:bg-white/10 text-gray-400 hover:text-white'
-                  : 'hover:bg-gray-100 text-gray-500 hover:text-gray-700'
-              )}
-              title="Clear history"
-            >
-              <RefreshCw className="w-4 h-4" />
-            </Button>
-          )} */}
-          {/* <Button
-            variant="ghost"
-            size="icon"
-            className={cn(
-              'rounded-lg',
-              darkMode
-                ? 'hover:bg-white/10 text-gray-400 hover:text-white'
-                : 'hover:bg-gray-100 text-gray-600'
-            )}
-          >
-            <MoreHorizontal className="w-4 h-4" />
-          </Button> */}
         </div>
       </div>
 
       {/* Messages - Fixed height with scroll */}
-      <div 
+      <div
         ref={messagesContainerRef}
         onScroll={handleScroll}
         className="flex-1 overflow-y-auto px-4 py-4 space-y-4 custom-scrollbar min-h-0"
@@ -334,6 +308,8 @@ const ChatPanel = ({
               onExecuteTask={onExecuteTask}
               onExecuteAllTasks={onExecuteAllTasks}
               onEditTask={onEditTask}
+              onRestore={onRestore}
+              messageIndex={idx}
               executingTaskId={executingTaskId}
             />
           );
@@ -345,29 +321,42 @@ const ChatPanel = ({
           !processedMessages[processedMessages.length - 1]?.isThinking &&
           lastThinkingLogsRef.current.length === 0
         )) && (
-          <div className="flex gap-3">
-            <div className={cn(
-              'flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center',
-              darkMode ? 'bg-white/5' : 'bg-gray-100'
-            )}>
-              <Sparkles className={cn('w-4 h-4', darkMode ? 'text-gray-400' : 'text-gray-600')} />
-            </div>
-            <div className="flex-1 min-w-0">
+            <div className="flex gap-3">
               <div className={cn(
-                'rounded-lg px-4 py-3',
-                darkMode ? 'bg-white/5 text-gray-200' : 'bg-gray-100 text-gray-900'
+                'flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center',
+                darkMode ? 'bg-white/5' : 'bg-gray-100'
               )}>
-                <div className="flex items-center gap-2">
-                  <div className="flex gap-1">
-                    <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
-                    <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
-                    <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                <Sparkles className={cn('w-4 h-4', darkMode ? 'text-gray-400' : 'text-gray-600')} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className={cn(
+                  'rounded-lg px-4 py-3',
+                  isRestoring
+                    ? (darkMode ? 'bg-amber-500/10 text-amber-300 border border-amber-500/20' : 'bg-amber-50 text-amber-700 border border-amber-200')
+                    : (darkMode ? 'bg-white/5 text-gray-200' : 'bg-gray-100 text-gray-900')
+                )}>
+                  <div className="flex items-center gap-2">
+                    {isRestoring ? (
+                      <>
+                        <div className="flex gap-1">
+                          <span className="w-2 h-2 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                          <span className="w-2 h-2 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                          <span className="w-2 h-2 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                        </div>
+                        <span className="text-xs font-semibold">Restoring...</span>
+                      </>
+                    ) : (
+                      <div className="flex gap-1">
+                        <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                        <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                        <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
 
         <div ref={messagesEndRef} />
       </div>
@@ -378,7 +367,7 @@ const ChatPanel = ({
         {(() => {
           const lastMessage = [...processedMessages].reverse().find(m => m.role === "assistant");
           const fileAttachments = lastMessage?.metadata?.file_attachments;
-          
+
           if (!fileAttachments?.files?.length) return null;
 
           const files = fileAttachments.files;
@@ -423,7 +412,7 @@ const ChatPanel = ({
             </div>
           );
         })()}
-        
+
         <ChatInput
           input={input}
           setInput={setInput}

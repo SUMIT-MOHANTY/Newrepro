@@ -167,6 +167,7 @@ function Workspace({ user, logout, isAuthenticated }) {
   const [freezeLoading, setFreezeLoading] = useState(false);
   const [isAutonomousPolling, setIsAutonomousPolling] = useState(false);
   const [pollCount, setPollCount] = useState(0);
+  const [isRestoring, setIsRestoring] = useState(false);
 
   // ── WebSocket: real-time updates from the container agent ──────────────────
   const { lastMessage: wsMessage, isConnected: wsConnected } = useWebSocket(currentProjectId);
@@ -216,17 +217,17 @@ function Workspace({ user, logout, isAuthenticated }) {
           const hasRegularMessageAfter = prev.slice(lastBgIndex + 1).some(
             m => m.role === 'assistant' && !m.metadata?.is_background_log
           );
-          
+
           if (!hasRegularMessageAfter || lastBg.isThinking) {
             const updated = [...prev];
-            
+
             // Deduplicate: check if this exact log already exists
             const existingLogs = lastBg.thinkingLogs || [];
             const isDuplicate = existingLogs.some(
-              log => log.message === newLog.message && 
-                     Math.abs(new Date(log.timestamp) - new Date(newLog.timestamp)) < 1000 // within 1 second
+              log => log.message === newLog.message &&
+                Math.abs(new Date(log.timestamp) - new Date(newLog.timestamp)) < 1000 // within 1 second
             );
-            
+
             updated[lastBgIndex] = {
               ...lastBg,
               content: lastBg.content || content, // Keep original content, don't replace
@@ -250,8 +251,8 @@ function Workspace({ user, logout, isAuthenticated }) {
           code: code || null,
           suggestions: suggestions || [],
           timestamp: newLog.timestamp,
-          metadata: { 
-            ...(metadata || {}), 
+          metadata: {
+            ...(metadata || {}),
             type: type || 'status',
             is_background_log: true,
           },
@@ -262,7 +263,7 @@ function Workspace({ user, logout, isAuthenticated }) {
         // Deduplicate: skip if the last message has identical content
         const lastMsg = prev[prev.length - 1];
         if (lastMsg?.content === content && lastMsg?.role === 'assistant') return prev;
-        
+
         return [...prev, newMsg];
       });
     }
@@ -294,13 +295,13 @@ function Workspace({ user, logout, isAuthenticated }) {
 
     // ── 4. Bounce the preview iframe when a new deployment lands ─────────────
     if (content?.includes('Your app is live') ||
-        content?.includes('🎉') ||
-        type === 'celebration') {
+      content?.includes('🎉') ||
+      type === 'celebration') {
       console.log('[WS] Deployment complete, refreshing preview');
       setIframeKey(k => k + 1);
     }
   }, [wsMessage]);
-    
+
   // eslint-disable-line react-hooks/exhaustive-deps
 
   // Task execution handlers
@@ -473,7 +474,11 @@ function Workspace({ user, logout, isAuthenticated }) {
               lastDb?.metadata?.task_plan ||
               lastDb?.content?.includes('[AGENT] VERIFICATION') ||
               lastDb?.suggestions?.length > 0 ||
-              lastDb?.code
+              lastDb?.code ||
+              // DYNAMIC CHECKS:
+              lastDb?.metadata?.is_final_message === true ||
+              lastDb?.isThinking === false ||
+              dbMessages.some(m => m.metadata?.is_final_message === true)
             );
 
             const hasGotItStop = pollCount >= 5 &&
@@ -505,8 +510,8 @@ function Workspace({ user, logout, isAuthenticated }) {
               );
               const liveMsgIdx = liveIdx >= 0
                 ? (prev.findLastIndex
-                    ? liveIdx
-                    : prev.length - 1 - liveIdx)
+                  ? liveIdx
+                  : prev.length - 1 - liveIdx)
                 : -1;
 
               // Find the DB tail thinking group
@@ -517,8 +522,8 @@ function Workspace({ user, logout, isAuthenticated }) {
               );
               const dbTailMsgIdx = dbTailIdx >= 0
                 ? (dbMessages.findLastIndex
-                    ? dbTailIdx
-                    : dbMessages.length - 1 - dbTailIdx)
+                  ? dbTailIdx
+                  : dbMessages.length - 1 - dbTailIdx)
                 : -1;
 
               if (liveMsgIdx < 0 || dbTailMsgIdx < 0) {
@@ -583,12 +588,12 @@ function Workspace({ user, logout, isAuthenticated }) {
     if (!currentProjectId) return;
     try {
       const token = localStorage.getItem('vibecoding_token');
-      
+
       // Fetch messages
       const messagesResponse = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/messages`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      
+
       // Fetch tasks
       const tasksResponse = await axios.get(`${API_BASE_URL}/api/projects/${currentProjectId}/tasks`, {
         headers: { Authorization: `Bearer ${token}` }
@@ -596,25 +601,25 @@ function Workspace({ user, logout, isAuthenticated }) {
         console.warn('Failed to fetch tasks:', err);
         return { data: { tasks: [], total_tasks: 0 } };
       });
-      
+
       if (messagesResponse.data.messages) {
         let messages = messagesResponse.data.messages;
-        
+
         // Check if any message signals loading complete
-        const hasLoadingComplete = messages.some(msg => 
+        const hasLoadingComplete = messages.some(msg =>
           msg.metadata?.loading_complete === true ||
           msg.metadata?.type === 'task_breakdown' ||
           msg.metadata?.type === 'task_execution_complete' ||
           msg.metadata?.type === 'task_execution_failed' ||
           msg.metadata?.type === 'task_execution_blocked'
         );
-        
+
         if (hasLoadingComplete) {
           console.log('✅ Loading complete signal detected - stopping loader');
           setLoading(false);
           setIsAutonomousPolling(false);
         }
-        
+
         // If we have tasks, find the task breakdown message and inject the task plan
         if (tasksResponse.data.tasks && tasksResponse.data.tasks.length > 0) {
           const taskPlan = {
@@ -625,14 +630,14 @@ function Workspace({ user, logout, isAuthenticated }) {
             pending_count: tasksResponse.data.pending_count,
             failed_count: tasksResponse.data.failed_count
           };
-          
+
           // Find the most recent message with task breakdown metadata or create one
-          const taskBreakdownMsgIndex = messages.findIndex(msg => 
-            msg.metadata?.type === 'task_breakdown' || 
+          const taskBreakdownMsgIndex = messages.findIndex(msg =>
+            msg.metadata?.type === 'task_breakdown' ||
             msg.metadata?.awaiting_task_selection ||
             (msg.content && msg.content.includes('Task Breakdown Complete'))
           );
-          
+
           if (taskBreakdownMsgIndex !== -1) {
             // Update existing message with task plan
             messages[taskBreakdownMsgIndex] = {
@@ -658,7 +663,7 @@ function Workspace({ user, logout, isAuthenticated }) {
             messages.push(taskBreakdownMsg);
           }
         }
-        
+
         setMessages(messages);
       }
     } catch (error) {
@@ -709,7 +714,7 @@ function Workspace({ user, logout, isAuthenticated }) {
   const fetchProjects = async () => {
     try {
       const response = await axios.get(`${API_BASE_URL}/api/projects`, {
-        
+
       });
       // Sort projects by created_at descending (most recent first)
       const sortedProjects = (response.data.projects || []).sort((a, b) => {
@@ -949,7 +954,7 @@ function Workspace({ user, logout, isAuthenticated }) {
         try {
           // First, check if the project exists
           const response = await axios.get(`${API_BASE_URL}/api/projects/${urlProjectId}`, {
-            
+
           });
 
           // Project exists, load it
@@ -965,7 +970,7 @@ function Workspace({ user, logout, isAuthenticated }) {
             const startResp = await axios.post(
               `${API_BASE_URL}/api/projects/${urlProjectId}/start`,
               {},
-              {  }
+              {}
             );
             if (startResp.data.started && startResp.data.preview_url) {
               console.log('🚀 Container starting for project:', urlProjectId);
@@ -1005,14 +1010,14 @@ function Workspace({ user, logout, isAuthenticated }) {
       // Check for auto-execution flag from D-Suite handoff
       const autoExecuteProjectId = sessionStorage.getItem('vibe_auto_execute_project');
       const autoExecuteToken = sessionStorage.getItem('vibe_auto_execute_token');
-      
+
       if (autoExecuteProjectId && autoExecuteToken && autoExecuteProjectId === projectIdToLoad) {
         console.log('🚀 Auto-execution triggered for project:', autoExecuteProjectId);
-        
+
         // Clear the flags
         sessionStorage.removeItem('vibe_auto_execute_project');
         sessionStorage.removeItem('vibe_auto_execute_token');
-        
+
         // Trigger execution
         try {
           const triggerResp = await axios.post(
@@ -1020,30 +1025,30 @@ function Workspace({ user, logout, isAuthenticated }) {
             {},
             { headers: { Authorization: `Bearer ${autoExecuteToken}` } }
           );
-          
+
           if (triggerResp.data.status === 'triggered') {
             console.log('✅ Auto-execution triggered successfully');
-            
+
             // Show a message to the user
             setMessages(prev => [...prev, {
               role: 'assistant',
               content: '🚀 **Auto-execution started!**\n\nI\'m analyzing your BRD from D-Suite and creating the application. This may take a few minutes.\n\nYou can watch the progress in real-time below.',
               timestamp: new Date().toISOString(),
             }]);
-            
+
             // Start polling for updates
             setIsContainerLoading(true);
             containerLoadExpectedRef.current = true;
           } else if (triggerResp.data.status === 'already_started') {
             console.log('ℹ️ Execution already started previously at', triggerResp.data.execution_start_time);
-            
+
             // Show a message that execution is already in progress
             setMessages(prev => [...prev, {
               role: 'assistant',
               content: '✅ **Welcome back!**\n\nExecution was already started for this project.',
               timestamp: new Date().toISOString(),
             }]);
-            
+
             // Start polling for updates to show current progress
             setIsContainerLoading(true);
             containerLoadExpectedRef.current = true;
@@ -1085,7 +1090,7 @@ function Workspace({ user, logout, isAuthenticated }) {
       const startResp = await axios.post(
         `${API_BASE_URL}/api/projects/${newProjectId}/start`,
         {},
-        {  }
+        {}
       );
       if (startResp.data.started && startResp.data.preview_url) {
         console.log('🚀 Container starting for switched project:', newProjectId);
@@ -1163,19 +1168,20 @@ function Workspace({ user, logout, isAuthenticated }) {
   };
 
   // Load code from a specific commit (checkpoint)
-  const loadCommitCheckpoint = async (commitHash) => {
+  const loadCommitCheckpoint = async (commitHash, isRestore = false) => {
     try {
       setIsCheckpointLoading(true);
-      console.log(`🔖 Loading checkpoint: ${commitHash}`);
+      console.log(`🔖 ${isRestore ? 'Restoring' : 'Loading'} checkpoint: ${commitHash}`);
       console.log(`📍 Current project: ${currentProjectId}`);
 
       // Find the commit info from branchCommits
       const commitInfo = branchCommits.find(c => c.hash === commitHash);
 
-      // Checkout the commit
+      // Checkout or Restore the commit
       const checkoutResp = await axios.post(`${API_BASE_URL}/api/git/checkpoint`, {
         project_id: currentProjectId,
-        version_id: commitHash
+        version_id: commitHash,
+        restore: isRestore
       });
       console.log('✅ Checkout response:', checkoutResp.data);
 
@@ -1286,6 +1292,113 @@ function Workspace({ user, logout, isAuthenticated }) {
       console.error('❌ Failed to load commit checkpoint:', err);
       console.error('Error details:', err.response?.data || err.message);
       setIsCheckpointLoading(false);
+    }
+  };
+
+  /**
+   * handleRestore — reverts the project files to the git state that existed
+   * BEFORE the user message at `messageIndex` was sent, then puts the prompt
+   * back into the chat input so the user can re-send or tweak it.
+   */
+  const handleRestore = async (promptText, messageIndex) => {
+    if (!currentProjectId || isRestoring || loading) return;
+
+    // 1. Identify the target checkpoint — multi-fallback strategy:
+    //    a) Check messages for version_id (most reliable)
+    //    b) Fall back to branchCommits (Git commit history) by timestamp
+    //    c) Last resort: use the most recent commit from branchCommits
+    let targetVersionId = null;
+    let targetMessage = null;
+
+    // Strategy A: Search preceding messages for a valid version_id
+    for (let i = messageIndex - 1; i >= 0; i--) {
+      const msg = messages[i];
+      const vid = msg?.version_id || msg?.versionId || msg?.metadata?.version_id || msg?.metadata?.versionId;
+      if (vid && vid !== 'workspace') {
+        targetVersionId = vid;
+        targetMessage = msg;
+        break;
+      }
+    }
+
+    // Strategy B: Fall back to branchCommits (loaded from Git history)
+    if (!targetVersionId && branchCommits && branchCommits.length > 0) {
+      const msgTimestamp = messages[messageIndex]?.timestamp;
+      if (msgTimestamp) {
+        // Find the latest commit that was created BEFORE the message we're restoring from
+        const msgTime = new Date(msgTimestamp).getTime();
+        const precedingCommit = branchCommits.find(c => {
+          const commitTime = new Date(c.date).getTime();
+          return commitTime < msgTime;
+        });
+        if (precedingCommit) {
+          targetVersionId = precedingCommit.hash;
+          console.log(`📌 Fallback: Using commit ${targetVersionId.slice(0,8)} from branchCommits (before message timestamp)`);
+        }
+      }
+      // If still nothing, just use the second most recent commit (the one before HEAD)
+      if (!targetVersionId && branchCommits.length > 1) {
+        targetVersionId = branchCommits[1].hash;
+        console.log(`📌 Fallback: Using second-most-recent commit ${targetVersionId.slice(0,8)} from branchCommits`);
+      } else if (!targetVersionId) {
+        targetVersionId = branchCommits[0].hash;
+        console.log(`📌 Fallback: Using latest commit ${targetVersionId.slice(0,8)} from branchCommits`);
+      }
+    }
+
+    if (!targetVersionId) {
+      console.warn('Cannot restore: No version_id found in messages or Git history.');
+      setErrorHeader("Cannot restore: No Git snapshots found for this project yet.");
+      return;
+    }
+
+    const targetMsg = processedMessages[messageIndex];
+    if (!targetMsg) {
+      console.warn('Cannot restore: target message not found at index', messageIndex);
+      return;
+    }
+    const messageId = targetMsg.id;
+
+    try {
+      setIsRestoring(true);
+      setLoading(true); // Show loading state during restore
+      stopWorkspacePolling(); // Stop polling while we revert filesystem
+
+      // 2. Call the updated checkpoint API to revert the codebase
+      await loadCommitCheckpoint(targetVersionId, true);
+
+      // 3. Delete messages AFTER the restored point from the DB and local state
+      // (This ensures the conversation history stays in sync with the file state)
+      const token = localStorage.getItem('vibecoding_token');
+      await axios.delete(`${API_BASE_URL}/api/projects/${currentProjectId}/messages`, {
+        params: { after_message_id: messageId },
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      // Update local state: keep only messages strictly before the restored message ID
+      const rawTargetIdx = messages.findIndex(m => m.id === messageId);
+      if (rawTargetIdx !== -1) {
+        const restoredMessages = messages.slice(0, rawTargetIdx);
+        setMessages(restoredMessages);
+      } else {
+        // Fallback if not found in raw state
+        const restoredMessages = messages.slice(0, messageIndex);
+        setMessages(restoredMessages);
+      }
+
+      // 4. Put the original prompt back into the input field for the user to re-send
+      setInput(promptText);
+
+      // 5. Restart polling
+      startWorkspacePolling(currentProjectId);
+
+      console.log(`Successfully restored to version: ${targetVersionId}`);
+    } catch (error) {
+      console.error('Failed to restore checkpoint:', error);
+      setErrorHeader("Failed to restore to previous snapshot.");
+    } finally {
+      setIsRestoring(false);
+      setLoading(false);
     }
   };
 
@@ -1471,7 +1584,7 @@ function Workspace({ user, logout, isAuthenticated }) {
 
     // Protection against double submissions
     if (loading) return;
-    
+
     // ✅ Set loading immediately for instant feedback
     setLoading(true);
     stopWorkspacePolling(); // stop any previous live polling
@@ -1515,12 +1628,12 @@ function Workspace({ user, logout, isAuthenticated }) {
 
       // Check if we're awaiting task breakdown - if so, don't add the empty message and keep loader active
       const awaitingTaskBreakdown = response.data.metadata?.awaiting_task_breakdown;
-      
+
       if (!awaitingTaskBreakdown && response.data.message) {
         // Only add message if it's not empty and we're not awaiting task breakdown
         setMessages(prev => [...prev, aiMessage]);
       }
-      
+
       setLastMessageId(response.data.message_id);
 
       if (response.data.code) {
@@ -1541,7 +1654,7 @@ function Workspace({ user, logout, isAuthenticated }) {
         setIsAutonomousPolling(true);
         // CRITICAL: Keep loading true - polling will set it to false when done
         // Don't call setLoading(false) here!
-        
+
         // ✅ Add safety timeout to prevent infinite loading (90 seconds)
         // setInterval(() => {
         //   setLoading(prev => {
@@ -1713,14 +1826,14 @@ function Workspace({ user, logout, isAuthenticated }) {
       }
     } catch (error) {
       console.error('Error:', error);
-      
+
       // ✅ Remove temporary status message
       setMessages(prev => prev.filter(msg => !msg.metadata?.temporary));
-      
+
       // ✅ Always reset loading state on error
       setLoading(false);
       setIsAutonomousPolling(false);
-      
+
       // ✅ Handle different error types with appropriate messages
       if (error.response?.status === 401) {
         setMessages(prev => [...prev, {
@@ -2725,7 +2838,7 @@ Please suggest improvements or modifications for this element.`;
                     <iframe
                       ref={iframeRef}
                       key={iframeKey}
-                      src={previewUrl || undefined}
+                      src={previewUrl ? `${previewUrl}${previewUrl.includes('?') ? '&' : '?'}cb=${iframeKey}` : undefined}
                       srcDoc={!previewUrl ? injectEditorScript(getPreviewHtml()) : undefined}
                       className="w-full h-full border-0"
                       title="Preview"
@@ -3016,6 +3129,8 @@ Please suggest improvements or modifications for this element.`;
           input={input}
           setInput={setInput}
           onSend={handleSend}
+          onRestore={handleRestore}
+          isRestoring={isRestoring}
           darkMode={darkMode}
           codeVersions={branchCommits}
           selectedVersion={null}

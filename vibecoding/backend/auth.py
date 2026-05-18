@@ -17,6 +17,7 @@ from pydantic import BaseModel, EmailStr
 
 # ─── Configuration ──────────────────────────────────────────────────────────────
 JWT_SECRET = os.getenv("JWT_SECRET", secrets.token_hex(32))
+# JWT_SECRET = os.getenv("JWT_SECRET", "vibecoding-default-development-secret-key-do-not-use-in-prod")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
 DB_PATH = os.path.join(os.path.dirname(__file__), "vibecoding_users.db")

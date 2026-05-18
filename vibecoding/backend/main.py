@@ -453,6 +453,7 @@ class GitRequest(BaseModel):
     token: Optional[str] = None
     chat_version: Optional[int] = None
     version_id: Optional[str] = None
+    restore: Optional[bool] = False
 
 async def summarize_content(content: str, code: str = None) -> str:
     """Helper to generate a professional CXO summary for a message."""
@@ -1227,12 +1228,22 @@ async def save_agent_message(request: AgentMessageRequest):
         import uuid
         import time
         
-        conn = get_db()
+        # Always capture the current Git HEAD as version_id for every agent message.
+        # This ensures the restore functionality can always find a valid checkpoint
+        # from any preceding message in the chat history.
+        version_id = None
+        try:
+            hash_res = git_manager._run_git_command(request.project_id, ["rev-parse", "HEAD"])
+            if hash_res.get("status") == "success" and hash_res.get("stdout", "").strip():
+                version_id = hash_res["stdout"].strip()
+                logger.info(f"Captured current commit hash {version_id} for project {request.project_id}")
+        except Exception:
+            pass  # Git not initialized yet — leave version_id as None
         
-        # Generate unique message ID
+        # 2. Insert message into database with the version_id (commit hash)
+        conn = get_db()
         message_id = f'agent_{int(time.time())}_{uuid.uuid4().hex[:4]}'
         
-        # Insert message into database
         conn.execute(
             """INSERT INTO messages
                (id, project_id, container_id, role, content, code, version_id,
@@ -1245,7 +1256,7 @@ async def save_agent_message(request: AgentMessageRequest):
                 request.role,
                 request.content,
                 request.code,
-                None,  # version_id
+                version_id,
                 datetime.now().isoformat(),
                 json.dumps(request.suggestions) if request.suggestions else None,
                 None,  # tool_calls
@@ -1257,7 +1268,8 @@ async def save_agent_message(request: AgentMessageRequest):
         conn.commit()
         conn.close()
         
-        logger.info(f"✅ Agent message saved: {message_id} for project {request.project_id}")
+        logger.info(f"✅ Agent message saved: {message_id} with version_id {version_id} for project {request.project_id}")
+
         
         return {
             "success": True,
@@ -2164,6 +2176,8 @@ def _group_log_messages(raw_messages: list) -> list:
         if msg.get('role') != 'assistant':
             return False
         meta = msg.get('metadata') or {}
+        if meta.get('is_final_message') or meta.get('type') == 'success' or meta.get('status') == 'success':
+            return True
         if meta.get('type') in TERMINAL_TYPES:
             return True
         if meta.get('task_plan') or meta.get('type') == 'task_breakdown':
@@ -2174,7 +2188,7 @@ def _group_log_messages(raw_messages: list) -> list:
         if msg.get('code'):
             return True
         content = msg.get('content', '')
-        if '[AGENT] VERIFICATION' in content or 'Your app is live' in content:
+        if '[AGENT] VERIFICATION' in content or 'Your app is live' in content or 'No API endpoint tests' in content or 'API endpoint tests' in content:
             return True
         return False
 
@@ -2302,6 +2316,63 @@ async def get_project_messages(project_id: str, background_tasks: BackgroundTask
         conn.close()
 
 
+@app.delete("/vibecoding/api/projects/{project_id}/messages")
+async def delete_project_messages(
+    project_id: str,
+    after_index: Optional[int] = None,
+    after_message_id: Optional[str] = None,
+    user: dict = Depends(get_current_user)
+):
+    """Delete messages after a certain index or message ID to sync conversation history with Git restore"""
+    from auth import get_db
+    conn = get_db()
+    try:
+        if after_message_id:
+            # Find the rowid of the message with after_message_id
+            row = conn.execute(
+                "SELECT rowid FROM messages WHERE project_id = ? AND id = ?",
+                (project_id, after_message_id)
+            ).fetchone()
+            if row:
+                target_rowid = row[0]
+                conn.execute(
+                    "DELETE FROM messages WHERE project_id = ? AND rowid >= ?",
+                    (project_id, target_rowid)
+                )
+                conn.commit()
+                logger.info(f"🗑️ Deleted messages starting from message ID {after_message_id} (rowid >= {target_rowid}) for project {project_id}")
+                return {"status": "success", "deleted_by": "message_id"}
+            else:
+                return {"status": "error", "message": f"Message ID {after_message_id} not found"}
+        
+        elif after_index is not None:
+            # Retrieve rowids in insertion order (rowid ASC)
+            rows = conn.execute(
+                "SELECT rowid FROM messages WHERE project_id = ? ORDER BY rowid ASC",
+                (project_id,)
+            ).fetchall()
+            
+            rowids = [row[0] for row in rows]
+            
+            # If after_index is within range, delete all messages with rowid greater than the rowid at after_index
+            if 0 <= after_index < len(rowids):
+                target_rowid = rowids[after_index]
+                conn.execute(
+                    "DELETE FROM messages WHERE project_id = ? AND rowid > ?",
+                    (project_id, target_rowid)
+                )
+                conn.commit()
+                logger.info(f"🗑️ Deleted messages after index {after_index} (rowid > {target_rowid}) for project {project_id}")
+                return {"status": "success", "deleted_count": len(rowids) - 1 - after_index}
+            
+        return {"status": "success", "message": "No deletion parameters matched, no messages deleted"}
+    except Exception as e:
+        logger.error(f"❌ Failed to delete messages: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
 @app.get("/vibecoding/api/projects/{project_id}/tasks")
 async def get_project_tasks(project_id: str):
     """Get tasks from the .vibecoding_tasks.json file in the workspace"""
@@ -2407,8 +2478,15 @@ async def git_checkpoint(request: GitRequest):
                 git_manager._run_git_command(project_id, ["reset", "--hard"])
                 git_manager._run_git_command(project_id, ["clean", "-fd"])
             
-        # Checkout the commit
-        checkout_res = git_manager.checkout_commit(project_id, version_id)
+        # Checkout or Restore the commit
+        if request.restore:
+            logger.info(f"🔄 Performing Git Restore (hard reset) to: {version_id} via container")
+            res = project_manager.send_request(f"__SYS_CMD_RESTORE__:{version_id}", project_id=project_id)
+            if not res.get("success"):
+                raise HTTPException(status_code=500, detail="Failed to send restore command to container")
+            return {"status": "success", "message": "Restore command queued to container"}
+        else:
+            checkout_res = git_manager.checkout_commit(project_id, version_id)
         
         if checkout_res["status"] == "success":
             # Tell the supervisor to switch the container to the workspace

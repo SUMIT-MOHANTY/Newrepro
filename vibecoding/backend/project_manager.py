@@ -1748,10 +1748,7 @@ except Exception as e:
                 
                 if success:
                     logger.info(f"✅ Switched to version {version_id}")
-                    # Trigger container restart to ensure web server picks up injected editor scripts
-                    logger.info(f"🔄 Triggering container restart to reload HTML files")
-                    self._trigger_container_restart(project_id)
-                    await asyncio.sleep(2)  # Wait for restart to complete
+                    # Switch command triggers version activation/restart inside container supervisor automatically
                     container = existing_container
                 else:
                     logger.warning(f"⚠️ Failed to switch version, recreating container")

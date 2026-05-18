@@ -30,19 +30,13 @@ from typing import Dict, Any, List, Optional
 # Import task-based development modules
 from task_planner import TaskPlanner, Task
 from task_executor import TaskExecutor
-from task_executor import TaskExecutor
 
-#!/usr/bin/env python3
-"""
-"""
+# Import robustness modules (git backup, syntax validation)
+from workspace_git import WorkspaceGit
+from syntax_validator import SyntaxValidator
 
-import json
-import os
-import re
-import subprocess
 import tempfile
-from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Tuple
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PROMPTS
@@ -928,6 +922,11 @@ MAILBOX         = Path('/tmp/vibe_prompt')
 def log(msg: str):
     print(f'🛠️  [Agent] {msg}', flush=True)
 
+# ── Robustness modules (global singletons) ────────────────────────────────────
+# These are initialized once and used throughout the agent lifecycle.
+workspace_git     = WorkspaceGit(str(WORKSPACE_DIR), log_func=log)
+syntax_validator  = SyntaxValidator(str(WORKSPACE_DIR), log_func=log)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DATABASE CONNECTION (DEPRECATED - Now using API)
@@ -1459,21 +1458,84 @@ Your summary:"""
             return f'• Created {len(files_written)} file(s)\n• Built your application structure\n• Ready for deployment'
 
 
+def _generate_commit_message(user_prompt: str, changed_files: list) -> str:
+    """Use AI to generate a clean, professional, single-line Git commit message"""
+    if not user_prompt:
+        return "Deployment successful"
+    try:
+        commit_prompt = f"""Generate a concise, professional Git commit message based on the following change details.
+User Request: "{user_prompt}"
+Changed Files: {', '.join(changed_files[:10]) if changed_files else 'Workspace initialized'}
+
+Rules:
+1. Must be a single line under 80 characters.
+2. Written in present or past tense (e.g. 'Add contact form with validation' or 'Updated color theme to dark mode').
+3. Do not include prefixes like 'Commit:' or quotes.
+4. Keep it highly specific to the features added or modified.
+
+Commit message:"""
+        
+        response = call_ai([
+            {'role': 'system', 'content': 'You are a professional software engineer writing git commit messages.'},
+            {'role': 'user', 'content': commit_prompt}
+        ], temperature=0.3, show_thinking=False)
+        
+        msg = response.strip().strip('"').strip("'").strip()
+        if msg:
+            return msg
+    except Exception as e:
+        log(f"⚠️ Failed to generate AI commit message: {e}")
+    
+    # Fallback to a formatted prompt message
+    clean_prompt = user_prompt.replace('\r', '').replace('\n', ' ').strip()
+    return clean_prompt[:60]
+
+
 # ── Nginx helpers ──────────────────────────────────────────────────────────────
 def nginx_reload() -> bool:
     t = subprocess.run(['/usr/sbin/nginx', '-t'], capture_output=True, text=True)
     if t.returncode != 0:
         log(f'Nginx config error: {t.stderr}')
         return False
-    r = subprocess.run(['/usr/sbin/nginx', '-s', 'reload'], capture_output=True, text=True)
-    if r.returncode != 0:
-        subprocess.run('pkill -9 nginx || true', shell=True, capture_output=True)
-        time.sleep(0.5)
+        
+    # Ensure the directories for the pid files exist
+    Path('/run').mkdir(parents=True, exist_ok=True)
+    Path('/var/run').mkdir(parents=True, exist_ok=True)
+    
+    # Check if Nginx is running
+    pgrep = subprocess.run(['pgrep', '-o', 'nginx'], capture_output=True, text=True)
+    is_running = (pgrep.returncode == 0)
+    
+    if is_running:
+        pid = pgrep.stdout.strip()
+        # Try to restore the pid files so Nginx can signal reload successfully
+        for pid_path in ['/run/nginx.pid', '/var/run/nginx.pid']:
+            try:
+                p = Path(pid_path)
+                if not p.exists() or p.read_text().strip() != pid:
+                    p.write_text(pid)
+                    log(f'Restored Nginx PID file {pid_path} with PID {pid}')
+            except Exception as pe:
+                log(f'Warning: failed to restore Nginx PID file {pid_path}: {pe}')
+                
+        r = subprocess.run(['/usr/sbin/nginx', '-s', 'reload'], capture_output=True, text=True)
+        if r.returncode == 0:
+            return True
+        log(f'Nginx reload failed: {r.stderr}. Attempting clean restart...')
+        
+    # If not running or reload failed, stop and start cleanly
+    subprocess.run('pkill -9 nginx || true', shell=True, capture_output=True)
+    time.sleep(0.5)  # Let TIME_WAIT settle
+    
+    # Try starting Nginx (up to 3 attempts with brief delays)
+    for attempt in range(3):
         s = subprocess.run(['/usr/sbin/nginx'], capture_output=True, text=True)
-        if s.returncode != 0:
-            log(f'Nginx failed to start: {s.stderr}')
-            return False
-    return True
+        if s.returncode == 0:
+            return True
+        log(f'Nginx start attempt {attempt+1} failed: {s.stderr}')
+        time.sleep(0.5)
+        
+    return False
 
 
 def write_nginx_config(conf: str) -> bool:
@@ -2261,7 +2323,7 @@ Return ONLY the clean file content with no explanation, no markers, no fences.""
 
 
 # ── Phase 2: Deployment ────────────────────────────────────────────────────────
-def deploy(error_context: dict = None, max_retries: int = 3, test_changes: bool = False, changed_files: list = None, user_prompt: str = None) -> bool:
+def deploy(error_context: dict = None, max_retries: int = 3, test_changes: bool = False, changed_files: list = None, user_prompt: str = None, snapshot_id: str = "") -> bool:
     report('Figuring out the best way to run your app...')
     
     # Show loading page immediately so users see progress
@@ -2269,6 +2331,23 @@ def deploy(error_context: dict = None, max_retries: int = 3, test_changes: bool 
 
     # Scan and fix any corrupted workspace files before attempting deployment
     sanitize_workspace()
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # STEP 0: Pre-deploy syntax validation (catch errors BEFORE build)
+    # ═══════════════════════════════════════════════════════════════════════
+    if changed_files:
+        log('🔍 Running pre-deploy syntax validation...')
+        syntax_errors = syntax_validator.validate_files(changed_files)
+        if syntax_errors:
+            report(f'Found {len(syntax_errors)} syntax error(s) — fixing before deploy...')
+            for err in syntax_errors:
+                fix_result = _auto_fix_syntax_error(err['error'], {})
+                if fix_result.get('fixed'):
+                    log(f'✅ Pre-deploy fix applied to {err["file"]}')
+                else:
+                    log(f'⚠️ Could not pre-fix {err["file"]}: {err["error"][:100]}')
+
+
 
     tree      = _discover_workspace()
     manifests = _read_manifests()
@@ -2721,7 +2800,25 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
             m = re.search(r'\{.*\}', raw, re.DOTALL)
             if not m:
                 raise ValueError('No JSON in architect response')
-            strategy = json.loads(m.group(0))
+            
+            json_str = m.group(0)
+            try:
+                strategy = json.loads(json_str)
+            except json.JSONDecodeError:
+                # Fallback: AI used single quotes? Or other minor issues.
+                # Try to replace single quotes with double quotes (very basic)
+                # but better: use ast.literal_eval if it looks like a python dict
+                try:
+                    import ast
+                    strategy = ast.literal_eval(json_str)
+                    if not isinstance(strategy, dict):
+                        raise ValueError("Parsed result is not a dict")
+                    log("💡 Architect response recovered using ast.literal_eval")
+                except:
+                    # Last ditch: try to fix common JSON errors
+                    fixed_json = json_str.replace("'", '"')
+                    strategy = json.loads(fixed_json)
+                    log("💡 Architect response recovered using quote replacement")
             
         except Exception as e:
             log(f'Architect failed on attempt {attempt}: {e}')
@@ -2730,7 +2827,7 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
 
         # Kill any running app processes on non-Nginx ports dynamically
         # Find all listening ports except 80 (Nginx) and kill them
-        subprocess.run(
+        subprocess.run( 
             'ss -tlnp | awk \'NR>1 && $4 !~ /:80$/ {match($4, /:([0-9]+)$/, a); if(a[1]) print a[1]}\' '
             '| sort -u | xargs -r -I{} fuser -k {}/tcp 2>/dev/null || true',
             shell=True, capture_output=True
@@ -3046,6 +3143,24 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
                    },
                    summary='App deployed successfully')
             
+
+
+            # ═══════════════════════════════════════════════════════════════
+            # GIT: Tag this successful deployment as rollback point
+            # ═══════════════════════════════════════════════════════════════
+            try:
+                commit_desc = _generate_commit_message(user_prompt, files_for_diff)
+
+                workspace_git.commit_after_edit(
+                    snapshot_id, files_for_diff,
+                    commit_desc
+                )
+                workspace_git.tag_deployment(
+                    f'Full deploy: {len(files_for_diff)} files, port {app_port}'
+                )
+            except Exception as git_err:
+                log(f'⚠️ Git commit/tag failed (non-critical): {git_err}')
+
             # If this was an edit with changes, automatically test them
             if test_changes and changed_files and user_prompt:
                 test_result = _test_changes_automatically(changed_files, user_prompt, app_port)
@@ -4426,7 +4541,10 @@ Output ONLY valid JSON, no explanations."""
     # Report results
     total_tests = tests_passed + tests_failed
     if total_tests == 0:
-        report('No API endpoint tests were needed for this change.')
+        report('No API endpoint tests were needed for this change.',
+               metadata={'is_final_message': True, 'status': 'success'},
+               message_type='success',
+               summary='Deployment complete')
         return {'success': True, 'tests_passed': 0, 'tests_failed': 0, 'test_results': [], 'needs_user_input': False, 'fix_applied': False}
     
     if tests_failed == 0:
@@ -4440,7 +4558,7 @@ Output ONLY valid JSON, no explanations."""
             report(
                 f'Great! Your changes are working. Here are some suggestions for what to do next:',
                 suggestions=next_suggestions,
-                metadata={'type': 'success', 'tests_passed': tests_passed, 'tests_failed': 0, 'show_suggestions': True},
+                metadata={'type': 'success', 'tests_passed': tests_passed, 'tests_failed': 0, 'show_suggestions': True, 'is_final_message': True},
                 summary=summary,
                 message_type='success'
             )
@@ -5020,6 +5138,19 @@ class Agent:
         if prompt.strip().lower() == "start building based on the brd requirements":
             self._handle_dsuite_handoff()
             return
+            
+        # Check if this is a system command to restore a git snapshot
+        if prompt.startswith("__SYS_CMD_RESTORE__:"):
+            version_id = prompt.split(":", 1)[1].strip()
+            log(f"🔄 Received system command to restore snapshot: {version_id}")
+            report(f"Rolling back to version {version_id[:8]}...", message_type="thinking")
+            success = workspace_git.rollback_to(version_id)
+            if success:
+                deploy()
+                report(f"Successfully restored to version {version_id[:8]}.", message_type="success")
+            else:
+                report(f"Failed to restore to version {version_id[:8]}.", message_type="error")
+            return
         
         existing = read_workspace_files()
         is_empty = len(existing) == 0
@@ -5494,7 +5625,7 @@ Use `TASK:START` to continue execution.
             self._handle_direct_generation(prompt, existing_files, False)
     
     def _handle_direct_generation(self, prompt: str, existing_files: dict, is_empty: bool):
-        """Direct code generation with EditEngine integration"""
+        """Direct code generation with EditEngine integration + Git backup"""
         
         # Check if this is a deployment-only fix
         deploy_only_keywords = [
@@ -5519,7 +5650,21 @@ Use `TASK:START` to continue execution.
             )
             return
         
-        # ✅ NEW: Route through EditEngine first
+        # ═══════════════════════════════════════════════════════════════════
+        # GIT: Create pre-edit snapshot (rollback point)
+        # ═══════════════════════════════════════════════════════════════════
+        snapshot_id = ''
+        if not is_empty:
+            try:
+                workspace_git.ensure_repo()
+                snapshot_id = workspace_git.snapshot_before_edit(
+                    f"Before: {prompt[:80]}"
+                )
+                log(f'📸 Pre-edit snapshot: {snapshot_id[:8] if snapshot_id else "none"}')
+            except Exception as git_err:
+                log(f'⚠️ Git snapshot failed (non-blocking): {git_err}')
+        
+        # ✅ Route through EditEngine first
         try:
             log('🔀 Routing request through EditEngine...')
             edit_result = self.edit_engine.route(prompt)
@@ -5527,9 +5672,11 @@ Use `TASK:START` to continue execution.
             log(f'EditEngine result: mode={edit_result["mode"]}, handled={edit_result["handled"]}')
             
             if edit_result["mode"] == "CREATE_APP" and not edit_result["handled"]:
-                # New app creation - use legacy generate_code()
+                # App creation or major change — use legacy generate_code()
+                # IMPORTANT: Pass existing_files so the AI has context of the current
+                # codebase and doesn't rebuild from scratch on existing projects.
                 log('📝 CREATE_APP mode - using legacy generate_code()')
-                result = generate_code(prompt, existing_files=None)
+                result = generate_code(prompt, existing_files=existing_files if not is_empty else None)
                 
                 if not result:
                     return
@@ -5546,9 +5693,38 @@ Use `TASK:START` to continue execution.
                 changed_files = edit_result["files_changed"]
                 user_prompt = prompt
                 
+                # ═══════════════════════════════════════════════════════════
+                # VALIDATE: Syntax-check all changed files before proceeding
+                # ═══════════════════════════════════════════════════════════
+                if changed_files:
+                    validation_errors = syntax_validator.validate_files(changed_files)
+                    if validation_errors:
+                        log(f'❌ Post-edit validation found {len(validation_errors)} error(s)')
+                        
+                        # Attempt auto-fix for each error
+                        all_fixed = True
+                        for err in validation_errors:
+                            fix_result = _auto_fix_syntax_error(err['error'], {})
+                            if not fix_result.get('fixed'):
+                                all_fixed = False
+                                log(f'⚠️ Could not fix {err["file"]}: {err["error"][:80]}')
+                        
+                        if not all_fixed and snapshot_id:
+                            # Rollback to pre-edit state
+                            log(f'⏪ Rolling back to pre-edit snapshot {snapshot_id[:8]}')
+                            workspace_git.rollback_to(snapshot_id)
+                            report(
+                                'The edit introduced syntax errors that couldn\'t be auto-fixed. '
+                                'I\'ve rolled back to the previous working state. '
+                                'Please try rephrasing your request.',
+                                message_type='warning',
+                                summary='Edit rolled back due to syntax errors'
+                            )
+                            return
+                
                 # Format file attachments for clean UI display
                 file_attachments = {
-                    "files": [os.path.basename(f) for f in changed_files[:50]]  # Only filenames, cap at 50
+                    "files": [os.path.basename(f) for f in changed_files[:50]]
                 } if changed_files else None
                 
                 # Report to user
@@ -5595,7 +5771,8 @@ Use `TASK:START` to continue execution.
             error_context=None,
             test_changes=bool(changed_files),
             changed_files=changed_files,
-            user_prompt=user_prompt
+            user_prompt=user_prompt,
+            snapshot_id=snapshot_id
         )
 
 
@@ -5815,6 +5992,9 @@ if __name__ == '__main__':
 
     agent = Agent()
 
+    # Check if there's a previous deployment we can restore (do this BEFORE overwriting Nginx config in apply_baseline_gateway!)
+    prev_deployment = _detect_previous_deployment()
+
     report('👋 VibeCoding Agent is online and ready!')
 
     # Serve a friendly loading page immediately
@@ -5825,9 +6005,6 @@ if __name__ == '__main__':
     if existing:
         file_count = len(existing)
         log(f'Container restart detected - workspace has {file_count} files')
-        
-        # Check if there's a previous deployment we can restore
-        prev_deployment = _detect_previous_deployment()
         
         if prev_deployment['has_deployment']:
             # Previous deployment detected - try to restore it
@@ -5841,7 +6018,9 @@ if __name__ == '__main__':
             if app_port:
                 healthy, msg, _ = _health_check(app_port=app_port)
                 if healthy:
-                    report('Your app is already running and healthy!')
+                    report('Your app is already running and healthy!',
+                           metadata={'is_final_message': True, 'status': 'success'},
+                           message_type='success')
                     # Skip redeployment, go straight to watchdog
                     watchdog(agent)
                     # watchdog runs forever, so we never reach here
@@ -5857,11 +6036,17 @@ if __name__ == '__main__':
         try:
             success = deploy(error_context=None, max_retries=3)
             if success:
-                report('Your app is back online!')
+                report('Your app is back online!',
+                       metadata={'is_final_message': True, 'status': 'success'},
+                       message_type='success')
             else:
-                report('Had trouble restarting the app. You can send me a message to fix it, or I\'ll keep trying automatically.')
+                report('Had trouble restarting the app. You can send me a message to fix it, or I\'ll keep trying automatically.',
+                       metadata={'is_final_message': True, 'status': 'warning'},
+                       message_type='warning')
         except Exception as e:
             log(f'Auto-redeploy on restart failed: {e}')
-            report('Had trouble restarting the app. Send me a message if you need help!')
+            report('Had trouble restarting the app. Send me a message if you need help!',
+                   metadata={'is_final_message': True, 'status': 'error'},
+                   message_type='error')
 
     watchdog(agent)

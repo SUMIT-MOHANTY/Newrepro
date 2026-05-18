@@ -18,13 +18,26 @@ class GitManager:
     def _get_project_dir(self, project_id: str) -> Path:
         return self.artifacts_dir / project_id
 
+    def _get_workspace_path_raw(self, project_id: str) -> Path:
+        """Get the workspace path without any initialization logic."""
+        return self._get_project_dir(project_id) / "workspace"
+
     def _get_workspace_dir(self, project_id: str) -> Path:
-        workspace_dir = self._get_project_dir(project_id) / "workspace"
+        workspace_dir = self._get_workspace_path_raw(project_id)
         workspace_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Ensure git is initialized locally even if no remote is connected
+        if not (workspace_dir / ".git").exists():
+            # Use _run_git_command_raw to avoid recursion
+            logger.info(f"Initializing local git repository for project: {project_id}")
+            self._run_git_command_raw(workspace_dir, ["init"])
+            self._run_git_command_raw(workspace_dir, ["config", "user.email", "vibe@engineer.com"])
+            self._run_git_command_raw(workspace_dir, ["config", "user.name", "Vibe Engineer"])
+            
         return workspace_dir
 
-    def _run_git_command(self, project_id: str, args: List[str]) -> Dict[str, Any]:
-        workspace_dir = self._get_workspace_dir(project_id)
+    def _run_git_command_raw(self, workspace_dir: Path, args: List[str]) -> Dict[str, Any]:
+        """Low-level git command execution without path resolution logic."""
         try:
             result = subprocess.run(
                 ["git"] + args,
@@ -40,8 +53,12 @@ class GitManager:
                 "returncode": result.returncode
             }
         except Exception as e:
-            logger.error(f"Git command failed: {e}")
+            logger.error(f"Git command raw failed: {e}")
             return {"status": "error", "message": str(e)}
+
+    def _run_git_command(self, project_id: str, args: List[str]) -> Dict[str, Any]:
+        workspace_dir = self._get_workspace_dir(project_id)
+        return self._run_git_command_raw(workspace_dir, args)
 
     def sync_workspace(self, project_id: str, version_dir: Path):
         """Sync files from a version directory to the workspace directory."""
@@ -319,6 +336,22 @@ class GitManager:
         """Automatically stage all changes and commit with version ID."""
         self.add_files(project_id)
         return self.commit(project_id, f"[{version_id}] {message}")
+
+    def auto_commit(self, project_id: str, message: str) -> Dict[str, Any]:
+        """Automatically stage all changes and commit with a message."""
+        self.add_files(project_id)
+        return self.commit(project_id, message)
+
+    def reset_to_commit(self, project_id: str, commit_hash: str) -> Dict[str, Any]:
+        """Hard reset the current branch to a specific commit and clean untracked files."""
+        # 1. Reset hard to the commit
+        reset_res = self._run_git_command(project_id, ["reset", "--hard", commit_hash])
+        if reset_res["status"] != "success":
+            return reset_res
+            
+        # 2. Clean untracked files and directories
+        clean_res = self._run_git_command(project_id, ["clean", "-fd"])
+        return clean_res
 
     def get_commit_history(self, project_id: str) -> Dict[str, Any]:
         """Get commit history for current branch."""

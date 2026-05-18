@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { User, Sparkles, History, CheckCircle2, Copy, RefreshCw, Search, Globe, ChevronDown, ChevronRight } from 'lucide-react';
+import { User, Sparkles, History, CheckCircle2, Copy, RefreshCw, Search, Globe, ChevronDown, ChevronRight, RotateCcw } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Button } from './ui/button';
@@ -187,6 +187,8 @@ const ChatMessage = ({
   onExecuteTask,
   onExecuteAllTasks,
   onEditTask,
+  onRestore,
+  messageIndex,
   executingTaskId
 }) => {
   // Debug: Log message to see what we're receiving
@@ -319,7 +321,7 @@ const ChatMessage = ({
   // Decide what to show as the primary content
   let finalContent = markdownContent;
   const hasCodeOrVersion = message.code || message.versionId || message.version_id;
-  
+
   if (!isUser && hasCodeOrVersion) {
     // If we have a curated AI summary, use it as the primary content to avoid boilerplates.
     if (aiSummary) {
@@ -370,7 +372,7 @@ const ChatMessage = ({
                 ))}
               </div>
             )}
-            
+
             {/* Inline Thinking Block - Shows accumulated thinking logs BEFORE main content.
                 Works for both:
                   - Live WS messages (thinkingLogs array built in memory)
@@ -387,234 +389,253 @@ const ChatMessage = ({
                 />
               </div>
             )}
-            
+
             {/* Tool Calls Display */}
             {!isUser && message.toolCalls && message.toolCalls.length > 0 && (
               <ToolCallsDisplay toolCalls={message.toolCalls} darkMode={darkMode} />
             )}
-            
+
             {/* Skip rendering main content for background logs — shown in ThinkingBlock above */}
             {message.metadata?.is_background_log && message.thinkingLogs && message.thinkingLogs.length > 0 ? null : (
               <>
-            
-            {/* Task Breakdown Display */}
-            {!isUser && message.metadata?.task_plan && (
-              <>
-                {console.log('TaskBreakdown metadata:', message.metadata)}
-                <TaskBreakdown
-                  taskPlan={message.metadata.task_plan}
-                  darkMode={darkMode}
-                  onExecuteTask={onExecuteTask}
-                  onExecuteAll={onExecuteAllTasks}
-                  onEditTask={onEditTask}
-                  executingTaskId={executingTaskId}
-                />
-              </>
-            )}
-            
-            {/* Task Breakdown Display - for planning/thinking messages */}
-            {!isUser && !message.metadata?.task_plan && (() => {
-              // Parse content for task lists
-              const lines = (message.content || '').split('\n');
-              const tasks = [];
-              let introText = '';
-              let foundTasks = false;
-              
-              for (const line of lines) {
-                const trimmed = line.trim();
-                if (trimmed.match(/^[•\-\*]\s+/) || trimmed.match(/^\d+\.\s+/)) {
-                  foundTasks = true;
-                  const taskText = trimmed.replace(/^[•\-\*]\s+/, '').replace(/^\d+\.\s+/, '');
-                  tasks.push(taskText);
-                } else if (trimmed && !foundTasks) {
-                  introText += (introText ? ' ' : '') + trimmed;
-                }
-              }
-              
-              // Only show task breakdown if we have tasks
-              if (tasks.length > 0) {
-                return (
-                  <div className="mb-3">
-                    {introText && (
-                      <p className={cn(
-                        "text-sm mb-3 font-medium",
-                        darkMode ? "text-gray-300" : "text-gray-700"
-                      )}>
-                        {introText}
-                      </p>
-                    )}
-                    <div className={cn(
-                      "rounded-lg border p-3 space-y-2",
-                      darkMode 
-                        ? "bg-purple-500/5 border-purple-500/20" 
-                        : "bg-purple-50 border-purple-200"
-                    )}>
-                      {tasks.map((task, idx) => (
-                        <div key={idx} className="flex items-start gap-2">
-                          <CheckCircle2 className={cn(
-                            "w-4 h-4 mt-0.5 flex-shrink-0",
-                            darkMode ? "text-purple-400" : "text-purple-600"
-                          )} />
-                          <span className={cn(
-                            "text-sm",
-                            darkMode ? "text-gray-200" : "text-gray-800"
-                          )}>
-                            {task}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              }
-              return null;
-            })()}
-            
-            {/* Chat Content */}
-            {!isUser && aiSummary && !showOriginal && hasCodeOrVersion && !message.metadata?.task_plan ? (
-              <div className="flex flex-col gap-3 py-1">
-                <div className="flex items-center gap-2 text-xs font-semibold text-blue-500/80 uppercase tracking-wider">
-                  <Sparkles className="w-3 h-3" />
-                  <span>Agent Outcome Summary</span>
-                </div>
-                <p className={cn(
-                  "text-[0.95rem] leading-relaxed font-medium italic",
-                  darkMode ? "text-blue-100/90" : "text-blue-900/90"
-                )}>
-                  {aiSummary}
-                </p>
-                <button
-                  onClick={() => setShowOriginal(true)}
-                  className={cn(
-                    "w-fit text-[10px] font-medium uppercase tracking-tighter opacity-40 hover:opacity-100 transition-opacity flex items-center gap-1 mt-1",
-                    darkMode ? "text-gray-400" : "text-gray-600"
-                  )}
-                >
-                  <ChevronDown className="w-2.5 h-2.5" />
-                  View Raw AI Log
-                </button>
-              </div>
-            ) : (
-              <div className="text-sm leading-relaxed whitespace-pre-wrap break-words markdown-body overflow-x-hidden">
-                {!isUser && aiSummary && showOriginal && hasCodeOrVersion && (
-                  <button
-                    onClick={() => setShowOriginal(false)}
-                    className={cn(
-                      "mb-3 text-[10px] font-medium uppercase tracking-tighter opacity-60 hover:opacity-100 transition-opacity flex items-center gap-1",
-                      darkMode ? "text-blue-400" : "text-blue-600"
-                    )}
-                  >
-                    <Sparkles className="w-2.5 h-2.5" />
-                    Back to Summary
-                  </button>
-                )}
-                <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={{
-                  p: ({ node, ...props }) => <div className="mb-3 last:mb-0 break-words" {...props} />,
-                  a: ({ node, ...props }) => <a className="text-blue-500 hover:text-blue-400 hover:underline transition-colors break-words [word-break:break-word]" target="_blank" rel="noreferrer" {...props} />,
-                  ul: ({ node, ...props }) => <ul className="list-disc list-outside ml-4 mb-3 space-y-1 break-words" {...props} />,
-                  ol: ({ node, ...props }) => <ol className="list-decimal list-outside ml-4 mb-3 space-y-1 break-words" {...props} />,
-                  li: ({ node, ...props }) => <li className="pl-1 break-words" {...props} />,
-                  h1: ({ node, ...props }) => <h1 className="text-xl font-bold mb-3 mt-5 break-words" {...props} />,
-                  h2: ({ node, ...props }) => <h2 className="text-lg font-bold mb-3 mt-4 break-words" {...props} />,
-                  h3: ({ node, ...props }) => <h3 className="text-md font-semibold mb-2 mt-3 break-words" {...props} />,
-                  strong: ({ node, ...props }) => <strong className="font-semibold" {...props} />,
-                  table: ({ node, ...props }) => (
-                    <div className="overflow-x-auto mb-4 border rounded-lg border-white/10 dark:border-white/10 border-black/10">
-                      <table className="w-full text-sm text-left divide-y divide-white/10 dark:divide-white/10 divide-black/10 break-words" {...props} />
-                    </div>
-                  ),
-                  thead: ({ node, ...props }) => <thead className="bg-black/5 dark:bg-white/5" {...props} />,
-                  th: ({ node, ...props }) => <th className="px-4 py-3 font-medium" {...props} />,
-                  td: ({ node, ...props }) => <td className="px-4 py-3 border-t border-white/10 dark:border-white/10 border-black/10" {...props} />,
-                  code: ({ node, inline, className, children, ...props }) => {
-                    const match = /language-(\w+)/.exec(className || '');
-                    return inline ? (
-                      <code className={`rounded px-1.5 py-0.5 text-[0.85em] font-mono break-words ${darkMode ? 'bg-white/10 text-gray-200' : 'bg-black/5 text-gray-800'
-                        }`} {...props}>
-                        {children}
-                      </code>
-                    ) : (
-                      <div className={`relative mb-4 rounded-lg overflow-hidden border ${darkMode ? 'bg-[#1E1E2E] border-white/10' : 'bg-[#f8f8f8] border-gray-200'
-                        }`}>
-                        {match && (
-                          <div className={`flex px-3 py-1.5 border-b text-xs font-medium truncate ${darkMode ? 'bg-[#181825] border-white/10 text-gray-400' : 'bg-gray-100 border-gray-200 text-gray-500'
-                            }`}>
-                            {match[1]}
-                          </div>
-                        )}
-                        <pre className={`p-3 overflow-x-auto text-[0.85em] leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'
-                          }`}>
-                          <code className={className} {...props}>
-                            {children}
-                          </code>
-                        </pre>
-                      </div>
-                    );
-                  },
-                  blockquote: ({ node, ...props }) => (
-                    <blockquote className="border-l-4 border-blue-500/50 pl-4 py-2 mb-3 text-gray-700 dark:text-gray-300 italic bg-blue-500/5 dark:bg-blue-500/10 rounded-r-lg break-words [word-break:break-word]" {...props} />
-                  ),
-                  hr: ({ node, ...props }) => <hr className="my-4 border-white/10 dark:border-white/10 border-black/10" {...props} />
-                }}
-              >
-                {showOriginal ? message.content : finalContent}
-              </ReactMarkdown>
-            </div>
-          )}
-          {message.code && (
-              <>
-                {/* Summary insight box - shown when extra context exists beyond main content */}
-                {showSummaryBox && (
-                  <div className={`mt-3 overflow-hidden rounded-2xl border transition-all duration-500 group/insights ${darkMode
-                    ? 'bg-gradient-to-br from-purple-500/10 via-purple-500/5 to-transparent border-purple-500/20 shadow-[0_4px_20px_rgba(168,85,247,0.1)]'
-                    : 'bg-gradient-to-br from-blue-50/80 via-white to-white border-blue-100 shadow-[0_4px_15px_rgba(59,130,246,0.05)]'
-                    }`}>
-                    <div className="p-4 px-5">
-                      {isSummarizing ? (
-                        <div className="space-y-2">
-                          <div className={`h-3 w-3/4 rounded animate-pulse ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`} />
-                          <div className={`h-3 w-full rounded animate-pulse ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`} />
-                          <div className={`h-3 w-1/2 rounded animate-pulse ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`} />
-                        </div>
-                      ) : (
-                        <p className={`text-sm leading-relaxed font-medium transition-colors ${darkMode ? 'text-gray-300 group-hover/insights:text-white' : 'text-gray-700 group-hover/insights:text-gray-900'
-                          }`}>
-                          {aiSummary || functionalSummary}
-                        </p>
-                      )}
-                    </div>
-                  </div>
+
+                {/* Task Breakdown Display */}
+                {!isUser && message.metadata?.task_plan && (
+                  <>
+                    {console.log('TaskBreakdown metadata:', message.metadata)}
+                    <TaskBreakdown
+                      taskPlan={message.metadata.task_plan}
+                      darkMode={darkMode}
+                      onExecuteTask={onExecuteTask}
+                      onExecuteAll={onExecuteAllTasks}
+                      onEditTask={onEditTask}
+                      executingTaskId={executingTaskId}
+                    />
+                  </>
                 )}
 
-                {/* Code Generated Badge */}
-                <div className={`mt-3 pt-3 border-t flex items-center justify-end ${message.role === 'user'
-                  ? 'border-white/20'
-                  : darkMode ? 'border-white/10' : 'border-gray-200'
-                  }`}>
-                  {(msgVersion || message.versionId || message.version_id) && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => onLoadVersion(msgVersion?.hash || message.versionId || message.version_id)}
-                      className={`text-xs px-3 py-1.5 h-auto rounded-lg font-bold transition-all shadow-sm ${selectedVersion === (msgVersion?.hash || message.versionId || message.version_id)
-                        ? (darkMode ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30' : 'bg-blue-50 text-blue-600 border border-blue-200')
-                        : (darkMode ? 'bg-white/5 text-gray-400 hover:text-white border border-white/10 hover:border-white/20' : 'bg-gray-50 text-gray-600 hover:bg-gray-100 border border-gray-200')
-                        }`}
+                {/* Task Breakdown Display - for planning/thinking messages */}
+                {!isUser && !message.metadata?.task_plan && (() => {
+                  // Parse content for task lists
+                  const lines = (message.content || '').split('\n');
+                  const tasks = [];
+                  let introText = '';
+                  let foundTasks = false;
+
+                  for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (trimmed.match(/^[•\-\*]\s+/) || trimmed.match(/^\d+\.\s+/)) {
+                      foundTasks = true;
+                      const taskText = trimmed.replace(/^[•\-\*]\s+/, '').replace(/^\d+\.\s+/, '');
+                      tasks.push(taskText);
+                    } else if (trimmed && !foundTasks) {
+                      introText += (introText ? ' ' : '') + trimmed;
+                    }
+                  }
+
+                  // Only show task breakdown if we have tasks
+                  if (tasks.length > 0) {
+                    return (
+                      <div className="mb-3">
+                        {introText && (
+                          <p className={cn(
+                            "text-sm mb-3 font-medium",
+                            darkMode ? "text-gray-300" : "text-gray-700"
+                          )}>
+                            {introText}
+                          </p>
+                        )}
+                        <div className={cn(
+                          "rounded-lg border p-3 space-y-2",
+                          darkMode
+                            ? "bg-purple-500/5 border-purple-500/20"
+                            : "bg-purple-50 border-purple-200"
+                        )}>
+                          {tasks.map((task, idx) => (
+                            <div key={idx} className="flex items-start gap-2">
+                              <CheckCircle2 className={cn(
+                                "w-4 h-4 mt-0.5 flex-shrink-0",
+                                darkMode ? "text-purple-400" : "text-purple-600"
+                              )} />
+                              <span className={cn(
+                                "text-sm",
+                                darkMode ? "text-gray-200" : "text-gray-800"
+                              )}>
+                                {task}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
+
+                {/* Chat Content */}
+                {!isUser && aiSummary && !showOriginal && hasCodeOrVersion && !message.metadata?.task_plan ? (
+                  <div className="flex flex-col gap-3 py-1">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-blue-500/80 uppercase tracking-wider">
+                      <Sparkles className="w-3 h-3" />
+                      <span>Agent Outcome Summary</span>
+                    </div>
+                    <p className={cn(
+                      "text-[0.95rem] leading-relaxed font-medium italic",
+                      darkMode ? "text-blue-100/90" : "text-blue-900/90"
+                    )}>
+                      {aiSummary}
+                    </p>
+                    <button
+                      onClick={() => setShowOriginal(true)}
+                      className={cn(
+                        "w-fit text-[10px] font-medium uppercase tracking-tighter opacity-40 hover:opacity-100 transition-opacity flex items-center gap-1 mt-1",
+                        darkMode ? "text-gray-400" : "text-gray-600"
+                      )}
                     >
-                      <History className="w-3.5 h-3.5 mr-2 opacity-70" />
-                      {selectedVersion === (msgVersion?.hash || message.versionId || message.version_id) ? 'Active Version' : 'View Version'}
-                    </Button>
-                  )}
-                </div>
-              </>
-            )}
+                      <ChevronDown className="w-2.5 h-2.5" />
+                      View Raw AI Log
+                    </button>
+                  </div>
+                ) : (
+                  <div className="text-sm leading-relaxed whitespace-pre-wrap break-words markdown-body overflow-x-hidden">
+                    {!isUser && aiSummary && showOriginal && hasCodeOrVersion && (
+                      <button
+                        onClick={() => setShowOriginal(false)}
+                        className={cn(
+                          "mb-3 text-[10px] font-medium uppercase tracking-tighter opacity-60 hover:opacity-100 transition-opacity flex items-center gap-1",
+                          darkMode ? "text-blue-400" : "text-blue-600"
+                        )}
+                      >
+                        <Sparkles className="w-2.5 h-2.5" />
+                        Back to Summary
+                      </button>
+                    )}
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        p: ({ node, ...props }) => <div className="mb-3 last:mb-0 break-words" {...props} />,
+                        a: ({ node, ...props }) => <a className="text-blue-500 hover:text-blue-400 hover:underline transition-colors break-words [word-break:break-word]" target="_blank" rel="noreferrer" {...props} />,
+                        ul: ({ node, ...props }) => <ul className="list-disc list-outside ml-4 mb-3 space-y-1 break-words" {...props} />,
+                        ol: ({ node, ...props }) => <ol className="list-decimal list-outside ml-4 mb-3 space-y-1 break-words" {...props} />,
+                        li: ({ node, ...props }) => <li className="pl-1 break-words" {...props} />,
+                        h1: ({ node, ...props }) => <h1 className="text-xl font-bold mb-3 mt-5 break-words" {...props} />,
+                        h2: ({ node, ...props }) => <h2 className="text-lg font-bold mb-3 mt-4 break-words" {...props} />,
+                        h3: ({ node, ...props }) => <h3 className="text-md font-semibold mb-2 mt-3 break-words" {...props} />,
+                        strong: ({ node, ...props }) => <strong className="font-semibold" {...props} />,
+                        table: ({ node, ...props }) => (
+                          <div className="overflow-x-auto mb-4 border rounded-lg border-white/10 dark:border-white/10 border-black/10">
+                            <table className="w-full text-sm text-left divide-y divide-white/10 dark:divide-white/10 divide-black/10 break-words" {...props} />
+                          </div>
+                        ),
+                        thead: ({ node, ...props }) => <thead className="bg-black/5 dark:bg-white/5" {...props} />,
+                        th: ({ node, ...props }) => <th className="px-4 py-3 font-medium" {...props} />,
+                        td: ({ node, ...props }) => <td className="px-4 py-3 border-t border-white/10 dark:border-white/10 border-black/10" {...props} />,
+                        code: ({ node, inline, className, children, ...props }) => {
+                          const match = /language-(\w+)/.exec(className || '');
+                          return inline ? (
+                            <code className={`rounded px-1.5 py-0.5 text-[0.85em] font-mono break-words ${darkMode ? 'bg-white/10 text-gray-200' : 'bg-black/5 text-gray-800'
+                              }`} {...props}>
+                              {children}
+                            </code>
+                          ) : (
+                            <div className={`relative mb-4 rounded-lg overflow-hidden border ${darkMode ? 'bg-[#1E1E2E] border-white/10' : 'bg-[#f8f8f8] border-gray-200'
+                              }`}>
+                              {match && (
+                                <div className={`flex px-3 py-1.5 border-b text-xs font-medium truncate ${darkMode ? 'bg-[#181825] border-white/10 text-gray-400' : 'bg-gray-100 border-gray-200 text-gray-500'
+                                  }`}>
+                                  {match[1]}
+                                </div>
+                              )}
+                              <pre className={`p-3 overflow-x-auto text-[0.85em] leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'
+                                }`}>
+                                <code className={className} {...props}>
+                                  {children}
+                                </code>
+                              </pre>
+                            </div>
+                          );
+                        },
+                        blockquote: ({ node, ...props }) => (
+                          <blockquote className="border-l-4 border-blue-500/50 pl-4 py-2 mb-3 text-gray-700 dark:text-gray-300 italic bg-blue-500/5 dark:bg-blue-500/10 rounded-r-lg break-words [word-break:break-word]" {...props} />
+                        ),
+                        hr: ({ node, ...props }) => <hr className="my-4 border-white/10 dark:border-white/10 border-black/10" {...props} />
+                      }}
+                    >
+                      {showOriginal ? message.content : finalContent}
+                    </ReactMarkdown>
+                  </div>
+                )}
+                {message.code && (
+                  <>
+                    {/* Summary insight box - shown when extra context exists beyond main content */}
+                    {showSummaryBox && (
+                      <div className={`mt-3 overflow-hidden rounded-2xl border transition-all duration-500 group/insights ${darkMode
+                        ? 'bg-gradient-to-br from-purple-500/10 via-purple-500/5 to-transparent border-purple-500/20 shadow-[0_4px_20px_rgba(168,85,247,0.1)]'
+                        : 'bg-gradient-to-br from-blue-50/80 via-white to-white border-blue-100 shadow-[0_4px_15px_rgba(59,130,246,0.05)]'
+                        }`}>
+                        <div className="p-4 px-5">
+                          {isSummarizing ? (
+                            <div className="space-y-2">
+                              <div className={`h-3 w-3/4 rounded animate-pulse ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`} />
+                              <div className={`h-3 w-full rounded animate-pulse ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`} />
+                              <div className={`h-3 w-1/2 rounded animate-pulse ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`} />
+                            </div>
+                          ) : (
+                            <p className={`text-sm leading-relaxed font-medium transition-colors ${darkMode ? 'text-gray-300 group-hover/insights:text-white' : 'text-gray-700 group-hover/insights:text-gray-900'
+                              }`}>
+                              {aiSummary || functionalSummary}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Code Generated Badge */}
+                    <div className={`mt-3 pt-3 border-t flex items-center justify-end ${message.role === 'user'
+                      ? 'border-white/20'
+                      : darkMode ? 'border-white/10' : 'border-gray-200'
+                      }`}>
+                      {(msgVersion || message.versionId || message.version_id) && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => onLoadVersion(msgVersion?.hash || message.versionId || message.version_id)}
+                          className={`text-xs px-3 py-1.5 h-auto rounded-lg font-bold transition-all shadow-sm ${selectedVersion === (msgVersion?.hash || message.versionId || message.version_id)
+                            ? (darkMode ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30' : 'bg-blue-50 text-blue-600 border border-blue-200')
+                            : (darkMode ? 'bg-white/5 text-gray-400 hover:text-white border border-white/10 hover:border-white/20' : 'bg-gray-50 text-gray-600 hover:bg-gray-100 border border-gray-200')
+                            }`}
+                        >
+                          <History className="w-3.5 h-3.5 mr-2 opacity-70" />
+                          {selectedVersion === (msgVersion?.hash || message.versionId || message.version_id) ? 'Active Version' : 'View Version'}
+                        </Button>
+                      )}
+                    </div>
+                  </>
+                )}
               </>
             )}
           </div>
         </div>
       </div>
+
+      {/* Restore link — shown below user messages */}
+      {isUser && onRestore && (
+        <div className="flex justify-end mt-1 mr-11">
+          <button
+            onClick={() => onRestore(message.content, messageIndex)}
+            className={cn(
+              'text-[10px] font-medium flex items-center gap-1 px-1.5 py-0.5 rounded transition-all',
+              'opacity-40 hover:opacity-100 cursor-pointer',
+              darkMode
+                ? 'text-amber-400 hover:bg-amber-500/10'
+                : 'text-amber-600 hover:bg-amber-50'
+            )}
+          >
+            <RotateCcw className="w-2.5 h-2.5" />
+            Restore
+          </button>
+        </div>
+      )}
 
       {/* Suggestions - Only show for assistant messages */}
       {!isUser && message.suggestions && message.suggestions.length > 0 && (
@@ -631,7 +652,7 @@ const ChatMessage = ({
               const suggestionText = typeof suggestion === 'string' ? suggestion : suggestion.text;
               const suggestionIcon = typeof suggestion === 'object' && suggestion.icon ? suggestion.icon : null;
               const suggestionPrompt = typeof suggestion === 'object' && suggestion.prompt ? suggestion.prompt : suggestionText;
-              
+
               return (
                 <button
                   key={idx}
