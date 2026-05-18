@@ -491,6 +491,7 @@ class SharedDocumentFile(Base):
     file_path = Column(String, nullable=False)
     file_size = Column(Integer, nullable=True)
     file_type = Column(String, nullable=True)
+    zip_password = Column(String, nullable=True)
     uploaded_at = Column(DateTime, default=datetime.utcnow)
 
     # Relationships

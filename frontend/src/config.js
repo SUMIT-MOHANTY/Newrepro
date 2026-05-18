@@ -40,6 +40,8 @@ export const API_ENDPOINTS = {
     SHARE_DOC_STATS: `${API_BASE_URL}/api/share-doc/stats`,
     SHARE_PROJECTS: `${API_BASE_URL}/api/share-projects`,
     SHARE_PROJECT: (projectToken) => `${API_BASE_URL}/api/share-projects/${projectToken}`,
+    SHARE_PROJECT_UPLOAD_FILES: (projectToken) => `${API_BASE_URL}/api/share-projects/${projectToken}/upload-files`,
+    SHARE_PROJECT_DELETE_FILE: (projectToken, fileId) => `${API_BASE_URL}/api/share-projects/${projectToken}/files/${fileId}`,
     SHARED_DOCUMENT: (shareToken) => `${API_BASE_URL}/api/shared/${shareToken}`,
     SHARED_DOCUMENT_DOWNLOAD: (shareToken, fileId) => `${API_BASE_URL}/api/shared/${shareToken}/download/${fileId}`,
     SHARED_DOCUMENT_VIEW: (shareToken, fileId) => `${API_BASE_URL}/api/shared/${shareToken}/view/${fileId}`,

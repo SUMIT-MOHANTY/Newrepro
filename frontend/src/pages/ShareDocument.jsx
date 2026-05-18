@@ -56,6 +56,7 @@ const ShareDocument = ({ selectedProjectKey, handleCreateShareProject: parentHan
     const [loadingStats, setLoadingStats] = useState(false);
     const [expandedRecipient, setExpandedRecipient] = useState(null);
     const [trackingPage, setTrackingPage] = useState(1);
+    const [draftLoaded, setDraftLoaded] = useState(false);
     const TRACKING_PAGE_SIZE = 5;
 
     // Roadmap configuration
@@ -133,7 +134,34 @@ const ShareDocument = ({ selectedProjectKey, handleCreateShareProject: parentHan
                 setRecipientEmails([]);
                 setShareLink('');
                 setShareToken('');
+                setDraftLoaded(false);
                 return;
+            }
+
+            setDraftLoaded(false);
+
+            // Check if there is a local draft saved in localStorage for this project
+            const savedDraftStr = localStorage.getItem(`share_draft_${selectedProjectToken}`);
+            if (savedDraftStr) {
+                try {
+                    const draft = JSON.parse(savedDraftStr);
+                    if (draft) {
+                        if (draft.shareConfig) setShareConfig(draft.shareConfig);
+                        if (draft.recipientEmails) setRecipientEmails(draft.recipientEmails);
+                        if (draft.selectedFiles) setSelectedFiles(draft.selectedFiles);
+                        if (draft.currentStep !== undefined) setCurrentStep(draft.currentStep);
+                        if (draft.uploadedFiles) {
+                            setUploadedFiles(draft.uploadedFiles.map(f => ({
+                                ...f,
+                                file: undefined
+                            })));
+                        }
+                        setDraftLoaded(true);
+                        return; // Skip fetching from backend as we have a local draft!
+                    }
+                } catch (e) {
+                    console.error("Failed to parse saved draft:", e);
+                }
             }
 
             // Clear state immediately when project changes to prevent leakage
@@ -188,11 +216,40 @@ const ShareDocument = ({ selectedProjectKey, handleCreateShareProject: parentHan
                 }
             } catch (err) {
                 console.error('Failed to fetch project details:', err);
+            } finally {
+                setDraftLoaded(true);
             }
         };
 
         fetchProjectDetails();
     }, [selectedProjectToken]);
+
+    // Persist draft changes locally
+    useEffect(() => {
+        if (!draftLoaded) return;
+        if (!selectedProjectToken || !selectedProjectToken.startsWith('share_')) return;
+
+        // Skip saving draft if we are in the finished sharing state (step 4)
+        if (currentStep === 4) return;
+
+        const serializedFiles = uploadedFiles.map(f => ({
+            id: f.id,
+            name: f.name,
+            size: f.size,
+            type: f.type,
+            isStored: f.isStored
+        }));
+
+        const draft = {
+            shareConfig,
+            recipientEmails,
+            selectedFiles,
+            currentStep,
+            uploadedFiles: serializedFiles
+        };
+
+        localStorage.setItem(`share_draft_${selectedProjectToken}`, JSON.stringify(draft));
+    }, [selectedProjectToken, shareConfig, recipientEmails, selectedFiles, currentStep, uploadedFiles, draftLoaded]);
 
     useEffect(() => { loadShareProjects(); }, []);
 
@@ -260,19 +317,96 @@ const ShareDocument = ({ selectedProjectKey, handleCreateShareProject: parentHan
     };
     const handleFileInput = (e) => handleFiles(Array.from(e.target.files));
 
-    const handleFiles = (files) => {
-        const newFiles = files.map(file => ({
+    const handleFiles = async (files) => {
+        if (!selectedProjectToken || !selectedProjectToken.startsWith('share_')) {
+            alert('Please select or create a valid Share Project first.');
+            return;
+        }
+
+        // 1. Instantly append files to the local state as "uploading" to give immediate visual feedback
+        const tempFiles = files.map(file => ({
             id: Math.random().toString(36).substr(2, 9),
-            file, name: file.name, size: file.size, type: file.type,
-            uploadedAt: new Date().toISOString()
+            name: file.name,
+            size: file.size,
+            type: file.type,
+            uploading: true
         }));
-        setUploadedFiles(prev => [...prev, ...newFiles]);
-        setSelectedFiles(prev => [...prev, ...newFiles.map(f => f.id)]);
+
+        setUploadedFiles(prev => [...prev, ...tempFiles]);
+
+        try {
+            // 2. Perform the immediate backend upload to the isolated folder!
+            const token = localStorage.getItem('token');
+            const formData = new FormData();
+            files.forEach(file => {
+                formData.append('files', file);
+            });
+
+            const response = await fetch(API_ENDPOINTS.SHARE_PROJECT_UPLOAD_FILES(selectedProjectToken), {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` },
+                body: formData
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to upload files to backend');
+            }
+
+            const data = await response.json();
+            
+            // 3. Replace the temporary files in our state with the actual stored files returned by backend!
+            setUploadedFiles(prev => {
+                let updated = [...prev];
+                tempFiles.forEach((temp, i) => {
+                    const idx = updated.findIndex(f => f.id === temp.id);
+                    if (idx !== -1 && data.files[i]) {
+                        updated[idx] = {
+                            id: data.files[i].id,
+                            name: data.files[i].original_filename,
+                            size: data.files[i].file_size,
+                            type: data.files[i].file_type,
+                            isStored: true,
+                            uploading: false
+                        };
+                    }
+                });
+
+                // Auto-select all newly saved files
+                const savedIds = updated.filter(f => f.isStored).map(f => f.id);
+                setSelectedFiles(prevSel => {
+                    const unique = new Set([...prevSel, ...savedIds]);
+                    return Array.from(unique);
+                });
+
+                return updated;
+            });
+        } catch (error) {
+            console.error('Error during automatic file upload:', error);
+            alert('Failed to upload files. Please try again.');
+            // Remove the failed files from the UI
+            setUploadedFiles(prev => prev.filter(f => !tempFiles.some(tf => tf.id === f.id)));
+        }
     };
 
-    const removeFile = (fileId) => {
+    const removeFile = async (fileId) => {
+        // Find if file is stored on the backend
+        const fileObj = uploadedFiles.find(f => f.id === fileId);
+        
+        // Remove locally immediately to feel lightning fast
         setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
         setSelectedFiles(prev => prev.filter(id => id !== fileId));
+
+        if (fileObj && fileObj.isStored) {
+            try {
+                const token = localStorage.getItem('token');
+                await fetch(API_ENDPOINTS.SHARE_PROJECT_DELETE_FILE(selectedProjectToken, fileId), {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+            } catch (err) {
+                console.error('Failed to delete file from server:', err);
+            }
+        }
     };
 
     const formatFileSize = (bytes) => {
@@ -308,11 +442,7 @@ const ShareDocument = ({ selectedProjectKey, handleCreateShareProject: parentHan
         try {
             const token = localStorage.getItem('token');
             const formData = new FormData();
-            uploadedFiles.forEach(fileObj => {
-                if (selectedFiles.includes(fileObj.id) && fileObj.file) {
-                    formData.append('files', fileObj.file);
-                }
-            });
+            formData.append('selected_files', JSON.stringify(selectedFiles));
             formData.append('config', JSON.stringify(shareConfig));
             formData.append('recipients', JSON.stringify(recipientEmails));
             if (selectedProjectToken) formData.append('project_token', selectedProjectToken);
@@ -326,12 +456,76 @@ const ShareDocument = ({ selectedProjectKey, handleCreateShareProject: parentHan
             const data = await response.json();
             setShareLink(data.share_url);
             setShareToken(data.share_token);
+
+            // Clear local draft on successful share!
+            localStorage.removeItem(`share_draft_${selectedProjectToken}`);
+
             goToStep(4);
         } catch (error) {
             console.error('Error generating share link:', error);
             alert('Failed to generate share link. Please try again.');
         } finally {
             setSharing(false);
+        }
+    };
+
+    const handleResetDraft = () => {
+        if (window.confirm("Are you sure you want to discard your draft edits and start over?")) {
+            localStorage.removeItem(`share_draft_${selectedProjectToken}`);
+            setUploadedFiles([]);
+            setSelectedFiles([]);
+            setRecipientEmails([]);
+            setShareLink('');
+            setShareToken('');
+            setShareConfig({
+                dashboardAccess: 'once',
+                expirationDays: 7,
+                expirationDate: '',
+                requirePassword: false,
+                password: '',
+                viewLimit: 5,
+                canDownload: true,
+                allowAnonymous: true
+            });
+            setCurrentStep(1);
+
+            const fetchProjectDetails = async () => {
+                try {
+                    const token = localStorage.getItem('token');
+                    const response = await fetch(API_ENDPOINTS.SHARE_PROJECT(selectedProjectToken), {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    if (response.ok) {
+                        const data = await response.json();
+                        const latestDoc = data.documents[0];
+                        if (latestDoc) {
+                            setUploadedFiles(latestDoc.files.map(f => ({
+                                id: f.id,
+                                name: f.original_filename,
+                                size: f.file_size,
+                                type: f.file_type,
+                                isStored: true
+                            })));
+                            setSelectedFiles(latestDoc.files.map(f => f.id));
+                            setRecipientEmails(latestDoc.recipients || []);
+                            setShareConfig(prev => ({
+                                ...prev,
+                                dashboardAccess: latestDoc.access_type || 'once',
+                                viewLimit: latestDoc.view_limit || 5,
+                                canDownload: latestDoc.can_download !== undefined ? latestDoc.can_download : true,
+                                allowAnonymous: latestDoc.allow_anonymous !== undefined ? latestDoc.allow_anonymous : true,
+                                expirationDate: latestDoc.expires_at ? latestDoc.expires_at.split('T')[0] : ''
+                            }));
+                            const frontendUrl = window.location.origin;
+                            setShareLink(`${frontendUrl}/shared/${latestDoc.share_token}`);
+                            setShareToken(latestDoc.share_token);
+                        }
+                    }
+                } catch (err) {
+                    console.error('Failed to reset to backend details:', err);
+                }
+            };
+            fetchProjectDetails();
         }
     };
 
@@ -502,6 +696,14 @@ const ShareDocument = ({ selectedProjectKey, handleCreateShareProject: parentHan
                                 <h2 className="text-xl font-bold text-app-text-main">Upload Documents</h2>
                                 <p className="text-xs text-app-text-muted">Attach files you want to share with recipients</p>
                             </div>
+                            {localStorage.getItem(`share_draft_${selectedProjectToken}`) && (
+                                <button
+                                    onClick={handleResetDraft}
+                                    className="px-3 py-1.5 border border-red-500/30 text-red-400 hover:bg-red-500/10 rounded-lg transition-all text-xs font-semibold"
+                                >
+                                    Discard Draft
+                                </button>
+                            )}
                         </div>
 
                         <div
@@ -512,11 +714,11 @@ const ShareDocument = ({ selectedProjectKey, handleCreateShareProject: parentHan
                         >
                             <Upload className="w-12 h-12 mx-auto mb-3 text-app-text-muted opacity-60" />
                             <p className="text-base font-semibold text-app-text-main mb-1">Drop files here or click to browse</p>
-                            <input type="file" multiple onChange={handleFileInput} className="hidden" id="file-upload" accept=".pdf,.doc,.docx,.txt,.md,.xlsx,.xls,.ppt,.pptx" />
+                            <input type="file" multiple onChange={handleFileInput} className="hidden" id="file-upload" accept=".html,.htm,.pdf,.doc,.docx,.txt,.md,.xlsx,.xls,.ppt,.pptx" />
                             <label htmlFor="file-upload" className="inline-flex items-center px-5 py-2.5 bg-app-primary/10 text-app-primary border border-app-primary/20 rounded-lg hover:bg-app-primary hover:text-white transition-all cursor-pointer font-bold text-sm mt-2">
                                 <Upload className="w-4 h-4 mr-2" />Select Files
                             </label>
-                            <p className="text-[10px] text-app-text-muted mt-4 opacity-70 italic">Supports: PDF, DOCX, TXT, Excel, PPT</p>
+                            <p className="text-[10px] text-app-text-muted mt-4 opacity-70 italic">Supports: HTML, PDF, DOCX, TXT, Excel, PPT</p>
                         </div>
 
                         {uploadedFiles.length > 0 && (
@@ -527,11 +729,20 @@ const ShareDocument = ({ selectedProjectKey, handleCreateShareProject: parentHan
                                         <div key={file.id} className="flex items-center justify-between px-3 py-2 bg-app-bg-page border border-app-border rounded-lg group hover:border-app-primary/40 transition-colors">
                                             <div className="flex items-center gap-2.5 min-w-0">
                                                 <div className="w-8 h-8 rounded-lg bg-app-primary/5 flex items-center justify-center flex-shrink-0">
-                                                    <FileText className="w-4 h-4 text-app-primary" />
+                                                    {file.uploading ? (
+                                                        <div className="w-3.5 h-3.5 border-2 border-app-primary/20 border-t-app-primary rounded-full animate-spin" />
+                                                    ) : (
+                                                        <FileText className="w-4 h-4 text-app-primary" />
+                                                    )}
                                                 </div>
                                                 <div className="min-w-0">
                                                     <p className="text-xs font-semibold text-app-text-main truncate max-w-[120px]">{file.name}</p>
-                                                    <p className="text-[10px] text-app-text-muted">{formatFileSize(file.size)}</p>
+                                                    <p className="text-[10px] text-app-text-muted flex items-center gap-1.5 flex-wrap">
+                                                        {formatFileSize(file.size)}
+                                                        {file.uploading && (
+                                                            <span className="text-app-primary font-bold text-[9px] uppercase tracking-wide bg-app-primary/10 px-1 py-0.5 rounded leading-none animate-pulse">Uploading</span>
+                                                        )}
+                                                    </p>
                                                 </div>
                                             </div>
                                             <button onClick={() => removeFile(file.id)} className="p-1.5 text-app-text-muted hover:text-red-400 hover:bg-red-400/10 rounded-md transition-colors opacity-0 group-hover:opacity-100">
@@ -546,7 +757,7 @@ const ShareDocument = ({ selectedProjectKey, handleCreateShareProject: parentHan
                         <div className="flex justify-end pt-2">
                             <button
                                 onClick={() => goToStep(2)}
-                                disabled={uploadedFiles.length === 0}
+                                disabled={uploadedFiles.length === 0 || uploadedFiles.some(f => f.uploading)}
                                 className="px-6 py-2.5 bg-app-primary text-white rounded-lg hover:bg-app-primary-hover transition-all font-bold text-sm shadow-md shadow-app-primary/20 disabled:opacity-50 disabled:grayscale"
                             >
                                 Continue to Access Control
@@ -720,7 +931,6 @@ const ShareDocument = ({ selectedProjectKey, handleCreateShareProject: parentHan
                                                     onChange={(e) => setShareConfig(prev => ({ ...prev, expirationDate: e.target.value }))}
                                                     className="w-full px-4 py-2 bg-app-bg-card border border-app-border rounded-lg text-xs text-app-text-main font-medium focus:ring-2 focus:ring-app-primary/20 focus:border-app-primary/40 transition-all appearance-none cursor-pointer"
                                                 />
-                                                <Calendar className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-app-text-muted pointer-events-none group-hover:text-app-primary transition-colors" />
                                             </div>
                                         </div>
                                     </div>

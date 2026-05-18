@@ -2852,6 +2852,7 @@ async def share_doc_documents(
     files: List[UploadFile] = File([]),
     config: str = Form(...),
     recipients: str = Form(...),
+    selected_files: str = Form("[]"),
     project_token: str = Form(None),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
@@ -2861,16 +2862,17 @@ async def share_doc_documents(
     Share Document documents with external users via secure links.
     Uploads files, creates a share link, and sends email notifications.
     """
+    # Parse configuration and recipients
+    print(f"DEBUG: share_doc_documents params: config={config[:100]}..., recipients={recipients[:100]}..., selected_files={selected_files}")
     import json
     import hashlib
     from datetime import timedelta
-    
-    # Parse configuration and recipients
     try:
         share_config = json.loads(config)
         recipient_list = json.loads(recipients)
+        selected_file_ids = json.loads(selected_files)
     except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid configuration or recipients format")
+        raise HTTPException(status_code=400, detail="Invalid configuration, recipients, or selected_files format")
     
     # Validate share project if provided
     share_project_id = None
@@ -2894,32 +2896,72 @@ async def share_doc_documents(
         except Exception as e:
             print(f"Warning: Failed to expire old documents: {e}")
     
-    # Create upload directory if it doesn't exist
-    upload_dir = Path("shared_documents")
-    upload_dir.mkdir(exist_ok=True)
-    
-    # Save uploaded files
+    # Create upload directory inside the project directory, as an isolated folder
+    base_upload_dir = Path("shared_documents")
+    base_upload_dir.mkdir(exist_ok=True)
+    if project_token:
+        upload_dir = base_upload_dir / project_token
+    else:
+        upload_dir = base_upload_dir
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Upload processing ────────────────────────────────────────────────────
+    # The client sends each file as a zip (already client-side converted to PDF).
+    # Server wraps the received zip in an AES-256 encrypted zip WITHOUT extracting
+    # or converting anything. The password is stored in DB.
+    # ─────────────────────────────────────────────────────────────────────────
+    import pyzipper as _pyzipper
+
     file_paths = []
     if files:
         for file in files:
-            # Generate unique filename
             file_id = secrets.token_urlsafe(16)
-            file_ext = Path(file.filename).suffix
-            unique_filename = f"{file_id}{file_ext}"
-            file_path = upload_dir / unique_filename
-            
-            # Save file
             content = await file.read()
-            with open(file_path, "wb") as f:
-                f.write(content)
-            
-            file_paths.append({
-                'filename': unique_filename,
-                'original_filename': file.filename,
-                'path': str(file_path),
-                'size': len(content),
-                'type': file.content_type or ''
-            })
+
+            # Generate a strong random AES-256 password for this file
+            zip_password = secrets.token_urlsafe(32)
+
+            # Store the AES-encrypted zip on disk
+            enc_filename = f"{file_id}.szp"   # .szp = secure zip
+            enc_path = upload_dir / enc_filename
+
+            try:
+                with _pyzipper.AESZipFile(
+                    str(enc_path), 'w',
+                    compression=_pyzipper.ZIP_DEFLATED,
+                    encryption=_pyzipper.WZ_AES
+                ) as zf:
+                    zf.setpassword(zip_password.encode())
+                    # Store client's zip as an opaque blob — no extraction
+                    zf.writestr('data.zip', content)
+
+                orig_name = file.filename
+                ext = Path(orig_name).suffix.lower()
+                media_type = 'text/html' if ext in ['.html', '.htm'] else 'application/pdf'
+                
+                file_paths.append({
+                    'filename': enc_filename,
+                    'original_filename': orig_name,
+                    'path': str(enc_path),
+                    'size': len(content),
+                    'type': media_type,
+                    'zip_password': zip_password
+                })
+                print(f"[upload] Stored encrypted container for {file.filename} → {enc_filename}")
+            except Exception as e:
+                print(f"[upload] Failed to encrypt {file.filename}: {e}")
+                # Fallback: store raw (still functional but unencrypted)
+                raw_path = upload_dir / f"{file_id}_raw{Path(file.filename).suffix}"
+                raw_path.write_bytes(content)
+                file_paths.append({
+                    'filename': raw_path.name,
+                    'original_filename': file.filename,
+                    'path': str(raw_path),
+                    'size': len(content),
+                    'type': file.content_type or '',
+                    'zip_password': None
+                })
+
     
     # If no new files but project token provided, get existing files from latest share
     if not file_paths and share_project_id:
@@ -2929,12 +2971,18 @@ async def share_doc_documents(
         
         if latest_share and latest_share.files:
             for f in latest_share.files:
+                # Only include if it was selected in the frontend
+                # (Handle both integer IDs and string IDs from JS)
+                if selected_file_ids and str(f.id) not in [str(sid) for sid in selected_file_ids]:
+                    continue
+                    
                 file_paths.append({
                     'filename': f.filename,
                     'original_filename': f.original_filename,
                     'path': f.file_path,
                     'size': f.file_size,
-                    'type': f.file_type
+                    'type': f.file_type,
+                    'zip_password': f.zip_password  # CRITICAL FIX: copy the password!
                 })
     
     # Create shared document entry
@@ -2996,7 +3044,7 @@ async def share_doc_documents(
         db.add(shared_doc)
         db.flush()  # Get the ID without committing
         
-        # Add file records
+        # Add file records (including zip_password for encrypted containers)
         for file_info in file_paths:
             shared_file = models.SharedDocumentFile(
                 share_id=shared_doc.id,
@@ -3004,7 +3052,8 @@ async def share_doc_documents(
                 original_filename=file_info['original_filename'],
                 file_path=file_info['path'],
                 file_size=file_info.get('size', 0),
-                file_type=file_info.get('type', '')
+                file_type=file_info.get('type', ''),
+                zip_password=file_info.get('zip_password')
             )
             db.add(shared_file)
         
@@ -3043,7 +3092,7 @@ async def share_doc_documents(
                     share_id=shared_doc.id,
                     recipients_data=recipient_data,
                     sender_name=current_user.email,
-                    document_count=len(files),
+                    document_count=len(file_paths),
                     config=share_config
                 )
             except Exception as e:
@@ -3065,6 +3114,77 @@ async def share_doc_documents(
                 pass
         raise HTTPException(status_code=500, detail=f"Failed to create share: {str(e)}")
 
+
+
+# ── Streaming helpers ─────────────────────────────────────────────────────────
+
+def _chunked(buf, chunk_size: int = 256 * 1024):
+    """Yield bytes from a file-like object in chunks for StreamingResponse."""
+    while True:
+        data = buf.read(chunk_size)
+        if not data:
+            break
+        yield data
+
+
+def _decrypt_and_extract_file(file_path: "Path", file_info) -> tuple[bytes, str]:
+    """
+    Decrypt the AES-256 outer zip, extract the client's inner zip,
+    extract the actual file, and return (file_bytes, media_type).
+    Preserves HTML/PDF raw files and converts other documents to PDF on the fly.
+    Falls back to reading the file directly if it isn't an encrypted container.
+    """
+    import io, zipfile, pyzipper, pdf_converter
+
+    raw_bytes = None
+    orig_name = file_info.original_filename or file_path.name
+
+    # ── Encrypted container (.szp) ──────────────────────────────────────────
+    if file_info.zip_password and file_path.suffix == '.szp':
+        with pyzipper.AESZipFile(str(file_path)) as outer:
+            outer.setpassword(file_info.zip_password.encode())
+            inner_zip_bytes = outer.read('data.zip')
+
+        # Inner zip: contains the original file sent by the client
+        try:
+            with zipfile.ZipFile(io.BytesIO(inner_zip_bytes)) as inner:
+                names = inner.namelist()
+                if not names:
+                    raise ValueError("Client zip is empty")
+                raw_bytes = inner.read(names[0])
+                orig_name = names[0]
+        except zipfile.BadZipFile:
+            # If the inner content is not a zip file, it was stored raw inside the szp!
+            raw_bytes = inner_zip_bytes
+    else:
+        # ── Unencrypted fallback (plain PDF or older uploads) / Raw storage ─────
+        raw_bytes = file_path.read_bytes()
+
+    ext = Path(orig_name).suffix.lower()
+    
+    # Preserve HTML files
+    if ext in ['.html', '.htm']:
+        return raw_bytes, "text/html"
+        
+    # Preserve PDF files
+    if ext == '.pdf':
+        return raw_bytes, "application/pdf"
+
+    # Always convert other types to PDF so they render natively in the browser's PDF viewer
+    import tempfile, os
+    tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+    try:
+        tmp.write(raw_bytes)
+        tmp.close()
+        pdf_bytes = pdf_converter.convert_to_pdf(tmp.name, orig_name)
+        return pdf_bytes, "application/pdf"
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/shared/{share_token}")
 async def get_shared_document(
@@ -3188,6 +3308,7 @@ async def download_shared_file(
     share_token: str,
     file_id: int,
     password: Optional[str] = None,
+    v_token: Optional[str] = None,
     r: Optional[str] = None,
     request: Request = None,
     db: Session = Depends(get_db)
@@ -3269,15 +3390,28 @@ async def download_shared_file(
     db.commit()
     
     file_path = Path(file_info.file_path)
-    
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File no longer available")
-    
-    return FileResponse(
-        path=str(file_path),
-        filename=file_info.original_filename,
-        media_type=file_info.file_type or 'application/octet-stream'
+
+    # Decrypt AES zip -> inner zip -> extract file -> stream
+    try:
+        file_bytes, media_type = _decrypt_and_extract_file(file_path, file_info)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to decrypt file: {e}")
+
+    from fastapi.responses import StreamingResponse
+    import io
+    return StreamingResponse(
+        _chunked(io.BytesIO(file_bytes)),
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{file_info.original_filename}"',
+            "Content-Length": str(len(file_bytes)),
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff"
+        }
     )
+
 
 
 @app.get("/api/shared/{share_token}/view/{file_id}")
@@ -3285,6 +3419,7 @@ async def view_shared_file(
     share_token: str,
     file_id: int,
     password: Optional[str] = None,
+    v_token: Optional[str] = None,
     r: Optional[str] = None,
     request: Request = None,
     db: Session = Depends(get_db)
@@ -3358,297 +3493,27 @@ async def view_shared_file(
     db.commit()
     
     file_path = Path(file_info.file_path)
-    
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File no longer available")
-    
-    # Read file content
-    try:
-        with open(file_path, 'rb') as f:
-            content = f.read()
-        
-        # Determine content type and handle different file types
-        file_ext = file_path.suffix.lower()
-        
-        if file_ext in ['.txt', '.md']:
-            # For text and markdown files, return as text with proper encoding
-            try:
-                text_content = content.decode('utf-8')
-                if file_ext == '.md':
-                    # Convert markdown to HTML for better viewing
-                    import markdown
-                    html_content = markdown.markdown(text_content, extensions=['tables', 'fenced_code'])
-                    return Response(
-                        content=f"""
-                        <!DOCTYPE html>
-                        <html>
-                        <head>
-                            <meta charset="UTF-8">
-                            <title>{file_info.original_filename}</title>
-                            <style>
-                                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
-                                       max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.6; }}
-                                pre {{ background: #f5f5f5; padding: 10px; border-radius: 5px; overflow-x: auto; }}
-                                code {{ background: #f5f5f5; padding: 2px 4px; border-radius: 3px; }}
-                                table {{ border-collapse: collapse; width: 100%; }}
-                                th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-                                th {{ background-color: #f2f2f2; }}
-                            </style>
-                        </head>
-                        <body>{html_content}</body>
-                        </html>
-                        """,
-                        media_type="text/html"
-                    )
-                else:
-                    return Response(content=text_content, media_type="text/plain; charset=utf-8")
-            except UnicodeDecodeError:
-                return Response(content=content, media_type="application/octet-stream")
-        
-        elif file_ext in ['.html', '.htm']:
-            return Response(content=content, media_type="text/html")
-        
-        elif file_ext == '.pdf':
-            return Response(content=content, media_type="application/pdf")
-        
-        elif file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']:
-            return Response(content=content, media_type=f"image/{file_ext[1:]}")
-        
-        elif file_ext in ['.docx', '.doc']:
-            # For Word documents, try to extract text content with better formatting
-            try:
-                if file_ext == '.docx':
-                    import docx
-                    doc = docx.Document(file_path)
-                    
-                    # Extract content with better formatting
-                    html_content = []
-                    html_content.append('<div style="max-width: 800px; margin: 0 auto; padding: 20px; font-family: \'Times New Roman\', serif; line-height: 1.6;">')
-                    
-                    for paragraph in doc.paragraphs:
-                        if paragraph.text.strip():
-                            # Handle different paragraph styles
-                            style = paragraph.style.name.lower()
-                            if 'heading' in style:
-                                level = '1'
-                                if 'heading 2' in style:
-                                    level = '2'
-                                elif 'heading 3' in style:
-                                    level = '3'
-                                html_content.append(f'<h{level} style="color: #1f2937; margin: 20px 0 10px 0;">{paragraph.text}</h{level}>')
-                            else:
-                                html_content.append(f'<p style="margin: 10px 0; text-align: justify;">{paragraph.text}</p>')
-                    
-                    # Extract tables if any
-                    for table in doc.tables:
-                        html_content.append('<table style="width: 100%; border-collapse: collapse; margin: 20px 0; border: 1px solid #d1d5db;">')
-                        for row in table.rows:
-                            html_content.append('<tr>')
-                            for cell in row.cells:
-                                html_content.append(f'<td style="border: 1px solid #d1d5db; padding: 8px; vertical-align: top;">{cell.text}</td>')
-                            html_content.append('</tr>')
-                        html_content.append('</table>')
-                    
-                    html_content.append('</div>')
-                    
-                    return Response(
-                        content=f"""
-                        <!DOCTYPE html>
-                        <html>
-                        <head>
-                            <meta charset="UTF-8">
-                            <title>{file_info.original_filename}</title>
-                            <style>
-                                body {{ margin: 0; padding: 0; background: #f9fafb; }}
-                                .document-header {{ background: white; padding: 15px 20px; border-bottom: 1px solid #e5e7eb; }}
-                                .document-title {{ font-size: 18px; font-weight: bold; color: #1f2937; }}
-                                .document-content {{ background: white; margin: 20px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
-                            </style>
-                        </head>
-                        <body>
-                            <div class="document-header">
-                                <div class="document-title">{file_info.original_filename}</div>
-                            </div>
-                            <div class="document-content">
-                                {''.join(html_content)}
-                            </div>
-                        </body>
-                        </html>
-                        """,
-                        media_type="text/html"
-                    )
-                else:
-                    # For .doc files, return as download since they're harder to parse
-                    return Response(content=content, media_type="application/msword")
-                
-            except ImportError:
-                # If docx library is not available, return raw content
-                return Response(content=content, media_type="application/octet-stream")
-        
-        elif file_ext in ['.xlsx', '.xls']:
-            # For Excel files, try to convert to HTML table
-            try:
-                import pandas as pd
-                
-                if file_ext == '.xlsx':
-                    # Read all sheets
-                    excel_file = pd.ExcelFile(file_path)
-                    html_content = []
-                    
-                    html_content.append('<div style="max-width: 1200px; margin: 0 auto; padding: 20px; font-family: Arial, sans-serif;">')
-                    
-                    for sheet_name in excel_file.sheet_names:
-                        df = pd.read_excel(file_path, sheet_name=sheet_name)
-                        html_content.append(f'<h3 style="color: #1f2937; margin: 30px 0 15px 0; padding: 10px; background: #f3f4f6; border-left: 4px solid #3b82f6;">Sheet: {sheet_name}</h3>')
-                        
-                        # Convert DataFrame to HTML with styling
-                        table_html = df.to_html(classes='excel-table', table_id=f'sheet-{sheet_name}', escape=False)
-                        html_content.append(table_html)
-                    
-                    html_content.append('</div>')
-                    
-                    return Response(
-                        content=f"""
-                        <!DOCTYPE html>
-                        <html>
-                        <head>
-                            <meta charset="UTF-8">
-                            <title>{file_info.original_filename}</title>
-                            <style>
-                                body {{ margin: 0; padding: 0; background: #f9fafb; }}
-                                .document-header {{ background: white; padding: 15px 20px; border-bottom: 1px solid #e5e7eb; }}
-                                .document-title {{ font-size: 18px; font-weight: bold; color: #1f2937; }}
-                                .excel-table {{ 
-                                    width: 100%; 
-                                    border-collapse: collapse; 
-                                    margin: 10px 0; 
-                                    background: white;
-                                    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-                                }}
-                                .excel-table th {{ 
-                                    background: #f3f4f6; 
-                                    border: 1px solid #d1d5db; 
-                                    padding: 8px; 
-                                    text-align: left; 
-                                    font-weight: bold;
-                                }}
-                                .excel-table td {{ 
-                                    border: 1px solid #d1d5db; 
-                                    padding: 8px; 
-                                    vertical-align: top; 
-                                }}
-                                .excel-table tr:nth-child(even) {{ background: #f9fafb; }}
-                            </style>
-                        </head>
-                        <body>
-                            <div class="document-header">
-                                <div class="document-title">{file_info.original_filename}</div>
-                            </div>
-                            {''.join(html_content)}
-                        </body>
-                        </html>
-                        """,
-                        media_type="text/html"
-                    )
-                else:
-                    # For .xls files, try to read with pandas
-                    df = pd.read_excel(file_path)
-                    table_html = df.to_html(classes='excel-table', escape=False)
-                    
-                    return Response(
-                        content=f"""
-                        <!DOCTYPE html>
-                        <html>
-                        <head>
-                            <meta charset="UTF-8">
-                            <title>{file_info.original_filename}</title>
-                            <style>
-                                body {{ font-family: Arial, sans-serif; margin: 20px; }}
-                                .excel-table {{ width: 100%; border-collapse: collapse; }}
-                                .excel-table th, .excel-table td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-                                .excel-table th {{ background-color: #f2f2f2; }}
-                            </style>
-                        </head>
-                        <body>
-                            <h2>{file_info.original_filename}</h2>
-                            {table_html}
-                        </body>
-                        </html>
-                        """,
-                        media_type="text/html"
-                    )
-                    
-            except ImportError:
-                return Response(content=content, media_type="application/octet-stream")
-        
-        elif file_ext in ['.pptx', '.ppt']:
-            # For PowerPoint files, extract slide content
-            try:
-                if file_ext == '.pptx':
-                    from pptx import Presentation
-                    
-                    prs = Presentation(file_path)
-                    html_content = []
-                    
-                    html_content.append('<div style="max-width: 900px; margin: 0 auto; padding: 20px; font-family: Arial, sans-serif;">')
-                    
-                    for i, slide in enumerate(prs.slides, 1):
-                        html_content.append(f'<div style="margin: 30px 0; padding: 20px; border: 1px solid #e5e7eb; border-radius: 8px; background: white; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">')
-                        html_content.append(f'<h3 style="color: #1f2937; margin: 0 0 15px 0; padding: 10px; background: #f3f4f6; border-radius: 4px;">Slide {i}</h3>')
-                        
-                        for shape in slide.shapes:
-                            if hasattr(shape, "text") and shape.text.strip():
-                                # Determine if it's a title or content
-                                if shape.is_placeholder:
-                                    placeholder = shape.placeholder_format
-                                    if placeholder.type == 1:  # Title placeholder
-                                        html_content.append(f'<h2 style="color: #1f2937; margin: 15px 0;">{shape.text}</h2>')
-                                    else:
-                                        html_content.append(f'<p style="margin: 10px 0; line-height: 1.6;">{shape.text}</p>')
-                                else:
-                                    html_content.append(f'<p style="margin: 10px 0; line-height: 1.6;">{shape.text}</p>')
-                        
-                        html_content.append('</div>')
-                    
-                    html_content.append('</div>')
-                    
-                    return Response(
-                        content=f"""
-                        <!DOCTYPE html>
-                        <html>
-                        <head>
-                            <meta charset="UTF-8">
-                            <title>{file_info.original_filename}</title>
-                            <style>
-                                body {{ margin: 0; padding: 0; background: #f9fafb; }}
-                                .document-header {{ background: white; padding: 15px 20px; border-bottom: 1px solid #e5e7eb; }}
-                                .document-title {{ font-size: 18px; font-weight: bold; color: #1f2937; }}
-                            </style>
-                        </head>
-                        <body>
-                            <div class="document-header">
-                                <div class="document-title">{file_info.original_filename}</div>
-                            </div>
-                            {''.join(html_content)}
-                        </body>
-                        </html>
-                        """,
-                        media_type="text/html"
-                    )
-                else:
-                    # For .ppt files, return as download
-                    return Response(content=content, media_type="application/vnd.ms-powerpoint")
-                    
-            except ImportError:
-                return Response(content=content, media_type="application/octet-stream")
-        
-        else:
-            # For other file types, return as-is
-            return Response(content=content, media_type=file_info.file_type or "application/octet-stream")
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
 
+    # Decrypt AES zip -> inner zip -> extract file -> stream inline
+    try:
+        file_bytes, media_type = _decrypt_and_extract_file(file_path, file_info)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to decrypt file: {e}")
+
+    from fastapi.responses import StreamingResponse
+    import io
+    return StreamingResponse(
+        _chunked(io.BytesIO(file_bytes)),
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{file_info.original_filename}"',
+            "Content-Length": str(len(file_bytes)),
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff"
+        }
+    )
 
 @app.get("/api/share-doc/{share_id}/recipients", response_model=List[Dict[str, Any]])
 async def get_share_doc_recipients(
@@ -3912,6 +3777,134 @@ async def update_share_project(
             'current_step': share_project.current_step
         }
     }
+
+@app.post("/api/share-projects/{project_token}/upload-files")
+async def upload_project_files(
+    project_token: str,
+    files: list[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Upload and encrypt files immediately inside a project-isolated folder
+    """
+    # 1. Fetch project
+    project = db.query(models.ShareProject).filter(
+        models.ShareProject.project_token == project_token,
+        models.ShareProject.owner_id == current_user.id
+    ).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # 2. Get or create the latest SharedDocument for this project (acting as active draft/share)
+    shared_doc = db.query(models.SharedDocument).filter(
+        models.SharedDocument.share_project_id == project.id
+    ).order_by(models.SharedDocument.created_at.desc()).first()
+
+    if not shared_doc:
+        shared_doc = models.SharedDocument(
+            share_token=secrets.token_urlsafe(32),
+            user_id=current_user.id,
+            share_project_id=project.id,
+            title=f"Shared Documents - {datetime.utcnow().strftime('%Y-%m-%d')}",
+            access_type='once',
+            expiration_time='no-expiration',
+            expires_at=None,
+            require_password=False,
+            password_hash=None,
+            view_limit=None,
+            can_download=True,
+            allow_anonymous=True
+        )
+        db.add(shared_doc)
+        db.flush()
+
+    # 3. Create isolated upload directory: shared_documents/{project_token}/
+    base_upload_dir = Path("shared_documents")
+    base_upload_dir.mkdir(exist_ok=True)
+    upload_dir = base_upload_dir / project_token
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    # 4. Save files directly as default as is
+    added_files = []
+
+    for file in files:
+        file_id = secrets.token_urlsafe(16)
+        content = await file.read()
+        
+        orig_name = file.filename
+        ext = Path(orig_name).suffix.lower()
+        
+        enc_filename = f"{file_id}{ext}"
+        enc_path = upload_dir / enc_filename
+
+        try:
+            # Write raw content directly as is
+            enc_path.write_bytes(content)
+            
+            media_type = 'text/html' if ext in ['.html', '.htm'] else 'application/pdf'
+            
+            shared_file = models.SharedDocumentFile(
+                share_id=shared_doc.id,
+                filename=enc_filename,
+                original_filename=orig_name,
+                file_path=str(enc_path),
+                file_size=len(content),
+                file_type=media_type,
+                zip_password=None
+            )
+            db.add(shared_file)
+            db.flush()
+
+            added_files.append({
+                'id': shared_file.id,
+                'filename': shared_file.filename,
+                'original_filename': shared_file.original_filename,
+                'file_size': shared_file.file_size,
+                'file_type': shared_file.file_type
+            })
+        except Exception as e:
+            print(f"Failed to save uploaded file {file.filename}: {e}")
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Failed to upload and save file: {e}")
+
+    db.commit()
+    return {"success": True, "files": added_files}
+
+
+@app.delete("/api/share-projects/{project_token}/files/{file_id}")
+async def delete_project_file(
+    project_token: str,
+    file_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Delete a specific uploaded file from project isolated folder and database
+    """
+    project = db.query(models.ShareProject).filter(
+        models.ShareProject.project_token == project_token,
+        models.ShareProject.owner_id == current_user.id
+    ).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    shared_file = db.query(models.SharedDocumentFile).join(models.SharedDocument).filter(
+        models.SharedDocumentFile.id == file_id,
+        models.SharedDocument.share_project_id == project.id
+    ).first()
+
+    if not shared_file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        Path(shared_file.file_path).unlink(missing_ok=True)
+    except Exception as e:
+        print(f"Warning: Failed to delete physical file {shared_file.file_path}: {e}")
+
+    db.delete(shared_file)
+    db.commit()
+    return {"success": True}
 
 
 @app.delete("/api/share-projects/{project_token}")

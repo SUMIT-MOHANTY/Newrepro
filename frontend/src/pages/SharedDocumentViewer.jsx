@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import PdfStreamViewer from '../components/PdfStreamViewer';
 import {
     FileText,
     Download,
@@ -22,6 +23,9 @@ import { API_ENDPOINTS } from '../config';
 const SharedDocumentViewer = () => {
     const { shareToken } = useParams();
     const navigate = useNavigate();
+
+    // Recipient-specific view token passed as ?v_token=... in the share link
+    const vToken = new URLSearchParams(window.location.search).get('v_token') || '';
     const sessionTimeoutRef = useRef(null);
     const devToolsCheckRef = useRef(null);
 
@@ -40,6 +44,9 @@ const SharedDocumentViewer = () => {
     const [htmlCanvasUrl, setHtmlCanvasUrl] = useState('');
     const [officeViewerError, setOfficeViewerError] = useState(false);
     const [useGoogleViewer, setUseGoogleViewer] = useState(false);
+    const [pendingPrint, setPendingPrint] = useState(false);
+    const [generatingPdf, setGeneratingPdf] = useState(false);
+    const iframeRef = useRef(null);
 
     // Security: Session timeout (30 minutes)
     const SESSION_TIMEOUT = 30 * 60 * 1000; // 30 minutes
@@ -236,6 +243,106 @@ const SharedDocumentViewer = () => {
         };
     }, []);
 
+    const prepareIframeForPrinting = () => {
+        try {
+            const iframe = iframeRef.current;
+            if (!iframe) return;
+            const doc = iframe.contentDocument || iframe.contentWindow.document;
+            if (!doc) return;
+
+            // 1. Inject CSS for @media print first
+            let style = doc.getElementById('dynamic-print-styles');
+            if (!style) {
+                style = doc.createElement('style');
+                style.id = 'dynamic-print-styles';
+                style.innerHTML = `
+                    @media print {
+                      @page {
+                        size: A4 landscape;
+                        margin: 0;
+                      }
+                      * {
+                        -webkit-print-color-adjust: exact !important;
+                        print-color-adjust: exact !important;
+                      }
+                      #nav, #pr, .no-print {
+                        display: none !important;
+                      }
+                    }
+                `;
+                doc.head.appendChild(style);
+            }
+
+            // 2. Iteratively inspect all elements and override height:100vh and overflow:hidden
+            const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ELEMENT, null, false);
+            let node;
+            while (node = walker.nextNode()) {
+                const computed = iframe.contentWindow.getComputedStyle(node);
+
+                // If element has height: 100vh (or high vh), change it to auto
+                if (computed.height.includes('vh') || computed.height === `${iframe.contentWindow.innerHeight}px`) {
+                    node.style.setProperty('height', 'auto', 'important');
+                    node.style.setProperty('min-height', '0', 'important');
+                    node.style.setProperty('max-height', 'none', 'important');
+                }
+
+                // If element has overflow: hidden, override to overflow: visible or auto
+                if (computed.overflow === 'hidden' || computed.overflowX === 'hidden' || computed.overflowY === 'hidden') {
+                    node.style.setProperty('overflow', 'visible', 'important');
+                    node.style.setProperty('overflow-x', 'visible', 'important');
+                    node.style.setProperty('overflow-y', 'visible', 'important');
+                }
+
+                // For slides or absolute positioned pagination structures:
+                if (node.classList.contains('slide')) {
+                    node.style.setProperty('display', 'flex', 'important');
+                    node.style.setProperty('position', 'relative', 'important');
+                    node.style.setProperty('width', '100%', 'important');
+                    node.style.setProperty('height', '100vh', 'important');
+                    node.style.setProperty('page-break-after', 'always', 'important');
+                    node.style.setProperty('break-after', 'page', 'important');
+                    node.style.setProperty('overflow', 'hidden', 'important');
+                    node.style.setProperty('box-sizing', 'border-box', 'important');
+                }
+            }
+
+            // Also do body and html elements
+            const htmlEl = doc.documentElement;
+            const bodyEl = doc.body;
+
+            htmlEl.style.setProperty('height', 'auto', 'important');
+            htmlEl.style.setProperty('overflow', 'visible', 'important');
+
+            bodyEl.style.setProperty('height', 'auto', 'important');
+            bodyEl.style.setProperty('overflow', 'visible', 'important');
+
+            const deckEl = doc.getElementById('deck');
+            if (deckEl) {
+                deckEl.style.setProperty('height', 'auto', 'important');
+                deckEl.style.setProperty('width', '100%', 'important');
+                deckEl.style.setProperty('position', 'relative', 'important');
+                deckEl.style.setProperty('overflow', 'visible', 'important');
+            }
+        } catch (err) {
+            console.error("Error preparing iframe for printing:", err);
+        }
+    };
+
+    const handleIframeLoad = () => {
+        if (pendingPrint && iframeRef.current) {
+            setPendingPrint(false);
+            setTimeout(() => {
+                try {
+                    prepareIframeForPrinting();
+                    iframeRef.current.contentWindow.focus();
+                    iframeRef.current.contentWindow.print();
+                } catch (err) {
+                    console.error("Print preview failed on load:", err);
+                }
+            }, 500);
+        }
+    };
+
     useEffect(() => {
         loadShareData();
     }, [shareToken]);
@@ -296,25 +403,21 @@ const SharedDocumentViewer = () => {
     const handleViewFile = async (file) => {
         setSelectedFile(file);
         setViewerMode('viewer');
-        setLoadingFile(true);
+        // PdfStreamViewer fetches the stream URL itself — no pre-fetch needed.
+        // The backend converts all file types to PDF on the fly.
+        setLoadingFile(false);
         setFileContent('');
         setHtmlCanvasUrl('');
         setOfficeViewerError(false);
         setUseGoogleViewer(false);
+    };
 
+    const _handleViewFile_unused = async (file) => {
+        // Kept for reference only — dead code, not called.
         try {
             const url = password
                 ? `${API_ENDPOINTS.SHARED_DOCUMENT_VIEW(shareToken, file.id)}?password=${encodeURIComponent(password)}`
                 : API_ENDPOINTS.SHARED_DOCUMENT_VIEW(shareToken, file.id);
-
-            const ext = file.filename.split('.').pop()?.toLowerCase();
-
-            // For PDF files, we'll handle them differently in the render
-            if (ext === 'pdf') {
-                setFileContent(''); // We'll use object/iframe for PDF
-                setLoadingFile(false);
-                return;
-            }
 
             const response = await fetch(url);
 
@@ -423,10 +526,211 @@ const SharedDocumentViewer = () => {
             return;
         }
 
+        const ext = filename.split('.').pop().toLowerCase();
+        const isHtml = ext === 'html' || ext === 'htm';
+
+        if (isHtml) {
+            setGeneratingPdf(true);
+
+            try {
+                const params = new URLSearchParams();
+                if (password) params.append('password', encodeURIComponent(password));
+                if (vToken) params.append('v_token', vToken);
+                const r = new URLSearchParams(window.location.search).get('r');
+                if (r) params.append('r', r);
+
+                const base = API_ENDPOINTS.SHARED_DOCUMENT_VIEW(shareToken, fileId);
+                const streamUrl = params.toString() ? `${base}?${params.toString()}` : base;
+
+                const response = await fetch(streamUrl);
+                if (!response.ok) {
+                    throw new Error('Failed to fetch document content');
+                }
+                const htmlText = await response.text();
+
+                // Open a beautiful new popup window (not a tab)
+                const width = 1200;
+                const height = 900;
+                const left = (window.screen.width - width) / 2;
+                const top = (window.screen.height - height) / 2;
+
+                const printWindow = window.open(
+                    '',
+                    '_blank',
+                    `width=${width},height=${height},left=${left},top=${top},toolbar=no,menubar=no,scrollbars=yes,status=no`
+                );
+
+                if (!printWindow) {
+                    alert("Pop-up blocked! Please allow pop-ups for this site to download the document.");
+                    setGeneratingPdf(false);
+                    return;
+                }
+
+                // Parse the original HTML
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(htmlText, 'text/html');
+
+                // Determine page size and layout properties dynamically based on target appearance
+                let pageSize = 'portrait';
+                let pageMargin = '0.5in'; // Use clean document margins for standard portrait reports
+
+                // 1. Detect if the original HTML explicitly mandates standard page settings
+                if (/size\s*:\s*landscape/i.test(htmlText)) {
+                    pageSize = 'landscape';
+                    pageMargin = '0';
+                } else if (/size\s*:\s*portrait/i.test(htmlText)) {
+                    pageSize = 'portrait';
+                    pageMargin = '0.5in';
+                } else {
+                    // 2. Fallback to heuristic: if it structures slides or a slide-deck viewport container, default to landscape
+                    const hasSlides = doc.getElementsByClassName('slide').length > 0 || 
+                                      doc.querySelector('#deck') !== null ||
+                                      /class=["']slide["']/i.test(htmlText);
+                    if (hasSlides) {
+                        pageSize = 'landscape';
+                        pageMargin = '0'; // Slide decks look perfect edge-to-edge
+                    }
+                }
+
+                // Create the beautiful overlay HTML structure
+                const overlayHtml = `
+                    <div id="print-instructions-overlay">
+                        <div class="spinner"></div>
+                        <div class="title">Preparing PDF Download...</div>
+                        <div class="subtitle">Please select <b>"Save as PDF"</b> as the Destination in the print dialog. This window will close automatically after saving.</div>
+                    </div>
+                `;
+
+                // Insert the custom high-end styles in doc.head
+                const printStyle = doc.createElement('style');
+                printStyle.innerHTML = `
+                    /* Screen Styles: Beautiful Instructions Overlay */
+                    @media screen {
+                        #print-instructions-overlay {
+                            position: fixed;
+                            inset: 0;
+                            background: #ffffff;
+                            z-index: 999999;
+                            display: flex;
+                            flex-direction: column;
+                            align-items: center;
+                            justify-content: center;
+                            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                            color: #0f172a;
+                            text-align: center;
+                            padding: 20px;
+                        }
+                        .spinner {
+                            width: 50px;
+                            height: 50px;
+                            border: 4px solid #e2e8f0;
+                            border-top-color: #6366f1;
+                            border-radius: 50%;
+                            animation: spin 1s linear infinite;
+                            margin-bottom: 24px;
+                        }
+                        @keyframes spin {
+                            to { transform: rotate(360deg); }
+                        }
+                        .title {
+                            font-size: 22px;
+                            font-weight: 600;
+                            margin-bottom: 8px;
+                            color: #0f172a;
+                        }
+                        .subtitle {
+                            font-size: 14px;
+                            color: #64748b;
+                            max-width: 420px;
+                            line-height: 1.6;
+                        }
+                    }
+
+                    /* Print Styles: Pixel-Perfect Page Splits */
+                    @media print {
+                        @page {
+                            size: ${pageSize};
+                            margin: ${pageMargin};
+                        }
+                        #print-instructions-overlay {
+                            display: none !important;
+                        }
+                        body, html {
+                            height: auto !important;
+                            overflow: visible !important;
+                            margin: 0 !important;
+                            padding: 0 !important;
+                            -webkit-print-color-adjust: exact !important;
+                            print-color-adjust: exact !important;
+                            background: white !important;
+                        }
+                        #deck {
+                            height: auto !important;
+                            width: 100% !important;
+                            overflow: visible !important;
+                            position: relative !important;
+                            background: transparent !important;
+                        }
+                        .slide {
+                            display: flex !important; /* Force display all slides */
+                            position: relative !important; /* Force relative positioning for printing flow */
+                            page-break-after: always !important;
+                            break-after: page !important;
+                            width: 100% !important;
+                            height: 100vh !important; /* Match page height exactly */
+                            margin: 0 !important;
+                            padding: 38px 58px 50px 72px !important;
+                            box-sizing: border-box !important;
+                            overflow: hidden !important;
+                        }
+                    }
+                `;
+                doc.head.appendChild(printStyle);
+
+                // Prepend overlay inside body
+                const tempDiv = doc.createElement('div');
+                tempDiv.innerHTML = overlayHtml.trim();
+                doc.body.insertBefore(tempDiv.firstChild, doc.body.firstChild);
+
+                // Add print and auto-close trigger script at the bottom of the body
+                const scriptEl = doc.createElement('script');
+                scriptEl.innerHTML = `
+                    window.addEventListener('DOMContentLoaded', () => {
+                        // Give assets, fonts, and layout a short moment to compile perfectly
+                        setTimeout(() => {
+                            window.print();
+                            window.close();
+                        }, 800);
+                    });
+                `;
+                doc.body.appendChild(scriptEl);
+
+                // Write the full parsed document to the popup window
+                printWindow.document.open();
+                printWindow.document.write(doc.documentElement.outerHTML);
+                printWindow.document.close();
+
+                // Stop the local loading screen spinner
+                setGeneratingPdf(false);
+
+            } catch (err) {
+                console.error("Error setting up print download:", err);
+                setGeneratingPdf(false);
+                alert("Failed to initialize download. Please try again.");
+            }
+            return;
+        }
+
+        // Non-HTML files (like PDFs, docx, etc.):
         try {
-            const url = password
-                ? `${API_ENDPOINTS.SHARED_DOCUMENT_DOWNLOAD(shareToken, fileId)}?password=${encodeURIComponent(password)}`
-                : API_ENDPOINTS.SHARED_DOCUMENT_DOWNLOAD(shareToken, fileId);
+            const params = new URLSearchParams();
+            if (password) params.append('password', encodeURIComponent(password));
+            if (vToken) params.append('v_token', vToken);
+            const r = new URLSearchParams(window.location.search).get('r');
+            if (r) params.append('r', r);
+
+            const base = API_ENDPOINTS.SHARED_DOCUMENT_DOWNLOAD(shareToken, fileId);
+            const url = params.toString() ? `${base}?${params.toString()}` : base;
 
             const response = await fetch(url);
 
@@ -438,7 +742,12 @@ const SharedDocumentViewer = () => {
             const downloadUrl = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = downloadUrl;
-            a.download = filename;
+
+            const stem = filename.replace(/\.[^/.]+$/, '');
+            const isPdf = ext === 'pdf';
+            const downloadExt = isPdf ? 'pdf' : 'pdf'; // Converted files are PDFs
+
+            a.download = `${stem}.${downloadExt}`;
             document.body.appendChild(a);
             a.click();
             window.URL.revokeObjectURL(downloadUrl);
@@ -735,106 +1044,47 @@ const SharedDocumentViewer = () => {
                             </div>
                         </div>
                     ) : (
-                        <div style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
-                            {selectedFile && (
-                                (() => {
-                                    const ext = selectedFile.filename.split('.').pop()?.toLowerCase();
-                                    const fileUrl = password
-                                        ? `${API_ENDPOINTS.SHARED_DOCUMENT_VIEW(shareToken, selectedFile.id)}?password=${encodeURIComponent(password)}`
-                                        : API_ENDPOINTS.SHARED_DOCUMENT_VIEW(shareToken, selectedFile.id);
-
-                                    // For Microsoft Office files, use Microsoft Office Online Viewer
-                                    if (isMicrosoftOfficeFile(selectedFile.filename)) {
-                                        // Get the full URL (need absolute URL for Microsoft viewer)
-                                        const absoluteFileUrl = fileUrl.startsWith('http')
-                                            ? fileUrl
-                                            : `${window.location.origin}${fileUrl}`;
-
-                                        const viewerUrl = getMicrosoftViewerUrl(absoluteFileUrl);
-
-                                        return (
-                                            <iframe
-                                                src={viewerUrl}
-                                                width="100%"
-                                                height="100%"
-                                                style={{
-                                                    border: 'none',
-                                                    display: 'block',
-                                                    backgroundColor: 'white'
-                                                }}
-                                                title={selectedFile.filename}
-                                                allowFullScreen
-                                            />
-                                        );
-                                    }
-
-                                    // For PDF files, use object embed for better compatibility
-                                    if (ext === 'pdf') {
-                                        return (
-                                            <object
-                                                data={fileUrl}
-                                                type="application/pdf"
-                                                width="100%"
-                                                height="100%"
-                                                style={{
-                                                    display: 'block',
-                                                    userSelect: 'none',
-                                                    WebkitUserSelect: 'none'
-                                                }}
-                                            >
-                                                <iframe
-                                                    src={fileUrl}
-                                                    width="100%"
-                                                    height="100%"
-                                                    style={{
-                                                        border: 'none',
-                                                        userSelect: 'none',
-                                                        WebkitUserSelect: 'none'
-                                                    }}
-                                                    title={selectedFile.filename}
-                                                    sandbox="allow-same-origin"
-                                                />
-                                            </object>
-                                        );
-                                    }
-
-                                    // For HTML files, use iframe with srcdoc for original rendering
-                                    if (ext === 'html' || ext === 'htm') {
-                                        return (
-                                            <iframe
-                                                srcDoc={fileContent}
-                                                width="100%"
-                                                height="100%"
-                                                style={{
-                                                    border: 'none',
-                                                    backgroundColor: 'white',
-                                                    display: 'block'
-                                                }}
-                                                title={selectedFile.filename}
-                                                sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
-                                            />
-                                        );
-                                    }
-
-                                    // For other files, use the HTML content
-                                    return (
-                                        <div
-                                            style={{
-                                                width: '100%',
-                                                height: '100%',
-                                                userSelect: 'none',
-                                                WebkitUserSelect: 'none',
-                                                MozUserSelect: 'none',
-                                                msUserSelect: 'none'
-                                            }}
-                                            onContextMenu={(e) => e.preventDefault()}
-                                            onDragStart={(e) => e.preventDefault()}
-                                            dangerouslySetInnerHTML={{ __html: fileContent }}
-                                        />
-                                    );
-                                })()
+                        <div style={{ flex: 1, overflow: 'hidden', position: 'relative', height: '100%' }}>
+                            {generatingPdf && (
+                                <div className="fixed inset-0 bg-white z-[99999] flex flex-col items-center justify-center">
+                                    <div className="w-12 h-12 border-4 border-app-primary border-t-transparent rounded-full animate-spin mb-4"></div>
+                                    <p className="text-app-text-main font-semibold text-base">Generating PDF for download...</p>
+                                    <p className="text-app-text-muted text-xs mt-1">Please wait, this will download automatically when finished.</p>
+                                </div>
                             )}
+                            {selectedFile && (() => {
+                                const params = new URLSearchParams();
+                                if (password) params.append('password', encodeURIComponent(password));
+                                if (vToken) params.append('v_token', vToken);
+                                const r = new URLSearchParams(window.location.search).get('r');
+                                if (r) params.append('r', r);
+                                const base = API_ENDPOINTS.SHARED_DOCUMENT_VIEW(shareToken, selectedFile.id);
+                                const streamUrl = params.toString() ? `${base}?${params.toString()}` : base;
+
+                                const isHtml = selectedFile.filename.toLowerCase().endsWith('.html') || selectedFile.filename.toLowerCase().endsWith('.htm');
+
+                                return (
+                                    <div style={{ height: '100%' }}>
+                                        {isHtml ? (
+                                            <iframe
+                                                ref={iframeRef}
+                                                src={streamUrl}
+                                                style={{ width: '100%', height: '100%', border: 'none', background: 'white' }}
+                                                title={selectedFile.filename}
+                                                sandbox="allow-scripts allow-same-origin allow-modals"
+                                                onLoad={handleIframeLoad}
+                                            />
+                                        ) : (
+                                            <PdfStreamViewer
+                                                url={streamUrl}
+                                                filename={selectedFile.filename}
+                                            />
+                                        )}
+                                    </div>
+                                );
+                            })()}
                         </div>
+
                     )}
                 </div>
             </div>
