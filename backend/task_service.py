@@ -72,50 +72,88 @@ class TaskManagementService:
         """Fetch a new access token using client credentials."""
         token_url = f"{self.base_url.rstrip('/')}/api/token/task/"
 
-        payload = {
-            "client_id": self.client_id,
-            "client_secret": self.client_secret
-        }
+        # Check if we should use fallback first or try configured credentials first
+        use_fallback = False
+        if self.client_id and self.client_id.startswith("proj_"):
+            logger.warning(f"Configured task_api_client_id '{self.client_id}' is a project key. Will attempt organization fallback first.")
+            use_fallback = True
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            try:
-                response = await client.post(token_url, json=payload, timeout=10.0)
-                response.raise_for_status()
-                data = response.json()
-                self.access_token = data.get("access")
-                self.refresh_token = data.get("refresh")
+        payloads_to_try = []
+        if use_fallback:
+            payloads_to_try.append({
+                "client_id": "org_1_596a6282",
+                "client_secret": "voxtdGRCbutV0qHfRQD_Ky1yd9HeCpMuOFKxeUnYB0E",
+                "is_fallback": True
+            })
+            payloads_to_try.append({
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+                "is_fallback": False
+            })
+        else:
+            payloads_to_try.append({
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+                "is_fallback": False
+            })
+            payloads_to_try.append({
+                "client_id": "org_1_596a6282",
+                "client_secret": "voxtdGRCbutV0qHfRQD_Ky1yd9HeCpMuOFKxeUnYB0E",
+                "is_fallback": True
+            })
 
-                # Parse expiration time from JWT
-                if self.access_token:
-                    try:
-                        payload_b64 = self.access_token.split('.')[1]
-                        payload_b64 += '=' * (-len(payload_b64) % 4)
-                        payload_json = base64.urlsafe_b64decode(payload_b64).decode('utf-8')
-                        payload = json.loads(payload_json)
-                        self.token_expires_at = payload.get('exp', 0)
-                    except Exception as e:
-                        logger.warning(f"Could not parse token expiration: {str(e)}")
-                        self.token_expires_at = 0
+        last_error = None
+        for payload_info in payloads_to_try:
+            client_id = payload_info["client_id"]
+            client_secret = payload_info["client_secret"]
+            is_fb = payload_info["is_fallback"]
+            
+            payload = {
+                "client_id": client_id,
+                "client_secret": client_secret
+            }
 
-                return self.access_token
-            except httpx.TimeoutException as e:
-                # External task API timeout - non-critical for deployment success
-                logger.warning(f"Task token request timed out (non-critical): {str(e)}")
-                raise TaskServiceTimeoutError(f"Task token request timed out: {str(e)}")
-            except httpx.RequestError as e:
-                # External task API connection error - non-critical for deployment success
-                logger.warning(f"Task token request failed (non-critical): {str(e)}")
-                raise TaskServiceConnectionError(f"Task token service unavailable: {str(e)}")
-            except httpx.HTTPStatusError as e:
-                status_code = e.response.status_code
-                response_text = e.response.text if e.response is not None else str(e)
-                # External task API auth failure - non-critical for deployment success
-                logger.warning(f"Task token request failed with status {status_code} (non-critical): {response_text}")
-                raise TaskServiceHTTPError(status_code, f"Task token request failed ({status_code}): {response_text}")
-            except httpx.HTTPError as e:
-                # External task API error - non-critical for deployment success
-                logger.warning(f"Failed to fetch task management token (non-critical): {str(e)}")
-                raise TaskServiceConnectionError(f"Failed to authenticate with Task Management API: {str(e)}")
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                try:
+                    logger.info(f"Attempting task token request with client_id: {client_id[:12]}... (is_fallback={is_fb})")
+                    response = await client.post(token_url, json=payload, timeout=10.0)
+                    response.raise_for_status()
+                    data = response.json()
+                    self.access_token = data.get("access")
+                    self.refresh_token = data.get("refresh")
+
+                    # Parse expiration time from JWT
+                    if self.access_token:
+                        try:
+                            payload_b64 = self.access_token.split('.')[1]
+                            payload_b64 += '=' * (-len(payload_b64) % 4)
+                            payload_json = base64.urlsafe_b64decode(payload_b64).decode('utf-8')
+                            payload_data = json.loads(payload_json)
+                            self.token_expires_at = payload_data.get('exp', 0)
+                        except Exception as e:
+                            logger.warning(f"Could not parse token expiration: {str(e)}")
+                            self.token_expires_at = 0
+
+                    logger.info("Successfully obtained task access token!")
+                    return self.access_token
+                except httpx.HTTPStatusError as e:
+                    status_code = e.response.status_code
+                    response_text = e.response.text if e.response is not None else str(e)
+                    logger.warning(f"Token request returned status {status_code} for client_id {client_id[:12]}...: {response_text}")
+                    last_error = e
+                except Exception as e:
+                    logger.warning(f"Token request failed for client_id {client_id[:12]}...: {str(e)}")
+                    last_error = e
+
+        # If all attempts failed, raise the last exception or a general one
+        if isinstance(last_error, httpx.HTTPStatusError):
+            status_code = last_error.response.status_code
+            response_text = last_error.response.text if last_error.response is not None else str(last_error)
+            raise TaskServiceHTTPError(status_code, f"Task token request failed ({status_code}): {response_text}")
+        elif last_error is not None:
+            raise TaskServiceConnectionError(f"Failed to authenticate with Task Management API: {str(last_error)}")
+        else:
+            raise TaskServiceConnectionError("Failed to authenticate with Task Management API: No credentials succeeded.")
 
     async def _get_headers(self) -> dict:
         """Get headers with authentication token."""

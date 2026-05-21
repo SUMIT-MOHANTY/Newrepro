@@ -182,6 +182,57 @@ function sanitizePrerequisiteForAiPayload(item = {}) {
 
 export default function StatusDashboard({ projects = [], projectsLoading = false, selectedProjectKey, selectedRole, fetchRoadmapData }) {
     const navigate = useNavigate();
+    
+    const getClockedHours = (task) => {
+        const hours = task.time_taken || task.duration || task.time_spent || 0;
+        const timerLogs = task.timer_logs || [];
+        if (timerLogs.length > 0) {
+            let calculated = 0;
+            let clockInTime = null;
+            let isClockedIn = false;
+            
+            const sortedLogs = [...timerLogs].sort((a, b) => {
+                const timeA = a.timestamp || a.created_at || a.time || '';
+                const timeB = b.timestamp || b.created_at || b.time || '';
+                return timeA.localeCompare(timeB);
+            });
+            
+            for (const log of sortedLogs) {
+                if (log.action === 'clock_in') {
+                    clockInTime = new Date(log.timestamp || log.created_at || log.time);
+                    isClockedIn = true;
+                } else if (log.action === 'clock_out' && clockInTime) {
+                    const clockOutTime = new Date(log.timestamp || log.created_at || log.time);
+                    const diffHrs = (clockOutTime - clockInTime) / 3600000;
+                    calculated += Math.max(0, diffHrs);
+                    clockInTime = null;
+                    isClockedIn = false;
+                }
+            }
+            
+            if (isClockedIn && clockInTime) {
+                const diffHrs = (new Date() - clockInTime) / 3600000;
+                calculated += Math.max(0, diffHrs);
+            }
+            if (calculated > 0) return calculated.toFixed(1);
+        }
+        return hours ? Number(hours).toFixed(1) : null;
+    };
+
+    const isCurrentlyClockedIn = (task) => {
+        if (task.is_clocked_in || task.timer_active) return true;
+        const timerLogs = task.timer_logs || [];
+        if (timerLogs.length > 0) {
+            const sortedLogs = [...timerLogs].sort((a, b) => {
+                const timeA = a.timestamp || a.created_at || a.time || '';
+                const timeB = b.timestamp || b.created_at || b.time || '';
+                return timeA.localeCompare(timeB);
+            });
+            const latest = sortedLogs[sortedLogs.length - 1];
+            return latest && latest.action === 'clock_in';
+        }
+        return false;
+    };
     const location = useLocation();
     const queryClient = useQueryClient();
     const [showModal, setShowModal] = useState(false);
@@ -2755,9 +2806,20 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
                                                             {/* Task Name & Desc */}
                                                             <div className="min-w-0 pr-4">
-                                                                <div className="flex items-center gap-2 mb-0.5">
+                                                                <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                                                                     <h4 className="text-sm font-bold text-app-text-main truncate" title={task.taskName}>{task.taskName || 'Untitled Task'}</h4>
                                                                     <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${typeStyles[taskType] || typeStyles.TASK}`}>{taskType}</span>
+                                                                    {getClockedHours(task) && (
+                                                                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-bold bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-400 border border-green-200/50">
+                                                                            {getClockedHours(task)} hrs clocked
+                                                                        </span>
+                                                                    )}
+                                                                    {isCurrentlyClockedIn(task) && (
+                                                                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400 border border-amber-200/50 animate-pulse">
+                                                                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                                                                            Actively Clocked In
+                                                                        </span>
+                                                                    )}
                                                                 </div>
                                                                 <p className="text-xs text-app-text-light truncate max-w-[900px]" title={task.description}>{task.description || 'No description'}</p>
                                                             </div>

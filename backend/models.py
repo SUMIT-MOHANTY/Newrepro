@@ -201,6 +201,11 @@ class Agent(Base):
     name = Column(String, nullable=False)
     type = Column(String, nullable=True)
     project_token = Column(String, index=True, nullable=True)
+    skills_content = Column(Text, nullable=True)
+    skills_summary = Column(String(500), nullable=True)
+    skills_tags = Column(JSON, nullable=True)
+    specialization = Column(String, nullable=True)
+    face = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class OrganizationAgentQuota(Base):
@@ -227,6 +232,9 @@ class OrganizationAgentMapping(Base):
     """
     Maps an agent record in `agents` table to an organization, and flags whether it is a built-in default.
     This avoids changing the existing `agents` schema while allowing org-scoped listing/quotas.
+    
+    shared_count / dedicated_count track how many instances of this agent type are allocated
+    to a project as shared or dedicated, enabling quantity-based allocation.
     """
     __tablename__ = "organization_agent_mappings"
     __table_args__ = (
@@ -240,6 +248,9 @@ class OrganizationAgentMapping(Base):
     agent_kind = Column(String, index=True, nullable=True)
     agent_sub_type = Column(String, index=True, nullable=True)  # 'dev' or 'test'
     is_default = Column(Boolean, default=False)
+    # Quantity-based allocation counts (0 means unallocated for that type)
+    shared_count = Column(Integer, nullable=False, default=0)
+    dedicated_count = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class Document(Base):

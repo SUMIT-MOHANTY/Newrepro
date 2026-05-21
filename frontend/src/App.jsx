@@ -25,6 +25,7 @@ import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
 import ShareDocument from './pages/ShareDocument';
 import SharedDocumentViewer from './pages/SharedDocumentViewer';
+import Billing from './pages/billing';
 
 function App() {
   return (
@@ -114,6 +115,11 @@ function App() {
         <Route path="/share-doc" element={
           <AppLayout>
             {(layoutProps) => <ShareDocument {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/billing" element={
+          <AppLayout>
+            {(layoutProps) => <Billing {...layoutProps} />}
           </AppLayout>
         } />
         <Route path="/app/:projectId" element={

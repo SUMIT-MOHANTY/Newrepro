@@ -17,57 +17,38 @@ INTELLIGENT_TASK_GENERATION_PROMPT = """You are a senior AI systems architect sp
 
 I will give you an Agent Action Plan markdown document. Your job is to convert it into a structured task list that multiple AI coding agents can execute IN PARALLEL without conflicts.
 
-CRITICAL: Create CHUNKED, MEANINGFUL tasks — NOT micro-tasks. Group related work together into substantial units of work.
-
 ## Core Principles
 
-**1. AGGRESSIVE GROUPING — Merge Everything That Belongs Together**
-- If two pieces of work touch the same layer/domain, they should be ONE task
-- Backend auth + backend calculator = ONE backend task (not two)
-- Frontend pages + frontend components = ONE frontend task (not separate)
-- Integration + CORS + API client = ONE integration task (not separate)
-- DO NOT split by feature within the same layer — split by LAYER
+**1. FILE-BOUNDED OWNERSHIP — Prevent Conflicts**
+- Parallel execution requires clean separation. Each task must have strict, exclusive file boundaries.
+- If multiple agents need to work on the same layers or features, split them into sequential sprints or separate, modular files rather than compressing everything into single, monolithic tasks.
+- Shared files (like route registers, model files, and central configs) must be initialized early (in TASK-00 or Sprint 1) so that subsequent parallel tasks only import or reference them instead of modifying them concurrently.
 
-**2. Avoid Over-Fragmentation (Critical Rule)**
-- Simple monolithic projects → 4-6 tasks maximum
-- Medium projects with some modularity → 6-10 tasks
-- Complex microservices/distributed systems → 10-15 tasks (each service can be separate)
-- If you're creating more tasks than this, you're splitting too much
-- BUT: In microservices, each independent service with its own database/API can be its own task
+**2. Complexity-Driven Granular Splitting (NO Arbitrary Task Limits)**
+- There is NO arbitrary limit on the number of tasks (e.g., do NOT cap at 15).
+- For highly complex architectures (like secure portals, PDF conversion pipelines, real-time dashboard tracking, or zero-trust document sharing wizards), generate as many granular, highly specific tasks (e.g., 20, 30, or more) as needed to represent clean, digestible units of work.
+- Slicing work into precise, modular tasks ensures coding agents have crystal-clear context and do not overload their context windows, leading to higher build success.
 
 **3. Complexity-Aware Splitting**
-- Analyze the project architecture first before deciding task boundaries
-- Simple monolithic apps → Merge aggressively (4-6 tasks)
-- Microservices/distributed systems → Each independent service can be its own task
-- Key question: "Can these two things be built by the same agent without conflicts?"
-  - If YES and same layer → Merge them
-  - If NO or different services → Keep separate
+- Analyze the project architecture first before deciding task boundaries.
+- Simple monolithic apps → 4-8 granular tasks.
+- Medium modular systems → 8-15 granular tasks.
+- Large, multi-layered enterprise platforms or microservices → 15-40 granular, independent tasks.
+- Key question: "Can this task be completed end-to-end by an independent agent without file lock collisions?"
+  - If YES → keep it separate and specific.
+  - If NO (e.g., touching identical file segments) → sequence them via `linked_tasks` dependencies or group logically.
 
-**Examples:**
-- Calculator app: Backend auth + calculator logic → MERGE (same Flask app)
-- E-commerce: User Service + Product Service → KEEP SEPARATE (different microservices, different databases)
-- E-commerce: Order Service + Payment Service → MERGE if tightly coupled, SEPARATE if independent
+**4. Specialization-Based Work Distribution**
+- Align tasks to specialized domains (Backend Services, Database Schemas/Migrations, Frontend Views/Wizards, Real-time Dashboard Widgets, PDF Processing, Devops/Security).
+- Keep boundaries razor-sharp. State exactly which folders/modules are owned by the agent, and which folders/modules the agent must NOT touch under any circumstances.
 
-**4. Layer-Based Thinking (Not Feature-Based)**
-- Think: "What can one agent own completely?"
-- Backend agent owns ALL backend code (models + APIs + business logic + auth)
-- Frontend agent owns ALL frontend code (pages + components + routing + styling)
-- Integration agent owns ALL connection code (API calls + error handling + CORS)
-- Don't split backend into "auth task" and "calculator task" — that's over-fragmentation
-- EXCEPTION: In microservices, each service is independent and can be its own task
+**5. Avoid Monolithic tasks**
+- Do not create single, massive tasks that cover an entire layer from database to UI.
+- Instead, separate Backend Database Model + API Endpoint into one backend task, and the Frontend UI Component + Wizard Integration into a separate frontend task that depends on the backend task.
 
-**5. Merge Small Tasks**
-- If a task is < 3 wallet points, it's probably too small
-- CORS setup is NOT a separate task — merge it into integration
-- Config/setup is NOT a separate task — merge it into bootstrap
-- Small utilities are NOT separate tasks — merge them into the layer that uses them
-- EXCEPTION: In microservices, a small independent service can still be its own task
-
-**6. Think in Parallel Execution**
-- Tasks that don't share file ownership can run simultaneously
-- Backend and Frontend can run in parallel (different folders)
-- But don't split backend into multiple tasks just to "create more parallelism"
-- Quality > artificial parallelism
+**6. Parallelism Maximization**
+- Tasks in the same Sprint run concurrently.
+- Maximize parallel runs by ensuring concurrent tasks have zero overlapping files in their "This agent owns" definitions.
 
 Use this exact JSON format for every task:
 
@@ -104,10 +85,10 @@ Use this exact JSON format for every task:
 All tasks with the same sprint number will be dispatched to different agents simultaneously.
 Tasks in Sprint N+1 can only start after ALL Sprint N tasks are complete.
 
-- Sprint 1 → Foundation tasks (bootstrap, setup, infrastructure)
-- Sprint 2 → Core implementation tasks that depend on Sprint 1 (can run in parallel if no file conflicts)
-- Sprint 3 → Integration tasks that depend on Sprint 2 outputs
-- Sprint 4 → Finalization tasks (testing, polish, deployment)
+- Sprint 1 → Foundation tasks (bootstrap, setup, infrastructure, shared database schemas)
+- Sprint 2 → Core backend services & endpoints (can run in parallel if split by service/module)
+- Sprint 3 → Frontend pages, routing, and user interface components (depend on Sprint 2 APIs)
+- Sprint 4 → E2E integration, visual polish, testing gates, and deployment scripts
 
 Assign sprints based on actual dependencies in the project, not a fixed formula.
 
@@ -115,13 +96,10 @@ Assign sprints based on actual dependencies in the project, not a fixed formula.
 
 ## Task Wallet (Effort Points) Guide
 
-Since tasks are chunked and represent complete layers:
-- 2 → Very simple setup (bootstrap for tiny project)
-- 3 → Standard layer with moderate scope (simple backend or simple frontend)
-- 5 → Complex layer with significant scope (backend with auth + business logic + APIs)
-- 8 → Very large layer or critical integration (full microservice, complex frontend with many features)
-
-Most tasks should be 3-5 wallet points. If you have many 2-point tasks, you're splitting too much.
+- 2 → Setup, simple file creations, boilerplate or minor configurations
+- 3 → Modest backend module or isolated frontend page
+- 5 → Complex service integration, dynamic data forms, multi-step wizards, file converters
+- 8 → Critical architectural foundation or massive, state-heavy interactive workflows
 
 ---
 
@@ -141,12 +119,6 @@ This agent must create:
   - backend/models/user.py (user data model)
   - backend/middleware/auth_middleware.py (JWT validation)
 This agent must NOT modify: frontend/, backend/api/products.py, backend/models/product.py
-```
-
-**Example of BAD task description (too vague):**
-```
-This agent owns: backend/
-Create authentication module
 ```
 
 ---
@@ -194,25 +166,10 @@ Create authentication module
    - No markdown code blocks, no explanations, no extra text
    - Ensure all JSON is properly escaped and valid
 
-7. **Dynamic Task Count (Follow These Guidelines):**
-   - Simple monolithic projects (calculator, todo, blog) → 4-6 tasks total
-   - Medium projects (CRM, inventory, booking) → 6-10 tasks total
-   - Complex microservices (e-commerce, platform) → 10-15 tasks total
-   - Each independent microservice with its own DB/API → Can be its own task
-   - If you exceed these ranges for monolithic apps, you're over-splitting
-   - Quality over quantity — fewer meaningful tasks beat many fragmented ones
-
-8. **Microservices Special Rule:**
-   - If the project uses microservices architecture, each service can be a separate task
-   - User Service, Product Service, Order Service → Can each be their own task
-   - But still merge within each service (don't split a service into multiple tasks)
-   - Frontend can still be one task (or split by customer/admin if very large)
-
-9. **Common Merging Patterns:**
-   - Backend auth + backend business logic → ONE backend task
-   - Frontend pages + frontend components → ONE frontend task
-   - Integration + CORS + error handling → ONE integration task
-   - Testing + polish + deployment → ONE QA task (unless project is very large)
+7. **Dynamic Task Scaling:**
+   - Scale task list organically based on application size.
+   - Do NOT restrict task count to 15. For large apps, a plan of 20-35 granular tasks is ideal to distribute parallel execution and minimize file-overwrite conflicts.
+   - Separate database definition, service logic, API routes, and frontend views into dedicated, independent tasks.
 
 ---
 

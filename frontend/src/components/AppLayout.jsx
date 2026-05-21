@@ -171,7 +171,8 @@ export default function AppLayout({ children }) {
                                     : location.pathname === '/agents' ? 'agents'
                                         : location.pathname === '/plugins' ? 'plugins'
                                             : location.pathname.startsWith('/share-doc') ? 'shareDoc'
-                                                : 'main';
+                                                : location.pathname.startsWith('/billing') ? 'billing'
+                                                    : 'main';
 
     const isShareMode = location.pathname.startsWith('/share-doc');
 
@@ -189,6 +190,7 @@ export default function AppLayout({ children }) {
             case 'governanceManagement': return 'Governance Management';
             case 'agents': return 'Agents';
             case 'plugins': return 'Plugins';
+            case 'billing': return 'Billing';
             default: return 'Requirements Analyzer';
         }
     }, []);
@@ -412,7 +414,7 @@ export default function AppLayout({ children }) {
         const projectTokenFromPath = (() => {
             const match = location.pathname.match(/^\/a\/([^/?#]+)/);
             if (match) return decodeURIComponent(match[1]);
-            
+
             // For share mode, check search params
             if (isShareMode) {
                 const params = new URLSearchParams(location.search);
@@ -623,7 +625,7 @@ export default function AppLayout({ children }) {
         // 4. IMPORTANT: Don't navigate away from current step if we're already on a valid step page
         const isOnProjectUrl = location.pathname.startsWith('/a/');
         const isOnTargetRoute = location.pathname.startsWith(targetRoute);
-        const isOnSpecialPage = ['/agents', '/organization-admin', '/plugins'].includes(location.pathname);
+        const isOnSpecialPage = ['/agents', '/organization-admin', '/plugins', '/billing'].includes(location.pathname);
 
         // Don't navigate away from status-dashboard if we're in On Flight or Complete mode
         const isOnStatusDashboard = location.pathname === '/status-dashboard';
@@ -991,9 +993,9 @@ export default function AppLayout({ children }) {
     const handleSelectShareProject = (project) => {
         const token = project.project_token || project.key;
         if (!token) return;
-        
+
         setSelectedProjectKey(token);
-        
+
         // Determine target step (default to 1 if not set)
         const step = project.current_step || 1;
         navigate(`/share-doc?step=${step}&project=${token}`);
@@ -1140,8 +1142,8 @@ export default function AppLayout({ children }) {
                                                     currentView === 'taskCreation' ? 'Sprint, Milestone, and Task Generation' :
                                                         currentView === 'resourceOnboarding' ? 'Onboard AI agents for this project' :
                                                             currentView === 'agentAnalysis' ? 'Executive Summary & Agent Analysis' :
-                                                                    currentView === 'shareDoc' ? 'Upload, Manage, and Share Project Documents' :
-                                                                        'Project Insight & AI Assessment'}
+                                                                currentView === 'shareDoc' ? 'Upload, Manage, and Share Project Documents' :
+                                                                    'Project Insight & AI Assessment'}
                                 </h2>
                             </div>
 

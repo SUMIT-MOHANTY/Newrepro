@@ -1089,6 +1089,11 @@ def initialize_agents_from_records(records: List[Any], project_token: Optional[s
         agent["name"] = normalize_agent_name(agent_id, name)
         if atype:
             agent["type"] = atype
+        agent["skills_content"] = getattr(rec, "skills_content", None) or (rec.get("skills_content") if isinstance(rec, dict) else None)
+        agent["skills_summary"] = getattr(rec, "skills_summary", None) or (rec.get("skills_summary") if isinstance(rec, dict) else None)
+        agent["skills_tags"] = getattr(rec, "skills_tags", None) or (rec.get("skills_tags") if isinstance(rec, dict) else None)
+        agent["specialization"] = getattr(rec, "specialization", None) or (rec.get("specialization") if isinstance(rec, dict) else None)
+        agent["face"] = getattr(rec, "face", None) or (rec.get("face") if isinstance(rec, dict) else None)
         agent_states[agent_id] = agent
 
 def ensure_project_initialized(project_token: Optional[str], records: List[Any]) -> None:
@@ -1107,6 +1112,11 @@ def ensure_project_initialized(project_token: Optional[str], records: List[Any])
         agent["name"] = normalize_agent_name(agent_id, name)
         if atype:
             agent["type"] = atype
+        agent["skills_content"] = getattr(rec, "skills_content", None) or (rec.get("skills_content") if isinstance(rec, dict) else None)
+        agent["skills_summary"] = getattr(rec, "skills_summary", None) or (rec.get("skills_summary") if isinstance(rec, dict) else None)
+        agent["skills_tags"] = getattr(rec, "skills_tags", None) or (rec.get("skills_tags") if isinstance(rec, dict) else None)
+        agent["specialization"] = getattr(rec, "specialization", None) or (rec.get("specialization") if isinstance(rec, dict) else None)
+        agent["face"] = getattr(rec, "face", None) or (rec.get("face") if isinstance(rec, dict) else None)
         agent_states[agent_id] = agent
 
 def get_completed_tasks(project_token: Optional[str]) -> List[Dict[str, Any]]:
@@ -10976,7 +10986,61 @@ def _classify_task_assignment_lane(task: Dict[str, Any]) -> str:
 
 
 def _infer_agent_assignment_lanes(agent_id: str, agent_state: Optional[Dict[str, Any]] = None) -> set[str]:
+    """
+    Infer agent assignment lanes based on agent metadata, skills_tags, and specialization.
+    Priority: skills_tags > specialization > name/type pattern matching
+    """
     state = agent_state if isinstance(agent_state, dict) else {}
+    lanes = {"general"}
+    
+    # PRIORITY 1: Check skills_tags (most reliable)
+    skills_tags = state.get("skills_tags")
+    tags = []
+    if isinstance(skills_tags, list):
+        tags = skills_tags
+    elif isinstance(skills_tags, str):
+        try:
+            import json as _json
+            tags = _json.loads(skills_tags)
+        except Exception:
+            pass
+    
+    if tags:
+        # Convert tags to lowercase for matching
+        tags_lower = [str(tag).lower() for tag in tags if tag]
+        
+        # Map tags to lanes
+        if any(tag in tags_lower for tag in ["frontend", "react", "vue", "angular", "ui", "web", "component", "vite", "tailwind", "css", "html", "javascript", "typescript"]):
+            lanes.add("frontend")
+        if any(tag in tags_lower for tag in ["backend", "api", "server", "python", "node", "express", "fastapi", "django", "flask", "database", "sql", "sqlite", "postgres", "mysql"]):
+            lanes.add("backend")
+        if any(tag in tags_lower for tag in ["qa", "test", "testing", "validator", "quality", "pytest", "jest", "vitest", "cypress", "selenium"]):
+            lanes.add("qa")
+        if any(tag in tags_lower for tag in ["devops", "infra", "infrastructure", "deploy", "deployment", "release", "ops", "docker", "kubernetes", "ci", "cd"]):
+            lanes.add("devops")
+        if any(tag in tags_lower for tag in ["integration", "fullstack", "full-stack", "shared"]):
+            lanes.add("integration")
+        
+        # If we found specific lanes from tags, return early (most reliable)
+        if len(lanes) > 1:  # More than just "general"
+            return lanes
+    
+    # PRIORITY 2: Check specialization field
+    specialization = str(state.get("specialization") or "").strip().lower()
+    if specialization:
+        if specialization in ["testing", "qa", "quality"]:
+            lanes.add("qa")
+        elif specialization in ["development", "dev", "developer"]:
+            # Development is broad, check type or name for more specificity
+            pass
+        elif specialization in ["devops", "operations"]:
+            lanes.add("devops")
+        elif specialization in ["frontend"]:
+            lanes.add("frontend")
+        elif specialization in ["backend"]:
+            lanes.add("backend")
+    
+    # PRIORITY 3: Fallback to name/type pattern matching
     combined = " ".join(
         [
             str(agent_id or ""),
@@ -10984,7 +11048,6 @@ def _infer_agent_assignment_lanes(agent_id: str, agent_state: Optional[Dict[str,
             str(state.get("type") or ""),
         ]
     ).lower()
-    lanes = {"general"}
 
     if any(token in combined for token in ("frontend", "react", "ui", "web", "component", "design")):
         lanes.add("frontend")
@@ -11000,11 +11063,133 @@ def _infer_agent_assignment_lanes(agent_id: str, agent_state: Optional[Dict[str,
     return lanes
 
 
-def _build_master_recommended_assignments(
+async def _ai_assign_tasks_to_agents(
+    tasks: List[Dict[str, Any]],
+    agents: List[Dict[str, Any]],
+    project_token: Optional[str] = None,
+) -> Dict[str, str]:
+    """
+    Use AI to intelligently assign tasks to agents based on skills_tags, specialization, and task requirements.
+    Returns a mapping of task_id -> agent_id
+    """
+    if not tasks or not agents:
+        return {}
+    
+    # Build agent profiles for AI
+    agent_profiles = []
+    for agent in agents:
+        agent_id = agent.get("id", "")
+        agent_name = agent.get("name", "")
+        skills_tags = agent.get("skills_tags", [])
+        skills_summary = agent.get("skills_summary", "")
+        specialization = agent.get("specialization", "")
+        agent_type = agent.get("type", "")
+        
+        # Parse skills_tags if it's a string
+        if isinstance(skills_tags, str):
+            try:
+                import json as _json
+                skills_tags = _json.loads(skills_tags)
+            except Exception:
+                skills_tags = []
+        
+        profile = {
+            "agent_id": agent_id,
+            "agent_name": agent_name,
+            "specialization": specialization,
+            "type": agent_type,
+            "skills_tags": skills_tags if isinstance(skills_tags, list) else [],
+            "skills_summary": skills_summary,
+        }
+        agent_profiles.append(profile)
+    
+    # Build task descriptions for AI
+    task_descriptions = []
+    for task in tasks:
+        task_id = str(task.get("id") or task.get("external_id") or task.get("task_id", ""))
+        title = task.get("title") or task.get("taskName", "")
+        description = task.get("description", "")
+        phase = task.get("phase") or task.get("task_phase", "")
+        domain = task.get("domain", "")
+        
+        task_descriptions.append({
+            "task_id": task_id,
+            "title": title,
+            "description": description[:500],  # Limit description length
+            "phase": phase,
+            "domain": domain,
+        })
+    
+    # Prepare AI prompt
+    prompt = f"""You are a Master Agent responsible for assigning tasks to development agents based on their skills and specializations.
+
+**Available Agents:**
+{json.dumps(agent_profiles, indent=2)}
+
+**Tasks to Assign:**
+{json.dumps(task_descriptions, indent=2)}
+
+**Assignment Rules:**
+1. Match tasks to agents based on their skills_tags, specialization, and type
+2. If a task is clearly a "testing" task (contains keywords: test, qa, assert, verify, mock, pytest, jest, vitest), assign it to agents with "Testing" specialization or "qa" in skills_tags
+3. If a task is a "backend" task (contains keywords: api, server, database, fastapi, python, sql, backend), assign it to agents with "backend" in skills_tags
+4. If a task is a "frontend" task (contains keywords: react, component, ui, page, frontend, vite, tailwind), assign it to agents with "frontend" in skills_tags
+5. If there's only ONE agent with matching skills for a task type, assign ALL tasks of that type to that agent
+6. If there are MULTIPLE agents with matching skills, distribute tasks evenly among them
+7. Consider the agent's specialization field as the highest priority indicator
+
+**Output Format:**
+Return ONLY a valid JSON object mapping task_id to agent_id. Example:
+{{
+  "task_123": "agent_01",
+  "task_456": "agent_02",
+  "task_789": "agent_01"
+}}
+
+Do not include any explanations, just the JSON mapping."""
+
+    try:
+        # Call AI service
+        response = await llm_gateway.call_llm(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,  # Lower temperature for more deterministic assignments
+            max_tokens=2000,
+        )
+        
+        # Parse AI response
+        ai_content = response.get("content", "").strip()
+        
+        # Extract JSON from response (handle markdown code blocks)
+        if "```json" in ai_content:
+            ai_content = ai_content.split("```json")[1].split("```")[0].strip()
+        elif "```" in ai_content:
+            ai_content = ai_content.split("```")[1].split("```")[0].strip()
+        
+        assignments = json.loads(ai_content)
+        
+        _log_master_agent(
+            f"🤖 AI assigned {len(assignments)} tasks to agents",
+            project_token=project_token,
+        )
+        
+        return assignments
+        
+    except Exception as e:
+        logger.warning(f"AI task assignment failed: {e}. Falling back to rule-based assignment.")
+        _log_master_agent(
+            f"⚠️ AI assignment failed: {str(e)[:100]}. Using fallback logic.",
+            project_token=project_token,
+            level="warning",
+        )
+        return {}
+
+
+async def _build_master_recommended_assignments(
     *,
     tasks: List[Dict[str, Any]],
     task_plan: List[Dict[str, Any]],
     project_token: Optional[str] = None,
+    use_ai_assignment: bool = True,  # New parameter to enable AI-based assignment
 ) -> List[Dict[str, Any]]:
     state = _ensure_project_state(project_token)
     agent_states = state.get("agent_states") if isinstance(state.get("agent_states"), dict) else {}
@@ -11015,12 +11200,39 @@ def _build_master_recommended_assignments(
             "type": str((agent_states.get(agent_id) or {}).get("type") or "").strip(),
             "lanes": _infer_agent_assignment_lanes(agent_id, agent_states.get(agent_id) or {}),
             "sequence": _extract_dev_agent_sequence(agent_id) or 999,
+            "skills_tags": (agent_states.get(agent_id) or {}).get("skills_tags"),
+            "skills_summary": (agent_states.get(agent_id) or {}).get("skills_summary"),
+            "specialization": (agent_states.get(agent_id) or {}).get("specialization"),
         }
         for agent_id in sorted(agent_states)
         if not _is_system_agent_id(agent_id)
     ]
     if not worker_agents:
         return []
+
+    # Try AI-based assignment first if enabled and we have skills data
+    ai_assignments = {}
+    has_skills_data = any(
+        agent.get("skills_tags") or agent.get("skills_summary") or agent.get("specialization")
+        for agent in worker_agents
+    )
+    
+    if use_ai_assignment and has_skills_data and len(worker_agents) > 1:
+        _log_master_agent(
+            f"🤖 Attempting AI-based task assignment for {len(tasks)} tasks across {len(worker_agents)} agents",
+            project_token=project_token,
+        )
+        ai_assignments = await _ai_assign_tasks_to_agents(
+            tasks=tasks,
+            agents=worker_agents,
+            project_token=project_token,
+        )
+        
+        if ai_assignments:
+            _log_master_agent(
+                f"✅ AI successfully assigned {len(ai_assignments)} tasks",
+                project_token=project_token,
+            )
 
     history_by_agent: Dict[str, Counter] = {}
     for completed in state.get("completed_tasks") or []:
@@ -11051,6 +11263,40 @@ def _build_master_recommended_assignments(
         lane = _classify_task_assignment_lane(task)
         domain = str(_normalize_task_domain(task) or "").strip().lower()
         upstream_assignee = str(task.get("assigned_agent") or "").strip()
+        
+        # Check if AI already assigned this task
+        ai_assigned_agent_id = ai_assignments.get(task_id)
+        if ai_assigned_agent_id:
+            # Validate that the AI-assigned agent exists
+            ai_agent = next((a for a in worker_agents if a["id"] == ai_assigned_agent_id), None)
+            if ai_agent:
+                load_by_agent[ai_agent["id"]] = load_by_agent.get(ai_agent["id"], 0) + 1
+                opt_in_username = build_external_agent_username(ai_agent["id"], ai_agent.get("name"))
+                
+                recommendation = {
+                    "task_id": task_id,
+                    "title": task.get("title") or task.get("taskName") or "Untitled task",
+                    "phase": task.get("phase") or task.get("task_phase") or "",
+                    "priority": task.get("priority") or "medium",
+                    "recommended_agent_id": ai_agent["id"],
+                    "recommended_agent_name": ai_agent.get("name") or get_default_agent_name(ai_agent["id"]),
+                    "opt_in_username": opt_in_username,
+                    "lane": lane,
+                    "reason": "AI-based assignment using skills and specialization",
+                    "assigned": False,
+                }
+                assignments.append(recommendation)
+                
+                plan_entry = plan_by_task_id.get(task_id)
+                if isinstance(plan_entry, dict):
+                    plan_entry["assignee"] = recommendation["recommended_agent_id"]
+                    plan_entry["recommended_agent_name"] = recommendation["recommended_agent_name"]
+                    plan_entry["opt_in_username"] = recommendation["opt_in_username"]
+                    plan_entry["assignment_reason"] = recommendation["reason"]
+                
+                continue  # Skip rule-based assignment for this task
+        
+        # Fallback to rule-based assignment
         best_agent = None
         best_score = None
 
@@ -14525,7 +14771,7 @@ async def ensure_master_workspace_note(
         
         # Build recommended assignments
         if tasks:
-            recommended_assignments = _build_master_recommended_assignments(
+            recommended_assignments = await _build_master_recommended_assignments(
                 tasks=tasks,
                 task_plan=task_plan,
                 project_token=project_token,
@@ -18203,6 +18449,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             # Claude.md: Always loaded for all agents (mandatory context)
             # Skills.md: Intelligently matched based on task relevance
             claude_and_skills_context = ""
+            skills_context = ""
             try:
                 import skill_matcher_service
                 from database import SessionLocal
@@ -18243,6 +18490,72 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     "message": f"⚠️ Could not load context files: {str(context_err)[:100]}"
                 })
             
+            # Retrieve custom agent skills set by end user
+            custom_skills = agent.get("skills_content")
+            if custom_skills and custom_skills.strip():
+                custom_skills_header = f"=== CUSTOM AGENT SKILLS ({agent.get('name', 'Agent')}) ===\n{custom_skills.strip()}\n======================================"
+                if custom_skills.strip() not in claude_and_skills_context:
+                    claude_and_skills_context = f"\n\n{custom_skills_header}\n" + claude_and_skills_context
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"🤖 Injected custom agent skills for {agent.get('name')}"
+                    })
+
+            # Check if skills.md files are injected or custom agent skills are present
+            if custom_skills or skills_context:
+                agent_name = agent.get("name", "Custom AI Agent")
+                skills_source = custom_skills if custom_skills else skills_context
+                custom_identity = (
+                    f"You are {agent_name}, a specialized AI Agent configured with custom skills.\n"
+                    f"Your custom capabilities and technical background are defined as follows:\n"
+                    f"{skills_source.strip()}\n"
+                    f"Use these skills to perform the requested task. Do not assume any generic, static roles or default capabilities that contradict these skills."
+                )
+
+                # Check and replace old static roles
+                static_roles = [
+                    "You are a Project Builder AI Agent.\nYour job is to analyze the given task and CREATE a complete, working project implementation.",
+                    "You are a Project Builder AI Agent.",
+                    "You are a Security and Risk Analysis Builder AI Agent.\nYour job is to analyze the given task, identify all risks, and CREATE actual mitigation code and config files.",
+                    "You are a Security and Risk Analysis Builder AI Agent.",
+                    "You are a Project Planning and Scaffolding AI Agent.\nYour job is to analyze the task, estimate resources, and CREATE a complete project scaffold.",
+                    "You are a Project Planning and Scaffolding AI Agent.",
+                ]
+                
+                replaced_role = False
+                for role_pat in static_roles:
+                    if role_pat in dynamic_system_prompt:
+                        dynamic_system_prompt = dynamic_system_prompt.replace(role_pat, custom_identity, 1)
+                        replaced_role = True
+                        break
+                
+                if not replaced_role:
+                    # In case it's a dynamically generated prompt or starts with general "You are a/an..."
+                    lines = dynamic_system_prompt.splitlines()
+                    for idx, line in enumerate(lines[:5]):
+                        clean_line = line.strip()
+                        if (clean_line.startswith("You are a ") or 
+                            clean_line.startswith("You are an ") or 
+                            clean_line.startswith("You are the ") or 
+                            clean_line.startswith("You are a Project Builder") or 
+                            clean_line.startswith("You are a Coding Agent") or
+                            "you are a project builder" in clean_line.lower() or
+                            "you are a coding agent" in clean_line.lower()):
+                            lines[idx] = custom_identity
+                            dynamic_system_prompt = "\n".join(lines)
+                            replaced_role = True
+                            break
+                    
+                    if not replaced_role:
+                        dynamic_system_prompt = f"{custom_identity}\n\n{dynamic_system_prompt}"
+                
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": "🧹 Sanitized generic roles in system prompt and replaced with custom agent skills"
+                })
+
             # Prepend context to dynamic system prompt
             if claude_and_skills_context:
                 dynamic_system_prompt = f"{claude_and_skills_context}\n\n{dynamic_system_prompt}"

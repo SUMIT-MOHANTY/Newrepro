@@ -9,6 +9,9 @@ from typing import Dict, List, Optional, Any, Set
 from datetime import datetime
 import json
 
+from database import SessionLocal
+import models
+
 logger = logging.getLogger(__name__)
 
 class MasterTaskManager:
@@ -278,40 +281,123 @@ class MasterTaskManager:
         return True
     
     def _choose_best_agent_for_task(self, task: Dict[str, Any], idle_agents: List[str]) -> str:
-        """Choose the best agent for a specific task type - SCALES TO 100+ AGENTS"""
-        task_type = task.get("classified_type", "backend")
-        
-        # 🎯 SCALABLE AGENT SPECIALIZATION SYSTEM
-        # Automatically categorizes agents by ID patterns and capabilities
-        
-        # Primary specialists (exact matches first)
-        primary_specialists = []
-        # Secondary specialists (can do the work)
-        secondary_specialists = []
-        # General agents (fallback)
-        general_agents = []
-        
+        """Choose the best agent for a specific task using dynamic scoring based on specialization,
+        skills tags, and dedicated/shared boundary enforcement."""
+        if not idle_agents:
+            return None
+
+        # 1. Classify the task into Testing or Development
+        title = task.get("title", "").lower()
+        description = task.get("description", "").lower()
+        task_text = f"{title} {description}"
+        task_project_token = task.get("project_token") or task.get("projectToken")
+
+        test_keywords = ["test", "qa", "assert", "check", "verify", "mock", "unittest", "pytest"]
+        is_testing = any(keyword in task_text for keyword in test_keywords)
+        classified_spec = "Testing" if is_testing else "Development"
+
+        logger.info(f"Classified task '{task.get('title')}' as specialization: {classified_spec}")
+
+        # 2. Open DB session to fetch specialization, skills_tags, AND agent kind/project binding
+        agent_db_map = {}
+        session = SessionLocal()
+        try:
+            db_agents = session.query(models.Agent).filter(models.Agent.id.in_(idle_agents)).all()
+            for a in db_agents:
+                agent_db_map[a.id] = {
+                    "specialization": a.specialization,
+                    "skills_tags": a.skills_tags,
+                    "agent_kind": "shared",       # default
+                    "assigned_project_token": None # default
+                }
+
+            # Fetch org mapping to get agent_kind and project_token binding
+            mappings = session.query(
+                models.OrganizationAgentMapping.agent_id,
+                models.OrganizationAgentMapping.agent_kind,
+                models.OrganizationAgentMapping.project_token,
+            ).filter(
+                models.OrganizationAgentMapping.agent_id.in_(idle_agents)
+            ).all()
+            for m in mappings:
+                if m.agent_id in agent_db_map:
+                    agent_db_map[m.agent_id]["agent_kind"] = m.agent_kind or "shared"
+                    agent_db_map[m.agent_id]["assigned_project_token"] = m.project_token
+
+        except Exception as e:
+            logger.error(f"Error fetching agent data from DB: {e}")
+        finally:
+            session.close()
+
+        # 3. Score idle agents dynamically
+        agent_scores = {}
         for agent_id in idle_agents:
-            agent_capabilities = self._get_agent_capabilities(agent_id)
-            
-            # Check if this agent is a primary specialist for this task type
-            if task_type in agent_capabilities.get("primary", []):
-                primary_specialists.append(agent_id)
-            # Check if this agent can handle this task type as secondary skill
-            elif task_type in agent_capabilities.get("secondary", []):
-                secondary_specialists.append(agent_id)
-            # All agents can do general work as fallback
+            agent_data = agent_db_map.get(agent_id, {})
+            score = 0
+
+            # ── Dedicated/Shared boundary enforcement ───────────────────────────
+            agent_kind = agent_data.get("agent_kind", "shared")
+            assigned_project = agent_data.get("assigned_project_token")
+
+            if agent_kind == "dedicated":
+                if task_project_token and assigned_project and assigned_project != task_project_token:
+                    # Dedicated agent is bound to a DIFFERENT project — SKIP
+                    logger.info(
+                        f"Agent {agent_id} is DEDICATED to project {assigned_project}, "
+                        f"skipping for task on project {task_project_token}"
+                    )
+                    continue
+                elif assigned_project and assigned_project == task_project_token:
+                    # Perfect dedicated match — strong bonus
+                    score += 300
+                    logger.info(f"Agent {agent_id} is DEDICATED to this project — +300 bonus")
             else:
-                general_agents.append(agent_id)
-        
-        # 🎯 PRIORITY SELECTION: Primary → Secondary → General
-        if primary_specialists:
-            # Among primary specialists, prefer less busy ones
-            return self._select_least_busy_agent(primary_specialists)
-        elif secondary_specialists:
-            return self._select_least_busy_agent(secondary_specialists)
+                # Shared agent — eligible for any project, moderate bonus
+                score += 50
+                logger.info(f"Agent {agent_id} is SHARED — +50 bonus")
+
+            # ── Specialization match ────────────────────────────────────────────
+            spec = agent_data.get("specialization")
+            if spec and spec.strip().lower() == classified_spec.lower():
+                score += 500
+
+            # ── Skills tags keyword match ───────────────────────────────────────
+            skills_tags = agent_data.get("skills_tags")
+            tags = []
+            if isinstance(skills_tags, list):
+                tags = skills_tags
+            elif isinstance(skills_tags, str):
+                try:
+                    import json as _json
+                    tags = _json.loads(skills_tags)
+                except Exception:
+                    pass
+
+            if tags:
+                for tag in tags:
+                    if tag and str(tag).lower() in task_text:
+                        score += 50
+
+            agent_scores[agent_id] = score
+            logger.info(f"Agent {agent_id} final score: {score} (kind: {agent_kind}, spec: {spec}, tags: {tags})")
+
+        if not agent_scores:
+            # All agents were dedicated to other projects — fall back to any idle agent
+            logger.warning("No eligible agents after kind boundary enforcement — falling back to any idle agent")
+            return idle_agents[0] if idle_agents else None
+
+        # 4. Select highest-scoring agent; break ties with least-busy
+        max_score = max(agent_scores.values())
+        highest_scoring_agents = [aid for aid, s in agent_scores.items() if s == max_score]
+
+        if len(highest_scoring_agents) == 1:
+            best_agent = highest_scoring_agents[0]
+            logger.info(f"Selected highest scoring agent: {best_agent} with score {max_score}")
+            return best_agent
         else:
-            return self._select_least_busy_agent(general_agents)
+            best_agent = self._select_least_busy_agent(highest_scoring_agents)
+            logger.info(f"Tie on max score {max_score} between {highest_scoring_agents}. Selected least-busy: {best_agent}")
+            return best_agent
     
     def _get_agent_capabilities(self, agent_id: str) -> Dict[str, List[str]]:
         """Get agent capabilities - FLEXIBLE ASSIGNMENT SYSTEM"""
