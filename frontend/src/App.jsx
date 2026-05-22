@@ -25,7 +25,7 @@ import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
 import ShareDocument from './pages/ShareDocument';
 import SharedDocumentViewer from './pages/SharedDocumentViewer';
-import Billing from './pages/billing';
+// import Billing from './pages/billing';
 
 function App() {
   return (
