@@ -11149,15 +11149,12 @@ Return ONLY a valid JSON object mapping task_id to agent_id. Example:
 Do not include any explanations, just the JSON mapping."""
 
     try:
-        # Call AI service
-        response = await llm_gateway.call_llm(
+        # Call AI service and extract text content safely
+        ai_content = await llm_gateway.call_llm_and_extract(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,  # Lower temperature for more deterministic assignments
             max_tokens=2000,
         )
-        
-        # Parse AI response
-        ai_content = response.get("content", "").strip()
         
         # Extract JSON from response (handle markdown code blocks)
         if "```json" in ai_content:
@@ -15639,11 +15636,53 @@ async def _claim_initial_task_assignments(
         # (first-come-first-served via opt_in_task claim lock)
         available_tasks.append(t)
 
-    # Serial round-robin: task 1 → agent 1, task 2 → agent 2, ...
+    # Serial round-robin with skill-based pre-assignment:
+    # 1. Try to match tasks to their best-fit agent via MasterTaskManager scoring
+    # 2. Fall back to simple round-robin for any unmatched agents/tasks
     assignments = []
-    task_index = 0
     effective_token = task_token or get_project_task_token(project_token)
 
+    # Build remaining pools
+    unassigned_agents = list(serial_agents)
+    unassigned_tasks = list(available_tasks)
+    task_to_agent: Dict[str, str] = {}  # tid → agent_id
+
+    # Phase 1: Skill-based matching
+    try:
+        from master_task_manager import master_task_manager as _mtm
+        for _task in list(unassigned_tasks):
+            if not unassigned_agents:
+                break
+            _tid = str(_normalize_task_id(_task) or _task.get("external_id") or _task.get("id") or "")
+            _task_for_scoring = dict(_task)
+            _task_for_scoring["project_token"] = project_token
+            _candidate_ids = [a["id"] for a in unassigned_agents]
+            _best_id = _mtm.choose_best_agent_for_task_public(_task_for_scoring, _candidate_ids)
+            if _best_id:
+                task_to_agent[_tid] = _best_id
+                # Remove from pools so they aren't double-assigned
+                unassigned_agents = [a for a in unassigned_agents if a["id"] != _best_id]
+                unassigned_tasks = [t for t in unassigned_tasks if str(_normalize_task_id(t) or t.get("external_id") or t.get("id") or "") != _tid]
+                logger.info(f"[Skill Assignment] Task {_tid} → {_best_id} (skill-matched)")
+    except Exception as _skill_err:
+        logger.warning(f"[Serial Assignment] Skill scoring failed; falling back to round-robin: {_skill_err}")
+
+    # Phase 2: Round-robin for remaining unmatched tasks/agents
+    for _task, _agent in zip(unassigned_tasks, unassigned_agents):
+        _tid = str(_normalize_task_id(_task) or _task.get("external_id") or _task.get("id") or "")
+        task_to_agent[_tid] = _agent["id"]
+        logger.info(f"[Round-Robin Assignment] Task {_tid} → {_agent['id']}")
+
+    # Build a quick reverse map: agent_id → task
+    agent_to_task: Dict[str, Optional[Dict]] = {a["id"]: None for a in serial_agents}
+    task_by_tid = {
+        str(_normalize_task_id(t) or t.get("external_id") or t.get("id") or ""): t
+        for t in available_tasks
+    }
+    for _tid, _aid in task_to_agent.items():
+        agent_to_task[_aid] = task_by_tid.get(_tid)
+
+    # Now execute opt-ins in agent order
     for agent in serial_agents:
         # ── GUARD: Skip if this agent already has an active task ──
         already_has_task = None
@@ -15654,11 +15693,11 @@ async def _claim_initial_task_assignments(
             if resolved_owner == agent["id"]:
                 already_has_task = t
                 break
-        
+
         if already_has_task:
             existing_tid = str(_normalize_task_id(already_has_task) or already_has_task.get("external_id") or already_has_task.get("id") or "")
             logger.info(
-                f"[Serial Assignment] Agent {agent['id']} already has active task {existing_tid}. Skipping new assignment."
+                f"[Skill Assignment] Agent {agent['id']} already has active task {existing_tid}. Skipping new assignment."
             )
             claimed_task_ids.add(existing_tid)
             reserved = _apply_master_task_metadata(dict(already_has_task), project_token=project_token)
@@ -15669,12 +15708,11 @@ async def _claim_initial_task_assignments(
             assignments.append((agent["id"], reserved))
             continue
 
-        if task_index >= len(available_tasks):
-            # No more tasks — agent starts idle, master supervisor will assign later
+        task = agent_to_task.get(agent["id"])
+        if task is None:
             assignments.append((agent["id"], None))
             continue
 
-        task = available_tasks[task_index]
         tid = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
 
         # Opt-in serially via task_service
@@ -15692,20 +15730,18 @@ async def _claim_initial_task_assignments(
             agent["current_task"] = task
             agent["resume_pending_task"] = True
             assignments.append((agent["id"], task))
-            logger.info(f"[Serial Assignment] Task {tid} → {agent['id']} ({agent.get('name', 'unnamed')})")
-            task_index += 1
+            logger.info(f"[Skill Assignment] Opt-in succeeded: Task {tid} → {agent['id']} ({agent.get('name', 'unnamed')})")
         except Exception as opt_err:
-            logger.warning(f"[Serial Assignment] Opt-in failed for task {tid} → {agent['id']}: {opt_err}")
-            # Skip this task (someone else may have claimed it) and try next
-            task_index += 1
+            logger.warning(f"[Skill Assignment] Opt-in failed for task {tid} → {agent['id']}: {opt_err}")
             assignments.append((agent["id"], None))
+
 
     if not assignments:
         raise ValueError("No idle agents available for serial execution.")
 
     logger.info(
-        f"[Serial Assignment] Assigned {sum(1 for _, t in assignments if t is not None)} tasks "
-        f"to {len(assignments)} agents serially."
+        f"[Skill Assignment] Assigned {sum(1 for _, t in assignments if t is not None)} tasks "
+        f"to {len(assignments)} agents (skill-based + round-robin fallback)."
     )
 
     return {
@@ -16718,7 +16754,48 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                             skip_reasons["conflict_blocked"] += 1
                             continue
 
-            # ── Step 3: Serial opt-in — atomically claim via external API ──
+            # ── Step 3: Skill-based gate — only opt-in if this agent is the best fit ──
+            # Ask MasterTaskManager to score ALL idle agents for this task.
+            # If a better-suited agent exists, skip so that agent can claim instead.
+            try:
+                from master_task_manager import master_task_manager as _mtm
+                # Collect all idle dev-agent IDs for this project (current agent is always included
+                # as a candidate even though its status may not be "idle" yet during this call)
+                _all_idle = [
+                    aid for aid, agt in project_agents.items()
+                    if not _is_system_agent_id(aid)
+                    and (
+                        agt.get("status") == "idle"          # truly idle agents
+                        or aid == agent_id                    # always include self for scoring
+                    )
+                    and not agt.get("blocked")                # exclude blocked agents
+                ]
+
+                # Enrich task with project_token so dedicated/shared boundary logic works
+                _task_for_scoring = dict(t)
+                _task_for_scoring["project_token"] = project_token
+                _best_agent = _mtm.choose_best_agent_for_task_public(_task_for_scoring, _all_idle)
+                if _best_agent and _best_agent != agent_id:
+                    # Another agent is a better fit — skip so it can claim
+                    logger.info(
+                        f"[{agent_id}] Skill-gate: task {tid} better suited for "
+                        f"{_best_agent}. Skipping to let best-fit agent claim it."
+                    )
+                    skip_reasons.setdefault("skill_gate_skipped", 0)
+                    skip_reasons["skill_gate_skipped"] += 1
+                    continue
+                if _best_agent == agent_id:
+                    logger.info(
+                        f"[{agent_id}] Skill-gate: task {tid} — this agent IS "
+                        f"the best fit (score chosen). Proceeding with opt-in."
+                    )
+                # If _best_agent is None (all agents dedicated to other projects, etc.), fall through
+            except Exception as _skill_err:
+                # Scoring failure is non-fatal — fall back to first-come-first-served
+                logger.debug(f"[{agent_id}] Skill-gate scoring failed for task {tid}: {_skill_err}")
+
+            # ── Step 4: Serial opt-in — atomically claim via external API ──
+
             try:
                 from task_service import task_service
                 effective_token = task_token or get_project_task_token(project_token)
@@ -16877,6 +16954,97 @@ async def _dag_progress_watcher(project_token: Optional[str]) -> None:
         await bus.unsubscribe(q)
 
 
+async def _is_shared_agent(agent_id: str, project_token: Optional[str]) -> bool:
+    """
+    Check if an agent is configured as shared.
+    
+    Args:
+        agent_id: ID of the agent
+        project_token: Project token (for scoping)
+    
+    Returns:
+        True if agent is shared, False if dedicated or system
+    """
+    # System agents are never shared
+    if _is_system_agent_id(agent_id):
+        return False
+    
+    try:
+        from database import SessionLocal
+        import models
+        
+        session = SessionLocal()
+        try:
+            # Get the stored agent ID
+            stored_id = _stored_agent_id(agent_id, project_token)
+            
+            # Query the organization agent mapping
+            mapping = session.query(models.OrganizationAgentMapping).filter(
+                models.OrganizationAgentMapping.agent_id == stored_id
+            ).first()
+            
+            if mapping:
+                # Check agent_kind
+                kind = mapping.agent_kind or "shared"
+                return kind.lower() == "shared"
+            
+            # Default to shared if no mapping found
+            return True
+            
+        finally:
+            session.close()
+            
+    except Exception as e:
+        logger.warning(f"Error checking if agent {agent_id} is shared: {e}")
+        # Default to shared for safety (will use coordination)
+        return True
+
+
+async def _pick_next_task(
+    agent_id: str,
+    project_token: Optional[str],
+    task_token: Optional[str]
+) -> Optional[Dict[str, Any]]:
+    """
+    Pick the next available task for an agent.
+    
+    Args:
+        agent_id: ID of the agent
+        project_token: Project token
+        task_token: Task token for external API
+    
+    Returns:
+        Task dictionary or None if no tasks available
+    """
+    try:
+        state = _ensure_project_state(project_token)
+        
+        # Get external tasks
+        external_tasks = await _fetch_external_tasks(
+            project_token=project_token,
+            task_token=task_token
+        )
+        
+        if not external_tasks:
+            return None
+        
+        # Filter to pending tasks
+        pending_tasks = [
+            task for task in external_tasks
+            if not _task_status_is_done(task.get("status"))
+        ]
+        
+        if not pending_tasks:
+            return None
+        
+        # Return first pending task
+        return pending_tasks[0]
+        
+    except Exception as e:
+        logger.warning(f"Error picking next task for agent {agent_id}: {e}")
+        return None
+
+
 async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = None,
                     assigned_task: Dict[str, Any] = None,
                     continuous: bool = False,
@@ -16909,6 +17077,96 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
     agent = project_agents.get(agent_id)
     if not agent:
         raise ValueError(f"Agent {agent_id} not found")
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # SHARED AGENT COORDINATION - Check if agent is shared and handle globally
+    # ═══════════════════════════════════════════════════════════════════════════
+    is_shared_agent = await _is_shared_agent(agent_id, project_token)
+    shared_agent_acquired = False
+    
+    if is_shared_agent and not _is_system_agent_id(agent_id):
+        from shared_agent_coordinator import get_shared_agent_coordinator
+        
+        coordinator = await get_shared_agent_coordinator()
+        
+        # Check if agent is available globally
+        available = await coordinator.is_agent_available(agent_id)
+        
+        if not available:
+            current_project = await coordinator.get_agent_current_project(agent_id)
+            logger.warning(
+                f"[{agent_id}] Shared agent is busy in project {current_project}. "
+                f"Queuing task for project {project_token}"
+            )
+            
+            # Get the task to queue
+            task_to_queue = assigned_task
+            if not task_to_queue:
+                # Try to get next task for this agent
+                task_to_queue = await _pick_next_task(
+                    agent_id=agent_id,
+                    project_token=project_token,
+                    task_token=task_token
+                )
+            
+            if task_to_queue:
+                queue_position = await coordinator.queue_task(
+                    agent_id=agent_id,
+                    project_token=project_token,
+                    task=task_to_queue,
+                    priority=task_to_queue.get("priority", 5),
+                    master_agent_id=MASTER_AGENT_ID
+                )
+                
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"⏳ Shared agent busy in another project. Task queued at position {queue_position}"
+                })
+            
+            return {
+                "success": False,
+                "queued": True,
+                "queue_position": queue_position if task_to_queue else None,
+                "message": f"Shared agent busy in project {current_project}. Task queued.",
+                "agent_id": agent_id,
+                "tasks_completed": 0,
+                "duration": 0,
+            }
+        
+        # Try to acquire the shared agent
+        task_for_acquisition = assigned_task
+        if not task_for_acquisition:
+            task_for_acquisition = await _pick_next_task(
+                agent_id=agent_id,
+                project_token=project_token,
+                task_token=task_token
+            )
+        
+        if task_for_acquisition:
+            acquired = await coordinator.acquire_agent(
+                agent_id=agent_id,
+                project_token=project_token,
+                task=task_for_acquisition,
+                master_agent_id=MASTER_AGENT_ID,
+                timeout_seconds=30.0
+            )
+            
+            if not acquired:
+                logger.error(f"[{agent_id}] Failed to acquire shared agent lock")
+                return {
+                    "success": False,
+                    "message": "Failed to acquire shared agent lock",
+                    "agent_id": agent_id,
+                    "tasks_completed": 0,
+                    "duration": 0,
+                }
+            
+            shared_agent_acquired = True
+            logger.info(f"[{agent_id}] ✅ Acquired shared agent for project {project_token}")
+        else:
+            logger.info(f"[{agent_id}] No tasks available, skipping shared agent acquisition")
+    # ═══════════════════════════════════════════════════════════════════════════
 
     last_result = None
 
@@ -16938,6 +17196,16 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
 
             if result.get("success") or result.get("reason") == "no_tasks":
                 # Success or no tasks — no retry needed
+                # Release shared agent if acquired
+                if is_shared_agent and shared_agent_acquired:
+                    try:
+                        from shared_agent_coordinator import get_shared_agent_coordinator
+                        coordinator = await get_shared_agent_coordinator()
+                        await coordinator.release_agent(agent_id, project_token)
+                        logger.info(f"[{agent_id}] ✅ Released shared agent")
+                    except Exception as release_err:
+                        logger.error(f"[{agent_id}] Failed to release shared agent: {release_err}")
+                
                 return result
 
             # Agent returned failure but didn't throw — treat as retryable
@@ -16976,6 +17244,16 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                 agent["blocked"] = True
                 agent["blocked_reason"] = f"Task failed after {MAX_RETRIES} attempts: {error_msg}"
                 agent["current_task"] = None
+                
+                # Release shared agent if acquired
+                if is_shared_agent and shared_agent_acquired:
+                    try:
+                        from shared_agent_coordinator import get_shared_agent_coordinator
+                        coordinator = await get_shared_agent_coordinator()
+                        await coordinator.release_agent(agent_id, project_token)
+                        logger.info(f"[{agent_id}] ✅ Released shared agent after failure")
+                    except Exception as release_err:
+                        logger.error(f"[{agent_id}] Failed to release shared agent: {release_err}")
                 
                 logger.error(f"[{agent_id}] BLOCKED: Agent will not pick up new tasks until unblocked")
                 return last_result
@@ -17040,9 +17318,29 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                 agent["last_run"] = datetime.utcnow().isoformat()
                 agent["current_task"] = None
                 
+                # Release shared agent if acquired
+                if is_shared_agent and shared_agent_acquired:
+                    try:
+                        from shared_agent_coordinator import get_shared_agent_coordinator
+                        coordinator = await get_shared_agent_coordinator()
+                        await coordinator.release_agent(agent_id, project_token)
+                        logger.info(f"[{agent_id}] ✅ Released shared agent after exception")
+                    except Exception as release_err:
+                        logger.error(f"[{agent_id}] Failed to release shared agent: {release_err}")
+                
                 logger.error(f"[{agent_id}] BLOCKED: Agent will not pick up new tasks until unblocked")
                 return last_result
 
+    # Final release if we exit the loop normally
+    if is_shared_agent and shared_agent_acquired:
+        try:
+            from shared_agent_coordinator import get_shared_agent_coordinator
+            coordinator = await get_shared_agent_coordinator()
+            await coordinator.release_agent(agent_id, project_token)
+            logger.info(f"[{agent_id}] ✅ Released shared agent (normal exit)")
+        except Exception as release_err:
+            logger.error(f"[{agent_id}] Failed to release shared agent: {release_err}")
+    
     return last_result
 
 

@@ -131,11 +131,11 @@ You will receive extracted requirements from Stage 1.
 Design the technical architecture:
 
 ### 1. Technology Stack Selection
-Recommend complete stack with rationale:
+Recommend complete stack with rationale. **CRITICAL:** Default to using SQLite for the database. Do NOT inject unnecessary requirements like Redis, MongoDB, or complex caching/queue systems unless explicitly requested by the BRD.
 - Frontend framework and UI library
 - Backend framework and language
-- Database (with version)
-- Caching/Queue system
+- Database (with version) - default to SQLite
+- Caching/Queue system - avoid unless requested
 - Authentication method
 - API documentation tool
 - Containerization approach
@@ -855,7 +855,7 @@ You MUST preserve the EXACT original wording, technology stack, architecture dec
 **ABSOLUTE RULE**: If the user asks to change "Project Name from Pegasus Platform to Pegasus Captive Management", you MUST:
 1. ONLY change occurrences of "Pegasus Platform" to "Pegasus Captive Management"
 2. PRESERVE ALL OTHER CONTENT EXACTLY AS-IS including:
-   - Technology stack (ASP.NET Core, React, PostgreSQL, MongoDB, RabbitMQ, Azure, etc.)
+   - Technology stack (ASP.NET Core, React, SQLite, Node.js, Azure, etc.)
    - Architecture patterns and decisions
    - Data models and schemas
    - API specifications

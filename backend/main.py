@@ -4318,6 +4318,126 @@ async def delete_governance_question(
     db.commit()
     return {"detail": "Question deleted"}
 
+@app.post("/api/projects/ensure")
+async def ensure_project_exists(
+    request: dict,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Ensure a project exists in the backend database.
+    Prevents duplicate project creation by:
+    - Returning existing project if token matches
+    - Creating new project with provided token if it doesn't exist
+    - Generating new token only if none provided
+    - CRITICAL: Prevents duplicate project names for the same user
+    
+    This is called during project initiation to synchronize frontend draft projects with backend.
+    """
+    project_token = request.get('project_token')
+    project_name = request.get('project_name', 'Untitled Project').strip()
+    client_id = request.get('client_id')
+    client_secret = request.get('client_secret')
+    
+    # Validate project name
+    if not project_name or project_name.lower() == 'untitled project':
+        raise HTTPException(
+            status_code=400,
+            detail="Please provide a valid project name"
+        )
+    
+    # CRITICAL: Check if a project with this name already exists for this user
+    existing_by_name = db.query(models.GovernanceResponse).filter(
+        models.GovernanceResponse.owner_id == current_user.id,
+        func.lower(models.GovernanceResponse.project_name) == project_name.lower()
+    ).first()
+    
+    if existing_by_name:
+        # If project_token matches, return the existing project (user is continuing)
+        if project_token and existing_by_name.project_token == project_token:
+            logger.info(f"Returning existing project: {project_token} for user {current_user.id}")
+            # Update credentials if provided
+            if client_id:
+                existing_by_name.client_id = client_id
+            if client_secret:
+                existing_by_name.client_secret = client_secret
+            db.commit()
+            db.refresh(existing_by_name)
+            
+            return {
+                'project_token': existing_by_name.project_token,
+                'project_name': existing_by_name.project_name,
+                'client_id': existing_by_name.client_id,
+                'client_secret': existing_by_name.client_secret,
+                'exists': True
+            }
+        else:
+            # Different token or no token - this is a duplicate name attempt
+            raise HTTPException(
+                status_code=409,
+                detail=f"A project named '{project_name}' already exists. Please choose a different name or continue with the existing project."
+            )
+    
+    if project_token:
+        # Check if project exists for this user with this token
+        existing = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.project_token == project_token,
+            models.GovernanceResponse.owner_id == current_user.id
+        ).first()
+        
+        if existing:
+            # Project exists - return it (update credentials if provided)
+            if client_id:
+                existing.client_id = client_id
+            if client_secret:
+                existing.client_secret = client_secret
+            db.commit()
+            db.refresh(existing)
+            
+            return {
+                'project_token': existing.project_token,
+                'project_name': existing.project_name,
+                'client_id': existing.client_id,
+                'client_secret': existing.client_secret,
+                'exists': True
+            }
+    
+    # Project doesn't exist - create it with provided or new token
+    new_token = project_token or str(uuid.uuid4())
+    
+    # Verify token is unique
+    while db.query(models.GovernanceResponse).filter(
+        models.GovernanceResponse.project_token == new_token
+    ).first():
+        new_token = str(uuid.uuid4())
+    
+    # Create placeholder governance response (will be updated when user completes governance)
+    new_project = models.GovernanceResponse(
+        owner_id=current_user.id,
+        project_token=new_token,
+        project_name=project_name,
+        answers={},
+        weighted_score=0,
+        classification='PENDING',
+        recommendation='Pending governance assessment',
+        client_id=client_id,
+        client_secret=client_secret,
+    )
+    
+    db.add(new_project)
+    db.commit()
+    db.refresh(new_project)
+    
+    logger.info(f"Created new project: {new_token} with name '{project_name}' for user {current_user.id}")
+    
+    return {
+        'project_token': new_project.project_token,
+        'project_name': new_project.project_name,
+        'client_id': new_project.client_id,
+        'client_secret': new_project.client_secret,
+        'exists': False
+    }
+
 
 @app.post("/governance/submit", response_model=schemas.GovernanceResult)
 async def submit_governance_response(

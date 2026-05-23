@@ -76,6 +76,9 @@ export const API_ENDPOINTS = {
     GOVERNANCE_QUESTION_UPDATE: (id) => `${API_BASE_URL}/governance/questions/${id}`,
     GOVERNANCE_QUESTION_DELETE: (id) => `${API_BASE_URL}/governance/questions/${id}`,
 
+    // Projects
+    PROJECT_ENSURE: `${API_BASE_URL}/api/projects/ensure`,
+
     // GitHub
     GITHUB_AUTH_URL: `${API_BASE_URL}/github/auth-url`,
     GITHUB_CALLBACK: `${API_BASE_URL}/github/callback`,

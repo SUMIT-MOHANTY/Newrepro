@@ -614,6 +614,26 @@ export default function AgentAnalysis({
     const selectedProject = projects.find((p) => p.key === selectedProjectKey) || null;
     const hasGovernanceAssessment = Boolean(selectedProject?.governanceResultId || governanceContext?.result_id);
 
+    // CRITICAL FIX: Read project token from URL parameter if present
+    // This ensures the correct project is loaded after navigation from GovernanceResult
+    useEffect(() => {
+        const params = new URLSearchParams(location.search);
+        const projectFromUrl = params.get('project');
+        
+        if (projectFromUrl && projectFromUrl !== selectedProjectKey) {
+            console.log('Project token from URL parameter:', projectFromUrl);
+            // Update localStorage to persist the selection
+            // The parent component (AppLayout) will read this and update selectedProjectKey
+            try {
+                localStorage.setItem('status_dashboard_selected_project_key', projectFromUrl);
+                // Trigger a page reload to let AppLayout pick up the new project
+                window.location.href = '/agent-analysis';
+            } catch (e) {
+                console.warn('Failed to save project key to localStorage:', e);
+            }
+        }
+    }, [location.search, selectedProjectKey]);
+
     // CRITICAL FIX: Update cache whenever state changes for the current project
     useEffect(() => {
         if (selectedProjectKey && result) {
