@@ -90,6 +90,17 @@ class UserOrganizationRole(Base):
     user = relationship("User", back_populates="organization_role_mappings")
     role = relationship("OrganizationRole", back_populates="user_mappings")
 
+class UserProjectAssociation(Base):
+    __tablename__ = "user_project_associations"
+    __table_args__ = (
+        UniqueConstraint("user_id", "project_token", name="uq_user_project_assoc"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    project_token = Column(String, ForeignKey("governance_responses.project_token"), index=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 class OrganizationInvite(Base):
     __tablename__ = "organization_invites"
     __table_args__ = (
@@ -272,6 +283,7 @@ class GovernanceResponse(Base):
     id = Column(Integer, primary_key=True, index=True)
     project_token = Column(String, unique=True, index=True)
     owner_id = Column(Integer, ForeignKey("users.id"))
+    organization_name = Column(String, index=True, nullable=True)
     project_name = Column(String, index=True)
     submission_date = Column(DateTime, default=datetime.utcnow)
     

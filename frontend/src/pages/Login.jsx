@@ -5,6 +5,7 @@ import { API_BASE_URL, API_ENDPOINTS } from '../config';
 import { sanitizeErrorMessage } from '../utils/errorHandling';
 import logo from '../assets/logo.png';
 import bourntecLogo from '../assets/bourntec_logo.png';
+import OrganizationSelect from './OrganizationSelect';
 
 const isAllowedNextUrl = (nextUrl) => {
     if (!nextUrl) return false;
@@ -30,6 +31,12 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
     const [error, setError] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [isSsoLoading, setIsSsoLoading] = useState(false);
+    
+    // Organization selection states for multi-org users
+    const [requiresSelection, setRequiresSelection] = useState(false);
+    const [orgs, setOrgs] = useState([]);
+    const [tempToken, setTempToken] = useState('');
+
     const navigate = useNavigate();
 
     const finishNavigate = (path) => {
@@ -39,6 +46,86 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
 
     const nextParam = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '').get('next');
     const nextUrl = isAllowedNextUrl(nextParam) ? nextParam : null;
+
+    const handlePostLoginRedirect = async (accessToken) => {
+        // Check if user has any projects (backend or draft)
+        let hasAnyProjects = false;
+        let lastProjectToken = null;
+        
+        try {
+            // Check backend projects
+            const projectsResponse = await fetch(`${API_BASE_URL}/governance/history`, {
+                headers: { 'Authorization': `Bearer ${accessToken}` },
+            });
+            
+            if (projectsResponse.ok) {
+                const projectsData = await projectsResponse.json();
+                const submissions = projectsData.submissions || [];
+                hasAnyProjects = submissions.length > 0;
+            }
+            
+            // Check draft projects in localStorage
+            if (!hasAnyProjects) {
+                const draftProjectsRaw = localStorage.getItem('draft_projects');
+                if (draftProjectsRaw) {
+                    try {
+                        const draftProjects = JSON.parse(draftProjectsRaw);
+                        hasAnyProjects = Array.isArray(draftProjects) && draftProjects.length > 0;
+                    } catch {
+                        // Ignore parse errors
+                    }
+                }
+            }
+        } catch (projectCheckError) {
+            console.debug('Could not check projects:', projectCheckError);
+        }
+        
+        // If no projects exist at all, redirect to new project page
+        if (!hasAnyProjects) {
+            if (nextUrl) {
+                window.location.assign(appendDsuiteToken(nextUrl, accessToken));
+                return;
+            }
+            finishNavigate('/new-project');
+            return;
+        }
+        
+        // User has projects - check if they have a saved progress page
+        try {
+            const progressResponse = await fetch(`${API_BASE_URL}/users/me/progress`, {
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                },
+            });
+            
+            if (progressResponse.ok) {
+                const progressData = await progressResponse.json();
+                const lastPage = progressData.last_page_path;
+                lastProjectToken = progressData.last_project_token;
+                
+                // If user has a last page and it's not login/signup, redirect there
+                if (lastPage && lastPage !== '/login' && lastPage !== '/signup' && lastPage !== '/') {
+                    if (nextUrl) {
+                        window.location.assign(appendDsuiteToken(nextUrl, accessToken));
+                    } else {
+                        finishNavigate(lastPage);
+                    }
+                    return;
+                }
+            }
+        } catch (progressError) {
+            console.debug('Could not fetch user progress:', progressError);
+            // Continue with default navigation
+        }
+        
+        if (nextUrl) {
+            window.location.assign(appendDsuiteToken(nextUrl, accessToken));
+            return;
+        }
+        
+        // Default: redirect to status dashboard
+        finishNavigate('/status-dashboard');
+    };
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -60,91 +147,37 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
             }
 
             const data = await response.json();
+            
+            // Check if organization selection is required
+            if (data.requires_selection) {
+                setTempToken(data.access_token);
+                setOrgs(data.organizations || []);
+                setRequiresSelection(true);
+                return;
+            }
+
             localStorage.setItem('token', data.access_token);
-            
-            // First, check if user has any projects (backend or draft)
-            let hasAnyProjects = false;
-            let lastProjectToken = null;
-            
-            try {
-                // Check backend projects
-                const projectsResponse = await fetch(`${API_BASE_URL}/governance/history`, {
-                    headers: { 'Authorization': `Bearer ${data.access_token}` },
-                });
-                
-                if (projectsResponse.ok) {
-                    const projectsData = await projectsResponse.json();
-                    const submissions = projectsData.submissions || [];
-                    hasAnyProjects = submissions.length > 0;
-                }
-                
-                // Check draft projects in localStorage
-                if (!hasAnyProjects) {
-                    const draftProjectsRaw = localStorage.getItem('draft_projects');
-                    if (draftProjectsRaw) {
-                        try {
-                            const draftProjects = JSON.parse(draftProjectsRaw);
-                            hasAnyProjects = Array.isArray(draftProjects) && draftProjects.length > 0;
-                        } catch {
-                            // Ignore parse errors
-                        }
-                    }
-                }
-            } catch (projectCheckError) {
-                console.debug('Could not check projects:', projectCheckError);
-            }
-            
-            // If no projects exist at all, redirect to new project page
-            if (!hasAnyProjects) {
-                if (nextUrl) {
-                    window.location.assign(appendDsuiteToken(nextUrl, data.access_token));
-                    return;
-                }
-                finishNavigate('/new-project');
-                return;
-            }
-            
-            // User has projects - check if they have a saved progress page
-            try {
-                const progressResponse = await fetch(`${API_BASE_URL}/users/me/progress`, {
-                    headers: {
-                        'Authorization': `Bearer ${data.access_token}`,
-                    },
-                });
-                
-                if (progressResponse.ok) {
-                    const progressData = await progressResponse.json();
-                    const lastPage = progressData.last_page_path;
-                    lastProjectToken = progressData.last_project_token;
-                    
-                    // If user has a last page and it's not login/signup, redirect there
-                    if (lastPage && lastPage !== '/login' && lastPage !== '/signup' && lastPage !== '/') {
-                        if (nextUrl) {
-                            window.location.assign(appendDsuiteToken(nextUrl, data.access_token));
-                        } else {
-                            finishNavigate(lastPage);
-                        }
-                        return;
-                    }
-                }
-            } catch (progressError) {
-                console.debug('Could not fetch user progress:', progressError);
-                // Continue with default navigation
-            }
-            
-            if (nextUrl) {
-                window.location.assign(appendDsuiteToken(nextUrl, data.access_token));
-                return;
-            }
-            
-            // Default: redirect to status dashboard
-            finishNavigate('/status-dashboard');
+            await handlePostLoginRedirect(data.access_token);
         } catch {
             setError('Invalid email or password. Please try again.');
         } finally {
             setIsLoading(false);
         }
     };
+
+    if (requiresSelection) {
+        return (
+            <OrganizationSelect
+                organizations={orgs}
+                tempToken={tempToken}
+                onSelectComplete={async (finalToken) => {
+                    localStorage.setItem('token', finalToken);
+                    setRequiresSelection(false);
+                    await handlePostLoginRedirect(finalToken);
+                }}
+            />
+        );
+    }
 
     const handleSsoLogin = async () => {
         setError('');

@@ -47,5 +47,25 @@ async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)], db: Se
     user = db.query(User).filter(User.email == token_data.email).first()
     if user is None:
         raise credentials_exception
+        
+    # Dynamically inject the active organization from JWT token if available
+    active_org = payload.get("org")
+    if active_org:
+        user.organization_name = active_org
+        # Evaluate is_org_admin status for the active organization
+        import models
+        from sqlalchemy import func
+        role_mapping = db.query(models.UserOrganizationRole).filter(
+            models.UserOrganizationRole.user_id == user.id,
+            func.lower(models.UserOrganizationRole.organization_name) == active_org.lower()
+        ).first()
+        if role_mapping:
+            role = db.query(models.OrganizationRole).filter(models.OrganizationRole.id == role_mapping.role_id).first()
+            if role and "admin" in role.name.lower():
+                user.is_org_admin = True
+            else:
+                user.is_org_admin = False
+                
     return user
+
 

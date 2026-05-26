@@ -637,21 +637,85 @@ async def login_for_access_token(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     db: Session = Depends(get_db),
 ):
-    user = db.query(models.User).filter(models.User.email == form_data.username).first()
+    user = db.query(models.User).filter(func.lower(models.User.email) == form_data.username.strip().lower()).first()
     if not user or not auth.verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    # Resolve all organizations this user is associated with
+    org_mappings = db.query(models.UserOrganizationRole).filter(models.UserOrganizationRole.user_id == user.id).all()
+    orgs = list(set([m.organization_name for m in org_mappings if m.organization_name]))
+    if user.organization_name and user.organization_name not in orgs:
+        orgs.append(user.organization_name)
+
     access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
+
+    if len(orgs) > 1:
+        # Create a temporary token for organization selection (sub only, no org)
+        temp_token = auth.create_access_token(
+            data={"sub": user.email}, expires_delta=timedelta(minutes=5)
+        )
+        return {
+            "access_token": temp_token,
+            "token_type": "bearer",
+            "requires_selection": True,
+            "organizations": orgs
+        }
+
+    # If they belong to exactly one organization, bind it directly to the token
+    active_org = orgs[0] if orgs else (user.organization_name or "Default Organization")
+
     access_token = auth.create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
+        data={"sub": user.email, "org": active_org}, expires_delta=access_token_expires
     )
+
     user.last_login = datetime.now(timezone.utc)
     db.add(user)
     db.commit()
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "requires_selection": False,
+        "organizations": [active_org]
+    }
+
+@app.post("/auth/select-organization", response_model=schemas.Token)
+async def select_organization(
+    payload: schemas.SelectOrganizationRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    org_name = payload.organization_name.strip()
+    
+    org_mappings = db.query(models.UserOrganizationRole).filter(
+        models.UserOrganizationRole.user_id == current_user.id
+    ).all()
+    orgs = list(set([m.organization_name for m in org_mappings if m.organization_name]))
+    if current_user.organization_name and current_user.organization_name not in orgs:
+        orgs.append(current_user.organization_name)
+        
+    matching_org = next((o for o in orgs if o.lower() == org_name.lower()), None)
+    if not matching_org:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not a member of this organization."
+        )
+        
+    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
+    access_token = auth.create_access_token(
+        data={"sub": current_user.email, "org": matching_org},
+        expires_delta=access_token_expires
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "requires_selection": False,
+        "organizations": [matching_org]
+    }
 
 @app.post("/auth/forgot-password")
 async def forgot_password(
@@ -1668,6 +1732,33 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_user)
 
+    # Seed Organization Role and User role mapping for newly created user
+    admin_role = db.query(models.OrganizationRole).filter(
+        func.lower(models.OrganizationRole.organization_name) == organization_name.lower(),
+        func.lower(models.OrganizationRole.name) == "admin"
+    ).first()
+    if not admin_role:
+        admin_role = models.OrganizationRole(
+            organization_name=organization_name,
+            name="Admin",
+            description="Administrator role with all permissions.",
+            is_system=True
+        )
+        db.add(admin_role)
+        db.commit()
+        db.refresh(admin_role)
+        # All pages permission for admin
+        for page in ORG_MANAGED_PAGES:
+            db.add(models.OrganizationRolePermission(role_id=admin_role.id, path=page.path))
+        db.commit()
+
+    db.add(models.UserOrganizationRole(
+        user_id=db_user.id,
+        organization_name=organization_name,
+        role_id=admin_role.id
+    ))
+    db.commit()
+
     try:
         email_service.send_organization_registration_password_email(
             recipient_email=normalized_email,
@@ -2228,27 +2319,46 @@ def accept_org_invite(
         raise HTTPException(status_code=400, detail="This invite link is restricted to a different email address.")
 
     existing_user = db.query(models.User).filter(func.lower(models.User.email) == requested_email).first()
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Email already registered. Please sign in instead.")
-
+    
     role = db.query(models.OrganizationRole).filter(models.OrganizationRole.id == invite.role_id).first()
     if not role:
         raise HTTPException(status_code=400, detail="Invite role is no longer available.")
 
-    raw_password = payload.password
-    hashed_password = auth.get_password_hash(raw_password)
-    user = models.User(
-        email=requested_email,
-        hashed_password=hashed_password,
-        first_name=_normalized_text(payload.first_name) or None,
-        last_name=_normalized_text(payload.last_name) or None,
-        organization_name=invite.organization_name,
-        is_org_admin=False,
-        last_login=datetime.utcnow(),
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
+    if existing_user:
+        # Check if user already has a mapping in this organization
+        existing_mapping = db.query(models.UserOrganizationRole).filter(
+            models.UserOrganizationRole.user_id == existing_user.id,
+            func.lower(models.UserOrganizationRole.organization_name) == invite.organization_name.lower()
+        ).first()
+        if existing_mapping:
+            raise HTTPException(status_code=400, detail="You are already a member of this organization.")
+
+        # Verify password for security
+        if not auth.verify_password(payload.password, existing_user.hashed_password):
+            raise HTTPException(status_code=400, detail="Invalid password for existing user account.")
+
+        user = existing_user
+        user.last_login = datetime.utcnow()
+        if not user.organization_name:
+            user.organization_name = invite.organization_name
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    else:
+        raw_password = payload.password
+        hashed_password = auth.get_password_hash(raw_password)
+        user = models.User(
+            email=requested_email,
+            hashed_password=hashed_password,
+            first_name=_normalized_text(payload.first_name) or None,
+            last_name=_normalized_text(payload.last_name) or None,
+            organization_name=invite.organization_name,
+            is_org_admin=False,
+            last_login=datetime.utcnow(),
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
 
     mapping = models.UserOrganizationRole(
         user_id=user.id,
@@ -4346,17 +4456,20 @@ async def ensure_project_exists(
             detail="Please provide a valid project name"
         )
     
-    # CRITICAL: Check if a project with this name already exists for this user
+    # CRITICAL: Check if a project with this name already exists for this organization
+    org_name = current_user.organization_name or "Default Organization"
     existing_by_name = db.query(models.GovernanceResponse).filter(
-        models.GovernanceResponse.owner_id == current_user.id,
+        func.lower(models.GovernanceResponse.organization_name) == org_name.lower(),
         func.lower(models.GovernanceResponse.project_name) == project_name.lower()
     ).first()
     
     if existing_by_name:
         # If project_token matches, return the existing project (user is continuing)
         if project_token and existing_by_name.project_token == project_token:
-            logger.info(f"Returning existing project: {project_token} for user {current_user.id}")
+            logger.info(f"Returning existing project: {project_token} for organization {org_name}")
             # Update credentials if provided
+            if not existing_by_name.organization_name:
+                existing_by_name.organization_name = org_name
             if client_id:
                 existing_by_name.client_id = client_id
             if client_secret:
@@ -4375,14 +4488,14 @@ async def ensure_project_exists(
             # Different token or no token - this is a duplicate name attempt
             raise HTTPException(
                 status_code=409,
-                detail=f"A project named '{project_name}' already exists. Please choose a different name or continue with the existing project."
+                detail=f"A project named '{project_name}' already exists in your organization. Please choose a different name or continue with the existing project."
             )
     
     if project_token:
-        # Check if project exists for this user with this token
+        # Check if project exists for this token and organization
         existing = db.query(models.GovernanceResponse).filter(
             models.GovernanceResponse.project_token == project_token,
-            models.GovernanceResponse.owner_id == current_user.id
+            func.lower(models.GovernanceResponse.organization_name) == org_name.lower()
         ).first()
         
         if existing:
@@ -4415,6 +4528,7 @@ async def ensure_project_exists(
     new_project = models.GovernanceResponse(
         owner_id=current_user.id,
         project_token=new_token,
+        organization_name=org_name,
         project_name=project_name,
         answers={},
         weighted_score=0,
@@ -4428,7 +4542,7 @@ async def ensure_project_exists(
     db.commit()
     db.refresh(new_project)
     
-    logger.info(f"Created new project: {new_token} with name '{project_name}' for user {current_user.id}")
+    logger.info(f"Created new project: {new_token} with name '{project_name}' for organization {org_name}")
     
     return {
         'project_token': new_project.project_token,
@@ -4517,6 +4631,8 @@ async def submit_governance_response(
         db_response.weighted_score = scoring_result["weighted_score"]
         db_response.classification = scoring_result["classification"]
         db_response.recommendation = recommendation_text
+        if not db_response.organization_name:
+            db_response.organization_name = current_user.organization_name
         if request.client_id:
             db_response.client_id = request.client_id
         if request.client_secret:
@@ -4525,6 +4641,7 @@ async def submit_governance_response(
         db_response = models.GovernanceResponse(
             owner_id=current_user.id,
             project_token=project_token,
+            organization_name=current_user.organization_name,
             project_name=request.project_name,
             answers=detailed_answers,
             business_value_score=scoring_result["dimension_scores"].get("Business Value & Urgency"),
@@ -4586,13 +4703,29 @@ async def get_governance_history(
             .all()
         )
     else:
-        org_user_ids = _org_user_ids_subquery(db, organization_name)
-        responses = (
-            db.query(models.GovernanceResponse)
-            .filter(models.GovernanceResponse.owner_id.in_(org_user_ids))
-            .order_by(models.GovernanceResponse.submission_date.desc())
-            .all()
-        )
+        if current_user.is_org_admin:
+            responses = (
+                db.query(models.GovernanceResponse)
+                .filter(func.lower(models.GovernanceResponse.organization_name) == organization_name.lower())
+                .order_by(models.GovernanceResponse.submission_date.desc())
+                .all()
+            )
+        else:
+            associated_tokens = db.query(models.UserProjectAssociation.project_token).filter(
+                models.UserProjectAssociation.user_id == current_user.id
+            ).scalar_subquery()
+            responses = (
+                db.query(models.GovernanceResponse)
+                .filter(
+                    func.lower(models.GovernanceResponse.organization_name) == organization_name.lower(),
+                    or_(
+                        models.GovernanceResponse.owner_id == current_user.id,
+                        models.GovernanceResponse.project_token.in_(associated_tokens)
+                    )
+                )
+                .order_by(models.GovernanceResponse.submission_date.desc())
+                .all()
+            )
     
     return {
         "total_submissions": len(responses),
@@ -4629,10 +4762,21 @@ async def get_governance_result(
             models.GovernanceResponse.owner_id == current_user.id
         )
     else:
-        org_user_ids = _org_user_ids_subquery(db, organization_name)
-        query = db.query(models.GovernanceResponse).filter(
-            models.GovernanceResponse.owner_id.in_(org_user_ids)
-        )
+        if current_user.is_org_admin:
+            query = db.query(models.GovernanceResponse).filter(
+                func.lower(models.GovernanceResponse.organization_name) == organization_name.lower()
+            )
+        else:
+            associated_tokens = db.query(models.UserProjectAssociation.project_token).filter(
+                models.UserProjectAssociation.user_id == current_user.id
+            ).scalar_subquery()
+            query = db.query(models.GovernanceResponse).filter(
+                func.lower(models.GovernanceResponse.organization_name) == organization_name.lower(),
+                or_(
+                    models.GovernanceResponse.owner_id == current_user.id,
+                    models.GovernanceResponse.project_token.in_(associated_tokens)
+                )
+            )
     
     if identifier.isdigit():
         response = query.filter(models.GovernanceResponse.id == int(identifier)).first()
@@ -6924,6 +7068,14 @@ def _ensure_user_organization_columns() -> None:
             conn.execute(text("ALTER TABLE users ADD COLUMN azure_devops_username VARCHAR"))
             conn.commit()
 
+def _ensure_governance_organization_columns() -> None:
+    with engine.connect() as conn:
+        result = conn.execute(text("PRAGMA table_info(governance_responses)"))
+        columns = [row[1] for row in result.fetchall()]
+        if "organization_name" not in columns:
+            conn.execute(text("ALTER TABLE governance_responses ADD COLUMN organization_name VARCHAR"))
+            conn.commit()
+
 def _ensure_default_oauth_clients(db: Session) -> None:
     defaults = [
         {
@@ -7037,6 +7189,7 @@ def _startup_init() -> None:
         _ensure_agent_skills_columns()
         _ensure_org_agent_mapping_kind_column()
         _ensure_user_organization_columns()
+        _ensure_governance_organization_columns()
         _ensure_default_oauth_clients(db)
         _ensure_default_agents(db)
         _ensure_default_governance_questions(db)
