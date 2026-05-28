@@ -2742,7 +2742,7 @@ async def upload_document(
     Supports: PDF, DOCX, PPTX, HTML, Images, and more.
     Requires authentication.
     """
-    allowed_extensions = {".pdf", ".docx", ".pptx", ".html", ".htm", ".png", ".jpg", ".jpeg", ".txt"}
+    allowed_extensions = {".pdf", ".docx", ".pptx", ".html", ".htm", ".png", ".jpg", ".jpeg", ".txt", ".md"}
     
     MAX_SIZE_BYTES = 100 * 1024 * 1024  # 100 MB
     total_size = 0
@@ -2768,8 +2768,8 @@ async def upload_document(
         if total_size > MAX_SIZE_BYTES:
             raise HTTPException(status_code=400, detail="Total file size exceeds 100MB limit.")
 
-        # Handle plain text files directly
-        if file_ext == ".txt":
+        # Handle plain text and markdown files directly
+        if file_ext in {".txt", ".md"}:
             try:
                 text_content = content.decode("utf-8", errors="replace").strip()
             except Exception:
@@ -5322,6 +5322,259 @@ async def get_skills_md_files(
     return {"files": governance.skills_md_files or []}
 
 
+def parse_markdown_techniques(content: str) -> List[Dict[str, str]]:
+    """Parse elicitation techniques from markdown skills files."""
+    import re
+    techniques = []
+    if not content:
+        return techniques
+
+    lines = content.split('\n')
+    current_name = None
+    current_desc = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        
+        # Check for headings (# Name or ## Name or ### Name)
+        if stripped.startswith('#'):
+            if current_name:
+                desc_str = '\n'.join(current_desc).strip()
+                # Clean up "description:" or similar prefixes if any
+                desc_str = re.sub(r'^(description|instructions?)\s*:\s*', '', desc_str, flags=re.IGNORECASE)
+                techniques.append({
+                    "name": current_name,
+                    "description": desc_str
+                })
+            current_name = stripped.lstrip('#').strip()
+            current_desc = []
+        else:
+            if current_name is not None:
+                current_desc.append(stripped)
+
+    if current_name and current_desc:
+        desc_str = '\n'.join(current_desc).strip()
+        desc_str = re.sub(r'^(description|instructions?)\s*:\s*', '', desc_str, flags=re.IGNORECASE)
+        techniques.append({
+            "name": current_name,
+            "description": desc_str
+        })
+
+    # If heading-based parsing found techniques, return them
+    if techniques:
+        return techniques
+
+    # Fallback to list-based parsing:
+    # - **Brainstorming**: Generate divergent ideas...
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(('-', '*', '+')) or (stripped and stripped[0].isdigit() and '. ' in stripped[:4]):
+            # Remove list bullet
+            item = re.sub(r'^[\-\*\+\d\.\s]+', '', stripped).strip()
+            
+            # Match formats like:
+            # **Name**: Desc
+            # **Name** - Desc
+            # Name: Desc
+            # Name -> Desc
+            match = re.match(r'^\*?\*?([^\*:\-\>]+)\*?\*?\s*(?::|-|->)\s*(.+)$', item)
+            if match:
+                name = match.group(1).strip()
+                desc = match.group(2).strip()
+                techniques.append({
+                    "name": name,
+                    "description": desc
+                })
+                
+    return techniques
+
+
+@app.get("/api/projects/{project_token}/elicitation-techniques")
+async def get_elicitation_techniques(
+    project_token: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get elicitation techniques for a project.
+    
+    If the project has skills/methods markdown files uploaded, asks the AI to generate 
+    techniques based on the contents of those uploaded files.
+    Otherwise, dynamically asks the AI to generate 5 SDLC-aligned elicitation techniques.
+    """
+    import re
+    import json
+    import llm_gateway
+    from config import settings
+
+    # 1. Fetch project/governance
+    query = db.query(models.GovernanceResponse).filter(
+        models.GovernanceResponse.owner_id == current_user.id
+    )
+    governance = query.filter(models.GovernanceResponse.project_token == project_token).first()
+    
+    # 2. Check if skills/methods files are uploaded
+    skills_content = ""
+    if governance and governance.skills_md_files:
+        skills_contents = [f.get("content", "") for f in governance.skills_md_files if f.get("content")]
+        if skills_contents:
+            skills_content = "\n\n".join(skills_contents)
+            
+    # Try to find the latest document/BRD content for this project
+    brd_content = ""
+    token_pattern = f'%"project_token": "{project_token}"%'
+    doc = db.query(models.Document).filter(
+        models.Document.owner_id == current_user.id,
+        models.Document.analysis_result.like(token_pattern)
+    ).order_by(models.Document.upload_date.desc()).first()
+    
+    if doc and doc.full_content:
+        brd_content = doc.full_content
+
+    # 3. Build AI prompt based on whether skills are uploaded or not
+    system_content = "You are an expert BRD analyst and SDLC process architect."
+    
+    if skills_content:
+        logger.info(f"Skills files found for project {project_token}. Instructing AI to generate techniques based on uploaded methodology context...")
+        user_content = f"""The user has uploaded a custom methodology / elicitation skills guide file.
+Based on the contents of the uploaded files provided below, please generate exactly 5 elicitation techniques.
+For each technique, you must provide:
+1. Technique Name
+2. Short Description / Instructions (how to use it based on the uploaded file guidelines)
+3. Purpose / Benefit
+
+You MUST return the output in a JSON list of objects containing fields 'name', 'description', and 'purpose'. Do not output any markdown fences, thoughts, or explanations. Only return a raw valid JSON array.
+
+Uploaded Methodology Content:
+{skills_content[:20000]}"""
+    else:
+        logger.info(f"No skills files found for project {project_token}. Dynamically generating SDLC-aligned techniques using AI...")
+        if brd_content:
+            user_content = f"""Based on the following BRD document content, generate exactly 5 tailored requirements elicitation techniques that can improve the BRD quality, aligned with the SDLC lifecycle.
+Each technique MUST have:
+1. Technique Name
+2. Short Description
+3. Purpose/Benefit
+
+You MUST return the output in a JSON list of objects containing fields 'name', 'description', and 'purpose'. Do not output any markdown fences, thoughts, or explanations. Only return a raw valid JSON array.
+
+BRD Content snippet:
+{brd_content[:15000]}"""
+        else:
+            user_content = """Generate exactly 5 high-quality, highly practical requirements elicitation techniques that can improve BRD quality, aligned with the SDLC lifecycle.
+Each technique MUST have:
+1. Technique Name
+2. Short Description
+3. Purpose/Benefit
+
+The techniques should cover:
+- Enhance requirement discovery
+- Improve edge-case analysis
+- Strengthen business logic
+- Encourage stakeholder thinking
+- Improve BRD completeness
+
+You MUST return the output in a JSON list of objects containing fields 'name', 'description', and 'purpose'. Do not output any markdown fences, thoughts, or explanations. Only return a raw valid JSON array."""
+
+    try:
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_content}
+        ]
+        
+        # Call LLM
+        ai_response = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=settings.ai_api_url,
+            api_key=settings.ai_api_key,
+            model=settings.ai_model,
+            timeout=60.0
+        )
+        
+        # Extract JSON list from response
+        cleaned_response = ai_response.strip()
+        if cleaned_response.startswith("```"):
+            cleaned_response = re.sub(r"^```(?:json)?\s*", "", cleaned_response)
+            cleaned_response = re.sub(r"\s*```$", "", cleaned_response)
+            
+        techniques = json.loads(cleaned_response.strip())
+        if isinstance(techniques, list) and len(techniques) > 0:
+            formatted_techniques = []
+            for t in techniques[:5]:
+                name = t.get("name") or t.get("technique_name") or "Elicitation Technique"
+                desc = t.get("description") or t.get("short_description") or ""
+                purpose = t.get("purpose") or t.get("purpose_benefit") or t.get("benefit") or ""
+                
+                full_desc = desc
+                if purpose and purpose not in desc:
+                    full_desc += f"\n\nPurpose/Benefit: {purpose}"
+                    
+                formatted_techniques.append({
+                    "name": name,
+                    "description": full_desc,
+                    "purpose": purpose
+                })
+            
+            return {
+                "source": "uploaded" if skills_content else "ai_generated",
+                "techniques": formatted_techniques
+            }
+    except Exception as e:
+        logger.error(f"Failed to dynamically generate elicitation techniques: {e}", exc_info=True)
+        
+    # Ultimate fail-safe parsing fallback: if skills files exist, parse them directly
+    if governance and governance.skills_md_files:
+        try:
+            uploaded_techniques = []
+            for file_obj in governance.skills_md_files:
+                file_content = file_obj.get("content", "")
+                parsed = parse_markdown_techniques(file_content)
+                uploaded_techniques.extend(parsed)
+            if uploaded_techniques:
+                return {
+                    "source": "uploaded",
+                    "techniques": uploaded_techniques[:5]
+                }
+        except:
+            pass
+
+    # Static fallback of 5 SDLC-aligned techniques if LLM call and parsing fails
+    fallback_techniques = [
+        {
+            "name": "Brainstorming & Feature Discovery",
+            "description": "Engage stakeholders to generate a wide list of creative features and user needs.\n\nPurpose/Benefit: Unlocks divergent ideas, discovers hidden user pain points, and outlines the broad scope of requirements.",
+            "purpose": "Unlocks divergent ideas, discovers hidden user pain points, and outlines the broad scope of requirements."
+        },
+        {
+            "name": "What-If Analysis & Edge-Case Modeling",
+            "description": "Systematic exploration of atypical conditions and error paths by asking 'What if...' for key user actions.\n\nPurpose/Benefit: Increases business logic resilience, prevents runtime crashes, and designs robust error-handling states.",
+            "purpose": "Increases business logic resilience, prevents runtime crashes, and designs robust error-handling states."
+        },
+        {
+            "name": "Functional Decomposition",
+            "description": "Break down large, high-level business goals into fine-grained functional tasks, modules, and API needs.\n\nPurpose/Benefit: Improves architectural precision, provides clear structures for developers, and ensures no business requirement is missed.",
+            "purpose": "Improves architectural precision, provides clear structures for developers, and ensures no business requirement is missed."
+        },
+        {
+            "name": "Interface & Wireframe Prototyping",
+            "description": "Define explicit screen UI states, input form fields, data validation constraints, and user navigation routes.\n\nPurpose/Benefit: Ensures stakeholder alignment on user experience, defines UI logic early, and sets expectations for frontend developers.",
+            "purpose": "Ensures stakeholder alignment on user experience, defines UI logic early, and sets expectations for frontend developers."
+        },
+        {
+            "name": "Data Flow & State Transition Mapping",
+            "description": "Trace how core database records and status fields change during lifecycle milestones (e.g. Draft -> Under Review -> Approved).\n\nPurpose/Benefit: Eliminates logical deadlocks in workflow automation, models data integrity, and specifies clean API state management.",
+            "purpose": "Eliminates logical deadlocks in workflow automation, models data integrity, and specifies clean API state management."
+        }
+    ]
+    return {
+        "source": "static_fallback",
+        "techniques": fallback_techniques
+    }
+
+
+
 def _extract_document_analysis_context(doc: models.Document) -> Optional[Dict[str, Any]]:
     """Parse stored analysis JSON and extract project-linking metadata."""
     if not doc.analysis_result:
@@ -7014,6 +7267,7 @@ def _runtime_agent_records(records: List[models.Agent], project_token: Optional[
                 for i in range(1, count + 1):
                     expanded.append({
                         "id": f"{public_id}#{i}",
+                        "display_id": f"{getattr(rec, 'display_id', None) or public_id}#{i}",
                         "name": f"{rec.name} #{i}",
                         "type": rec.type,
                         "skills_content": getattr(rec, "skills_content", None),
@@ -7025,6 +7279,7 @@ def _runtime_agent_records(records: List[models.Agent], project_token: Optional[
             else:
                 expanded.append({
                     "id": public_id,
+                    "display_id": getattr(rec, "display_id", None) or public_id,
                     "name": rec.name,
                     "type": rec.type,
                     "skills_content": getattr(rec, "skills_content", None),
@@ -7056,6 +7311,9 @@ def _ensure_agent_skills_columns() -> None:
             conn.commit()
         if "face" not in columns:
             conn.execute(text("ALTER TABLE agents ADD COLUMN face TEXT"))
+            conn.commit()
+        if "display_id" not in columns:
+            conn.execute(text("ALTER TABLE agents ADD COLUMN display_id VARCHAR"))
             conn.commit()
 
 
@@ -8976,16 +9234,26 @@ async def add_agent_with_skills(
             specialization = "Development"
             tags = ["Development"]
 
-    # Generate sequential agent ID by checking existing mappings
+    # Load ALL mapped agents to find the correct display_id sequence
     mapping_q = db.query(models.OrganizationAgentMapping.agent_id).filter(
         func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower()
     )
     mapped_ids = [row[0] for row in mapping_q.all()]
     
-    sequence = 1
+    # Query their display_id from the Agent table
+    display_ids = []
+    if mapped_ids:
+        display_ids_q = db.query(models.Agent.display_id).filter(models.Agent.id.in_(mapped_ids))
+        display_ids = [row[0] for row in display_ids_q.all() if row[0]]
+
+    # Include any legacy mapped agent IDs that were not UUIDs and served directly as display IDs
     for mid in mapped_ids:
-        # Check either 'agent_XX' or '...::agent_XX'
-        agent_part = mid.split("::")[-1] if "::" in mid else mid
+        if mid and not mid.startswith("agt_"):
+            display_ids.append(mid)
+
+    sequence = 1
+    for d_id in display_ids:
+        agent_part = d_id.split("::")[-1] if "::" in d_id else d_id
         if agent_part.startswith("agent_"):
             try:
                 num = int(agent_part.split("_")[1])
@@ -8994,7 +9262,11 @@ async def add_agent_with_skills(
             except (ValueError, IndexError):
                 pass
 
-    agent_id = f"agent_{sequence:02d}"
+    display_id = f"agent_{sequence:02d}"
+
+    # Generate globally unique primary key ID to prevent UNIQUE constraint errors
+    import uuid
+    agent_uuid = f"agt_{uuid.uuid4().hex}"
 
     # Combine user manual tags with LLM-extracted tags
     if request.tags:
@@ -9005,7 +9277,8 @@ async def add_agent_with_skills(
 
     # Create dynamic Agent record
     new_agent = models.Agent(
-        id=agent_id,
+        id=agent_uuid,
+        display_id=display_id,
         name=name,
         type="validator",
         project_token=project_token,
@@ -9022,7 +9295,7 @@ async def add_agent_with_skills(
     # Map to organization
     new_mapping = models.OrganizationAgentMapping(
         organization_name=organization_name,
-        agent_id=agent_id,
+        agent_id=agent_uuid,
         project_token=project_token,
         agent_kind="shared",
         agent_sub_type=sub_type,
@@ -9038,7 +9311,8 @@ async def add_agent_with_skills(
     return {
         "success": True,
         "agent": {
-            "id": agent_id,
+            "id": agent_uuid,
+            "display_id": display_id,
             "name": name,
             "skills_summary": summary,
             "skills_content": skills_content,

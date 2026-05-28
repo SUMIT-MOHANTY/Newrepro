@@ -209,6 +209,7 @@ class Agent(Base):
     __tablename__ = "agents"
 
     id = Column(String, primary_key=True, index=True)
+    display_id = Column(String, nullable=True)
     name = Column(String, nullable=False)
     type = Column(String, nullable=True)
     project_token = Column(String, index=True, nullable=True)

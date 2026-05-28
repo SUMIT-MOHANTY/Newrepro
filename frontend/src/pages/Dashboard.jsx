@@ -7,7 +7,7 @@ import { customAlert, customPrompt } from '../utils/modalHelpers';
 import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Settings, FileText, History, User, LogOut, Plus, Zap, Server, Users, Activity, Clock, Download, Menu, CheckCircle2, KeyRound, AlertTriangle, RefreshCw, Info } from 'lucide-react';
+import { Settings, FileText, History, User, LogOut, Plus, Zap, Server, Users, Activity, Clock, Download, Menu, CheckCircle2, KeyRound, AlertTriangle, RefreshCw, Info, Sparkles } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { generateRobustPDF } from './robustPdfGenerator';
 
@@ -522,6 +522,11 @@ const Dashboard = ({
     // -- Per-Project State Management --
     const [projectStates, setProjectStates] = useState({});
 
+    // -- Local Skills Viewer Modal States --
+    const [showSkillsViewer, setShowSkillsViewer] = useState(false);
+    const [selectedSkillContent, setSelectedSkillContent] = useState('');
+    const [selectedSkillName, setSelectedSkillName] = useState('');
+
     const getProjectState = (key) => {
         const state = projectStates[key] || {
             files: [], linkedFiles: [], textInput: '', activeTab: 'upload', processing: false,
@@ -530,7 +535,8 @@ const Dashboard = ({
             progress: 0, progressMessage: '',
             urlInput: '', urlRequirements: '', urlSource: '', urlFetchSummary: null,
             urlFetching: false,
-            skillFiles: [] // Add skills files state
+            skillFiles: [], // Add skills files state
+            uploadedSkills: [] // Already uploaded skills from backend
         };
 
         // Only set revisionUnlocked from backend if we don't have explicit state stored
@@ -566,13 +572,15 @@ const Dashboard = ({
         revisionReason, progress, progressMessage,
         urlInput = '', urlRequirements = '', urlSource = '', urlFetchSummary = null,
         urlFetching = false,
-        skillFiles = [] // Add skills files to destructuring
+        skillFiles = [], // Add skills files to destructuring
+        uploadedSkills = [] // Already uploaded skills from backend
     } = activeState;
 
     // Helpers to update active project state from UI components natively 
     const setFiles = (v) => setProjectState(selectedProjectKey, { files: typeof v === 'function' ? v(activeState.files || []) : v });
     const setLinkedFiles = (v) => setProjectState(selectedProjectKey, { linkedFiles: typeof v === 'function' ? v(activeState.linkedFiles || []) : v });
     const setSkillFiles = (v) => setProjectState(selectedProjectKey, { skillFiles: typeof v === 'function' ? v(activeState.skillFiles || []) : v });
+    const setUploadedSkills = (v) => setProjectState(selectedProjectKey, { uploadedSkills: typeof v === 'function' ? v(activeState.uploadedSkills || []) : v });
     const setTextInput = (v) => setProjectState(selectedProjectKey, { textInput: typeof v === 'function' ? v(activeState.textInput) : v });
     const setUrlInput = (v) => setProjectState(selectedProjectKey, { urlInput: typeof v === 'function' ? v(activeState.urlInput) : v });
     const setUrlRequirements = (v) => setProjectState(selectedProjectKey, { urlRequirements: typeof v === 'function' ? v(activeState.urlRequirements) : v });
@@ -1419,6 +1427,126 @@ const Dashboard = ({
         setProjects(builtProjects);
     }, [governanceHistory, history, extractProjectMetaFromDocument, setProjects]);
 
+    // Fetch and sync already uploaded skill files when selected project switches
+    useEffect(() => {
+        if (!selectedProjectKey) return;
+        const fetchUploadedSkills = async () => {
+            try {
+                const token = localStorage.getItem('token');
+                const response = await fetch(API_ENDPOINTS.GOVERNANCE_SKILLS_MD_FILES(selectedProjectKey), {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.files && Array.isArray(data.files)) {
+                        setProjectState(selectedProjectKey, { uploadedSkills: data.files });
+                    }
+                }
+            } catch (err) {
+                console.error('Failed to fetch project skills files:', err);
+            }
+        };
+        fetchUploadedSkills();
+    }, [selectedProjectKey]);
+
+    const handleSkillsUpload = async (e) => {
+        const selectedFiles = Array.from(e.target.files || []);
+        if (selectedFiles.length === 0) return;
+
+        setError('');
+        
+        try {
+            const skillsToSave = [...uploadedSkills];
+            
+            for (let i = 0; i < selectedFiles.length; i++) {
+                const file = selectedFiles[i];
+                if (!file.name.endsWith('.md') && !file.name.endsWith('.txt')) {
+                    alert(`${file.name} is not supported. Only .md and .txt files are allowed in Skills.`);
+                    continue;
+                }
+                
+                const content = await new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result);
+                    reader.onerror = () => reject(reader.error);
+                    reader.readAsText(file);
+                });
+                
+                const existingIndex = skillsToSave.findIndex(f => f.name === file.name);
+                const newSkill = {
+                    name: file.name,
+                    content: content,
+                    uploadedAt: new Date().toISOString()
+                };
+                
+                if (existingIndex >= 0) {
+                    skillsToSave[existingIndex] = newSkill;
+                } else {
+                    skillsToSave.push(newSkill);
+                }
+            }
+            
+            // Update local state
+            setUploadedSkills(skillsToSave);
+            
+            // Save in localStorage for persistence
+            localStorage.setItem(`skills_md_files_${selectedProjectKey}`, JSON.stringify(skillsToSave));
+            
+            // Save to backend immediately!
+            const token = localStorage.getItem('token');
+            if (token) {
+                await fetch(API_ENDPOINTS.GOVERNANCE_SKILLS_MD_FILES(selectedProjectKey), {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify(skillsToSave)
+                });
+                console.log(`Successfully synced ${skillsToSave.length} skill files to project.`);
+            }
+        } catch (err) {
+            console.error('Failed to parse or save skills:', err);
+            setError('Failed to process and upload skill files.');
+        }
+        
+        // Clear input value
+        e.target.value = '';
+    };
+
+    const handleRemoveSkill = async (fileName) => {
+        try {
+            const updated = uploadedSkills.filter(f => f.name !== fileName);
+            setUploadedSkills(updated);
+            
+            if (updated.length === 0) {
+                localStorage.removeItem(`skills_md_files_${selectedProjectKey}`);
+            } else {
+                localStorage.setItem(`skills_md_files_${selectedProjectKey}`, JSON.stringify(updated));
+            }
+            
+            const token = localStorage.getItem('token');
+            if (token) {
+                await fetch(API_ENDPOINTS.GOVERNANCE_SKILLS_MD_FILES(selectedProjectKey), {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify(updated)
+                });
+            }
+        } catch (err) {
+            console.error('Failed to remove skill file:', err);
+        }
+    };
+
+    const handleViewSkill = (file) => {
+        setSelectedSkillContent(file.content);
+        setSelectedSkillName(file.name);
+        setShowSkillsViewer(true);
+    };
+
     // Redirect to new project page if no projects exist and not in new project mode
     useEffect(() => {
         if (!projectsLoading && projects.length === 0 && !isNewProjectMode) {
@@ -1850,6 +1978,41 @@ const Dashboard = ({
                             markdown: uploadData.markdown,
                             html: uploadData.html
                         });
+                    }
+
+                    // Parse and save skills.md to governance response's skills_md_files
+                    try {
+                        const skillsToSave = [];
+                        for (let i = 0; i < skillFiles.length; i++) {
+                            const file = skillFiles[i];
+                            const content = await new Promise((resolve, reject) => {
+                                const reader = new FileReader();
+                                reader.onload = () => resolve(reader.result);
+                                reader.onerror = () => reject(reader.error);
+                                reader.readAsText(file);
+                            });
+                            skillsToSave.push({
+                                name: file.name,
+                                content: content,
+                                uploadedAt: new Date().toISOString()
+                            });
+                        }
+                        
+                        // Save in localStorage
+                        localStorage.setItem(`skills_md_files_${taskKey}`, JSON.stringify(skillsToSave));
+                        
+                        // Save in backend
+                        await fetch(API_ENDPOINTS.GOVERNANCE_SKILLS_MD_FILES(taskKey), {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${token}`
+                            },
+                            body: JSON.stringify(skillsToSave)
+                        });
+                        console.log(`Successfully saved ${skillsToSave.length} skill files to project governance context.`);
+                    } catch (skillErr) {
+                        console.error('Failed to parse and save skills to governance context:', skillErr);
                     }
                 }
                 setProjectState(taskKey, { progress: 60, progressMessage: 'Skills processed...' });
@@ -3045,40 +3208,83 @@ const Dashboard = ({
                                                     </div>
                                                 </div>
                                             ) : activeTab === 'skills' ? (
-                                                <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-app-bg-page/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && !isEnterpriseUploadBlocked ? 'border-app-border hover:border-blue-400 cursor-pointer' : 'border-app-border opacity-60'}`}>
-                                                    <input
-                                                        type="file"
-                                                        id={`file-upload-skills`}
-                                                        multiple
-                                                        onChange={handleFileChange}
-                                                        accept=".md,.txt"
-                                                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                                        disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
-                                                    />
-                                                    <div className="mx-auto w-12 h-12 text-app-text-light mb-3 group-hover:text-app-primary transition-colors">
-                                                        <FileText className="w-12 h-12" />
+                                                <div className="space-y-6">
+                                                    {/* Drop Zone */}
+                                                    <div className={`border-2 border-dashed rounded-xl p-6 sm:p-10 text-center transition-colors bg-app-bg-page/50 group relative ${selectedProject && (selectedProject.documents.length === 0 || revisionUnlocked) && !isEnterpriseUploadBlocked ? 'border-emerald-300 hover:border-emerald-500 cursor-pointer' : 'border-app-border opacity-60'}`}>
+                                                        <input
+                                                            type="file"
+                                                            id={`file-upload-skills`}
+                                                            multiple
+                                                            onChange={handleSkillsUpload}
+                                                            accept=".md,.txt"
+                                                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                                                            disabled={!selectedProject || (selectedProject.documents.length > 0 && !revisionUnlocked) || isEnterpriseUploadBlocked}
+                                                        />
+                                                        <div className="mx-auto w-12 h-12 text-emerald-500 mb-3 group-hover:text-emerald-600 transition-colors">
+                                                            <Sparkles className="w-12 h-12" />
+                                                        </div>
+                                                        <span className="mt-2 block text-sm font-semibold text-app-text-main">
+                                                            Click or drag & drop to upload Skills/Methods files
+                                                        </span>
+                                                        <span className="mt-1 block text-xs text-app-text-light">
+                                                            Markdown (.md) and Text (.txt) files only (max 100MB)
+                                                        </span>
                                                     </div>
-                                                    <span className="mt-2 block text-sm font-medium text-app-text-main">
-                                                        {skillFiles.length > 0
-                                                            ? `${skillFiles.length} skill file(s) selected`
-                                                            : "Click to select skill files (max 100MB total)"}
-                                                    </span>
-                                                    {skillFiles.length > 0 && (
-                                                        <div className="mt-2 text-xs text-app-text-muted flex flex-col items-center">
-                                                            {skillFiles.map((f, i) => (
-                                                                <span key={i} className="truncate max-w-[200px]">{f.name}</span>
-                                                            ))}
+
+                                                    {/* Info box explaining how they work */}
+                                                    <div className="bg-gradient-to-r from-emerald-50/70 to-teal-50/70 dark:from-emerald-950/20 dark:to-teal-950/20 border border-emerald-200/50 dark:border-emerald-900/30 rounded-xl p-4 flex gap-3 text-xs leading-relaxed text-emerald-800 dark:text-emerald-300">
+                                                        <span className="text-lg">💡</span>
+                                                        <div className="text-left">
+                                                            <p className="font-bold mb-1 text-emerald-950 dark:text-emerald-200">Interactive Requirements Elicitation Techniques</p>
+                                                            <p className="mb-2">
+                                                                Uploading a <code>skills.md</code> or <code>methods.md</code> file containing custom elicitation techniques (e.g., <em>Brainstorming</em>, <em>What-If Analysis</em>) automatically parses those techniques and displays them as selectable interactive options in the <strong>BRD Chat</strong> sidebar.
+                                                            </p>
+                                                            <p>
+                                                                If no file is uploaded, the AI automatically suggests 5 customized, SDLC-aligned elicitation techniques. You can click on any of these cards inside the BRD Chat to surgically apply the technique and discover robust, edge-case requirements!
+                                                            </p>
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Uploaded Skills list */}
+                                                    {uploadedSkills.length > 0 && (
+                                                        <div className="space-y-2 mt-4 text-left">
+                                                            <p className="text-xs font-semibold text-app-text-label uppercase tracking-wider">Uploaded Skill Files</p>
+                                                            <div className="space-y-2">
+                                                                {uploadedSkills.map((file, index) => (
+                                                                    <div
+                                                                        key={index}
+                                                                        className="flex items-center justify-between p-3 bg-app-bg-card border border-app-border rounded-lg hover:bg-app-bg-hover transition-colors"
+                                                                    >
+                                                                        <div className="flex items-center gap-3 flex-1 min-w-0">
+                                                                            <Sparkles className="w-4 h-4 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
+                                                                            <div className="flex-1 min-w-0">
+                                                                                <p className="text-sm font-semibold text-app-text-main truncate">{file.name}</p>
+                                                                                <p className="text-xs text-app-text-muted">
+                                                                                    Uploaded {file.uploadedAt ? new Date(file.uploadedAt).toLocaleDateString() : new Date().toLocaleDateString()}
+                                                                                </p>
+                                                                            </div>
+                                                                        </div>
+                                                                        <div className="flex items-center gap-2 flex-shrink-0">
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => handleViewSkill(file)}
+                                                                                className="px-3 py-1.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/30 rounded-md transition-colors"
+                                                                            >
+                                                                                View
+                                                                            </button>
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => handleRemoveSkill(file.name)}
+                                                                                className="px-3 py-1.5 text-xs font-semibold text-app-status-error hover:bg-app-status-errorBg rounded-md transition-colors"
+                                                                            >
+                                                                                Remove
+                                                                            </button>
+                                                                        </div>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
                                                         </div>
                                                     )}
-                                                    <span className="mt-1 block text-xs text-app-text-light">
-                                                        Markdown (.md) and Text (.txt) files only
-                                                    </span>
-                                                    <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-left">
-                                                        <p className="text-xs text-blue-900 font-semibold mb-1">💡 What are Skills?</p>
-                                                        <p className="text-xs text-blue-700">
-                                                            Skills are additional context files (guides, documentation, best practices) that help the AI understand your project better and provide more accurate analysis.
-                                                        </p>
-                                                    </div>
                                                 </div>
                                             ) : (
                                                 <div className="space-y-6">
@@ -3860,6 +4066,51 @@ const Dashboard = ({
                         )}
                     </div>
                 </main>
+            )}
+
+            {/* ── SKILLS FILE VIEWER MODAL ── */}
+            {showSkillsViewer && (
+                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[9999] p-4">
+                    <div className="bg-app-bg-card rounded-2xl shadow-2xl border border-app-border max-w-4xl w-full max-h-[80vh] flex flex-col">
+                        {/* Modal Header */}
+                        <div className="flex items-center justify-between p-6 border-b border-app-border">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-xl bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center">
+                                    <Sparkles className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                                </div>
+                                <div>
+                                    <h3 className="text-lg font-bold text-app-text-main text-left">{selectedSkillName}</h3>
+                                    <p className="text-xs text-app-text-muted text-left">Skills File Viewer</p>
+                                </div>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setShowSkillsViewer(false)}
+                                className="w-8 h-8 rounded-lg hover:bg-app-bg-hover flex items-center justify-center transition-colors"
+                            >
+                                <span className="text-xl text-app-text-muted">×</span>
+                            </button>
+                        </div>
+                        
+                        {/* Modal Content */}
+                        <div className="flex-1 overflow-y-auto p-6">
+                            <pre className="text-sm text-app-text-main bg-app-bg-page p-4 rounded-lg border border-app-border whitespace-pre-wrap break-words font-mono text-left">
+                                {selectedSkillContent}
+                            </pre>
+                        </div>
+                        
+                        {/* Modal Footer */}
+                        <div className="flex items-center justify-end gap-3 p-6 border-t border-app-border">
+                            <button
+                                type="button"
+                                onClick={() => setShowSkillsViewer(false)}
+                                className="px-4 py-2.5 text-sm font-semibold text-app-text-main bg-app-bg-page border border-app-border rounded-lg hover:bg-app-bg-hover transition-colors"
+                            >
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                </div>
             )}
         </>
     );

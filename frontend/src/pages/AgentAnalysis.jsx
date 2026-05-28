@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { API_ENDPOINTS } from '../config';
 import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { FileText, Download, Server, Users, Activity, Clock, Loader2, KeyRound, Plus, Circle, CheckCircle2 } from 'lucide-react';
+import { FileText, Download, Server, Users, Activity, Clock, Loader2, KeyRound, Plus, Circle, CheckCircle2, Info } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
 import ReactFlow, { Background, Controls } from 'reactflow';
 import 'reactflow/dist/style.css';
@@ -607,6 +607,12 @@ export default function AgentAnalysis({
     const [chatSending, setChatSending] = useState(false);
     const chatEndRef = useRef(null);
 
+    // Dynamic requirements elicitation techniques states
+    const [elicitationTechniques, setElicitationTechniques] = useState([]);
+    const [techniquesLoading, setTechniquesLoading] = useState(false);
+    const [techniquesError, setTechniquesError] = useState('');
+    const [techniquesSource, setTechniquesSource] = useState('ai_generated'); // 'uploaded' | 'ai_generated' | 'static_fallback'
+
     // Cache results by project key to prevent data loss when switching projects
     const resultCacheRef = useRef({});
     const lastLoadedProjectRef = useRef(null);
@@ -833,6 +839,7 @@ export default function AgentAnalysis({
             setProgress(100);
             setProgressMessage('Analysis complete!');
             await saveToHistory(finalResult, selectedProjectKey, effectiveRepoContext);
+            return finalResult;
         } catch (err) {
             console.error('Analysis error:', err);
             const userFriendlyError = formatAnalysisError(err);
@@ -1516,10 +1523,11 @@ export default function AgentAnalysis({
         try {
             setProgress(30);
             setProgressMessage('Performing targeted update...');
-            await fetchAnalysisRef.current(aiPayload, token, result, {
+            const updatedResult = await fetchAnalysisRef.current(aiPayload, token, result, {
                 repoContext: repoContext,
                 governanceContext: governanceContext,
             });
+            return updatedResult;
         } catch (err) {
             const userFriendlyError = formatAnalysisError(err);
             setError(userFriendlyError || 'Failed to update analysis');
@@ -1527,6 +1535,41 @@ export default function AgentAnalysis({
             setProcessing(false);
         }
     };
+
+    // ── Fetch Elicitation Techniques ──
+    const fetchElicitationTechniques = useCallback(async (projectToken) => {
+        if (!projectToken || !token) return;
+        setTechniquesLoading(true);
+        setTechniquesError('');
+        try {
+            const response = await fetch(API_ENDPOINTS.GOVERNANCE_ELICITATION_TECHNIQUES(projectToken), {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                },
+            });
+            if (response.ok) {
+                const data = await response.json();
+                setElicitationTechniques(data.techniques || []);
+                setTechniquesSource(data.source || 'ai_generated');
+            } else {
+                console.error('Failed to fetch elicitation techniques:', await response.text());
+                setTechniquesError('Failed to load requirement elicitation techniques.');
+            }
+        } catch (err) {
+            console.error('Error fetching elicitation techniques:', err);
+            setTechniquesError('Error connecting to techniques engine.');
+            setElicitationTechniques([]);
+        } finally {
+            setTechniquesLoading(false);
+        }
+    }, [token]);
+
+    // Fetch techniques when project switches
+    useEffect(() => {
+        if (selectedProjectKey) {
+            fetchElicitationTechniques(selectedProjectKey);
+        }
+    }, [selectedProjectKey, fetchElicitationTechniques]);
 
     // ── Load chat messages from database ──
     const loadChatMessages = useCallback(async (documentId) => {
@@ -1600,16 +1643,16 @@ export default function AgentAnalysis({
         await saveChatMessage(userMsg);
 
         try {
-            await handleRefineAnalysis(message, 'feedback');
+            const updatedResult = await handleRefineAnalysis(message, 'feedback');
 
             // After analysis completes, add an assistant confirmation message
             const assistantMsg = {
                 id: `resp_${Date.now()}`,
                 role: 'assistant',
-                content: result?.analysis?.change_summary
+                content: updatedResult?.analysis?.change_summary
                     || 'Analysis updated successfully based on your input.',
-                affectedSections: result?.analysis?.affected_sections || [],
-                changeSummary: result?.analysis?.change_summary,
+                affectedSections: updatedResult?.analysis?.affected_sections || [],
+                changeSummary: updatedResult?.analysis?.change_summary,
                 timestamp: new Date().toISOString(),
             };
             setChatMessages(prev => [...prev, assistantMsg]);
@@ -1631,6 +1674,57 @@ export default function AgentAnalysis({
         } finally {
             setChatSending(false);
             // Scroll to bottom of chat
+            setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+        }
+    };
+
+    // ── Apply elicitation technique ──
+    const handleApplyTechnique = async (tech) => {
+        if (chatSending || processing) return;
+
+        const promptText = `Please apply the "${tech.name}" elicitation technique to surgically enhance and discover edge-case requirements for this BRD.\n\nMethodology Instructions:\n"${tech.description}"`;
+
+        const msgId = `msg_${Date.now()}`;
+        const userMsg = {
+            id: msgId,
+            role: 'user',
+            content: `**Applying requirements elicitation technique: [${tech.name}]**\n\n*Using methodology instructions:* \n> ${tech.description.replace(/\n/g, ' ')}\n\nProcessing BRD enhancement based on this SDLC process.`,
+            timestamp: new Date().toISOString(),
+        };
+
+        setChatMessages(prev => [...prev, userMsg]);
+        setChatSending(true);
+
+        // Save user message to database
+        await saveChatMessage(userMsg);
+
+        try {
+            const updated = await handleRefineAnalysis(promptText, 'feedback');
+
+            // Add the assistant confirmation message with the ACTUAL change_summary!
+            const assistantMsg = {
+                id: `resp_${Date.now()}`,
+                role: 'assistant',
+                content: updated?.analysis?.change_summary
+                    || `BRD successfully enhanced and updated based on the [${tech.name}] elicitation technique.`,
+                affectedSections: updated?.analysis?.affected_sections || [],
+                changeSummary: updated?.analysis?.change_summary,
+                timestamp: new Date().toISOString(),
+            };
+            setChatMessages(prev => [...prev, assistantMsg]);
+            await saveChatMessage(assistantMsg);
+        } catch (err) {
+            const errMsg = {
+                id: `err_${Date.now()}`,
+                role: 'assistant',
+                content: `Technique application failed: ${err.message || 'Unknown error'}`,
+                isError: true,
+                timestamp: new Date().toISOString(),
+            };
+            setChatMessages(prev => [...prev, errMsg]);
+            await saveChatMessage(errMsg);
+        } finally {
+            setChatSending(false);
             setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
         }
     };
@@ -1695,6 +1789,25 @@ export default function AgentAnalysis({
             setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
         }
     };
+
+    // ── Memoized Chat Messages with Prepend Welcome Elicitation Message ──
+    const renderedMessages = useMemo(() => {
+        if (elicitationTechniques.length === 0) return chatMessages;
+
+        // Check if welcome message is already in chatMessages from DB to avoid duplicating it
+        const hasWelcome = chatMessages.some(m => m.id === 'welcome-elicitation');
+        if (hasWelcome) return chatMessages;
+
+        const welcomeMsg = {
+            id: 'welcome-elicitation',
+            role: 'assistant',
+            content: `Hello! I have completed the initial BRD analysis. Below are 5 tailored requirements elicitation techniques synthesized based on the project requirements. Select any technique below to surgically enhance your BRD:`,
+            timestamp: result?.upload_date || new Date().toISOString(),
+            isElicitation: true
+        };
+
+        return [welcomeMsg, ...chatMessages];
+    }, [chatMessages, elicitationTechniques, result]);
 
     // ── Helper: render a mermaid code string to a PNG data-URL ──
     const renderMermaidToPng = async (mermaidCode) => {
@@ -2504,7 +2617,7 @@ export default function AgentAnalysis({
                                 {/* Chat Message Thread */}
                                 <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4 bg-gray-50">
                                     {/* Welcome message */}
-                                    {chatMessages.length === 0 && (
+                                    {renderedMessages.length === 0 && (
                                         <div className="text-center py-8">
                                             <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center mx-auto mb-3">
                                                 <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2515,24 +2628,11 @@ export default function AgentAnalysis({
                                             <p className="text-xs text-gray-500 leading-relaxed max-w-[280px] mx-auto">
                                                 Describe what you want to update in the BRD analysis.
                                             </p>
-                                            {/* <div className="mt-4 space-y-2">
-                                                {[
-                                                    'Describe what needs to be Changed..',
-                                                ].map((suggestion, i) => (
-                                                    <button
-                                                        key={i}
-                                                        onClick={() => setChatInput(suggestion)}
-                                                        className="block w-full text-left text-xs text-blue-600 hover:text-blue-800 bg-white hover:bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 transition-colors"
-                                                    >
-                                                        "{suggestion}"
-                                                    </button>
-                                                ))}
-                                            </div> */}
                                         </div>
                                     )}
 
                                     {/* Chat messages */}
-                                    {chatMessages.map((msg) => (
+                                    {renderedMessages.map((msg) => (
                                         <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                                             {/* Label */}
                                             <span className="text-[10px] text-gray-400 mb-1 px-1">
@@ -2550,6 +2650,75 @@ export default function AgentAnalysis({
                                                         {msg.content}
                                                     </ReactMarkdown>
                                                 </div>
+
+                                                {/* Techniques Cards Deck inside bubble */}
+                                                {msg.isElicitation && elicitationTechniques.length > 0 && (
+                                                    <div className="mt-4 pt-3 border-t border-gray-100 space-y-3">
+                                                        <div className="flex items-center justify-between gap-1.5 pb-1">
+                                                            <span className="text-[9px] font-bold uppercase tracking-wider text-gray-400">
+                                                                Refinement Techniques
+                                                            </span>
+                                                            <span className={`text-[8px] font-semibold px-2 py-0.5 rounded-full ${
+                                                                techniquesSource === 'uploaded' 
+                                                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' 
+                                                                    : 'bg-blue-50 text-blue-700 border border-blue-100'
+                                                            }`}>
+                                                                {techniquesSource === 'uploaded' ? 'Custom Skill' : 'AI SDLC Process'}
+                                                            </span>
+                                                        </div>
+                                                        <div className="grid grid-cols-1 gap-2.5">
+                                                            {elicitationTechniques.map((tech, idx) => (
+                                                                <div 
+                                                                    key={idx} 
+                                                                    className="bg-gray-50/80 border border-gray-200/60 hover:border-blue-300 rounded-xl p-3 transition-all duration-300 flex flex-col justify-between group hover:shadow-md hover:bg-white"
+                                                                >
+                                                                    <div className="flex items-start justify-between gap-2 mb-2">
+                                                                        <span className="font-bold text-gray-700 text-[11px] leading-tight group-hover:text-blue-600 transition-colors">
+                                                                            {tech.name}
+                                                                        </span>
+                                                                        
+                                                                        {/* Tooltip info button */}
+                                                                        <div className="relative group flex-shrink-0">
+                                                                            <button 
+                                                                                type="button"
+                                                                                className="text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-all p-1 rounded-full focus:outline-none"
+                                                                                title={tech.name}
+                                                                            >
+                                                                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                                                                </svg>
+                                                                            </button>
+                                                                            {/* Tooltip Content */}
+                                                                            <div className="absolute right-0 bottom-full mb-2 w-64 p-3 bg-slate-900/95 text-white text-[10.5px] leading-relaxed rounded-xl shadow-xl border border-slate-800 backdrop-blur-md opacity-0 pointer-events-none group-hover:opacity-100 transition-all duration-300 z-50 transform translate-y-1 group-hover:opacity-100 group-hover:translate-y-0">
+                                                                                <div className="font-bold text-blue-400 mb-1 flex items-center justify-between">
+                                                                                    <span>{tech.name}</span>
+                                                                                    <span className="text-[8px] font-semibold uppercase tracking-wider text-gray-400 bg-slate-800 px-1.5 py-0.5 rounded">
+                                                                                        {techniquesSource === 'uploaded' ? 'Custom Skill' : 'AI SDLC'}
+                                                                                    </span>
+                                                                                </div>
+                                                                                <div className="text-gray-200 mt-1 whitespace-pre-line leading-relaxed font-normal">
+                                                                                    {tech.description}
+                                                                                </div>
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+
+                                                                    <button
+                                                                        onClick={() => handleApplyTechnique(tech)}
+                                                                        disabled={chatSending || processing}
+                                                                        className="w-full text-center bg-white hover:bg-blue-600 text-blue-600 hover:text-white border border-gray-200 hover:border-transparent rounded-lg py-1.5 px-3 text-[10px] font-bold transition-all duration-200 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none flex items-center justify-center gap-1 shadow-sm"
+                                                                    >
+                                                                        <span>Apply Method</span>
+                                                                        <svg className="w-3 h-3 transition-transform group-hover:translate-x-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                                                                        </svg>
+                                                                    </button>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                )}
+
                                                 {/* Affected sections badge */}
                                                 {msg.affectedSections && msg.affectedSections.length > 0 && (
                                                     <div className="mt-2 pt-2 border-t border-gray-100 flex flex-wrap gap-1">

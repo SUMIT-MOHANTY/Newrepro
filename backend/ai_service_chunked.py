@@ -880,7 +880,7 @@ Think of this like a "Find and Replace" operation — only what the user explici
 ## OUTPUT FORMAT
 Return ONLY valid JSON (no markdown fences):
 {
-  "change_summary": "One sentence describing what changed and why",
+  "change_summary": "A friendly, conversational, and highly detailed message explaining exactly what enhancements or changes you implemented in the BRD based on the requested technique/feedback, why it benefits the project, and inviting user feedback on this update.",
   "affected_sections": ["section names that changed"],
   "stage1_updates": {
     // Only include fields that actually changed. Omit unchanged fields entirely.

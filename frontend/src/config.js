@@ -71,6 +71,7 @@ export const API_ENDPOINTS = {
     GOVERNANCE_PREREQUISITES_COMPLETE: (id) => `${API_BASE_URL}/governance/${id}/prerequisites-complete`,
     GOVERNANCE_CLAUDE_MD_FILES: (id) => `${API_BASE_URL}/governance/${id}/claude-md-files`,
     GOVERNANCE_SKILLS_MD_FILES: (id) => `${API_BASE_URL}/governance/${id}/skills-md-files`,
+    GOVERNANCE_ELICITATION_TECHNIQUES: (id) => `${API_BASE_URL}/api/projects/${id}/elicitation-techniques`,
     GOVERNANCE_QUESTION_ALL: `${API_BASE_URL}/governance/questions/all`,
     GOVERNANCE_QUESTION_CREATE: `${API_BASE_URL}/governance/questions`,
     GOVERNANCE_QUESTION_UPDATE: (id) => `${API_BASE_URL}/governance/questions/${id}`,
