@@ -1809,6 +1809,64 @@ export default function AgentAnalysis({
         return [welcomeMsg, ...chatMessages];
     }, [chatMessages, elicitationTechniques, result]);
 
+    // ── Memoized custom Markdown components to prevent unmounting/remounting on parent state change ──
+    const markdownComponents = useMemo(() => ({
+        h1: ({ node, ...props }) => <h1 className="text-lg font-bold text-gray-900 mt-6 mb-3 pb-2 border-b-2 border-gray-200" {...props} />,
+        h2: ({ node, ...props }) => <h2 className="text-base font-bold text-gray-900 mt-5 mb-2 pb-1 border-b border-gray-200" {...props} />,
+        h3: ({ node, ...props }) => <h3 className="text-sm font-semibold text-gray-800 mt-4 mb-2" {...props} />,
+        h4: ({ node, ...props }) => <h4 className="text-sm font-semibold text-gray-700 mt-3 mb-1" {...props} />,
+        p: ({ node, ...props }) => <p className="text-sm text-gray-700 leading-relaxed mb-3" {...props} />,
+        ul: ({ node, ...props }) => <ul className="list-disc list-outside ml-5 space-y-1 mb-3 text-sm text-gray-700" {...props} />,
+        ol: ({ node, ...props }) => <ol className="list-decimal list-outside ml-5 space-y-1 mb-3 text-sm text-gray-700" {...props} />,
+        li: ({ node, ...props }) => <li className="leading-relaxed text-sm" {...props} />,
+        table: ({ node, ...props }) => (
+            <div className="overflow-x-auto my-6">
+                <table className="min-w-full divide-y divide-gray-200 border border-gray-200 rounded-lg" {...props} />
+            </div>
+        ),
+        thead: ({ node, ...props }) => <thead className="bg-gray-50" {...props} />,
+        th: ({ node, ...props }) => <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider border-b border-gray-200" {...props} />,
+        td: ({ node, ...props }) => <td className="px-4 py-3 text-sm text-gray-700 border-t border-gray-200" {...props} />,
+        code: ({ node, inline, className, children, ...props }) => {
+            if (inline) {
+                return <code className="bg-gray-100 text-red-600 px-1 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>;
+            }
+            const codeContent = String(children || '').trim();
+            const isMermaid = codeContent.startsWith('graph') ||
+                codeContent.includes('flowchart') ||
+                codeContent.includes('sequenceDiagram') ||
+                codeContent.includes('classDiagram') ||
+                codeContent.includes('stateDiagram');
+
+            const isErDiagram = codeContent.startsWith('erDiagram') ||
+                (codeContent.toLowerCase().startsWith('erdiagram'));
+
+            if (isMermaid || isErDiagram) {
+                return <MermaidDiagram code={codeContent} showDownload={true} />;
+            }
+
+            return <code className="block bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-xs font-mono" {...props}>{children}</code>;
+        },
+        pre: ({ node, children, ...props }) => {
+            const preContent = String(children || '');
+            const codeMatch = preContent.match(/<code[^>]*>([\s\S]*?)<\/code>/);
+            const codeContent = codeMatch ? codeMatch[1] : preContent;
+
+            if (codeContent.includes('graph') ||
+                codeContent.includes('flowchart') ||
+                codeContent.includes('sequenceDiagram') ||
+                codeContent.includes('classDiagram') ||
+                codeContent.includes('stateDiagram')) {
+                return <MermaidDiagram code={codeContent} />;
+            }
+
+            return <pre className="bg-gray-900 rounded-lg my-4" {...props}>{children}</pre>;
+        },
+        blockquote: ({ node, ...props }) => <blockquote className="border-l-4 border-blue-500 pl-4 italic text-gray-600 my-4 bg-blue-50 py-2" {...props} />,
+        a: ({ node, ...props }) => <a className="text-blue-600 hover:text-blue-800 underline font-medium" {...props} />,
+        strong: ({ node, ...props }) => <strong className="font-bold text-gray-900" {...props} />,
+    }), []);
+
     // ── Helper: render a mermaid code string to a PNG data-URL ──
     const renderMermaidToPng = async (mermaidCode) => {
         try {
@@ -2706,7 +2764,7 @@ export default function AgentAnalysis({
                                                                                 </svg>
                                                                             </button>
                                                                             {/* Tooltip Content */}
-                                                                            <div className="absolute right-0 bottom-full mb-2 w-64 p-3 bg-slate-900/95 text-white text-[10.5px] leading-relaxed rounded-xl shadow-xl border border-slate-800 backdrop-blur-md opacity-0 pointer-events-none group-hover/tooltip:opacity-100 group-hover/tooltip:translate-y-0 transition-all duration-300 z-50 transform translate-y-1">
+                                                                            <div className="absolute right-full -top-12 mr-3 w-64 p-3 bg-slate-900/95 text-white text-[10.5px] leading-relaxed rounded-xl shadow-xl border border-slate-800 backdrop-blur-md opacity-0 pointer-events-none group-hover/tooltip:opacity-100 group-hover/tooltip:translate-x-0 transition-all duration-300 z-50 transform translate-x-1">
                                                                                 <div className="font-bold text-blue-400 mb-1 flex items-center justify-between">
                                                                                     <span>{tech.name}</span>
                                                                                     <span className="text-[8px] font-semibold uppercase tracking-wider text-gray-400 bg-slate-800 px-1.5 py-0.5 rounded">
@@ -3178,65 +3236,7 @@ export default function AgentAnalysis({
                                                     return (
                                                         <ReactMarkdown
                                                             remarkPlugins={[remarkGfm]}
-                                                            components={{
-                                                                h1: ({ node, ...props }) => <h1 className="text-lg font-bold text-gray-900 mt-6 mb-3 pb-2 border-b-2 border-gray-200" {...props} />,
-                                                                h2: ({ node, ...props }) => <h2 className="text-base font-bold text-gray-900 mt-5 mb-2 pb-1 border-b border-gray-200" {...props} />,
-                                                                h3: ({ node, ...props }) => <h3 className="text-sm font-semibold text-gray-800 mt-4 mb-2" {...props} />,
-                                                                h4: ({ node, ...props }) => <h4 className="text-sm font-semibold text-gray-700 mt-3 mb-1" {...props} />,
-                                                                p: ({ node, ...props }) => <p className="text-sm text-gray-700 leading-relaxed mb-3" {...props} />,
-                                                                ul: ({ node, ...props }) => <ul className="list-disc list-outside ml-5 space-y-1 mb-3 text-sm text-gray-700" {...props} />,
-                                                                ol: ({ node, ...props }) => <ol className="list-decimal list-outside ml-5 space-y-1 mb-3 text-sm text-gray-700" {...props} />,
-                                                                li: ({ node, ...props }) => <li className="leading-relaxed text-sm" {...props} />,
-                                                                table: ({ node, ...props }) => (
-                                                                    <div className="overflow-x-auto my-6">
-                                                                        <table className="min-w-full divide-y divide-gray-200 border border-gray-200 rounded-lg" {...props} />
-                                                                    </div>
-                                                                ),
-                                                                thead: ({ node, ...props }) => <thead className="bg-gray-50" {...props} />,
-                                                                th: ({ node, ...props }) => <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider border-b border-gray-200" {...props} />,
-                                                                td: ({ node, ...props }) => <td className="px-4 py-3 text-sm text-gray-700 border-t border-gray-200" {...props} />,
-                                                                code: ({ node, inline, className, children, ...props }) => {
-                                                                    // Show inline code, show blocks based on config
-                                                                    if (inline) {
-                                                                        return <code className="bg-gray-100 text-red-600 px-1 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>;
-                                                                    }
-                                                                    // Check if this is a mermaid or erDiagram block
-                                                                    const codeContent = String(children || '').trim();
-                                                                    const isMermaid = codeContent.startsWith('graph') ||
-                                                                        codeContent.includes('flowchart') ||
-                                                                        codeContent.includes('sequenceDiagram') ||
-                                                                        codeContent.includes('classDiagram') ||
-                                                                        codeContent.includes('stateDiagram');
-
-                                                                    const isErDiagram = codeContent.startsWith('erDiagram') ||
-                                                                        (codeContent.toLowerCase().startsWith('erdiagram'));
-
-                                                                    if (isMermaid || isErDiagram) {
-                                                                        return <MermaidDiagram code={codeContent} showDownload={true} />;
-                                                                    }
-
-                                                                    return <code className="block bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-xs font-mono" {...props}>{children}</code>;
-                                                                },
-                                                                pre: ({ node, children, ...props }) => {
-                                                                    // Check if pre block contains mermaid
-                                                                    const preContent = String(children || '');
-                                                                    const codeMatch = preContent.match(/<code[^>]*>([\s\S]*?)<\/code>/);
-                                                                    const codeContent = codeMatch ? codeMatch[1] : preContent;
-
-                                                                    if (codeContent.includes('graph') ||
-                                                                        codeContent.includes('flowchart') ||
-                                                                        codeContent.includes('sequenceDiagram') ||
-                                                                        codeContent.includes('classDiagram') ||
-                                                                        codeContent.includes('stateDiagram')) {
-                                                                        return <MermaidDiagram code={codeContent} />;
-                                                                    }
-
-                                                                    return <pre className="bg-gray-900 rounded-lg my-4" {...props}>{children}</pre>;
-                                                                },
-                                                                blockquote: ({ node, ...props }) => <blockquote className="border-l-4 border-blue-500 pl-4 italic text-gray-600 my-4 bg-blue-50 py-2" {...props} />,
-                                                                a: ({ node, ...props }) => <a className="text-blue-600 hover:text-blue-800 underline font-medium" {...props} />,
-                                                                strong: ({ node, ...props }) => <strong className="font-bold text-gray-900" {...props} />,
-                                                            }}
+                                                            components={markdownComponents}
                                                         >
                                                             {filterContentForDisplay(analysisContent)}
                                                         </ReactMarkdown>
