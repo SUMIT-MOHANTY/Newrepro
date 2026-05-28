@@ -2670,26 +2670,43 @@ export default function AgentAnalysis({
                                                             {elicitationTechniques.map((tech, idx) => (
                                                                 <div 
                                                                     key={idx} 
-                                                                    className="bg-gray-50/80 border border-gray-200/60 hover:border-blue-300 rounded-xl p-3 transition-all duration-300 flex flex-col justify-between group hover:shadow-md hover:bg-white"
+                                                                    className="bg-gray-50/80 border border-gray-200/60 rounded-xl p-2.5 transition-all duration-300 flex items-center justify-between gap-3 hover:border-blue-300 hover:bg-white hover:shadow-xs group/card"
                                                                 >
-                                                                    <div className="flex items-start justify-between gap-2 mb-2">
-                                                                        <span className="font-bold text-gray-700 text-[11px] leading-tight group-hover:text-blue-600 transition-colors">
-                                                                            {tech.name}
-                                                                        </span>
-                                                                        
-                                                                        {/* Tooltip info button */}
-                                                                        <div className="relative group flex-shrink-0">
+                                                                    {/* Left: Technique Name clickable & highlights on hover */}
+                                                                    <span 
+                                                                        onClick={() => handleApplyTechnique(tech)}
+                                                                        className="font-bold text-gray-700 text-[11px] leading-tight group-hover/card:text-blue-600 transition-colors cursor-pointer flex-1 min-w-0 truncate"
+                                                                        title={`Apply methodology: ${tech.name}`}
+                                                                    >
+                                                                        {tech.name}
+                                                                    </span>
+                                                                    
+                                                                    {/* Right: Actions (Tick + Info) */}
+                                                                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                                                                        {/* Tick / Apply Button */}
+                                                                        <button
+                                                                            onClick={() => handleApplyTechnique(tech)}
+                                                                            disabled={chatSending || processing}
+                                                                            title="Apply this method"
+                                                                            className="text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 bg-white border border-gray-200/80 hover:border-emerald-200 transition-all p-1 rounded-full hover:scale-105 active:scale-95 shadow-xs disabled:opacity-50 disabled:pointer-events-none flex items-center justify-center"
+                                                                        >
+                                                                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                                                                            </svg>
+                                                                        </button>
+
+                                                                        {/* Info / Tooltip Button */}
+                                                                        <div className="relative group/tooltip flex-shrink-0">
                                                                             <button 
                                                                                 type="button"
-                                                                                className="text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-all p-1 rounded-full focus:outline-none"
-                                                                                title={tech.name}
+                                                                                className="text-gray-400 hover:text-blue-600 hover:bg-blue-50 bg-white border border-gray-200/80 hover:border-blue-200 transition-all p-1 rounded-full shadow-xs focus:outline-none flex items-center justify-center"
                                                                             >
                                                                                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                                                                 </svg>
                                                                             </button>
                                                                             {/* Tooltip Content */}
-                                                                            <div className="absolute right-0 bottom-full mb-2 w-64 p-3 bg-slate-900/95 text-white text-[10.5px] leading-relaxed rounded-xl shadow-xl border border-slate-800 backdrop-blur-md opacity-0 pointer-events-none group-hover:opacity-100 transition-all duration-300 z-50 transform translate-y-1 group-hover:opacity-100 group-hover:translate-y-0">
+                                                                            <div className="absolute right-0 bottom-full mb-2 w-64 p-3 bg-slate-900/95 text-white text-[10.5px] leading-relaxed rounded-xl shadow-xl border border-slate-800 backdrop-blur-md opacity-0 pointer-events-none group-hover/tooltip:opacity-100 group-hover/tooltip:translate-y-0 transition-all duration-300 z-50 transform translate-y-1">
                                                                                 <div className="font-bold text-blue-400 mb-1 flex items-center justify-between">
                                                                                     <span>{tech.name}</span>
                                                                                     <span className="text-[8px] font-semibold uppercase tracking-wider text-gray-400 bg-slate-800 px-1.5 py-0.5 rounded">
@@ -2702,17 +2719,6 @@ export default function AgentAnalysis({
                                                                             </div>
                                                                         </div>
                                                                     </div>
-
-                                                                    <button
-                                                                        onClick={() => handleApplyTechnique(tech)}
-                                                                        disabled={chatSending || processing}
-                                                                        className="w-full text-center bg-white hover:bg-blue-600 text-blue-600 hover:text-white border border-gray-200 hover:border-transparent rounded-lg py-1.5 px-3 text-[10px] font-bold transition-all duration-200 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none flex items-center justify-center gap-1 shadow-sm"
-                                                                    >
-                                                                        <span>Apply Method</span>
-                                                                        <svg className="w-3 h-3 transition-transform group-hover:translate-x-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M14 5l7 7m0 0l-7 7m7-7H3" />
-                                                                        </svg>
-                                                                    </button>
                                                                 </div>
                                                             ))}
                                                         </div>
