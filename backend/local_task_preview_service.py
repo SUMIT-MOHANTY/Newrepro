@@ -22,17 +22,21 @@ TYPE_CONFIG = {
 # index will be placed inside the same sprint.
 PHASE_TO_SPRINT_INDEX = {
     "foundation": 0,
-    "backend-core": 0,
+    "frontend-core": 0,
+    "frontend-features": 0,
+    "backend-core": 1,
     "backend-features": 1,
-    "frontend-core": 1,
-    "frontend-features": 2,
     "integration": 2,
+    "testing-polish": 3,
+    "testing": 3,
+    "polish": 3,
 }
 
 SPRINT_GROUP_LABELS = [
-    ("Foundation & Core Setup", "Project foundation, scaffolding, and core backend setup"),
-    ("Feature Development", "Backend and frontend feature implementation"),
-    ("Integration & Polish", "Frontend features, integration testing, and deployment preparation"),
+    ("Frontend Proto & Bootstrap", "Project bootstrap, setup, and all frontend UI screens/prototypes with dummy data"),
+    ("Backend Services & DB Config", "Database schemas, models, JWT auth, and third-party API configurations/external dependencies"),
+    ("Frontend-Backend Integration", "Connect frontend screens to backend APIs, replace dummy data, and run DB connectivity checks"),
+    ("Testing & Polish", "Comprehensive unit, integration, and E2E testing, and production deployment configuration")
 ]
 
 

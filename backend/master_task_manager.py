@@ -268,17 +268,56 @@ class MasterTaskManager:
                 task_type in capabilities.get("secondary", []))
     
     def _task_dependencies_met(self, task: Dict[str, Any]) -> bool:
-        """Check if task dependencies are satisfied"""
-        # For now, simple sequence-based dependency
-        task_sequence = task.get("sequence", 0)
-        
-        # Check if all previous tasks are completed
-        for prev_task in self.task_queue:
-            prev_sequence = prev_task.get("sequence", 0)
-            if prev_sequence < task_sequence and prev_task["status"] != "completed":
+        """Check if task's DIRECT dependencies are satisfied.
+
+        Previously this blocked any task whose sequence number was greater than
+        any uncompleted task — effectively serialising the entire queue.  Now we
+        only check the explicit ``linked_tasks`` / ``dependencies`` fields, which
+        is the correct DAG-based behaviour.  If a task has no explicit deps it is
+        immediately eligible.
+        """
+        # Build a quick lookup of completed task IDs (by internal title, id, or external_id)
+        completed_ids: set = set()
+        for t in self.task_queue:
+            if t.get("status") == "completed":
+                for key in ("id", "external_id", "task_id", "title"):
+                    val = t.get(key)
+                    if val:
+                        completed_ids.add(str(val))
+
+        # Gather this task's direct dependency identifiers
+        deps = []
+        for field in ("linked_tasks", "dependencies"):
+            raw = task.get(field)
+            if isinstance(raw, list):
+                deps = [str(d) for d in raw if d]
+                break
+
+        if not deps:
+            return True  # No declared deps → always ready
+
+        for dep_id in deps:
+            if dep_id not in completed_ids:
+                logger.debug(
+                    f"Task '{task.get('title')}' waiting for dependency '{dep_id}'"
+                )
                 return False
-                
+
         return True
+
+    def choose_best_agent_for_task_public(
+        self,
+        task: Dict[str, Any],
+        idle_agent_ids: List[str],
+    ) -> Optional[str]:
+        """Public wrapper around ``_choose_best_agent_for_task`` so that external
+        callers (e.g. ``agent_service._pick_next_task``) can perform skill-based
+        selection without accessing private methods.
+
+        Returns the agent_id of the highest-scoring agent, or ``None`` if no
+        suitable agent is found.
+        """
+        return self._choose_best_agent_for_task(task, idle_agent_ids)
     
     def _choose_best_agent_for_task(self, task: Dict[str, Any], idle_agents: List[str]) -> str:
         """Choose the best agent for a specific task using dynamic scoring based on specialization,

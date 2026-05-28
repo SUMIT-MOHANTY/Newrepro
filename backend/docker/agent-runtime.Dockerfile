@@ -24,6 +24,9 @@ RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && 
     ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
     ln -sf /usr/local/lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack
 
+COPY dsuite-deploy-agent.py /usr/local/bin/dsuite-deploy-agent.py
+RUN chmod +x /usr/local/bin/dsuite-deploy-agent.py
+
 WORKDIR /workspace
 
 CMD ["sleep", "infinity"]

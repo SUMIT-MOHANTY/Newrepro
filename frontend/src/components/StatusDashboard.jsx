@@ -275,6 +275,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const [showPreviewLogs, setShowPreviewLogs] = useState(false);
     const [processMode, setProcessMode] = useState(() => getProcessModeForProject(localStorage.getItem(PROJECT_STORAGE_KEY) || ''));
 
+
     // ── External Task API State ──────────────────────────────────────
     const [isGeneratingTasks, setIsGeneratingTasks] = useState(false);
     const [taskList, setTaskList] = useState([]);
@@ -310,6 +311,20 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         });
         return sprints.size;
     }, [sortedTaskList]);
+
+    const uniqueSprints = useMemo(() => {
+        const sprintsMap = new Map();
+        taskList.forEach(task => {
+            const sprintId = extractEntityId(task, 'sprint');
+            const sprintLabel = getTaskSprintLabel(task);
+            if (sprintId != null && sprintId !== '') {
+                sprintsMap.set(String(sprintId), sprintLabel);
+            }
+        });
+        return Array.from(sprintsMap.entries())
+            .map(([id, name]) => ({ id, name }))
+            .sort((a, b) => toNumber(a.id) - toNumber(b.id));
+    }, [taskList]);
     const autoAiAssistRunRef = useRef(new Set());
 
     const selectedProjectKeyRef = useRef(selectedProjectKey);
@@ -2378,7 +2393,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                             <Globe className="w-full h-full text-violet-600" />
                                                         </div>
                                                         <div>
-                                                            <h4 className="text-sm font-bold text-app-text-main">Deploy Agent</h4>
+                                            <h4 className="text-sm font-bold text-app-text-main">Deploy Agent</h4>
                                                             <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">agent/integration</p>
                                                         </div>
                                                     </div>
@@ -2397,6 +2412,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                         )}
                                                     </div>
                                                 </div>
+
+
 
                                                 <div className="flex-1 flex flex-col justify-end">
                                                     {previewStatus.status === 'running' && previewStatus.preview_url ? (

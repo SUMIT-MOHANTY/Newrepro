@@ -13,42 +13,138 @@ import llm_gateway
 logger = logging.getLogger(__name__)
 
 
-INTELLIGENT_TASK_GENERATION_PROMPT = """You are a senior AI systems architect specializing in multi-agent task orchestration.
+INTELLIGENT_TASK_GENERATION_PROMPT = """You are a senior AI systems architect and principal UX engineer specializing in multi-agent task orchestration and prototype-first product development.
 
-I will give you an Agent Action Plan markdown document. Your job is to convert it into a structured task list that multiple AI coding agents can execute IN PARALLEL without conflicts.
+I will give you an Agent Action Plan markdown document. Your job is to convert it into a structured task list that multiple AI coding agents can execute IN PARALLEL without conflicts — and where Sprint 1 produces a fully interactive, visually stunning, internally-linked frontend prototype that gives stakeholders a true bird's-eye view of the finished product.
 
-## Core Principles
+---
+
+## ═══════════════════════════════════════════════════════
+## PART 1 — SPRINT 1 FRONTEND PROTOTYPE PHILOSOPHY
+## ═══════════════════════════════════════════════════════
+
+Sprint 1 is NOT a collection of isolated screens. It is a **living, breathing application prototype** — a complete interactive story where every screen connects to every other screen, every button does something, and the end-user can walk through real user journeys end-to-end using realistic mock data.
+
+Think of Sprint 1 as building the **demo-ready product trailer**. When a stakeholder opens the app for the first time, they must be able to:
+  1. Navigate naturally between all major screens without hitting dead ends
+  2. Click buttons, fill forms, open modals, switch tabs — all with working UI state
+  3. See realistic, domain-appropriate mock data (not "User 1" or "Lorem ipsum")
+  4. Experience a visually polished, cohesive design that feels production-ready
+
+### THE GOLDEN RULE — ZERO DEAD UI
+**Every single interactive element in the prototype MUST do something.** No exceptions.
+- Every button → navigates to a screen, opens a modal/drawer, triggers a state change, or shows a toast notification
+- Every nav link → routes to its target page using React Router `<Link>` or `useNavigate()`
+- Every table row → is clickable and navigates to a detail view
+- Every form → has a working submit handler that shows a success/error state
+- Every card → responds to hover/click with visual feedback
+- Every dropdown/select → updates visible state when an option is chosen
+- Every tab → switches the visible panel content
+- Every search input → filters the displayed list in real-time (client-side, no API)
+
+If an agent builds a button that does nothing, the task has FAILED. There are no placeholder elements in Sprint 1.
+
+### NAVIGATION ARCHITECTURE REQUIREMENT
+TASK-00 MUST establish the navigation foundation that ALL frontend tasks depend on:
+  1. **React Router v6 setup** in `src/App.tsx` with ALL application routes pre-registered
+  2. **Shared Layout component** (`src/components/layout/AppLayout.tsx`) containing:
+     - Persistent sidebar with navigation links to every major section
+     - Top navigation bar with user avatar, notifications bell, and breadcrumbs
+     - Main content area where page components are rendered via `<Outlet />`
+  3. **Design token file** (`src/styles/tokens.css` or `src/theme/tokens.ts`) defining:
+     - Primary, secondary, accent, surface, and text color variables
+     - Typography scale (display, heading, body, caption font sizes)
+     - Spacing scale, border radius, shadow levels
+  4. **Global mock data store** (`src/mocks/mockData.ts`) with 5-10 realistic records per entity type, using domain-specific names, realistic values, and varied statuses
+  5. **Shared UI components** (`src/components/ui/`) — Button, Badge, Card, Modal, Table, Sidebar, etc. — used consistently by all page components
+
+Every subsequent Sprint 1 frontend task IMPORTS from these shared foundations. No task invents its own navigation, colors, or mock data structure.
+
+### DESIGN QUALITY STANDARD
+Sprint 1 prototype screens must be visually outstanding — not generic, not bare, not "bootstrap default."
+  - **Aesthetic direction**: Choose a clear, committed visual identity appropriate to the project domain (e.g., enterprise SaaS → clean, structured, data-dense; consumer app → warm, playful, card-based; fintech → precise, trustworthy, dark-mode-ready)
+  - **Typography**: Use a distinctive font pairing — a strong display/heading font plus a clean body font. Import from Google Fonts or use system fonts deliberately. Never default to Inter/Arial/system-ui without intention.
+  - **Color system**: Define a cohesive palette — one primary action color, one accent, semantic colors (success green, warning amber, error red), and surface/background layers. Apply consistently.
+  - **Spacing and layout**: Use consistent spacing scale. Pages should feel structured and breathable, not cramped or randomly spaced.
+  - **Micro-interactions**: Add CSS transitions on hover states, smooth route transitions, loading skeleton states, and animated feedback on form submissions.
+  - **Visual richness**: Charts/graphs must use realistic data shapes. Tables must have multi-column data. Dashboards must have KPI cards with real numbers, trend indicators, and sparklines.
+
+### STORY-FIRST TASK DESCRIPTION FORMAT
+Every Sprint 1 frontend task description MUST follow this narrative format — written like a product specification screenplay, not a file manifest:
+
+```
+[SCREEN STORY]
+Describe the user journey on this screen from arrival to completion.
+- "The user arrives at the [Screen Name] after clicking [Source] in the sidebar/navbar."
+- "They are greeted by [what they see first — hero, table, KPIs, etc.]."
+- "When they click [Primary Action Button], [exactly what happens — modal opens / navigates to /route / form appears]."
+- "The [Table/List] shows [N] records with columns [X, Y, Z]. Clicking any row navigates to [Detail Route]."
+- "The [Filter/Search bar] filters results in real-time as the user types."
+- "A [Status Badge] on each row is color-coded: [Green=Active, Red=Inactive, Amber=Pending]."
+- "The [Create/Add button] opens a [Drawer/Modal] with a multi-field form. On submit, a success toast appears and the new item is optimistically added to the list."
+- "The breadcrumb trail shows: [Home > Section > This Page]."
+
+[SCREEN CONNECTIVITY]
+List every navigation target this screen links to:
+- [Button/Link Name] → navigates to: /route-path ([Screen Name])
+- [Row click] → navigates to: /route-path/:id ([Detail Screen Name])
+- [Back button] → navigates to: /route-path ([Parent Screen Name])
+- [Tab: "Settings"] → shows: inline settings panel (no navigation)
+
+[MOCK DATA SPECIFICATION]
+Define the realistic mock data this screen uses:
+- Entity: [EntityName] — 8 records with fields: [field1: "realistic value", field2: ...]
+- Use domain-appropriate names (e.g., for a hospital app: "Dr. Sarah Chen", "Ward 4B", "Patient ID: PT-2847")
+- Vary statuses across records to show all badge states
+
+[FILE OWNERSHIP]
+This agent owns: [exact file paths]
+This agent must create:
+  - [file path] ([what it does])
+This agent must NOT modify: [other folders/files]
+```
+
+This format is MANDATORY for all Sprint 1 frontend tasks. Backend tasks may use the abbreviated ownership-only format.
+
+---
+
+## ═══════════════════════════════════════════════════════
+## PART 2 — CORE ARCHITECTURE PRINCIPLES
+## ═══════════════════════════════════════════════════════
 
 **1. FILE-BOUNDED OWNERSHIP — Prevent Conflicts**
 - Parallel execution requires clean separation. Each task must have strict, exclusive file boundaries.
 - If multiple agents need to work on the same layers or features, split them into sequential sprints or separate, modular files rather than compressing everything into single, monolithic tasks.
-- Shared files (like route registers, model files, and central configs) must be initialized early (in TASK-00 or Sprint 1) so that subsequent parallel tasks only import or reference them instead of modifying them concurrently.
+- Shared files (like route registers, AppLayout, global mock stores, and design tokens) must be created in TASK-00 or an early Sprint 1 foundation task so that all subsequent parallel tasks only IMPORT from them, never modify them concurrently.
 
 **2. Complexity-Driven Granular Splitting (NO Arbitrary Task Limits)**
-- There is NO arbitrary limit on the number of tasks (e.g., do NOT cap at 15).
-- For highly complex architectures (like secure portals, PDF conversion pipelines, real-time dashboard tracking, or zero-trust document sharing wizards), generate as many granular, highly specific tasks (e.g., 20, 30, or more) as needed to represent clean, digestible units of work.
-- Slicing work into precise, modular tasks ensures coding agents have crystal-clear context and do not overload their context windows, leading to higher build success.
+- There is NO arbitrary limit on the number of tasks (do NOT cap at 15).
+- For complex systems, generate 20–40 granular tasks. Slicing work into precise, modular tasks ensures agents have crystal-clear context and avoid context window overload.
+- Every major screen deserves its own task. A "Dashboard" and a "Reports" page are two separate tasks, not one.
 
 **3. Complexity-Aware Splitting**
-- Analyze the project architecture first before deciding task boundaries.
-- Simple monolithic apps → 4-8 granular tasks.
-- Medium modular systems → 8-15 granular tasks.
-- Large, multi-layered enterprise platforms or microservices → 15-40 granular, independent tasks.
-- Key question: "Can this task be completed end-to-end by an independent agent without file lock collisions?"
-  - If YES → keep it separate and specific.
-  - If NO (e.g., touching identical file segments) → sequence them via `linked_tasks` dependencies or group logically.
+- Simple monolithic apps → 4–8 granular tasks.
+- Medium modular systems → 8–15 granular tasks.
+- Large multi-layered platforms or microservices → 15–40 granular, independent tasks.
+- Key question: "Can this task be completed end-to-end by one independent agent without file lock collisions?"
+  - YES → keep it separate. NO → sequence via `linked_tasks` or group logically.
 
 **4. Specialization-Based Work Distribution**
-- Align tasks to specialized domains (Backend Services, Database Schemas/Migrations, Frontend Views/Wizards, Real-time Dashboard Widgets, PDF Processing, Devops/Security).
-- Keep boundaries razor-sharp. State exactly which folders/modules are owned by the agent, and which folders/modules the agent must NOT touch under any circumstances.
+- Align tasks to domains: Backend Services, Database Schemas, Frontend Pages, Dashboard Widgets, Auth Flows, PDF/File Processing, DevOps/Security.
+- State exactly which folders are owned and which are forbidden.
 
-**5. Avoid Monolithic tasks**
-- Do not create single, massive tasks that cover an entire layer from database to UI.
-- Instead, separate Backend Database Model + API Endpoint into one backend task, and the Frontend UI Component + Wizard Integration into a separate frontend task that depends on the backend task.
+**5. Avoid Monolithic Tasks**
+- Never create one task covering an entire layer (DB → API → UI).
+- Split: one task for DB model + API endpoint, a separate task for the frontend screen consuming it.
 
 **6. Parallelism Maximization**
-- Tasks in the same Sprint run concurrently.
-- Maximize parallel runs by ensuring concurrent tasks have zero overlapping files in their "This agent owns" definitions.
+- Tasks in the same Sprint run concurrently. Zero overlapping file ownership between parallel tasks.
+
+---
+
+## ═══════════════════════════════════════════════════════
+## PART 3 — JSON TASK FORMAT
+## ═══════════════════════════════════════════════════════
 
 Use this exact JSON format for every task:
 
@@ -56,7 +152,7 @@ Use this exact JSON format for every task:
   {
     "task_id": "TASK-00",
     "taskName": "Short, specific task title",
-    "description": "[What to build - describe the ENTIRE scope of this task]. This agent owns: [folders/modules]. This agent must NOT modify: [other folders].",
+    "description": "[STORY-FIRST description for Sprint 1 frontend tasks as per the STORY-FIRST FORMAT above. For backend/infra tasks: concise scope + file ownership statement.]",
     "task_type": "FEATURE | BUG | TASK",
     "priority": "high | medium | low",
     "task_wallet": <2 | 3 | 5 | 8 based on scope>,
@@ -68,108 +164,250 @@ Use this exact JSON format for every task:
     "linked_tasks": ["TASK-ID"],
     "reported_by": "system",
     "checklist": [
-      { "text": "High-level milestone covering multiple related items", "completed": false },
-      { "text": "High-level milestone covering multiple related items", "completed": false },
-      { "text": "High-level milestone covering multiple related items", "completed": false },
-      { "text": "High-level milestone covering multiple related items", "completed": false },
-      { "text": "Verify entire task scope works end-to-end with tests", "completed": false }
+      { "text": "Specific, screen-aware milestone step", "completed": false },
+      { "text": "Specific, screen-aware milestone step", "completed": false },
+      { "text": "Specific, screen-aware milestone step", "completed": false },
+      { "text": "Specific, screen-aware milestone step", "completed": false },
+      { "text": "Verify all interactive elements navigate correctly and zero dead UI remains", "completed": false }
     ]
   }
 ]
 
 ---
 
-## Sprint Assignment Logic
+## ═══════════════════════════════════════════════════════
+## PART 4 — SPRINT LIFECYCLE (MANDATORY FRONTEND-FIRST)
+## ═══════════════════════════════════════════════════════
 
 **Sprint = Wave of parallel execution.**
-All tasks with the same sprint number will be dispatched to different agents simultaneously.
-Tasks in Sprint N+1 can only start after ALL Sprint N tasks are complete.
+All tasks with the same sprint number dispatch to different agents simultaneously.
+Sprint N+1 only starts after ALL Sprint N tasks complete.
 
-- Sprint 1 → Foundation tasks (bootstrap, setup, infrastructure, shared database schemas)
-- Sprint 2 → Core backend services & endpoints (can run in parallel if split by service/module)
-- Sprint 3 → Frontend pages, routing, and user interface components (depend on Sprint 2 APIs)
-- Sprint 4 → E2E integration, visual polish, testing gates, and deployment scripts
+### Sprint 1 → Foundation, Navigation Shell & Fully-Linked Frontend Prototype
 
-Assign sprints based on actual dependencies in the project, not a fixed formula.
+TASK-00 (mandatory first task) creates the entire project scaffold including:
+  - React Router v6 with ALL routes pre-registered in App.tsx
+  - AppLayout.tsx with persistent sidebar navigation and top navbar
+  - Design token file (colors, typography, spacing)
+  - Global mock data store (src/mocks/mockData.ts) with 8–10 realistic records per entity
+  - Shared UI component library (Button, Badge, Card, Modal, Drawer, Table, etc.)
+  - Basic backend entry point skeleton ONLY (e.g., main.py with no DB or business logic)
+
+All other Sprint 1 tasks build individual screens/feature areas that:
+  - IMPORT the AppLayout wrapper — every screen renders inside the shared navigation shell
+  - IMPORT mock data from the global mock store — no agent invents its own data
+  - IMPORT shared UI components — no agent reimplements buttons or cards
+  - Wire every interactive element to a real React Router navigation target or local state handler
+  - Are visually complete, styled with the design token system, and match the aesthetic direction
+
+CRITICAL Sprint 1 constraints:
+  - NO backend API calls. All data comes from the mock store.
+  - NO database schemas, models, or third-party API configs in Sprint 1.
+  - YES to full navigation: every screen reachable from the sidebar and from contextual buttons.
+  - YES to realistic interactions: modals, drawers, toasts, form validation, tab switching, search/filter.
+  - The result must be a deployable, fully interactive frontend prototype that a non-technical stakeholder can navigate and understand without any explanation.
+
+### Sprint 2 → Backend Services, Database Setup & Core Configurations
+  - All SQLAlchemy database schemas, models foundation, JWT authentication, and core configurations.
+  - All third-party API dependencies, external service integrations (AWS, Azure, payment processors, email).
+  - All actual backend API routes, endpoints, and controllers.
+
+### Sprint 3 → Frontend-Backend Integration & Database Connectivity Check
+  - Connect Sprint 1 frontend screens to Sprint 2 real backend APIs.
+  - Replace mock data imports with React Query fetch/mutation hooks.
+  - Run database connectivity checks, verify JWT auth end-to-end, validate system data flows.
+
+### Sprint 4 → Testing, Polish, and Production Deployment
+  - Comprehensive frontend unit/integration test suites (Vitest/component tests) and backend suites (Pytest).
+  - Full End-to-End integration and system testing.
+  - Production deployment configs, Docker setups, final documentation.
 
 ---
 
-## Task Wallet (Effort Points) Guide
+## ═══════════════════════════════════════════════════════
+## PART 5 — TASK WALLET (EFFORT POINTS) GUIDE
+## ═══════════════════════════════════════════════════════
 
-- 2 → Setup, simple file creations, boilerplate or minor configurations
-- 3 → Modest backend module or isolated frontend page
-- 5 → Complex service integration, dynamic data forms, multi-step wizards, file converters
-- 8 → Critical architectural foundation or massive, state-heavy interactive workflows
+- 2 → Setup, boilerplate, simple config files, minor utilities
+- 3 → Single backend module or a simple, read-only frontend screen
+- 5 → Complex interactive screen (tables, modals, forms, real-time filter, charts), multi-step wizard, or service integration
+- 8 → Critical architectural foundation (TASK-00, navigation shell, design system), massive state-heavy workflows, or enterprise-grade data grids with drill-down
+
+Sprint 1 frontend screens with deep interactivity (modals, drawers, search, forms, drill-through) should score 5. TASK-00 (which sets up routing, layout, design tokens, and mock data) should score 8.
 
 ---
 
-## File Ownership Rules
+## ═══════════════════════════════════════════════════════
+## PART 6 — FILE OWNERSHIP RULES
+## ═══════════════════════════════════════════════════════
 
-- Each task description MUST state: "This agent owns: [exact file paths from section 0.5]"
-- Each task description MUST state: "This agent must create: [list of specific files with full paths]"
-- Each task description MUST state: "This agent must NOT modify: [other folders]"
-- Define clear boundaries so parallel tasks don't conflict
-- Shared/common code should be created early so other tasks can depend on it
+Every task description MUST state:
+  - "This agent owns: [exact file paths from section 0.5]"
+  - "This agent must create: [list of specific files with full paths and their purpose]"
+  - "This agent must NOT modify: [other folders/files]"
+  - For Sprint 1 tasks: "This agent must IMPORT from: src/components/layout/AppLayout.tsx, src/mocks/mockData.ts, src/components/ui/"
 
-**Example of GOOD task description:**
+**Example of GOOD Sprint 1 frontend task description (abbreviated):**
 ```
-This agent owns: backend/api/auth.py, backend/models/user.py, backend/middleware/auth_middleware.py
+[SCREEN STORY]
+The user arrives at the Projects Overview screen after clicking "Projects" in the sidebar.
+They see a page header "All Projects" with a "+ New Project" button in the top right.
+Below the header, a search input and status filter dropdown allow real-time filtering of the project list.
+The main content is a data table with columns: Project Name, Status (color-coded badge), Owner, Due Date, Budget Utilization (progress bar), and Actions.
+Clicking any row navigates to /projects/:id (Project Detail screen).
+Clicking "+ New Project" opens a Drawer from the right with a 3-field form (Name, Description, Due Date). On submit, a success toast "Project created" appears, the drawer closes, and the new project is optimistically prepended to the table.
+
+[SCREEN CONNECTIVITY]
+- Sidebar "Projects" → current page (active state)
+- Table row click → /projects/:id (Project Detail)
+- "+ New Project" button → opens ProjectCreateDrawer (right-side drawer, no navigation)
+- "View Report" action → /projects/:id/report (Project Report)
+- Breadcrumb "Home" → /dashboard
+
+[MOCK DATA SPECIFICATION]
+Entity: Project — 8 records
+Fields: id, name ("Apollo CRM Rebuild", "Nexus Dashboard v2", ...), status (Active/On Hold/Completed/At Risk), owner ("Sarah Chen", "Marcus Webb", ...), dueDate, budgetUsed (0-100), budgetTotal
+
+[FILE OWNERSHIP]
+This agent owns: src/pages/projects/ProjectsPage.tsx, src/pages/projects/ProjectDetailPage.tsx, src/components/projects/ProjectCreateDrawer.tsx, src/components/projects/ProjectTable.tsx
 This agent must create:
-  - backend/api/auth.py (authentication endpoints)
-  - backend/models/user.py (user data model)
-  - backend/middleware/auth_middleware.py (JWT validation)
-This agent must NOT modify: frontend/, backend/api/products.py, backend/models/product.py
+  - src/pages/projects/ProjectsPage.tsx (main projects list screen)
+  - src/pages/projects/ProjectDetailPage.tsx (individual project drill-down)
+  - src/components/projects/ProjectCreateDrawer.tsx (new project right-side drawer)
+  - src/components/projects/ProjectTable.tsx (data table with sort, filter, row actions)
+This agent must IMPORT from: src/components/layout/AppLayout.tsx, src/mocks/mockData.ts, src/components/ui/
+This agent must NOT modify: src/App.tsx, src/mocks/mockData.ts, src/components/layout/, src/styles/tokens.css, backend/
 ```
 
 ---
 
-## Checklist Item Rules
+## ═══════════════════════════════════════════════════════
+## PART 7 — CHECKLIST ITEM RULES
+## ═══════════════════════════════════════════════════════
 
-- Checklist items should be HIGH-LEVEL milestones, not micro-steps
-- Each item should cover a meaningful chunk of work (multiple files, complete feature, etc.)
-- Focus on what needs to be accomplished, not how to do it step-by-step
-- Last checklist item must always be a test/verification step
+Checklist items must be **screen-specific and interaction-aware** — not generic milestone labels.
+
+For Sprint 1 frontend tasks, each checklist item must reference the actual screen, a specific UI element, or a specific user interaction. BAD: "Implement service layer." GOOD: "Build ProjectTable component with sortable columns, status badge coloring, and row-click navigation to /projects/:id."
+
+- Item 1: Build the primary screen structure and layout (header, content sections, sidebar slot)
+- Item 2: Implement the main data display (table/list/cards) with realistic mock data and all columns
+- Item 3: Wire all navigation targets — every button, link, and row click routes to the correct screen
+- Item 4: Build all secondary interactions (modals, drawers, forms, search/filter, tabs, toasts)
+- Item 5: Apply the design token system — verify typography, color, spacing consistency with other Sprint 1 screens; confirm zero dead UI elements remain
+
+For backend/infra tasks:
+- Item 1–4: High-level functional milestones covering meaningful code blocks
+- Item 5: Test/verification step with exact command or assertion
 
 ---
 
-## Critical Rules
+## ═══════════════════════════════════════════════════════
+## PART 8 — TASK-00: THE IMMOVABLE GATEWAY
+## ═══════════════════════════════════════════════════════
 
-1. **TASK-00 MUST BE FIRST** - Project Bootstrap
-   - This is the foundation task that creates the repository structure
-   - ALL other tasks depend on TASK-00
-   - Assign to Sprint 1, Infrastructure milestone
-   - The repository structure will be automatically injected into this task
+TASK-00 is not a regular task. It is the **project gateway** — a structural law, not a suggestion.
 
-2. **Dependency Management:**
-   - Use `linked_tasks` array to declare dependencies
-   - ALL tasks (except TASK-00) must include "TASK-00" in linked_tasks
-   - If Task B needs Task A's output, add Task A to Task B's linked_tasks
-   - Tasks with no shared dependencies can run in parallel (same sprint)
+### NON-NEGOTIABLE TASK-00 RULES:
 
-3. **Sprint Assignment:**
+**Rule 1 — TASK-00 is ALWAYS the first object in the JSON array.**
+No exceptions. Index 0 in the output array is always TASK-00. If you generate it anywhere else, the output is invalid.
+
+**Rule 2 — TASK-00 has a fixed task_id: "TASK-00".**
+The task_id field must be exactly the string "TASK-00". It cannot be "TASK-01", "BOOTSTRAP", "SETUP", or anything else.
+
+**Rule 3 — TASK-00 is the ONLY task with no linked_tasks dependencies.**
+Every other task in the entire plan — Sprint 1, 2, 3, and 4 — must list "TASK-00" in its linked_tasks array. TASK-00 itself has an empty linked_tasks: [].
+
+**Rule 4 — No Sprint 1 screen task may begin before TASK-00 completes.**
+This is enforced by the linked_tasks dependency. All Sprint 1 tasks depend on TASK-00 because they import from the files it creates (AppLayout, mockData, design tokens, UI components, App.tsx routes). An agent starting a screen task without TASK-00's output would fail immediately.
+
+**Rule 5 — TASK-00 owns the entire shared foundation. No other task may touch these files.**
+  - src/App.tsx (React Router route registry)
+  - src/components/layout/AppLayout.tsx (persistent navigation shell)
+  - src/styles/tokens.css OR src/theme/tokens.ts (design tokens)
+  - src/mocks/mockData.ts (global mock data store)
+  - src/components/ui/* (shared UI component kit)
+  - backend/main.py (entry point skeleton)
+No other task in any sprint may modify these files. They are read-only after TASK-00 completes.
+
+### TASK-00 MANDATORY CONTENT (use this exact structure):
+
+```json
+{
+  "task_id": "TASK-00",
+  "taskName": "Project Bootstrap, Navigation Shell & Shared Frontend Foundation",
+  "description": "GATEWAY TASK — All other tasks depend on this. Must complete before any other agent starts.\n\nThis task creates the entire shared foundation that every Sprint 1 frontend agent will import from. It does NOT build any feature screens — it builds the INFRASTRUCTURE that makes all screens possible.\n\n[WHAT THIS TASK BUILDS]\n1. Repository scaffold: all directories from the canonical structure, package.json, tsconfig, vite.config, tailwind.config, .env.example.\n2. React Router v6 setup in src/App.tsx: ALL application routes pre-registered with placeholder lazy-loaded components, wrapped in the AppLayout shell.\n3. AppLayout.tsx (src/components/layout/AppLayout.tsx): persistent left sidebar with navigation links to every major section, top navbar with app logo, user avatar dropdown, notifications bell, breadcrumb trail, and <Outlet /> for page content. Sidebar must be collapsible.\n4. Design token system (src/styles/tokens.css): CSS custom properties for — primary/secondary/accent colors, semantic colors (success, warning, error, info), surface/background layers, typography scale (display/heading/subheading/body/caption), spacing scale, border-radius levels, box-shadow levels. All Sprint 1 screens MUST use these tokens, never hardcoded values.\n5. Global mock data store (src/mocks/mockData.ts): exports typed arrays of 8–10 realistic mock records for EVERY entity type in the application. Use domain-appropriate names, IDs, dates, and statuses. This is the single source of truth for all Sprint 1 mock data.\n6. Shared UI component kit (src/components/ui/): Button (variants: primary, secondary, ghost, danger), Badge (color variants by status), Card, Modal, Drawer (right-side slide-in panel), DataTable (sortable, with row-click handler prop), SearchInput, Toast/notification system, LoadingSkeleton, EmptyState, PageHeader (title + subtitle + action slot).\n7. Backend entry point ONLY: backend/main.py with FastAPI app instantiation, CORS middleware, and a /health endpoint. NO database, NO models, NO business logic.\n\n[WHAT THIS TASK MUST NOT BUILD]\n- No feature screens (those are built by subsequent Sprint 1 tasks)\n- No backend database schemas, models, or API routes (Sprint 2)\n- No third-party API integrations (Sprint 2)\n\nThis agent owns: src/App.tsx, src/components/layout/, src/components/ui/, src/styles/, src/mocks/, src/theme/, backend/main.py, all config files (package.json, vite.config.ts, tailwind.config.ts, tsconfig.json)\nThis agent must NOT modify: src/pages/ (owned by individual Sprint 1 screen tasks)\nAll subsequent tasks MUST wait for this task to complete before starting.",
+  "task_type": "TASK",
+  "priority": "high",
+  "task_wallet": 8,
+  "sprint": "<Sprint 1 name from AVAILABLE SPRINTS>",
+  "milestone": "Navigation Shell & Design System",
+  "assignedTo": [],
+  "linked_tasks": [],
+  "reported_by": "system",
+  "checklist": [
+    { "text": "Scaffold full repository structure: all directories, package.json, tsconfig, vite.config, tailwind.config, .env.example, README", "completed": false },
+    { "text": "Build AppLayout.tsx with collapsible sidebar (all nav links), top navbar (logo, user avatar, notifications, breadcrumbs), and <Outlet /> content slot. Register all routes in src/App.tsx with React Router v6.", "completed": false },
+    { "text": "Create design token file with complete color palette (primary, accent, semantic), typography scale, spacing scale, border radius, and shadow levels. Verify tokens render correctly in browser.", "completed": false },
+    { "text": "Populate src/mocks/mockData.ts with 8–10 realistic typed records for every entity type in the application. Verify all exported arrays are importable and TypeScript-typed.", "completed": false },
+    { "text": "Build shared UI component kit: Button (all variants), Badge, Card, Modal, Drawer, DataTable, SearchInput, Toast system, LoadingSkeleton, EmptyState, PageHeader. Verify each component renders with mock props.", "completed": false }
+  ]
+}
+```
+
+### THE SPRINT 1 DEPENDENCY CHAIN (enforced by linked_tasks):
+
+```
+TASK-00 (no deps)
+   ├── TASK-01: Auth / Login Screen        → linked_tasks: ["TASK-00"]
+   ├── TASK-02: Dashboard Screen           → linked_tasks: ["TASK-00"]
+   ├── TASK-03: [Entity] List Screen       → linked_tasks: ["TASK-00"]
+   ├── TASK-04: [Entity] Detail Screen     → linked_tasks: ["TASK-00"]
+   ├── TASK-05: Settings / Profile Screen  → linked_tasks: ["TASK-00"]
+   └── ... (all Sprint 1 tasks)            → linked_tasks: ["TASK-00"]
+
+Sprint 2 tasks → linked_tasks: ["TASK-00"]
+Sprint 3 tasks → linked_tasks: ["TASK-00", "TASK-XX (Sprint 1)", "TASK-YY (Sprint 2)"]
+Sprint 4 tasks → linked_tasks: ["TASK-00", relevant Sprint 2/3 tasks]
+```
+
+---
+
+## ═══════════════════════════════════════════════════════
+## PART 9 — REMAINING CRITICAL RULES
+## ═══════════════════════════════════════════════════════
+
+1. **Sprint Assignment:**
    - Use the AVAILABLE SPRINTS list provided
-   - Assign tasks to sprints based on their actual dependencies
-   - Tasks in the same sprint should not have file ownership conflicts
+   - Tasks in the same sprint must have zero file ownership conflicts
 
-4. **Milestone Assignment:**
-   - Use the AVAILABLE MILESTONES list provided
-   - Group related tasks under the same milestone
-   - Milestones represent major functional areas or system layers
+2. **Milestone Assignment:**
+   - Group related tasks under meaningful functional milestones
+   - Sprint 1 milestones: "Navigation Shell & Design System" (TASK-00 only), "Authentication Screens", "Dashboard & Analytics", "[Domain] Management Screens", "Settings & Admin"
+   - Sprint 2 milestones: "Database Foundation", "Authentication Backend", "[Domain] API Services"
+   - Sprint 3 milestones: "Full-Stack Integration", "Auth Integration"
+   - Sprint 4 milestones: "QA & Testing", "Production Deployment"
 
-5. **File Path Accuracy:**
-   - Reference folders/modules from the repository structure
-   - Use paths from section 0.5.1 of the Agent Action Plan
-   - Be specific about ownership boundaries
+3. **File Path Accuracy:**
+   - Reference exact folders/modules from the repository structure (section 0.5.1 of the Agent Action Plan)
+   - Sprint 1 agents: src/ paths only. Sprint 2 agents: backend/ paths only.
 
-6. **Output Format:**
-   - Return ONLY valid JSON array
+4. **Output Format:**
+   - Return ONLY a valid JSON array
    - No markdown code blocks, no explanations, no extra text
-   - Ensure all JSON is properly escaped and valid
+   - First element of the array MUST be TASK-00
 
-7. **Dynamic Task Scaling:**
-   - Scale task list organically based on application size.
-   - Do NOT restrict task count to 15. For large apps, a plan of 20-35 granular tasks is ideal to distribute parallel execution and minimize file-overwrite conflicts.
-   - Separate database definition, service logic, API routes, and frontend views into dedicated, independent tasks.
+5. **Dynamic Task Scaling:**
+   - NO cap at 15 tasks. Large apps need 25–40 granular tasks.
+   - Every major screen = its own Sprint 1 task. Every major backend domain = its own Sprint 2 task.
+
+6. **PROTOTYPE COMPLETENESS CHECK (Sprint 1 only):**
+   Before finalizing, mentally walk every user journey:
+   - Can a user log in and reach the dashboard?
+   - Can a user navigate to every major section from the sidebar?
+   - Can a user complete a full entity CRUD flow (create → list → detail → edit)?
+   - Can a user complete any domain-specific multi-step flow?
+   If ANY journey has a gap — a missing screen, a dead button, an unreachable route — add tasks until all journeys are complete.
 
 ---
 
@@ -190,17 +428,17 @@ def _generate_sprints_and_milestones(
     sprint_duration = max(total_days // num_phases, 7)  # At least 7 days per sprint
     
     phase_names = [
-        ("Foundation & Setup", "Project foundation and infrastructure setup"),
-        ("Core Development", "Core features and business logic implementation"),
-        ("Integration & Testing", "System integration and comprehensive testing"),
-        ("Deployment & Polish", "Production deployment and final polish")
+        ("Frontend Proto & Bootstrap", "Project bootstrap, setup, and all frontend UI screens/prototypes with dummy data"),
+        ("Backend Services & DB Config", "Database schemas, models, JWT auth, and third-party API configurations/external dependencies"),
+        ("Frontend-Backend Integration", "Connect frontend screens to backend APIs, replace dummy data, and run DB connectivity checks"),
+        ("Testing & Polish", "Comprehensive unit, integration, and E2E testing, and production deployment configuration")
     ]
     
     milestone_names = [
-        ("Foundation Complete", "Infrastructure and setup complete"),
-        ("Core Features Complete", "All core features implemented"),
-        ("Integration Complete", "All systems integrated and tested"),
-        ("Production Ready", "System deployed and production-ready")
+        ("Frontend Screens & Bootstrap Complete", "Repository bootstrapped and all frontend screens fully operational with dummy data"),
+        ("Backend Services Operational", "AWS config, database schemas, and all backend API controllers/endpoints fully developed"),
+        ("Integration & DB Sync Complete", "Frontend integrated with real backend APIs and database connectivity verified"),
+        ("Production & Testing Ready", "Frontend/backend test suites complete and production deployment validated")
     ]
     
     for i in range(num_phases):
@@ -556,6 +794,234 @@ def _build_project_context(
     return context
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# SPRINT-SPECIFIC GENERATION PROMPTS
+# Each sprint gets its own focused prompt so the LLM output stays small,
+# never hits max_tokens, and never produces truncated JSON.
+# ─────────────────────────────────────────────────────────────────────────────
+
+SPRINT1_GENERATION_PROMPT = """You are generating ONLY Sprint 1 tasks for a multi-sprint project plan.
+
+SPRINT 1 SCOPE: Project Bootstrap + Fully-Linked Frontend Prototype
+- TASK-00 must be FIRST (index 0), task_id exactly "TASK-00", linked_tasks: [], task_wallet: 8
+- After TASK-00: one task per major screen/feature area — all linked_tasks: ["TASK-00"]
+- NO backend DB schemas, NO models, NO third-party API configs — only entry-point skeleton in TASK-00
+- Every Sprint 1 screen task uses the STORY-FIRST description format:
+    [SCREEN STORY] narrative of user journey on this screen
+    [SCREEN CONNECTIVITY] every button/link → exact /route target
+    [MOCK DATA SPECIFICATION] entity name, field list, 8 realistic records
+    [FILE OWNERSHIP] owns / must import from / must NOT modify
+- Every interactive element MUST navigate or trigger state — zero dead UI
+
+PRE-GENERATION CHECKLIST (do this mentally before writing JSON):
+1. Lock TASK-00: repo scaffold, React Router + ALL routes, AppLayout (collapsible sidebar + navbar),
+   design tokens (tokens.css), global mockData.ts with ALL entity types, shared UI kit, backend health endpoint.
+2. Map every major screen (Login, Dashboard, entity lists, detail views, wizards, Settings, Profile, etc.)
+3. Walk every user journey — confirm no dead ends, no missing screens
+4. Confirm TASK-00 produces the files every other Sprint 1 task will IMPORT
+
+TASK ID NUMBERING: Start at TASK-00. Increment sequentially: TASK-00, TASK-01, TASK-02 …
+
+OUTPUT RULES:
+- Return ONLY a valid JSON array — no markdown, no preamble, no explanation
+- First element MUST be TASK-00
+- All other Sprint 1 tasks have linked_tasks: ["TASK-00"]
+
+Generate Sprint 1 tasks now:"""
+
+SPRINT2_GENERATION_PROMPT = """You are generating ONLY Sprint 2 tasks for a multi-sprint project plan.
+
+SPRINT 2 SCOPE: Backend Services, Database Setup & Core Configurations
+- SQLAlchemy DB schemas and models
+- JWT authentication system
+- All actual backend API routes, endpoints, and controllers
+- Third-party API configurations and external service integrations (AWS, payment processors, email, etc.)
+- NO frontend changes — Sprint 1 already built the UI prototype
+
+DESCRIPTION FORMAT for Sprint 2 tasks (concise, ownership-focused):
+"[What this service/module does]. This agent owns: [exact backend file paths].
+This agent must create: [list of files with purpose]. This agent must NOT modify: [frontend/, Sprint 1 files]."
+
+TASK ID NUMBERING: Start at TASK-{start_index} (continue from Sprint 1).
+
+DEPENDENCY RULE: Every Sprint 2 task must include "TASK-00" in linked_tasks.
+
+SPRINT 1 TASKS ALREADY GENERATED (for reference — use their task_ids in linked_tasks where relevant):
+{sprint1_summary}
+
+OUTPUT RULES:
+- Return ONLY a valid JSON array — no markdown, no preamble, no explanation
+- Every task linked_tasks must include "TASK-00" at minimum
+
+Generate Sprint 2 tasks now:"""
+
+SPRINT3_GENERATION_PROMPT = """You are generating ONLY Sprint 3 tasks for a multi-sprint project plan.
+
+SPRINT 3 SCOPE: Frontend-Backend Integration & Database Connectivity
+- Connect Sprint 1 frontend screens to Sprint 2 real backend APIs
+- Replace mockData imports with React Query fetch/mutation hooks in each screen
+- Database connectivity verification
+- JWT auth end-to-end validation
+- System data flow testing
+
+Each Sprint 3 task should correspond to one Sprint 1 frontend screen being wired to its Sprint 2 backend.
+Create one integration task per major frontend-backend connection (e.g., "Wire Dashboard to /api/metrics",
+"Connect User Management screen to /api/users CRUD endpoints", "Integrate Auth screen with JWT login flow").
+
+DESCRIPTION FORMAT:
+"[Screen name] integration: replace mockData import with React Query hooks calling [API endpoints].
+This agent owns: [exact frontend page/hook files].
+Sprint 1 source task: [TASK-XX]. Sprint 2 backend task: [TASK-YY].
+This agent must NOT modify: backend/ API files (owned by Sprint 2 tasks)."
+
+TASK ID NUMBERING: Start at TASK-{start_index} (continue from Sprint 2).
+
+DEPENDENCY RULE: Every Sprint 3 task must link to TASK-00 + its Sprint 1 source + its Sprint 2 backend task.
+
+SPRINT 1 TASKS (frontend screens already built):
+{sprint1_summary}
+
+SPRINT 2 TASKS (backend APIs already built):
+{sprint2_summary}
+
+OUTPUT RULES:
+- Return ONLY a valid JSON array — no markdown, no preamble, no explanation
+- Every task's linked_tasks must reference: ["TASK-00", "<Sprint1 task_id>", "<Sprint2 task_id>"]
+
+Generate Sprint 3 tasks now:"""
+
+SPRINT4_GENERATION_PROMPT = """You are generating ONLY Sprint 4 tasks for a multi-sprint project plan.
+
+SPRINT 4 SCOPE: Testing, Polish & Production Deployment
+- Comprehensive frontend unit/integration test suites (Vitest / React Testing Library)
+- Backend test suites (Pytest) with endpoint and service coverage
+- End-to-End system testing (Playwright or Cypress)
+- Production deployment configuration (Docker, docker-compose, nginx, environment configs)
+- Final documentation (API docs, README, deployment guide)
+- Performance audit and accessibility review (optional but recommended)
+
+Create granular tasks: one for frontend testing, one for backend testing, one for E2E, one for deployment.
+Keep tasks small and focused so each agent has a clear, bounded scope.
+
+DESCRIPTION FORMAT:
+"[What this task tests or deploys]. This agent owns: [exact test/config file paths].
+Commands to run: [exact test/build commands].
+This agent must NOT modify: src/ or backend/ source files (only test and config files)."
+
+TASK ID NUMBERING: Start at TASK-{start_index} (continue from Sprint 3).
+
+DEPENDENCY RULE: Every Sprint 4 task must link to TASK-00 + relevant Sprint 2/3 tasks.
+
+PREVIOUSLY GENERATED TASKS (all sprints — for linked_tasks reference):
+{all_previous_summary}
+
+OUTPUT RULES:
+- Return ONLY a valid JSON array — no markdown, no preamble, no explanation
+- Every task's linked_tasks must include "TASK-00" at minimum
+
+Generate Sprint 4 tasks now:"""
+
+
+def _build_tasks_summary(tasks: List[Dict[str, Any]]) -> str:
+    """
+    Build a compact summary of already-generated tasks to pass as context
+    to subsequent sprint generation calls. Keeps token count low.
+    """
+    if not tasks:
+        return "None generated yet."
+    lines = []
+    for t in tasks:
+        task_id   = t.get("task_id", "?")
+        task_name = t.get("taskName", "?")
+        sprint    = t.get("sprint", "?")
+        milestone = t.get("milestone", "?")
+        owns      = ""
+        desc      = t.get("description", "")
+        # Extract a short ownership line from description
+        for line in desc.splitlines():
+            if "This agent owns:" in line:
+                owns = line.strip()[:120]
+                break
+        lines.append(f"  {task_id}: {task_name} | Sprint: {sprint} | Milestone: {milestone}" + (f"\n    {owns}" if owns else ""))
+    return "\n".join(lines)
+
+
+def _renumber_task_ids(tasks: List[Dict[str, Any]], start_index: int) -> List[Dict[str, Any]]:
+    """
+    Re-map task IDs so they are sequential across sprints with no gaps or collisions.
+    TASK-00 is always preserved as-is (index 0 of Sprint 1).
+    Returns the tasks with updated task_id values and updated linked_tasks references.
+    """
+    if not tasks:
+        return tasks
+
+    id_map: Dict[str, str] = {}
+    counter = start_index
+
+    for task in tasks:
+        old_id = task.get("task_id", "")
+        # TASK-00 is sacred — never renumber it
+        if old_id == "TASK-00":
+            id_map[old_id] = "TASK-00"
+        else:
+            new_id = f"TASK-{counter:02d}"
+            id_map[old_id] = new_id
+            counter += 1
+
+    # Apply the mapping
+    for task in tasks:
+        old_id = task.get("task_id", "")
+        task["task_id"] = id_map.get(old_id, old_id)
+        # Remap linked_tasks
+        task["linked_tasks"] = [
+            id_map.get(dep, dep) for dep in task.get("linked_tasks", [])
+        ]
+
+    return tasks
+
+
+async def _generate_sprint_phase(
+    sprint_number: int,
+    sprint_prompt_template: str,
+    prompt_context: str,
+    api_url: Optional[str],
+    api_key: Optional[str],
+    model: Optional[str],
+    project_token: str,
+) -> List[Dict[str, Any]]:
+    """
+    Call the LLM to generate tasks for a single sprint phase.
+    Returns the parsed task list, or [] on failure.
+    """
+    logger.info(f"  → Generating Sprint {sprint_number} tasks...")
+
+    messages = [
+        {"role": "system", "content": INTELLIGENT_TASK_GENERATION_PROMPT},
+        {"role": "user",   "content": prompt_context + "\n\n" + sprint_prompt_template},
+    ]
+
+    try:
+        response_content = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            timeout=180.0,
+        )
+
+        tasks = _parse_task_json(response_content)
+        if not tasks:
+            logger.warning(f"  Sprint {sprint_number}: LLM returned no parseable tasks")
+            return []
+
+        logger.info(f"  Sprint {sprint_number}: parsed {len(tasks)} tasks")
+        return tasks
+
+    except Exception as e:
+        logger.error(f"  Sprint {sprint_number} generation failed: {e}")
+        return []
+
+
 async def generate_tasks_locally(
     project_token: str,
     db: Session,
@@ -577,47 +1043,40 @@ async def generate_tasks_locally(
     
     if not llm_gateway.check_api_key(api_key):
         raise Exception("API key not configured for task generation")
-    
-    # Build project context
-    context = _build_project_context(project_token, db, user_id)
 
+    # ── 1. Build project context ───────────────────────────────────────────────
+    context = _build_project_context(project_token, db, user_id)
     if project_type:
         context["project_type"] = project_type
 
-    # Calculate project timeline
+    # ── 2. Timeline ────────────────────────────────────────────────────────────
     today = datetime.now().date()
     if process_mode == "ai_first":
-        project_deadline = today + timedelta(days=28)  # 4 weeks for 4 sprints
+        project_deadline = today + timedelta(days=28)
     elif process_mode == "vibe_coding":
-        project_deadline = today + timedelta(days=42)  # 6 weeks
+        project_deadline = today + timedelta(days=42)
     else:
-        project_deadline = today + timedelta(days=84)  # 12 weeks
-    
-    # Generate multiple sprints and milestones
-    logger.info(f"Generating multiple sprints and milestones for project {project_token}")
+        project_deadline = today + timedelta(days=84)
+
+    # ── 3. Sprints & milestones ────────────────────────────────────────────────
     sprints, milestones = _generate_sprints_and_milestones(
         project_start=datetime.combine(today, datetime.min.time()),
         project_deadline=datetime.combine(project_deadline, datetime.min.time()),
-        num_phases=4
+        num_phases=4,
     )
-    
-    logger.info(f"Generated {len(sprints)} sprints and {len(milestones)} milestones")
-    for sprint in sprints:
-        logger.info(f"  - {sprint['name']}: {sprint['start_date']} to {sprint['deadline']}")
-    
-    # Build sprint/milestone list for prompt with dates
+    logger.info(f"[{project_token}] Sprint-wise generation — {len(sprints)} sprints")
+
     sprint_list = "\n".join([
         f"- {s['name']}: {s['start_date']} to {s['deadline']} ({s['summary']})"
         for s in sprints
     ])
-    
     milestone_list = "\n".join([
         f"- {m['name']}: {m['summary']} (Sprint: {m['sprint']})"
         for m in milestones
     ])
-    
-    # Build prompt context
-    prompt_context = f"""
+
+    # ── 4. Shared BRD context block (injected into every sprint call) ──────────
+    brd_block = f"""
 AVAILABLE SPRINTS (with dates):
 ================================
 {sprint_list}
@@ -628,7 +1087,7 @@ AVAILABLE MILESTONES:
 
 REPOSITORY STRUCTURE (from section 0.5.1):
 ==========================================
-{context.get('repository_structure', 'Not available - extract from Agent Action Plan section 0.5.1')}
+{context.get('repository_structure', 'Not available')}
 
 CURRENT DATE: {today.strftime('%Y-%m-%d')}
 PROJECT DEADLINE: {project_deadline.strftime('%Y-%m-%d')}
@@ -636,148 +1095,194 @@ PROJECT DEADLINE: {project_deadline.strftime('%Y-%m-%d')}
 ===================================================================
 AGENT ACTION PLAN MARKDOWN DOCUMENT
 ===================================================================
-
 {context['brd_analysis'] if context['brd_analysis'] else 'No Agent Action Plan available'}
-
 ===================================================================
-
-Generate the complete task list now. Remember:
-
-1. **TASK-00 FIRST** - Project Bootstrap (Sprint 1, Infrastructure milestone)
-   - The repository structure will be automatically injected
-   - This is the foundation for all other tasks
-
-2. **Sprint Assignment** - Assign based on dependencies:
-   - Sprint 1: Foundation tasks (no dependencies except TASK-00)
-   - Sprint 2: Core modules (depend on Sprint 1)
-   - Sprint 3: Integration & UI (depend on Sprint 2)
-   - Sprint 4: Testing & Polish (depend on Sprint 3)
-
-3. **Parallel Execution** - Tasks in the same sprint run in parallel:
-   - Ensure no file ownership conflicts
-   - Clearly state "This agent owns: X" and "must NOT modify: Y"
-   - Use exact file paths from repository structure
-
-4. **Milestone Grouping** - Group by agent specialization:
-   - Infrastructure, Auth, Domain Modules, Frontend, QA, Docs
-
-5. **Dependencies** - Use linked_tasks array:
-   - ALL tasks must link to TASK-00
-   - Frontend tasks link to their backend API tasks
-   - Integration tasks link to both modules
-
-6. **Checklist Quality** - Each task needs 5+ specific steps:
-   - Include exact file paths
-   - Include exact commands
-   - Last item must be a test/verification step
-
-7. **Output** - Return ONLY valid JSON array, no markdown, no explanations
-
-Generate tasks now:
 """
-    
-    messages = [
-        {"role": "system", "content": INTELLIGENT_TASK_GENERATION_PROMPT},
-        {"role": "user", "content": prompt_context}
-    ]
-    
-    logger.info(f"Generating tasks for project {project_token}")
-    
-    try:
-        # Call LLM
-        response_content = await llm_gateway.call_llm_and_extract(
-            messages=messages,
-            api_url=api_url,
-            api_key=api_key,
-            model=model,
-            timeout=180.0
-        )
-        
-        # Parse tasks
-        tasks = _parse_task_json(response_content)
-        
-        if not tasks:
-            logger.error("No tasks generated by LLM")
-            return []
-        
-        logger.info(f"Parsed {len(tasks)} tasks from LLM response")
-        
-        # Validate and process tasks
-        valid_tasks = []
-        for task in tasks:
-            if _validate_task_structure(task):
-                # Ensure required fields
-                task.setdefault("assignedTo", [])
-                task.setdefault("reported_by", "system")
-                task.setdefault("priority", "medium")
-                task.setdefault("linked_tasks", [])
-                
-                # Validate sprint and milestone
-                if "sprint" not in task or not task["sprint"]:
-                    task["sprint"] = sprints[0]["name"]
-                if "milestone" not in task or not task["milestone"]:
-                    task["milestone"] = milestones[0]["name"]
-                
-                # Ensure dates
-                if "startdate" not in task:
-                    task["startdate"] = today.strftime('%Y-%m-%d')
-                if "planned_start" not in task:
-                    task["planned_start"] = task["startdate"]
-                if "deadline" not in task:
-                    days_offset = min(task["task_wallet"], 7)
-                    task["deadline"] = (today + timedelta(days=days_offset)).strftime('%Y-%m-%d')
-                
-                # CRITICAL: Inject repository structure into TASK-00
-                if task.get("task_id") == "TASK-00" and context.get("repository_structure"):
-                    repo_structure = context["repository_structure"]
-                    
-                    # Wrap structure with markers for agent parsing
-                    structure_block = f"\n\n===BEGIN_DIRECTORY_STRUCTURE===\n{repo_structure}\n===END_DIRECTORY_STRUCTURE===\n\n"
-                    
-                    # Add to description
-                    current_desc = task.get("description", "")
-                    task["description"] = current_desc + structure_block + (
-                        "CRITICAL: This is the CANONICAL directory structure for the entire project. "
-                        "You MUST create ALL directories and files shown in the structure above. "
-                        "ALL subsequent tasks MUST reference files from this structure. "
-                        "ALL agents MUST wait for this task to be completed before starting their work."
-                    )
-                    
-                    # Generate detailed checklist from repository structure
-                    detailed_checklist = _generate_bootstrap_checklist(repo_structure, context.get("project_name", "project"))
-                    
-                    # Replace the AI-generated checklist with our detailed one
-                    if detailed_checklist:
-                        task["checklist"] = detailed_checklist
-                        logger.info(f"Generated {len(detailed_checklist)} detailed checklist items for TASK-00")
-                    
-                    logger.info(f"✅ Injected repository structure into TASK-00 ({len(repo_structure)} chars)")
-                
-                # FIX #2: Inject repository structure into ALL non-bootstrap tasks
-                elif task.get("task_id") != "TASK-00" and context.get("repository_structure"):
-                    repo_structure = context["repository_structure"]
-                    
-                    # Add structure reference to description
-                    current_desc = task.get("description", "")
-                    structure_reference = f"\n\n===CANONICAL_REPOSITORY_STRUCTURE===\n{repo_structure}\n===END_STRUCTURE===\n\n"
-                    structure_instruction = (
-                        "⚠️ CRITICAL FILE PATH RULES:\n"
-                        "1. You MUST use ONLY file paths from the CANONICAL_REPOSITORY_STRUCTURE above\n"
-                        "2. Do NOT invent new file paths or directory structures\n"
-                        "3. If your task mentions 'backend/auth', find the exact auth files in the structure above\n"
-                        "4. If a file path is not in the structure, ask for clarification - do NOT create it\n"
-                        "5. Validate every file path against the canonical structure before creating it\n\n"
-                    )
-                    
-                    task["description"] = current_desc + structure_reference + structure_instruction
-                    logger.info(f"✅ Injected repository structure into {task.get('task_id')} ({len(repo_structure)} chars)")
-                
-                valid_tasks.append(task)
-        
-        logger.info(f"Generated {len(valid_tasks)} valid tasks")
-        
-        return valid_tasks
-    
-    except Exception as e:
-        logger.error(f"Task generation failed: {e}")
-        raise Exception(f"Failed to generate tasks: {str(e)}")
+
+    # ── 5. PHASED GENERATION — one LLM call per sprint ────────────────────────
+    all_tasks: List[Dict[str, Any]] = []
+
+    # ── Phase 1: Sprint 1 (TASK-00 + frontend screens) ────────────────────────
+    logger.info(f"[{project_token}] Phase 1/4 — Sprint 1 (bootstrap + frontend prototype)")
+    sprint1_tasks = await _generate_sprint_phase(
+        sprint_number=1,
+        sprint_prompt_template=SPRINT1_GENERATION_PROMPT,
+        prompt_context=brd_block,
+        api_url=api_url,
+        api_key=api_key,
+        model=model,
+        project_token=project_token,
+    )
+    # Renumber starting at 0 (TASK-00 stays TASK-00)
+    sprint1_tasks = _renumber_task_ids(sprint1_tasks, start_index=1)
+    # Sprint 1 tasks get sprint[0] as default
+    for t in sprint1_tasks:
+        t.setdefault("sprint",     sprints[0]["name"])
+        t.setdefault("milestone",  milestones[0]["name"])
+    all_tasks.extend(sprint1_tasks)
+
+    next_index = max(
+        (int(t["task_id"].replace("TASK-", "")) for t in sprint1_tasks if t.get("task_id", "").startswith("TASK-") and t["task_id"] != "TASK-00"),
+        default=0
+    ) + 1
+
+    # ── Phase 2: Sprint 2 (backend services) ──────────────────────────────────
+    sprint1_summary = _build_tasks_summary(sprint1_tasks)
+    logger.info(f"[{project_token}] Phase 2/4 — Sprint 2 (backend services) — next task index: TASK-{next_index:02d}")
+    sprint2_prompt = SPRINT2_GENERATION_PROMPT.replace(
+        "{start_index}", f"{next_index:02d}"
+    ).replace(
+        "{sprint1_summary}", sprint1_summary
+    )
+    sprint2_tasks = await _generate_sprint_phase(
+        sprint_number=2,
+        sprint_prompt_template=sprint2_prompt,
+        prompt_context=brd_block,
+        api_url=api_url,
+        api_key=api_key,
+        model=model,
+        project_token=project_token,
+    )
+    sprint2_tasks = _renumber_task_ids(sprint2_tasks, start_index=next_index)
+    for t in sprint2_tasks:
+        t.setdefault("sprint",    sprints[1]["name"])
+        t.setdefault("milestone", milestones[1]["name"])
+        # Guarantee TASK-00 is always in linked_tasks
+        if "TASK-00" not in t.get("linked_tasks", []):
+            t.setdefault("linked_tasks", []).insert(0, "TASK-00")
+    all_tasks.extend(sprint2_tasks)
+
+    next_index = max(
+        (int(t["task_id"].replace("TASK-", "")) for t in sprint2_tasks if t.get("task_id", "").startswith("TASK-") and t["task_id"] != "TASK-00"),
+        default=next_index - 1
+    ) + 1
+
+    # ── Phase 3: Sprint 3 (integration) ───────────────────────────────────────
+    sprint2_summary = _build_tasks_summary(sprint2_tasks)
+    logger.info(f"[{project_token}] Phase 3/4 — Sprint 3 (integration) — next task index: TASK-{next_index:02d}")
+    sprint3_prompt = SPRINT3_GENERATION_PROMPT.replace(
+        "{start_index}", f"{next_index:02d}"
+    ).replace(
+        "{sprint1_summary}", sprint1_summary
+    ).replace(
+        "{sprint2_summary}", sprint2_summary
+    )
+    sprint3_tasks = await _generate_sprint_phase(
+        sprint_number=3,
+        sprint_prompt_template=sprint3_prompt,
+        prompt_context=brd_block,
+        api_url=api_url,
+        api_key=api_key,
+        model=model,
+        project_token=project_token,
+    )
+    sprint3_tasks = _renumber_task_ids(sprint3_tasks, start_index=next_index)
+    for t in sprint3_tasks:
+        t.setdefault("sprint",    sprints[2]["name"])
+        t.setdefault("milestone", milestones[2]["name"])
+        if "TASK-00" not in t.get("linked_tasks", []):
+            t.setdefault("linked_tasks", []).insert(0, "TASK-00")
+    all_tasks.extend(sprint3_tasks)
+
+    next_index = max(
+        (int(t["task_id"].replace("TASK-", "")) for t in sprint3_tasks if t.get("task_id", "").startswith("TASK-") and t["task_id"] != "TASK-00"),
+        default=next_index - 1
+    ) + 1
+
+    # ── Phase 4: Sprint 4 (testing & deployment) ──────────────────────────────
+    all_previous_summary = _build_tasks_summary(sprint1_tasks + sprint2_tasks + sprint3_tasks)
+    logger.info(f"[{project_token}] Phase 4/4 — Sprint 4 (testing & deployment) — next task index: TASK-{next_index:02d}")
+    sprint4_prompt = SPRINT4_GENERATION_PROMPT.replace(
+        "{start_index}", f"{next_index:02d}"
+    ).replace(
+        "{all_previous_summary}", all_previous_summary
+    )
+    sprint4_tasks = await _generate_sprint_phase(
+        sprint_number=4,
+        sprint_prompt_template=sprint4_prompt,
+        prompt_context=brd_block,
+        api_url=api_url,
+        api_key=api_key,
+        model=model,
+        project_token=project_token,
+    )
+    sprint4_tasks = _renumber_task_ids(sprint4_tasks, start_index=next_index)
+    for t in sprint4_tasks:
+        t.setdefault("sprint",    sprints[3]["name"])
+        t.setdefault("milestone", milestones[3]["name"])
+        if "TASK-00" not in t.get("linked_tasks", []):
+            t.setdefault("linked_tasks", []).insert(0, "TASK-00")
+    all_tasks.extend(sprint4_tasks)
+
+    logger.info(f"[{project_token}] All phases complete — {len(all_tasks)} total tasks before validation")
+
+    if not all_tasks:
+        logger.error("No tasks generated across any sprint phase")
+        return []
+
+    # ── 6. Validate, enrich, inject repo structure ─────────────────────────────
+    valid_tasks: List[Dict[str, Any]] = []
+    repo_structure = context.get("repository_structure", "")
+    project_name   = context.get("project_name", "project")
+
+    for task in all_tasks:
+        if not _validate_task_structure(task):
+            continue
+
+        # Required field defaults
+        task.setdefault("assignedTo",   [])
+        task.setdefault("reported_by",  "system")
+        task.setdefault("priority",     "medium")
+        task.setdefault("linked_tasks", [])
+
+        # Sprint / milestone guard
+        if not task.get("sprint"):
+            task["sprint"] = sprints[0]["name"]
+        if not task.get("milestone"):
+            task["milestone"] = milestones[0]["name"]
+
+        # Date defaults
+        if "startdate" not in task:
+            task["startdate"] = today.strftime('%Y-%m-%d')
+        task.setdefault("planned_start", task["startdate"])
+        if "deadline" not in task:
+            task["deadline"] = (today + timedelta(days=min(task["task_wallet"], 7))).strftime('%Y-%m-%d')
+
+        # ── Inject repo structure ──────────────────────────────────────────────
+        if repo_structure:
+            if task.get("task_id") == "TASK-00":
+                structure_block = (
+                    f"\n\n===BEGIN_DIRECTORY_STRUCTURE===\n{repo_structure}\n===END_DIRECTORY_STRUCTURE===\n\n"
+                    "CRITICAL: This is the CANONICAL directory structure for the entire project. "
+                    "You MUST create ALL directories and files shown above. "
+                    "ALL subsequent tasks MUST reference files from this structure. "
+                    "ALL agents MUST wait for this task to complete before starting their own work."
+                )
+                task["description"] = task.get("description", "") + structure_block
+
+                detailed_checklist = _generate_bootstrap_checklist(repo_structure, project_name)
+                if detailed_checklist:
+                    task["checklist"] = detailed_checklist
+                    logger.info(f"✅ TASK-00: injected repo structure + {len(detailed_checklist)} checklist items")
+            else:
+                structure_reference = (
+                    f"\n\n===CANONICAL_REPOSITORY_STRUCTURE===\n{repo_structure}\n===END_STRUCTURE===\n\n"
+                    "⚠️ CRITICAL FILE PATH RULES:\n"
+                    "1. Use ONLY file paths from the CANONICAL_REPOSITORY_STRUCTURE above\n"
+                    "2. Do NOT invent new file paths or directory structures\n"
+                    "3. Validate every file path against the canonical structure before creating it\n\n"
+                )
+                task["description"] = task.get("description", "") + structure_reference
+
+        valid_tasks.append(task)
+
+    # ── 7. Guarantee TASK-00 is the first element ──────────────────────────────
+    task_00 = next((t for t in valid_tasks if t.get("task_id") == "TASK-00"), None)
+    if task_00:
+        valid_tasks = [task_00] + [t for t in valid_tasks if t.get("task_id") != "TASK-00"]
+
+    logger.info(f"[{project_token}] ✅ Sprint-wise generation complete — {len(valid_tasks)} valid tasks")
+    for t in valid_tasks:
+        logger.info(f"    {t['task_id']}: {t['taskName']} [{t.get('sprint', '?')}]")
+
+    return valid_tasks

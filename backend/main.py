@@ -6959,39 +6959,83 @@ def _normalize_agent_kind(
 
 
 def _stored_agent_id(agent_id: str, project_token: Optional[str]) -> str:
+    base_id = agent_id.split("#")[0] if "#" in agent_id else agent_id
     project_token = _normalize_project_token(project_token)
     if not project_token:
-        return agent_id
+        return base_id
     prefix = f"{project_token}::"
-    if agent_id.startswith(prefix):
-        return agent_id
-    return f"{prefix}{agent_id}"
+    if base_id.startswith(prefix):
+        return base_id
+    return f"{prefix}{base_id}"
 
 
 def _public_agent_id(agent_id: str, project_token: Optional[str]) -> str:
+    base_id = agent_id.split("#")[0] if "#" in agent_id else agent_id
     project_token = _normalize_project_token(project_token)
     if not project_token:
-        return agent_id
+        return base_id
     prefix = f"{project_token}::"
-    if agent_id.startswith(prefix):
-        return agent_id[len(prefix):]
-    return agent_id
+    if base_id.startswith(prefix):
+        return base_id[len(prefix):]
+    return base_id
 
 
 def _runtime_agent_records(records: List[models.Agent], project_token: Optional[str]) -> List[Dict[str, Any]]:
-    return [
-        {
-            "id": _public_agent_id(rec.id, project_token),
-            "name": rec.name,
-            "type": rec.type,
-            "skills_content": getattr(rec, "skills_content", None),
-            "skills_summary": getattr(rec, "skills_summary", None),
-            "skills_tags": getattr(rec, "skills_tags", None),
-            "specialization": getattr(rec, "specialization", None),
-            "face": getattr(rec, "face", None),
-        }
-        for rec in records
-    ]
+    project_token = _normalize_project_token(project_token)
+    from database import SessionLocal
+    db = SessionLocal()
+    try:
+        # Query mappings to find counts
+        mapping_rows = db.query(
+            models.OrganizationAgentMapping.agent_id,
+            models.OrganizationAgentMapping.agent_kind,
+            models.OrganizationAgentMapping.shared_count,
+            models.OrganizationAgentMapping.dedicated_count,
+        ).filter(
+            models.OrganizationAgentMapping.project_token == project_token
+        ).all() if project_token else []
+        
+        visible_counts = {}
+        for row in mapping_rows:
+            raw_id = row[0]
+            kind = row[1] or 'shared'
+            sc = int(row[2] or 0)
+            dc = int(row[3] or 0)
+            count = sc if kind == 'shared' else dc
+            visible_counts[_public_agent_id(raw_id, project_token)] = count
+            
+        expanded = []
+        for rec in records:
+            public_id = _public_agent_id(rec.id, project_token)
+            is_default_system = public_id in ("g_agent_01", "m_agent_01", "deploy_agent") or public_id.startswith("g_agent_") or public_id.startswith("m_agent_")
+            
+            count = visible_counts.get(public_id, 0)
+            if not is_default_system and count > 1:
+                for i in range(1, count + 1):
+                    expanded.append({
+                        "id": f"{public_id}#{i}",
+                        "name": f"{rec.name} #{i}",
+                        "type": rec.type,
+                        "skills_content": getattr(rec, "skills_content", None),
+                        "skills_summary": getattr(rec, "skills_summary", None),
+                        "skills_tags": getattr(rec, "skills_tags", None),
+                        "specialization": getattr(rec, "specialization", None),
+                        "face": getattr(rec, "face", None),
+                    })
+            else:
+                expanded.append({
+                    "id": public_id,
+                    "name": rec.name,
+                    "type": rec.type,
+                    "skills_content": getattr(rec, "skills_content", None),
+                    "skills_summary": getattr(rec, "skills_summary", None),
+                    "skills_tags": getattr(rec, "skills_tags", None),
+                    "specialization": getattr(rec, "specialization", None),
+                    "face": getattr(rec, "face", None),
+                })
+        return expanded
+    finally:
+        db.close()
 
 
 def _ensure_agent_skills_columns() -> None:
@@ -7643,33 +7687,42 @@ async def list_agents(
     
     # Check public repo status for all agents in parallel
     import asyncio
-    agent_tasks = [
-        _sanitize_agent_for_user_with_public_check(agent, global_cred)
-        for agent in agent_service.get_all_agents(project_token)
-        if agent.get("id") in visible_runtime_ids
-    ]
+    agent_tasks = []
+    for agent in agent_service.get_all_agents(project_token):
+        agent_id = agent.get("id")
+        base_id = agent_id.split("#")[0] if "#" in agent_id else agent_id
+        if base_id in visible_runtime_ids:
+            agent_tasks.append(_sanitize_agent_for_user_with_public_check(agent, global_cred))
     sanitized_agents = await asyncio.gather(*agent_tasks)
     
-    agents = [
-        {
+    agents = []
+    for sanitized_agent in sanitized_agents:
+        public_id = sanitized_agent.get("id")
+        base_id = public_id.split("#")[0] if "#" in public_id else public_id
+        if base_id not in visible_runtime_ids:
+            continue
+        row_tuple = visible_runtime_ids[base_id]
+        kind = row_tuple[0]
+        sub_type = row_tuple[1]
+        sc = row_tuple[2] if len(row_tuple) > 2 else 0
+        dc = row_tuple[3] if len(row_tuple) > 3 else 0
+        
+        agents.append({
             **sanitized_agent,
-            "agent_kind": visible_runtime_ids[sanitized_agent.get("id")][0],
-            "sub_type": visible_runtime_ids[sanitized_agent.get("id")][1],
-            "shared_count": visible_runtime_ids[sanitized_agent.get("id")][2] if len(visible_runtime_ids[sanitized_agent.get("id")]) > 2 else 0,
-            "dedicated_count": visible_runtime_ids[sanitized_agent.get("id")][3] if len(visible_runtime_ids[sanitized_agent.get("id")]) > 3 else 0,
-        }
-        for sanitized_agent in sanitized_agents
-        if sanitized_agent.get("id") in visible_runtime_ids
-    ]
+            "agent_kind": kind,
+            "sub_type": sub_type,
+            "shared_count": sc,
+            "dedicated_count": dc,
+        })
     
     # Filter out legacy dev/test agents when include_defaults=False
     if not include_defaults:
         agents = [
             a for a in agents
             if (
-                str(a.get("id")).strip().lower() in ("g_agent_01", "m_agent_01", "deploy_agent")
-                or str(a.get("id")).strip().lower().startswith("g_agent_")
-                or str(a.get("id")).strip().lower().startswith("m_agent_")
+                str(a.get("id")).strip().lower().split("#")[0] in ("g_agent_01", "m_agent_01", "deploy_agent")
+                or str(a.get("id")).strip().lower().split("#")[0].startswith("g_agent_")
+                or str(a.get("id")).strip().lower().split("#")[0].startswith("m_agent_")
                 or a.get("skills_summary")
             )
         ]
@@ -8123,6 +8176,7 @@ async def deploy_preview(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
     project_token: Optional[str] = None,
+    sprint_id: Optional[str] = None,
 ):
     """
     Deploy the agent/integration branch into a live environment.
@@ -8161,6 +8215,7 @@ async def deploy_preview(
         git_repo_url=git_repo_url,
         git_token=git_token,
         project_token=project_token,
+        sprint_id=sprint_id,
     )
     if result.get("status") == "error":
         raise HTTPException(status_code=500, detail=result.get("error", "Deploy failed"))
@@ -8183,6 +8238,7 @@ async def fix_preview(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
     project_token: Optional[str] = None,
+    sprint_id: Optional[str] = None,
 ):
     """Trigger AI to fix failing preview deployment, commit, push, and restart preview."""
     project_token = _normalize_project_token(project_token)
@@ -8208,6 +8264,7 @@ async def fix_preview(
         git_repo_url=git_repo_url,
         git_token=git_token,
         project_token=project_token,
+        sprint_id=sprint_id,
     )
     if result.get("status") == "error":
         raise HTTPException(status_code=500, detail=result.get("error", "Fix failed"))
@@ -8237,8 +8294,11 @@ async def get_agent_status(
         project_token = _normalize_project_token(project_token)
         organization_name = _require_organization(current_user)
         
+        # Handle instance suffix by using base ID for internal checks/calls
+        base_agent_id = agent_id.split("#")[0] if "#" in agent_id else agent_id
+        
         # Rate limiting: prevent excessive calls to individual agent status
-        if not _check_agent_status_rate_limit(agent_id, current_user.id, project_token):
+        if not _check_agent_status_rate_limit(base_agent_id, current_user.id, project_token):
             # Return cached data if available, otherwise return 429
             individual_cache_key = f"agent_status:{organization_name}:{project_token or 'none'}:{current_user.id}:{agent_id}"
             cached_result = _get_cached_agents(individual_cache_key)
@@ -8272,6 +8332,8 @@ async def get_agent_status(
         global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
         sanitized_agent = await _sanitize_agent_for_user_with_public_check(agent, global_cred)
         
+        # Restore request agent_id (with instance suffix) so frontend maps correctly
+        sanitized_agent = {**sanitized_agent, "id": agent_id}
         result = {"agent": sanitized_agent}
         
         # Cache the individual agent result
@@ -8305,6 +8367,9 @@ async def run_agent(
     
     # Invalidate cache since agent status will change
     _invalidate_agent_cache(organization_name, project_token)
+    
+    # Handle instance suffix
+    base_agent_id = agent_id.split("#")[0] if "#" in agent_id else agent_id
     
     _ensure_default_agents(db, project_token)
     query = db.query(models.Agent)
@@ -8376,6 +8441,9 @@ async def reset_agent(
     """Reset an agent back to idle state."""
     try:
         project_token = _normalize_project_token(project_token)
+        # Handle instance suffix
+        base_agent_id = agent_id.split("#")[0] if "#" in agent_id else agent_id
+        
         _ensure_default_agents(db, project_token)
         query = db.query(models.Agent)
         if project_token:
@@ -8385,6 +8453,8 @@ async def reset_agent(
         records = query.all()
         agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
         agent = agent_service.reset_agent(agent_id, project_token)
+        if agent:
+            agent = {**agent, "id": agent_id}
         return {"agent": agent}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -9168,6 +9238,9 @@ async def update_agent(
         raise HTTPException(status_code=400, detail="Agent name cannot be empty")
     try:
         project_token = _normalize_project_token(project_token)
+        # Handle instance suffix
+        base_agent_id = agent_id.split("#")[0] if "#" in agent_id else agent_id
+        
         _ensure_default_agents(db, project_token)
         query = db.query(models.Agent)
         if project_token:
@@ -9191,6 +9264,8 @@ async def update_agent(
             )
         global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
         sanitized_agent = await _sanitize_agent_for_user_with_public_check(agent, global_cred)
+        if sanitized_agent:
+            sanitized_agent = {**sanitized_agent, "id": agent_id}
         return {"agent": sanitized_agent}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -9216,6 +9291,9 @@ async def update_agent_post(
         raise HTTPException(status_code=400, detail="Agent name cannot be empty")
     try:
         project_token = _normalize_project_token(project_token)
+        # Handle instance suffix
+        base_agent_id = agent_id.split("#")[0] if "#" in agent_id else agent_id
+        
         _ensure_default_agents(db, project_token)
         query = db.query(models.Agent)
         if project_token:
@@ -9239,6 +9317,8 @@ async def update_agent_post(
             )
         global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
         sanitized_agent = await _sanitize_agent_for_user_with_public_check(agent, global_cred)
+        if sanitized_agent:
+            sanitized_agent = {**sanitized_agent, "id": agent_id}
         return {"agent": sanitized_agent}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -9255,6 +9335,9 @@ async def remove_agent(
     try:
         project_token = _normalize_project_token(project_token)
         organization_name = _require_organization(current_user)
+        
+        # Handle instance suffix
+        base_agent_id = agent_id.split("#")[0] if "#" in agent_id else agent_id
         
         _ensure_default_agents_for_org(db, organization_name, project_token)
         _bootstrap_org_agent_mappings_if_missing(db, organization_name, project_token)
@@ -9301,11 +9384,18 @@ async def remove_agent(
 
         agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
 
-        agent_service.remove_agent(agent_id, project_token)
-        _delete_agent_record(db, agent_id, project_token)
+        # Remove all instances of the agent from memory
+        project_agents = agent_service._get_agent_states(project_token)
+        keys_to_remove = [
+            k for k in project_agents.keys()
+            if k == base_agent_id or k.startswith(f"{base_agent_id}#")
+        ]
+        for k in keys_to_remove:
+            agent_service.remove_agent(k, project_token)
+        _delete_agent_record(db, base_agent_id, project_token)
         
         # Also remove the mapping
-        stored_id = _stored_agent_id(agent_id, project_token)
+        stored_id = _stored_agent_id(base_agent_id, project_token)
         db.query(models.OrganizationAgentMapping).filter(
             func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower(),
             models.OrganizationAgentMapping.agent_id == stored_id,

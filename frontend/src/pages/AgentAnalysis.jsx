@@ -2713,10 +2713,17 @@ export default function AgentAnalysis({
                                                         <span className="text-gray-400">•</span>
                                                     </>
                                                 )}
-                                                <div className="flex items-center gap-1.5">
-                                                    <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
-                                                    <span className="font-medium text-emerald-600">Analysis Complete</span>
-                                                </div>
+                                                {analysisInProgress || processing ? (
+                                                    <div className="flex items-center gap-1.5">
+                                                        <div className="w-2.5 h-2.5 bg-amber-500 rounded-full animate-pulse"></div>
+                                                        <span className="font-semibold text-amber-600">Analysis in Progress</span>
+                                                    </div>
+                                                ) : (
+                                                    <div className="flex items-center gap-1.5">
+                                                        <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                                                        <span className="font-medium text-emerald-600">Analysis Complete</span>
+                                                    </div>
+                                                )}
                                             </div>
                                         </div>
                                     </div>

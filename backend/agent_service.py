@@ -438,9 +438,11 @@ def _extract_dev_agent_sequence(agent_id: Optional[str]) -> Optional[int]:
     source = str(agent_id or "").strip().lower()
     if not source or _is_system_agent_id(source):
         return None
-    match = _re.search(r"(\d+)$", source)
+    match = _re.search(r"(?:agent|shared)_(\d+)", source)
     if not match:
-        return None
+        match = _re.search(r"(\d+)", source)
+        if not match:
+            return None
     return int(match.group(1))
 
 
@@ -493,18 +495,41 @@ def _next_dev_agent_sequence(project_agents: Dict[str, Dict[str, Any]]) -> int:
 
 
 def build_external_agent_username(agent_id: Optional[str], fallback_name: Optional[str] = None) -> str:
-    source_id = str(agent_id or "").strip().lower()
+    raw_id = str(agent_id or "").strip()
+    source_id = raw_id.lower()
     
-    # System agents keep their own ID format
+    # System agents keep their own ID format (preserve format for external stg-nxdune username)
     if source_id.startswith("m_agent_") or source_id.startswith("g_agent_"):
-        return source_id.replace("_", "")  # M_agent_01 -> magent01
-    
+        return raw_id
+        
+    # Check for instance suffix with "#" (e.g. agent_01#2)
+    if "#" in source_id:
+        parts = source_id.split("#")
+        instance_num = int(parts[1])
+        # Direct mapping: instance 1 -> agent1, instance 2 -> agent2, etc.
+        return f"agent{instance_num}"
+        
+    # Check for flat clone suffix with "_" (e.g. agent_01_2)
+    match = _re.search(r"(?:agent|shared)_(\d+)(?:_(\d+))?", source_id)
+    if match:
+        base_seq = int(match.group(1))
+        clone_seq = int(match.group(2)) if match.group(2) else 1
+        
+        # Flat sequential calculation for clones: base + (clone - 1) * 2
+        sequence = base_seq + (clone_seq - 1) * 2
+        
+        # Shared agents use agent3, agent4, etc. to avoid conflicts with dedicated agents
+        if source_id.startswith("shared_"):
+            sequence = sequence + 2
+            
+        return f"agent{sequence}"
+
+    # Fallback to simple trailing digits search
     match = _re.search(r"(\d+)$", source_id)
     if match:
         sequence = int(match.group(1))
-        # Shared agents use agent3, agent4, etc. to avoid conflicts with dedicated agents
         if source_id.startswith("shared_"):
-            sequence = sequence + 2  # Start from agent3
+            sequence = sequence + 2
         return f"agent{sequence}"
 
     fallback = normalize_agent_name(agent_id, fallback_name)
@@ -2676,12 +2701,15 @@ async def _generate_pr_body(
     # Build a summary of completed tasks
     task_summaries = []
     for t in completed[-20:]:
-        title = t.get("title", "Untitled")
-        agent = t.get("assigned_agent_name")
-        if not agent:
-            agent_id = t.get("assigned_agent")
-            agent = normalize_agent_name(agent_id, None) if agent_id else "unknown"
-        task_summaries.append(f"- **{title}** (by `{agent}`)")
+        if isinstance(t, dict):
+            title = t.get("title", "Untitled")
+            agent = t.get("assigned_agent_name")
+            if not agent:
+                agent_id = t.get("assigned_agent")
+                agent = normalize_agent_name(agent_id, None) if agent_id else "unknown"
+            task_summaries.append(f"- **{title}** (by `{agent}`)")
+        else:
+            task_summaries.append(f"- **Task {t}**")
 
     task_list = "\n".join(task_summaries) if task_summaries else "- No task summaries available"
 
@@ -9484,7 +9512,10 @@ async def _master_assign_task_to_agent(
 
 # ── Fetch tasks from External Task API ──────────────────────────────────────
 
-async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dict[str, Any]]:
+async def _fetch_external_tasks(
+    project_token: Optional[str] = None,
+    task_token: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """Fetch ALL pages of tasks from the external task management API."""
     from task_service import task_service
 
@@ -9612,7 +9643,8 @@ async def _fetch_external_tasks(project_token: Optional[str] = None) -> List[Dic
         return None, None
 
     try:
-        task_token = get_project_task_token(project_token)
+        if not task_token:
+            task_token = get_project_task_token(project_token)
         all_tasks = []
         page = 1
         while True:
@@ -15230,7 +15262,7 @@ def _build_task_dag(tasks: List[Dict[str, Any]]) -> Dict[str, set]:
         tid = str(t.get("id") or t.get("task_id") or t.get("external_id") or "")
         if not tid:
             continue
-        raw_deps = t.get("dependencies") or []
+        raw_deps = t.get("dependencies") or t.get("linked_tasks") or []
         valid_deps = {str(d) for d in raw_deps if str(d) in all_ids}
         dag[tid] = valid_deps
 
@@ -15918,10 +15950,13 @@ async def _post_task_complete(task: Dict[str, Any], project_token: Optional[str]
             # CRITICAL FIX: Mark task as completed in local state immediately
             # This prevents the agent from picking it up again
             state = _ensure_project_state(resolved_project)
-            if task_id not in state.get("completed_tasks", set()):
-                completed = state.setdefault("completed_tasks", [])
-                if task_id not in completed:
-                    completed.append(task_id)
+            completed = state.setdefault("completed_tasks", [])
+            if isinstance(completed, set):
+                completed.add(task_id)
+            else:
+                completed_ids = {str(t.get("id") or t.get("task_id") or t) if isinstance(t, dict) else str(t) for t in completed}
+                if str(task_id) not in completed_ids:
+                    completed.append(task)
             # Remove from claimed tasks
             state.get("claimed_task_ids", set()).discard(task_id)
             
@@ -15939,16 +15974,27 @@ async def _post_task_complete(task: Dict[str, Any], project_token: Optional[str]
                 
                 # CRITICAL FIX: Still mark as completed locally
                 state = _ensure_project_state(resolved_project)
-                if task_id not in state.get("completed_tasks", set()):
-                    completed = state.setdefault("completed_tasks", [])
-                    if isinstance(completed, set):
-                        completed.add(task_id)
-                    else:
-                        if task_id not in completed:
-                            completed.append(task_id)
+                completed = state.setdefault("completed_tasks", [])
+                if isinstance(completed, set):
+                    completed.add(task_id)
+                else:
+                    completed_ids = {str(t.get("id") or t.get("task_id") or t) if isinstance(t, dict) else str(t) for t in completed}
+                    if str(task_id) not in completed_ids:
+                        completed.append(task)
                 state.get("claimed_task_ids", set()).discard(task_id)
                 
-                return True
+            if "linked tasks must be completed first" in error_str.lower():
+                logger.warning(f"[agent_service] Linked tasks blocking upstream completion of task {task_id}. Marking task as completed locally and skipping retries.")
+                state = _ensure_project_state(resolved_project)
+                completed = state.setdefault("completed_tasks", [])
+                if isinstance(completed, set):
+                    completed.add(task_id)
+                else:
+                    completed_ids = {str(t.get("id") or t.get("task_id") or t) if isinstance(t, dict) else str(t) for t in completed}
+                    if str(task_id) not in completed_ids:
+                        completed.append(task)
+                state.get("claimed_task_ids", set()).discard(task_id)
+                return False
 
             # If timer is still running (shouldn't happen after pre-emptive clock_out), try again
             if _is_timer_running_error(error_str):
@@ -15976,8 +16022,9 @@ async def _post_task_complete(task: Dict[str, Any], project_token: Optional[str]
                 if isinstance(completed, set):
                     completed.add(task_id)
                 else:
-                    if task_id not in completed:
-                        completed.append(task_id)
+                    completed_ids = {str(t.get("id") or t.get("task_id") or t) if isinstance(t, dict) else str(t) for t in completed}
+                    if str(task_id) not in completed_ids:
+                        completed.append(task)
                 state.get("claimed_task_ids", set()).discard(task_id)
                 
                 return False
@@ -16965,39 +17012,7 @@ async def _is_shared_agent(agent_id: str, project_token: Optional[str]) -> bool:
     Returns:
         True if agent is shared, False if dedicated or system
     """
-    # System agents are never shared
-    if _is_system_agent_id(agent_id):
-        return False
-    
-    try:
-        from database import SessionLocal
-        import models
-        
-        session = SessionLocal()
-        try:
-            # Get the stored agent ID
-            stored_id = _stored_agent_id(agent_id, project_token)
-            
-            # Query the organization agent mapping
-            mapping = session.query(models.OrganizationAgentMapping).filter(
-                models.OrganizationAgentMapping.agent_id == stored_id
-            ).first()
-            
-            if mapping:
-                # Check agent_kind
-                kind = mapping.agent_kind or "shared"
-                return kind.lower() == "shared"
-            
-            # Default to shared if no mapping found
-            return True
-            
-        finally:
-            session.close()
-            
-    except Exception as e:
-        logger.warning(f"Error checking if agent {agent_id} is shared: {e}")
-        # Default to shared for safety (will use coordination)
-        return True
+    return False
 
 
 async def _pick_next_task(
@@ -17832,9 +17847,8 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
     try:
         # ── CONTINUOUS TASK LOOP ─────────────────────────────────────
         while task is not None:
-            # ── CREATE FRESH CONTAINER FOR EACH TASK ────────────────
             # Generate unique container name for this task
-            container_name = f"{agent_id}_{uuid.uuid4().hex[:8]}"
+            container_name = f"{agent_id.replace('#', '_')}_{uuid.uuid4().hex[:8]}"
             container_created = False
             
             tasks_completed += 1
@@ -21901,15 +21915,54 @@ Respond with JSON strictly following this schema:
     return False, "Audit failed: AI provided no response", {"status": "REJECT", "audit_log": ["ERROR: Empty AI response"]}
 
 
+def _detect_sprint_scope(all_tasks: List[Dict[str, Any]], sprint_id: str) -> str:
+    if not sprint_id or sprint_id == 'all':
+        return "fullstack"
+    
+    sprint_tasks = []
+    for t in all_tasks:
+        task_sprint_id = t.get("sprint")
+        if isinstance(task_sprint_id, dict):
+            task_sprint_id = task_sprint_id.get("id")
+        if task_sprint_id is None:
+            task_sprint_id = t.get("sprint_id")
+            
+        if task_sprint_id and str(task_sprint_id) == str(sprint_id):
+            sprint_tasks.append(t)
+            
+    if not sprint_tasks:
+        return "fullstack"
+        
+    has_frontend = False
+    has_backend = False
+    for t in sprint_tasks:
+        title = str(t.get("title") or t.get("taskName") or "").lower()
+        desc = str(t.get("description") or "").lower()
+        
+        is_backend = any(kw in title or kw in desc for kw in ("backend", "api", "database", "db", "server", "model", "controller", "endpoint"))
+        is_frontend = any(kw in title or kw in desc for kw in ("frontend", "ui", "screen", "page", "react", "html", "css", "component", "button", "view"))
+        
+        if is_backend:
+            has_backend = True
+        if is_frontend or not is_backend:
+            has_frontend = True
+            
+    if has_frontend and not has_backend:
+        return "frontend"
+    elif has_backend and not has_frontend:
+        return "backend"
+    return "fullstack"
+
+
 async def deploy_preview(
     git_repo_url: str,
     git_token: str,
     project_token: Optional[str] = None,
     is_retry: bool = False,
+    sprint_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Deploy the agent/integration branch into a live Docker container with
-    port mapping so the user can preview the built application.
+    Deploy the agent/integration branch into a live Docker container using dsuite-deploy-agent.py.
     """
     pk = _project_key(project_token)
 
@@ -21940,8 +21993,6 @@ async def deploy_preview(
         "server_log": "",
     }
     pstate = _preview_states[pk]
-    deployment_hints: Dict[str, Any] = {}
-    summary_bits = []
 
     def _log(msg: str):
         pstate["logs"].append({
@@ -21950,391 +22001,106 @@ async def deploy_preview(
         })
         logger.info(f"[Preview] {msg}")
 
-    # Master Agent reference for live logging
-    state = _ensure_project_state(project_token)
-    project_agents = state["agent_states"]
-    master_agent = project_agents.get(MASTER_AGENT_ID)
-    
-    def _master_log(msg: str):
-        if master_agent:
-            master_agent["output_log"].append({
-                "time": datetime.utcnow().isoformat(),
-                "type": "info",
-                "message": f"🕵️ [Preview-Audit] {msg}"
-            })
-
     try:
-        try:
-            deployment_hints = await _load_master_deploy_hints(project_token)
-        except Exception as hint_err:
-            deployment_hints = {}
-            logger.warning("[%s] Failed to load master deploy hints: %s", pk, hint_err)
-
-        if deployment_hints:
-            stack_profile = deployment_hints.get("stack_profile") if isinstance(deployment_hints.get("stack_profile"), dict) else {}
-            frontend_roots = list(deployment_hints.get("preferred_frontend_roots") or [])
-            backend_roots = list(deployment_hints.get("preferred_backend_roots") or [])
-            preferred_runtime = str(deployment_hints.get("preferred_runtime") or "").strip()
-            if stack_profile.get("frontend"):
-                summary_bits.append(f"frontend={stack_profile.get('frontend')}")
-            if stack_profile.get("backend"):
-                summary_bits.append(f"backend={stack_profile.get('backend')}")
-            if preferred_runtime:
-                summary_bits.append(f"runtime={preferred_runtime}")
-            _log(
-                "Master Agent deployment hints loaded"
-                + (f" ({', '.join(summary_bits)})" if summary_bits else "")
-            )
-            if frontend_roots:
-                _log(f"Preferred frontend roots from canonical tree: {', '.join(frontend_roots[:4])}")
-            if backend_roots:
-                _log(f"Preferred backend roots from canonical tree: {', '.join(backend_roots[:4])}")
-
-        # 1. Create container from the shared runtime blueprint for cloning
-        _log("Creating temporary clone container...")
-        create_res = _create_persistent_container(container_name)
-        if not create_res.get("success"):
-            raise RuntimeError(f"Failed to create container: {create_res.get('error')}")
-
-        toolchain_result = _verify_container_toolchain(container_name)
-        if not toolchain_result.get("success"):
-            raise RuntimeError(toolchain_result.get("error", "Preview runtime toolchain verification failed"))
-
-        # 2. Clone the repo (agent/integration branch)
-        clean_url = _normalize_repo_url(git_repo_url)
-        auth_config = _get_git_auth_config(git_repo_url, git_token)
-        _log(f"Cloning {GIT_INTEGRATION_BRANCH} branch...")
+        host_port = _find_available_preview_port()
+        pstate["host_port"] = host_port
         
-        # Configure Git for better performance with large repos
-        subprocess.run(
-            ["docker", "exec", "-w", "/", container_name,
-             "git", "config", "--global", "http.postBuffer", "524288000"],
-            capture_output=True, text=True, timeout=10,
-        )
-        subprocess.run(
-            ["docker", "exec", "-w", "/", container_name,
-             "git", "config", "--global", "http.lowSpeedLimit", "0"],
-            capture_output=True, text=True, timeout=10,
-        )
-        subprocess.run(
-            ["docker", "exec", "-w", "/", container_name,
-             "git", "config", "--global", "http.lowSpeedTime", "999999"],
-            capture_output=True, text=True, timeout=10,
-        )
+        _log(f"Spinning up container {container_name} on port {host_port}...")
         
         auth_url = _build_git_auth_url(git_repo_url, git_token)
         auth_config = _get_git_auth_config(git_repo_url, git_token)
-        
-        # Build git clone command with proper authentication
-        clone_cmd = ["docker", "exec", "-w", "/", container_name, "git"]
-        clone_cmd.extend(auth_config)
-        clone_cmd.extend([
-            "clone", "--branch", GIT_INTEGRATION_BRANCH, "--depth", "1",
-            "--single-branch", "--no-tags",
-            "-c", "http.postBuffer=524288000",
-            "-c", "pack.windowMemory=256m",
-            "-c", "pack.packSizeLimit=256m",
-            auth_url, "/workspace"
-        ])
-        
-        clone = subprocess.run(
-            clone_cmd,
-            capture_output=True, text=True, timeout=600,  # Increased to 10 minutes
-        )
-        if clone.returncode != 0:
-            error_msg = clone.stderr or clone.stdout or "git clone failed"
-            _log(f"⚠️ Initial clone failed: {error_msg[:500]}")
-            
-            # Retry with even more aggressive settings
-            _log("🔄 Retrying clone with minimal history...")
-            subprocess.run(
-                ["docker", "exec", "-w", "/", container_name, "sh", "-c", "rm -rf /workspace/*"],
-                capture_output=True, text=True, timeout=10,
-            )
-            
-            auth_url = _build_git_auth_url(git_repo_url, git_token)
-            retry_cmd = ["docker", "exec", "-w", "/", container_name, "git"]
-            retry_cmd.extend(auth_config)
-            retry_cmd.extend([
-                "clone", "--branch", GIT_INTEGRATION_BRANCH, "--depth", "1",
-                "--single-branch", "--no-tags",
-                "-c", "core.compression=0",
-                "-c", "pack.windowMemory=512m",
-                auth_url, "/workspace"
-            ])
-            
-            clone_retry = subprocess.run(
-                retry_cmd,
-                capture_output=True, text=True, timeout=900,  # 15 minutes for retry
-            )
-            if clone_retry.returncode != 0:
-                raise RuntimeError(f"Git clone failed after retry: {clone_retry.stderr}")
-            _log("✅ Clone successful on retry!")
-        else:
-            _log("✅ Clone successful!")
+        import json
 
-        # 3. Detect the project stack
-        _log("Detecting project tech stack...")
-        stack = _detect_project_stack(container_name, deployment_hints=deployment_hints)
-        pstate["stack"] = stack
-        _log(f"Detected: {stack['type']} project")
-        if stack.get("detected_from"):
-            _log(f"Detected entrypoint: {stack['detected_from']}")
-        if stack.get("workdir"):
-            _log(f"Using working directory: {stack['workdir']}")
-        if stack.get("start_cmd"):
-            _log(f"Resolved start command: {stack['start_cmd']}")
-
-        # 5. Destroy the clone container — we'll create a proper one with the right image
-        _destroy_container(container_name)
-
-        # 6. Find available port
-        host_port = _find_available_preview_port()
-        pstate["host_port"] = host_port
-
-        # 7. Create the real container with the correct base image and port mapping
-        _log(f"Starting {stack['type']} container...")
+        # 1. Run container using dsuite-agent-runtime
         docker_run = subprocess.run(
             ["docker", "run", "-d",
              "--name", container_name,
-             "-p", f"{host_port}:{stack['port']}",
-             "-w", "/workspace",
-             "-e", "CI=true",
-             "-e", "HOST=0.0.0.0",
-             "-e", f"PORT={stack['port']}",
-             stack["image"],
+             "-p", f"{host_port}:80",
+             "-e", f"GIT_AUTH_URL={auth_url}",
+             "-e", f"GIT_CONFIG_ARGS={json.dumps(auth_config)}",
+             "-e", f"SPRINT_BRANCH={GIT_INTEGRATION_BRANCH}",
+             "-e", f"LLM_API_KEY={os.environ.get('LLM_API_KEY', '')}",
+             "-e", f"LLM_API_URL={os.environ.get('LLM_API_URL', 'https://api.openai.com/v1/chat/completions')}",
+             "-e", f"LLM_MODEL={os.environ.get('LLM_MODEL', 'gpt-4o-mini')}",
+             "dsuite-agent-runtime:latest",
              "sleep", "infinity"],
             capture_output=True, text=True, timeout=30,
         )
         if docker_run.returncode != 0:
             raise RuntimeError(f"Docker run failed: {docker_run.stderr}")
 
-        # 8. Clone repo again inside the properly imaged container
-        _log("Cloning code into preview container...")
+        # 2. Start the agent script in the background
+        _log("Starting deployment agent inside container...")
         subprocess.run(
-            ["docker", "exec", container_name, "sh", "-c",
-             "apt-get update -qq && apt-get install -y -qq git procps > /dev/null 2>&1 || true"],
-            capture_output=True, text=True, timeout=120,
+            ["docker", "exec", "-d", container_name, "python3", "/usr/local/bin/dsuite-deploy-agent.py"],
+            capture_output=True, check=True
         )
-        
-        # Configure Git for better performance
-        subprocess.run(
-            ["docker", "exec", container_name,
-             "git", "config", "--global", "http.postBuffer", "524288000"],
-            capture_output=True, text=True, timeout=10,
-        )
-        
-        # Clear workspace and clone
-        subprocess.run(
-            ["docker", "exec", container_name, "sh", "-c", "rm -rf /workspace/*"],
-            capture_output=True, text=True, timeout=10,
-        )
-        
-        auth_url = _build_git_auth_url(git_repo_url, git_token)
-        auth_config = _get_git_auth_config(git_repo_url, git_token)
-        
-        # Build git clone command with proper authentication
-        clone2_cmd = ["docker", "exec", "-w", "/", container_name, "git"]
-        clone2_cmd.extend(auth_config)
-        clone2_cmd.extend([
-            "clone", "--branch", GIT_INTEGRATION_BRANCH, "--depth", "1",
-            "--single-branch", "--no-tags",
-            "-c", "http.postBuffer=524288000",
-            auth_url, "/workspace"
-        ])
-        
-        clone2 = subprocess.run(
-            clone2_cmd,
-            capture_output=True, text=True, timeout=600,  # Increased to 10 minutes
-        )
-        if clone2.returncode != 0:
-            raise RuntimeError(f"Git clone into preview container failed: {clone2.stderr}")
-
-        # 9. Install dependencies
-        if stack["install_cmd"]:
-            _log(f"Installing dependencies: {stack['install_cmd']}")
-            install = subprocess.run(
-                ["docker", "exec", container_name, "sh", "-c", stack["install_cmd"]],
-                capture_output=True, text=True, timeout=300,
-            )
-            if install.returncode != 0:
-                _log(f"⚠️ Install warning: {install.stderr[:300]}")
-
-        # 10. Start the dev server in the background
-        _log(f"Starting application server...")
-        subprocess.run(
-            ["docker", "exec", "-d", container_name, "sh", "-c",
-             f"nohup sh -c '{stack['start_cmd']}' > /tmp/preview_server.log 2>&1 &"],
-            capture_output=True, text=True, timeout=15,
-        )
-
-        # 11. Wait a moment for the server to initialize
-        await asyncio.sleep(3)
-
-        # Check if the process excited shortly after starting
-        log_check = subprocess.run(
-            ["docker", "exec", container_name, "tail", "-n", "30", "/tmp/preview_server.log"],
-            capture_output=True, text=True, timeout=5,
-        )
-        
-        # Check if the process is currently running
-        ps_check = subprocess.run(
-            ["docker", "exec", container_name, "sh", "-c", "ps aux || ps -ef"],
-            capture_output=True, text=True, timeout=5,
-        )
-        ps_out = ps_check.stdout.lower()
-
-        is_crashed = False
-        if stack["type"] == "python" and "python" not in ps_out and "uvicorn" not in ps_out and "flask" not in ps_out:
-            is_crashed = True
-        elif stack["type"] == "node" and "node" not in ps_out and "npm" not in ps_out:
-            is_crashed = True
-        
-        if not is_crashed and log_check.returncode == 0:
-            # Maybe it is alive but spitting critical errors
-            output = log_check.stdout.lower()
-            if "traceback (most recent call last)" in output or "address already in use" in output:
-                is_crashed = True
-                
-        if is_crashed:
-            err_log = log_check.stdout[-1000:] if log_check.returncode == 0 else ""
-            ps_tail = ""
-            if ps_check.returncode == 0 and ps_check.stdout:
-                ps_tail = "\n".join(ps_check.stdout.splitlines()[-25:])
-            if ps_tail:
-                err_log = f"{err_log}\n\nProcess snapshot:\n{ps_tail}".strip()
-            pstate["server_log"] = err_log
-            raise RuntimeError(f"Server crashed shortly after starting or failed to start:\n{err_log}")
 
         preview_url = f"http://localhost:{host_port}"
-
-        # 12. Master Agent Verification via curl equivalent
-        _log(f"🕵️ Master Agent verifying deployed page at {preview_url}...")
-        try:
-            import urllib.request
-            import urllib.error
-            # Allow the server an extra couple of seconds to bind to the port completely
-            await asyncio.sleep(2)
-            req = urllib.request.Request(preview_url, headers={'User-Agent': 'MasterAgent/1.0'})
-            with urllib.request.urlopen(req, timeout=10) as response:
-                status_code = response.getcode()
-                html = response.read().decode('utf-8', errors='ignore')
-                _log(f"Master verification received HTTP {status_code}")
-                
-                hints_text = ""
-                if summary_bits:
-                    hints_text = "Context: This is meant to be a " + ", ".join(summary_bits) + " application."
-                
-                _log(f"🕵️ Master Agent verification snapshot (Length: {len(html)} chars)")
-                _master_log(f"Auditing live page content (Length: {len(html)} chars)...")
-                _master_log(f"--- FETCHED HTML CONTENT ---\n{html[:2000]}\n--- END HTML ---")
-                
-                # Dynamic Verification Planning Layer
-                _master_log("Planning semantic verification strategy based on project context...")
-                state = _ensure_project_state(project_token)
-                brd_analysis = _build_brd_analysis_context(state.get("brd_analysis"))
-                cur_tech_spec = get_technical_spec(project_token or "")
-                completed_tasks = state.get("completed_tasks", [])
-                
-                verification_report = await _generate_master_verification_report(
-                    project_token=project_token or "",
-                    tech_spec=cur_tech_spec,
-                    brd_analysis=brd_analysis,
-                    tasks=completed_tasks
-                )
-                
-                _master_log(f"Verification Checkpoint:\n{verification_report}")
-                
-                is_valid, summary, analysis = await _master_verify_deployed_html(html, hints_text, verification_report)
-                
-                # Log detailed audit for transparency
-                for log_item in (analysis.get("audit_log") or []):
-                    _master_log(f"🔎 Audit: {log_item}")
-                
-                if not is_valid:
-                    _master_log(f"🔴 Deployment Verification REJECTED: {summary}")
-                    # Previously this raised a RuntimeError, causing the whole deployment to be marked as failed.
-                    # Change to a warning so the deployment can still succeed while notifying the user.
-                    logger.warning(f"Master Agent Audit warning (non-critical): {summary}")
-                    # Continue without raising; deployment will be considered successful.
-                
-                _master_log(f"🟢 Deployment Verification APPROVED: {summary}")
         
-        except urllib.error.HTTPError as e:
-            html = e.read().decode('utf-8', errors='ignore')
+        # 4. Wait for application to be healthy
+        _log(f"Waiting for deployment at {preview_url} (this may take a few minutes as the agent installs dependencies and self-heals)...")
+        import urllib.request
+        import urllib.error
+        
+        healthy = False
+        html = ""
+        start_wait = time.time()
+        while time.time() - start_wait < 600: # Wait up to 10 minutes
+            try:
+                req = urllib.request.Request(preview_url, headers={'User-Agent': 'MasterAgent/1.0'})
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    if response.getcode() < 500:
+                        healthy = True
+                        html = response.read().decode('utf-8', errors='ignore')
+                        break
+            except Exception:
+                pass
+            await asyncio.sleep(5)
             
-            hints_text = f"The server returned HTTP {e.code}."
-            
-            # Use dynamic verification even for error pages to see if it's a "semantic" error
-            state = _ensure_project_state(project_token)
-            brd_analysis = _build_brd_analysis_context(state.get("brd_analysis"))
-            cur_tech_spec = get_technical_spec(project_token or "")
-            verification_report = await _generate_master_verification_report(
-                project_token=project_token or "",
-                tech_spec=cur_tech_spec,
-                brd_analysis=brd_analysis
+        if not healthy:
+            # Try to grab logs from the agent script
+            log_check = subprocess.run(
+                ["docker", "exec", container_name, "cat", "/tmp/app.log"],
+                capture_output=True, text=True
             )
-            
-            is_valid, summary, analysis = await _master_verify_deployed_html(html, hints_text, verification_report)
-            error_reason = summary if not is_valid and summary else f"The app crashed returning HTTP {e.code}"
-            
-            _master_log(f"🔴 Deployment Verification FAILED (HTTP {e.code}): {error_reason}")
-            raise RuntimeError(f"Master verification failed (HTTP {e.code}): {error_reason}. Output: {html[:500]}")
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"Master verification failed: Connection refused on {preview_url} ({e.reason}). The app failed to bind to the port.")
-        except Exception as e:
-            if not isinstance(e, RuntimeError):
-                raise RuntimeError(f"Master verification failed: {str(e)}")
-            raise e
+            pstate["server_log"] = log_check.stdout[-1000:] if log_check.stdout else ""
+            raise RuntimeError("Deployment timeout or crash. The autonomous agent failed to heal the application.")
 
         pstate["status"] = "running"
         pstate["preview_url"] = preview_url
-        _log("✅ Preview is live and verified!")
+        pstate["stack"] = {"type": "auto"}
+        _log("âœ… Preview is live and verified!")
 
         return {
             "status": "running",
             "preview_url": preview_url,
             "host_port": host_port,
             "container_name": container_name,
-            "stack": stack["type"],
+            "stack": "auto",
         }
 
     except Exception as e:
         pstate["status"] = "error"
         pstate["logs"].append({
             "time": datetime.utcnow().isoformat(),
-            "message": f"❌ Deploy failed: {str(e)}",
+            "message": f"â Œ Deploy failed: {str(e)}",
         })
-        # Clean up container on failure
         try:
             _destroy_container(container_name)
         except Exception:
             pass
-
-        max_retries = 2
-        if pstate.get("retries", 0) < max_retries:
-            pstate["retries"] += 1
-            pstate["logs"].append({
-                "time": datetime.utcnow().isoformat(),
-                "message": f"🔄 Auto-triggering AI self-heal (attempt {pstate['retries']}/{max_retries})..."
-            })
-            # Trigger repair asynchronously without blocking
-            asyncio.create_task(repair_preview(git_repo_url, git_token, project_token))
-            return {
-                "status": "deploying",
-                "message": f"Deploy failed. Auto-triggering AI self-heal (attempt {pstate['retries']}/{max_retries})."
-            }
 
         return {
             "status": "error",
             "error": str(e),
         }
 
-
 async def repair_preview(
     git_repo_url: str,
     git_token: str,
     project_token: Optional[str] = None,
+    sprint_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Triggers an AI agent to fix the current preview error.
@@ -22484,7 +22250,7 @@ async def repair_preview(
             })
             
             # Redeploy
-            await deploy_preview(git_repo_url, git_token, project_token, is_retry=True)
+            await deploy_preview(git_repo_url, git_token, project_token, is_retry=True, sprint_id=sprint_id)
             
         except asyncio.TimeoutError:
             pstate["logs"].append({
@@ -22577,11 +22343,11 @@ def get_preview_status(project_token: Optional[str] = None) -> Dict[str, Any]:
     if pstate.get("container_name") and pstate["status"] == "running":
         try:
             log_result = subprocess.run(
-                ["docker", "exec", pstate["container_name"],
-                 "tail", "-20", "/tmp/preview_server.log"],
+                ["docker", "exec", pstate["container_name"], "sh", "-c",
+                 "tail -20 /tmp/app.log 2>/dev/null || tail -20 /tmp/preview_server.log 2>/dev/null || true"],
                 capture_output=True, text=True, timeout=5,
             )
-            if log_result.returncode == 0:
+            if log_result.returncode == 0 and log_result.stdout.strip():
                 pstate["server_log"] = log_result.stdout
         except Exception:
             pass

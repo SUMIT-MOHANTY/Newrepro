@@ -73,3 +73,9 @@ test*
 *copy*
 sql_app.db
 sql_app.db
+backend/check_tasks.py
+backend/get_external_agents.py
+backend/scratch_check_all_dbs.py
+backend/scratch_check_db.py
+sql_app*
+backend/scratch_check_db.py

@@ -12,7 +12,10 @@ from models import (
     OrganizationSSOSetting, AgentCredential, Agent,
     OrganizationAgentQuota, OrganizationAgentMapping,
     Document, GovernanceResponse, GovernanceQuestion,
-    GovernanceQuestionOption, Task, AgentMessage
+    GovernanceQuestionOption, Task, AgentMessage,
+    ChatMessage, UserProjectAssociation, HandoffToken,
+    SharedDocument, SharedDocumentFile, SharedDocumentRecipient,
+    SharedDocumentAccessLog, ShareProject
 )
 
 
@@ -29,6 +32,12 @@ def clear_database_except_users():
         
         tables_to_clear = [
             (AgentMessage, "Agent Messages"),
+            (ChatMessage, "Chat Messages"),
+            (SharedDocumentAccessLog, "Shared Document Access Logs"),
+            (SharedDocumentRecipient, "Shared Document Recipients"),
+            (SharedDocumentFile, "Shared Document Files"),
+            (SharedDocument, "Shared Documents"),
+            (ShareProject, "Share Projects"),
             (Task, "Tasks"),
             (GovernanceQuestionOption, "Governance Question Options"),
             (GovernanceQuestion, "Governance Questions"),
@@ -43,10 +52,12 @@ def clear_database_except_users():
             (OAuthAuthorizationCode, "OAuth Authorization Codes"),
             (OAuthClient, "OAuth Clients"),
             (OrganizationInvite, "Organization Invites"),
+            (UserProjectAssociation, "User Project Associations"),
             (UserOrganizationRole, "User Organization Roles"),
             (OrganizationRolePermission, "Organization Role Permissions"),
             (OrganizationRole, "Organization Roles"),
             (PasswordReset, "Password Resets"),
+            (HandoffToken, "Handoff Tokens"),
         ]
         
         total_deleted = 0
