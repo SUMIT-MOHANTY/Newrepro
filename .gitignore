@@ -79,3 +79,10 @@ backend/scratch_check_all_dbs.py
 backend/scratch_check_db.py
 sql_app*
 backend/scratch_check_db.py
+backend/migrate_agent_namespaces.py
+backend/scratch_check_dbs.py
+backend/scratch_list_git.py
+backend/scratch_simulate_bootstrap.py
+backend/scratch_*
+backend/search_*
+backend/scratch*

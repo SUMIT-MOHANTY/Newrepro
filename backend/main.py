@@ -9322,6 +9322,172 @@ async def add_agent_with_skills(
         }
     }
 
+class UpdateAgentSkillsRequest(BaseModel):
+    name: str
+    skills_content: str
+    face: Optional[str] = None
+    tags: Optional[str] = None
+    project_token: Optional[str] = None
+
+
+@app.post("/agents/skills/update/{agent_id}")
+async def update_agent_with_skills(
+    agent_id: str,
+    request: UpdateAgentSkillsRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    organization_name = _require_organization(current_user)
+    name = request.name.strip()
+    skills_content = request.skills_content.strip()
+    project_token = _normalize_project_token(request.project_token)
+
+    if not name:
+        raise HTTPException(status_code=400, detail="Agent name is required")
+    if not skills_content:
+        raise HTTPException(status_code=400, detail="Skills file content is required")
+
+    # Retrieve existing agent record (ignore suffix instance like #1 if present)
+    base_id = agent_id.split("#")[0]
+    agent_rec = db.query(models.Agent).filter(models.Agent.id == base_id).first()
+    if not agent_rec:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if not project_token and agent_rec.project_token:
+        project_token = agent_rec.project_token
+
+    summary = "Developer with custom capabilities."
+    tags = []
+    specialization = "Development"
+
+    try:
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are an AI that analyzes a software agent's skills from a markdown description.\n"
+                    "Analyze the skills content and output a raw JSON object with the following fields:\n"
+                    "- \"summary\": A high-level summary of skills and capabilities. Maximum 200 characters.\n"
+                    "- \"tags\": A JSON list of technical skills and tools (e.g., [\"React\", \"FastAPI\", \"Testing\", \"Python\"]). Extract up to 10 key technical skills.\n"
+                    "- \"specialization\": This must be strictly either \"Development\" or \"Testing\". Classify based on whether they focus more on writing code and building features (\"Development\") vs writing tests, QA, checks, mocking, and verification (\"Testing\").\n\n"
+                    "Output ONLY the raw JSON object, without any markdown formatting, backticks, or explanation. Example:\n"
+                    "{\n"
+                    "  \"summary\": \"Expert in web automation, e2e testing, and integration verification.\",\n"
+                    "  \"tags\": [\"Playwright\", \"Selenium\", \"Python\", \"Pytest\"],\n"
+                    "  \"specialization\": \"Testing\"\n"
+                    "}"
+                )
+            },
+            {
+                "role": "user",
+                "content": f"Skills document:\n\n{skills_content}"
+            }
+        ]
+        llm_response = await llm_gateway.call_llm_and_extract(messages, timeout=60.0)
+        llm_response = llm_response.strip()
+
+        if llm_response.startswith("```"):
+            lines = llm_response.splitlines()
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            llm_response = "\n".join(lines).strip()
+
+        try:
+            parsed = json.loads(llm_response)
+            summary = parsed.get("summary", "Developer with custom capabilities.").strip()
+            tags = parsed.get("tags", [])
+            specialization = parsed.get("specialization", "Development").strip()
+        except Exception as parse_err:
+            logger.error(f"Error parsing LLM JSON response: {parse_err}")
+            # regex parse fallback
+            import re
+            summary_match = re.search(r'"summary"\s*:\s*"([^"]+)"', llm_response)
+            if summary_match:
+                summary = summary_match.group(1)
+            spec_match = re.search(r'"specialization"\s*:\s*"([^"]+)"', llm_response)
+            if spec_match:
+                specialization = spec_match.group(1)
+            tags_match = re.search(r'"tags"\s*:\s*\[([^\]]+)\]', llm_response)
+            if tags_match:
+                tags = [t.strip().replace('"', '') for t in tags_match.group(1).split(",")]
+
+        if len(summary) > 200:
+            summary = summary[:197] + "..."
+
+        if not isinstance(tags, list):
+            tags = []
+        else:
+            tags = [str(t).strip() for t in tags if t]
+
+        if specialization not in ["Development", "Testing"]:
+            spec_lower = specialization.lower()
+            if any(keyword in spec_lower for keyword in ["test", "qa", "verify", "check", "assert", "mock"]):
+                specialization = "Testing"
+            else:
+                specialization = "Development"
+    except Exception as e:
+        logger.error(f"Failed to generate skills summary with AI: {e}")
+        content_lower = skills_content.lower()
+        test_keywords = ["test", "qa", "assert", "check", "verify", "mock", "unittest", "pytest"]
+        if any(keyword in content_lower for keyword in test_keywords):
+            specialization = "Testing"
+            tags = ["Testing", "QA"]
+        else:
+            specialization = "Development"
+            tags = ["Development"]
+
+    if request.tags:
+        manual_tags = [t.strip() for t in request.tags.split(",") if t.strip()]
+        for mt in manual_tags:
+            if mt not in tags:
+                tags.append(mt)
+
+    # Update Agent record
+    agent_rec.name = name
+    agent_rec.skills_content = skills_content
+    agent_rec.skills_summary = summary
+    agent_rec.skills_tags = tags
+    agent_rec.specialization = specialization
+    if request.face is not None:
+        agent_rec.face = request.face
+
+    db.add(agent_rec)
+
+    # Update mapping sub_type
+    sub_type = "test" if specialization == "Testing" else "dev"
+    mapping = db.query(models.OrganizationAgentMapping).filter(
+        func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower(),
+        models.OrganizationAgentMapping.agent_id == base_id
+    ).first()
+    if mapping:
+        mapping.agent_sub_type = sub_type
+        db.add(mapping)
+
+    db.commit()
+    db.refresh(agent_rec)
+
+    # Re-initialize project memory cache
+    records = db.query(models.Agent).filter(
+        models.Agent.project_token == project_token
+    ).all()
+    agent_service.initialize_agents_from_records(_runtime_agent_records(records, project_token), project_token)
+
+    return {
+        "success": True,
+        "agent": {
+            "id": agent_id,
+            "display_id": agent_rec.display_id,
+            "name": name,
+            "skills_summary": summary,
+            "skills_content": skills_content,
+            "skills_tags": tags,
+            "specialization": specialization,
+            "face": agent_rec.face,
+        }
+    }
+
 
 @app.post("/agents/onboard")
 async def onboard_agents(

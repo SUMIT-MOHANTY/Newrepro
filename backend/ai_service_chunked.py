@@ -317,6 +317,8 @@ Create implementation plan:
 Provide COMPLETE file tree with inline comments.
 Include: backend, frontend, config, tests, docs, CI/CD
 
+CRITICAL: The repository structure tree MUST start directly with the root-level files and directories of the project (e.g. `src/`, `backend/`, `package.json`, `.gitignore`). Do NOT wrap the entire structure in a top-level parent folder named after the project.
+
 {_build_prerequisite_instruction_text()}
 
 ### 3. Implementation Phases
@@ -412,6 +414,8 @@ NOT a technical architecture diagram with databases, APIs, and servers.
 
 ## 0.5 Repository Structure Planning
 [Use Stage 4 file tree]
+
+CRITICAL: The repository structure tree MUST start directly with the root-level files and directories of the project (e.g. `src/`, `backend/`, `package.json`, `.gitignore`). Do NOT wrap the entire structure in a top-level parent folder named after the project.
 
 ## 0.6 Scope Definition
 [Derive from Stage 1 requirements]

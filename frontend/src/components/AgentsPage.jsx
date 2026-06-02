@@ -1,11 +1,45 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Users, Trash2, Activity, Clock, CheckCircle, AlertCircle, RefreshCw, Filter, Server, Database, GitBranch, Bot, Globe, Plus, Upload } from 'lucide-react';
+import { Users, Trash2, Edit, Activity, Clock, CheckCircle, AlertCircle, RefreshCw, Filter, Server, Database, GitBranch, Bot, Globe, Plus, Upload } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
+
 import { getNeutralAgentName, getNeutralAgentLabel } from '../utils/agentNames';
 import kaktoxLogo from '../assets/Kaktox.png';
 import nModLogo from '../assets/N-Mod-icon.png';
 import masterLogo from '../assets/logo1.png';
 import cloudIcon from '../assets/cloud-icon.png';
+
+const PREDEFINED_TEMPLATES = [
+  {
+    name: 'Frontend Developer',
+    tags: 'React, Vite, CSS Modules, Tailwind CSS, Lucide Icons, UI Components',
+    specialization: 'Development',
+    description: 'Specialized React & Vite agent. Connects page routing, implements responsive UI layouts, and styles elements using CSS tokens.',
+    skills: `# Frontend Developer Agent Skill\n\n## Role\nYou are a specialized Frontend Development Agent focused on building React applications with modern tooling (Vite, React) and styling (Tailwind CSS/CSS Modules).\n\n## Tech Stack\n- Framework: React\n- Build Tool: Vite\n- Styling: Tailwind CSS & CSS Modules\n- UI Components: Lucide React (icons)\n- State Management: React Context / Hooks\n\n## Core Responsibilities\n1. Component Development: Create modular, responsive React components using hooks.\n2. Routing: Register pages/components in the main routing shell (App.jsx).\n3. API Connection: Replace mock data with real API calls using fetch or axios.\n4. Layout & Styling: Maintain consistent layout systems, sidebar navigation, and use CSS variable tokens.`,
+    icon: Globe,
+    accentColor: 'from-emerald-400 to-teal-500',
+    colorClass: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20 hover:border-emerald-500/40 hover:text-emerald-300'
+  },
+  {
+    name: 'Backend Developer',
+    tags: 'FastAPI, Python, SQL Databases, SQLite, PostgreSQL, REST API',
+    specialization: 'Development',
+    description: 'Specialized FastAPI & Python agent. Sets up REST routes, SQLAlchemy models, migration scripts, and business validation.',
+    skills: `# Backend Developer Agent Skill\n\n## Role\nYou are a specialized Backend Development Agent focused on building Python APIs with FastAPI, SQLAlchemy, databases, and clean routing.\n\n## Tech Stack\n- Language: Python\n- Framework: FastAPI\n- ORM: SQLAlchemy / SQLModel\n- Database: SQLite / PostgreSQL\n- API Protocol: REST / JSON\n\n## Core Responsibilities\n1. API Routing: Create clear, versioned FastAPI APIRouter endpoints.\n2. Database Schema: Implement SQLAlchemy models, migrations, and Pydantic schemas.\n3. Business Logic: Write modular services for data processing, validation, and auth.\n4. Security: Implement CORS, password hashing, and token-based auth (JWT).`,
+    icon: Server,
+    accentColor: 'from-blue-400 to-indigo-500',
+    colorClass: 'text-blue-400 bg-blue-500/10 border-blue-500/20 hover:border-blue-500/40 hover:text-blue-300'
+  },
+  {
+    name: 'QA & Testing Specialist',
+    tags: 'Testing, Pytest, Playwright, E2E Testing, Integration Testing, Assertions',
+    specialization: 'Testing',
+    description: 'Specialized Pytest & Playwright agent. Creates unit/integration test suites and browser automation to verify features.',
+    skills: `# QA & Testing Specialist Agent Skill\n\n## Role\nYou are a specialized Quality Assurance and Testing Agent focused on verifying features, running backend unit tests, and executing E2E frontend flows.\n\n## Tech Stack\n- Backend Testing: Pytest, unittest\n- Frontend E2E: Playwright / Cypress\n- Assertions: standard assertions, status code checks\n- Mocking: unittest.mock, patch\n\n## Core Responsibilities\n1. Unit Tests: Create test cases in tests/ directory validating API responses, database operations, and edge cases.\n2. E2E Tests: Write automated browser scripts to simulate user login, navigation, and form submissions.\n3. Verification: Assert status codes, content fields, and UI element presence on successful/error execution.`,
+    icon: Activity,
+    accentColor: 'from-purple-400 to-pink-500',
+    colorClass: 'text-purple-400 bg-purple-500/10 border-purple-500/20 hover:border-purple-500/40 hover:text-purple-300'
+  }
+];
 
 /**
  * AgentsPage – Full‑screen view of all agents for the current organization.
@@ -33,6 +67,10 @@ export default function AgentsPage({ projects = [] }) {
   const [newAgentTags, setNewAgentTags] = useState('');
   const [addingAgent, setAddingAgent] = useState(false);
   const [addAgentError, setAddAgentError] = useState('');
+  const [isConfiguringTemplate, setIsConfiguringTemplate] = useState(false);
+  const [editingAgentId, setEditingAgentId] = useState(null);
+
+
 
   // Handle markdown file selection and parse content inside the browser
   const handleFileChange = (e) => {
@@ -76,15 +114,18 @@ export default function AgentsPage({ projects = [] }) {
     }
   };
 
-  // Submit custom agent details to backend 
   const handleAddAgentSubmit = async (e) => {
     e.preventDefault();
     if (!newAgentName.trim() || !skillsContent) return;
     setAddingAgent(true);
     setAddAgentError('');
     const token = localStorage.getItem('token');
+    const isEditing = !!editingAgentId;
+    const url = isEditing 
+      ? `${API_ENDPOINTS.AGENTS}/skills/update/${editingAgentId}` 
+      : `${API_ENDPOINTS.AGENTS}/skills/add`;
     try {
-      const res = await fetch(`${API_ENDPOINTS.AGENTS}/skills/add`, {
+      const res = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -94,16 +135,19 @@ export default function AgentsPage({ projects = [] }) {
           name: newAgentName.trim(),
           skills_content: skillsContent,
           face: newAgentFace || null,
-          tags: newAgentTags.trim() || null
+          tags: newAgentTags.trim() || null,
+          project_token: projects && projects[0] ? projects[0].project_token : null
         })
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.detail || 'Failed to create custom agent');
+        throw new Error(data.detail || `Failed to ${isEditing ? 'update' : 'create'} custom agent`);
       }
 
       // Reset form and modal
       setShowAddAgentModal(false);
+      setIsConfiguringTemplate(false);
+      setEditingAgentId(null);
       setNewAgentName('');
       setSkillsContent('');
       setSkillsFileName('');
@@ -114,9 +158,41 @@ export default function AgentsPage({ projects = [] }) {
       await fetchAgents();
       await fetchQuota();
     } catch (err) {
-      setAddAgentError(err.message || 'Failed to add custom agent');
+      setAddAgentError(err.message || `Failed to ${isEditing ? 'update' : 'add'} custom agent`);
     } finally {
       setAddingAgent(false);
+    }
+  };
+
+
+  const handleQuickAddAgent = async (tmpl) => {
+    setLoading(true);
+    setError(null);
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch(`${API_ENDPOINTS.AGENTS}/skills/add`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          name: tmpl.name,
+          skills_content: tmpl.skills,
+          face: null,
+          tags: tmpl.tags
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to add agent');
+      }
+      await fetchAgents();
+      await fetchQuota();
+    } catch (err) {
+      setError(err.message || 'Failed to add custom agent');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -559,6 +635,15 @@ export default function AgentsPage({ projects = [] }) {
               All ({totalAgents})
             </button>
             <button
+              onClick={() => setFilter('samples')}
+              className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${filter === 'samples'
+                ? 'bg-app-primary text-white'
+                : 'bg-app-text-label/20 text-app-text-main hover:bg-app-text-label/30'
+                }`}
+            >
+              Samples ({PREDEFINED_TEMPLATES.length})
+            </button>
+            <button
               onClick={() => setFilter('shared')}
               className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${filter === 'shared'
                 ? 'bg-app-primary text-white'
@@ -576,17 +661,30 @@ export default function AgentsPage({ projects = [] }) {
             >
               Testing ({dedicatedAgents.length})
             </button>
+
           </div>
 
           <button
-            onClick={() => setShowAddAgentModal(true)}
+            onClick={() => {
+              setIsConfiguringTemplate(false);
+              setEditingAgentId(null);
+              setNewAgentName('');
+              setSkillsContent('');
+              setSkillsFileName('');
+              setNewAgentFace('');
+              setNewAgentTags('');
+              setAddAgentError('');
+              setShowAddAgentModal(true);
+            }}
             className="flex items-center gap-1.5 px-3 py-1 text-sm font-semibold rounded-lg bg-gradient-to-r from-app-primary to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white shadow-sm transition-all duration-200"
           >
+
             <Plus className="w-4 h-4" />
             <span>Add Agent</span>
           </button>
         </div>
       </div>
+
 
       {/* Main Content Area */}
       <div className="flex-1 flex min-h-0">
@@ -615,7 +713,96 @@ export default function AgentsPage({ projects = [] }) {
           {/* Agents List */}
           {!loading && !error && (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {filteredAgents.length > 0 ? (
+              {filter === 'samples' ? (
+                PREDEFINED_TEMPLATES.map((tmpl) => {
+                  const IconComponent = tmpl.icon;
+                  return (
+                    <div
+                      key={tmpl.name}
+                      className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-3.5 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow"
+                    >
+                      {/* Top accent bar */}
+                      <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${tmpl.accentColor}`}></div>
+
+                      <div className="flex items-start justify-between mb-2">
+                        <div className="flex items-center gap-2.5">
+                          {/* Agent Icon/Logo */}
+                          <div className={`w-9 h-9 rounded-lg bg-app-bg-page border flex items-center justify-center shadow-lg ${
+                            tmpl.name.includes('Frontend') ? 'text-emerald-500 dark:text-emerald-400 border-emerald-500/20 dark:border-emerald-500/30 bg-emerald-500/10 dark:bg-emerald-500/20' :
+                            tmpl.name.includes('Backend') ? 'text-blue-500 dark:text-blue-400 border-blue-500/20 dark:border-blue-500/30 bg-blue-500/10 dark:bg-blue-500/20' :
+                            'text-purple-500 dark:text-purple-400 border-purple-500/20 dark:border-purple-500/30 bg-purple-500/10 dark:bg-purple-500/20'
+                          }`}>
+                            <IconComponent className="w-4 h-4 text-current font-bold" />
+                          </div>
+
+                          <div>
+                            <div className="flex items-center gap-1.5">
+                              <h4 className="text-xs font-bold text-app-text-main">
+                                {tmpl.name}
+                              </h4>
+                              <span className={`px-1.5 py-0.5 text-[8px] font-bold rounded-full uppercase tracking-wider ${
+                                tmpl.specialization === 'Testing'
+                                  ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20'
+                                  : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                              }`}>
+                                {tmpl.specialization}
+                              </span>
+                            </div>
+                            <p className="text-[9px] text-app-text-light uppercase tracking-wider font-semibold">Sample Template</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Description */}
+                      <div className="p-2 rounded-lg bg-app-bg-muted/40 border border-app-border-light/30 flex-1 flex flex-col justify-between mb-3">
+                        <div>
+                          <p className="text-[11px] leading-relaxed text-app-text-main">
+                            {tmpl.description}
+                          </p>
+                          <div className="flex flex-wrap gap-1 mt-2">
+                            {tmpl.tags.split(', ').map((tag, idx) => (
+                              <span
+                                key={idx}
+                                className="px-1 py-0.5 rounded text-[8px] font-semibold bg-app-bg-page text-app-text-muted border border-app-border-light/40"
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Action buttons */}
+                      <div className="grid grid-cols-2 gap-2 mt-auto">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNewAgentName(tmpl.name);
+                            setNewAgentTags(tmpl.tags);
+                            setSkillsContent(tmpl.skills);
+                            setSkillsFileName(`${tmpl.name.toLowerCase().replace(/ & /g, '_').replace(/ /g, '_')}_skills.md`);
+                            setIsConfiguringTemplate(true);
+                            setShowAddAgentModal(true);
+                          }}
+                          className="py-1.5 rounded-lg bg-app-bg-muted hover:bg-app-bg-hover border border-app-border-light text-xs font-bold text-app-text-main transition-all flex items-center justify-center gap-1 cursor-pointer"
+                        >
+                          <Bot className="w-3.5 h-3.5" />
+                          <span>Configure</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleQuickAddAgent(tmpl)}
+                          disabled={loading}
+                          className="py-1.5 rounded-lg bg-app-primary hover:bg-blue-600 text-white text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer shadow-sm hover:shadow"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Quick Add</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              ) : filteredAgents.length > 0 ? (
                 filteredAgents.map((agent) => {
                   const isSystem = agent.agentType === 'system';
                   const isShared = agent.agentType === 'shared';
@@ -665,15 +852,15 @@ export default function AgentsPage({ projects = [] }) {
                   return (
                     <div
                       key={agent.id}
-                      className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-4 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow"
+                      className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-3.5 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow"
                     >
                       {/* Top accent bar */}
                       <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${accentColor}`}></div>
 
-                      <div className="flex items-start justify-between mb-4">
-                        <div className="flex items-center gap-3">
+                      <div className="flex items-start justify-between mb-2">
+                        <div className="flex items-center gap-2.5">
                           {/* Agent Icon/Logo */}
-                          <div className={`w-10 h-10 rounded-xl ${useLogo ? 'bg-app-bg-page border border-app-border' : `bg-gradient-to-br ${isGitManager ? 'from-app-primary to-app-primary' :
+                          <div className={`w-9 h-9 rounded-lg ${useLogo ? 'bg-app-bg-page border border-app-border' : `bg-gradient-to-br ${isGitManager ? 'from-app-primary to-app-primary' :
                             isMasterAgent ? 'from-fuchsia-500 to-app-status-error' :
                               isTestAgent ? 'from-app-status-warning to-orange-600' :
                                 isDeployAgent ? 'from-violet-500 to-purple-600' :
@@ -685,28 +872,28 @@ export default function AgentsPage({ projects = [] }) {
                                   isDeployAgent ? 'shadow-app-bg-hover' :
                                     isShared ? 'shadow-emerald-200' :
                                       'shadow-app-primary-ring'
-                            } ${useLogo && !agent.face ? 'p-1.5' : ''}`}>
+                            } ${useLogo && !agent.face ? 'p-1' : ''}`}>
                             {useLogo && logoSrc ? (
                               <img src={logoSrc} alt={agent.name || getNeutralAgentName(agent)} className={`w-full h-full ${agent.face ? 'object-cover rounded-lg' : 'object-contain'}`} />
                             ) : isGitManager ? (
-                              <GitBranch className="w-5 h-5 text-white" />
+                              <GitBranch className="w-4 h-4 text-white" />
                             ) : isMasterAgent ? (
-                              <Bot className="w-5 h-5 text-white" />
+                              <Bot className="w-4 h-4 text-white" />
                             ) : isTestAgent ? (
-                              <Activity className="w-5 h-5 text-white" />
+                              <Activity className="w-4 h-4 text-white" />
                             ) : isDeployAgent ? (
-                              <Globe className="w-5 h-5 text-white" />
+                              <Globe className="w-4 h-4 text-white" />
                             ) : (
                               getStatusIcon(agent.status)
                             )}
                           </div>
                           <div>
-                            <div className="flex items-center gap-2">
-                              <h4 className="text-sm font-bold text-app-text-main">
+                            <div className="flex items-center gap-1.5">
+                              <h4 className="text-xs font-bold text-app-text-main">
                                 {agent.name || getNeutralAgentName(agent)}
                               </h4>
                               {agent.specialization && (
-                                <span className={`px-2 py-0.5 text-[9px] font-bold rounded-full uppercase tracking-wider ${
+                                <span className={`px-1.5 py-0.5 text-[8px] font-bold rounded-full uppercase tracking-wider ${
                                   agent.specialization === 'Testing'
                                     ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20'
                                     : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
@@ -715,33 +902,53 @@ export default function AgentsPage({ projects = [] }) {
                                 </span>
                               )}
                             </div>
-                            <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">{getNeutralAgentLabel(agent)}</p>
+                            <p className="text-[9px] text-app-text-light uppercase tracking-wider font-semibold">{getNeutralAgentLabel(agent)}</p>
                           </div>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 mr-1">
                             {isRunning && (
-                              <span className="relative flex h-2.5 w-2.5">
+                              <span className="relative flex h-2 w-2">
                                 <span className={`animate-ping absolute inline-flex h-full w-full rounded-full bg-${finalStatusColor}-400 opacity-75`}></span>
-                                <span className={`relative inline-flex rounded-full h-2.5 w-2.5 bg-${finalStatusColor}-500`}></span>
+                                <span className={`relative inline-flex rounded-full h-2 w-2 bg-${finalStatusColor}-500`}></span>
                               </span>
                             )}
-                            <span className={`text-[10px] font-bold text-${finalStatusColor}-${isIdle ? '500' : '600'}`}>
+                            <span className={`text-[9px] font-bold text-${finalStatusColor}-${isIdle ? '500' : '600'}`}>
                               {agent.status?.toUpperCase() || 'IDLE'}
                             </span>
                           </div>
+                          
+                          {/* Edit / Configure Button - Available for all custom agents */}
+                          {(isShared || isDedicated) && (
+                            <button
+                              onClick={() => {
+                                setNewAgentName(agent.name || getNeutralAgentName(agent));
+                                setNewAgentTags(agent.skills_tags ? agent.skills_tags.join(', ') : '');
+                                setSkillsContent(agent.skills_content || '');
+                                setSkillsFileName(`${(agent.name || getNeutralAgentName(agent)).toLowerCase().replace(/ & /g, '_').replace(/ /g, '_')}_skills.md`);
+                                setNewAgentFace(agent.face || '');
+                                setEditingAgentId(agent.id);
+                                setShowAddAgentModal(true);
+                              }}
+                              className="p-1 rounded-lg bg-app-bg-card/50 text-app-text-muted hover:text-app-primary hover:bg-app-primary/10 transition-all cursor-pointer"
+                              title="Configure / Edit Agent"
+                            >
+                              <Edit className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+
                           {/* Delete Button - Available for all custom agents */}
                           {(isShared || isDedicated) && (
                             <button
                               onClick={() => handleDeleteAgent(agent.id)}
                               disabled={deletingId === agent.id}
-                              className="p-1.5 rounded-lg bg-app-bg-card/50 text-red-400 hover:text-red-300 hover:bg-app-status-error/10 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="p-1 rounded-lg bg-app-bg-card/50 text-red-400 hover:text-red-300 hover:bg-app-status-error/10 transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                               title="Delete custom agent"
                             >
                               {deletingId === agent.id ? (
-                                <RefreshCw className="w-4 h-4 animate-spin" />
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                               ) : (
-                                <Trash2 className="w-4 h-4" />
+                                <Trash2 className="w-3.5 h-3.5" />
                               )}
                             </button>
                           )}
@@ -750,24 +957,20 @@ export default function AgentsPage({ projects = [] }) {
 
                       {/* Skills Summary for Custom Agents */}
                       {agent.skills_summary && (
-                        <div className="mt-3 p-2.5 rounded-lg bg-app-bg-muted/50 border border-app-border-light/40 flex-1 flex flex-col justify-between">
+                        <div className="mt-2.5 p-2 rounded-lg bg-app-bg-muted/40 border border-app-border-light/30 flex-1 flex flex-col justify-between mb-3">
                           <div>
-                            <p className="text-xs font-semibold text-app-text-muted mb-1 flex items-center gap-1">
-                              <Bot className="w-3.5 h-3.5 text-app-primary" />
-                              AI Skills Summary
-                            </p>
-                            <p className="text-xs text-app-text-main leading-relaxed italic mb-2">
+                            <p className="text-[11px] text-app-text-main leading-relaxed italic mb-1.5">
                               "{agent.skills_summary}"
                             </p>
                           </div>
 
                           {/* Skills Tags Rendering */}
                           {agent.skills_tags && Array.isArray(agent.skills_tags) && agent.skills_tags.length > 0 && (
-                            <div className="mt-2 flex flex-wrap gap-1">
+                            <div className="flex flex-wrap gap-1 mt-1">
                               {agent.skills_tags.map((tag, idx) => (
                                 <span
                                   key={idx}
-                                  className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-app-bg-page text-app-text-muted border border-app-border-light"
+                                  className="px-1 py-0.5 rounded text-[8px] font-semibold bg-app-bg-page text-app-text-muted border border-app-border-light/40"
                                 >
                                   {tag}
                                 </span>
@@ -776,6 +979,7 @@ export default function AgentsPage({ projects = [] }) {
                           )}
                         </div>
                       )}
+
 
                       {/* Progress indicator if running */}
                       {isRunning && agent.progress > 0 && (
@@ -828,139 +1032,221 @@ export default function AgentsPage({ projects = [] }) {
 
       {/* Add Agent Modal */}
       {showAddAgentModal && (
-        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="relative w-full max-w-md bg-app-bg-card border border-app-border rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] animate-in fade-in zoom-in duration-200">
-            <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-app-primary to-blue-600"></div>
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className={`relative w-full ${isConfiguringTemplate || skillsContent ? 'max-w-3xl' : 'max-w-md'} bg-app-bg-card border border-app-border rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] transition-all duration-300 animate-in zoom-in duration-200`}>
+            
+            {/* Top gradient line */}
+            <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${
+              editingAgentId
+                ? 'from-amber-400 via-orange-500 to-red-500'
+                : isConfiguringTemplate 
+                  ? 'from-emerald-400 via-teal-500 to-indigo-500' 
+                  : 'from-app-primary to-blue-600'
+            }`}></div>
             
             {/* Header */}
-            <div className="p-6 pb-4 flex-shrink-0">
+            <div className="p-6 pb-4 flex-shrink-0 border-b border-app-border-light/40 bg-app-bg-card/50">
               <h3 className="text-lg font-bold text-app-text-main flex items-center gap-2 mb-1">
-                <Bot className="w-5 h-5 text-app-primary" />
-                Add Custom Agent
+                {editingAgentId ? (
+                  <>
+                    <Bot className="w-5 h-5 text-amber-400 animate-pulse" />
+                    <span>Edit Custom Agent</span>
+                  </>
+                ) : isConfiguringTemplate ? (
+                  <>
+                    <Bot className="w-5 h-5 text-emerald-400" />
+                    <span>Configure Agent Template</span>
+                  </>
+                ) : (
+                  <>
+                    <Bot className="w-5 h-5 text-app-primary" />
+                    <span>Add Custom Agent</span>
+                  </>
+                )}
               </h3>
               <p className="text-xs text-app-text-muted">
-                Create a custom dynamic agent by providing their name and uploading their skills file.
+                {editingAgentId 
+                  ? 'Modify the custom agent name, tags, face icon, and skills file content.'
+                  : isConfiguringTemplate 
+                    ? 'Customize the pre-defined template name, tags, and skills before deploying.'
+                    : 'Create a custom dynamic agent by providing their name and uploading their skills file.'
+                }
               </p>
             </div>
+
 
             {/* Form */}
             <form onSubmit={handleAddAgentSubmit} className="flex-1 flex flex-col min-h-0">
               {/* Scrollable Fields area */}
-              <div className="flex-1 overflow-y-auto px-6 pb-4 space-y-4 scrollbar-thin scrollbar-thumb-app-border">
-                <div>
-                  <label className="block text-xs font-bold text-app-text-muted uppercase tracking-wider mb-1.5">
-                    Agent Name
-                  </label>
-                  <input
-                    type="text"
-                    value={newAgentName}
-                    onChange={(e) => setNewAgentName(e.target.value)}
-                    placeholder="e.g. Frontend Architect, QA Specialist"
-                    className="w-full px-3 py-2 bg-app-bg-muted/50 border border-app-border-light rounded-lg text-sm text-app-text-main focus:outline-none focus:border-app-primary placeholder:text-app-text-muted/60 transition-colors"
-                    disabled={addingAgent}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-app-text-muted uppercase tracking-wider mb-1.5">
-                    Agent Icon / Avatar
-                  </label>
-                  <div className="flex items-center gap-3">
-                    {newAgentFace ? (
-                      <div className="relative w-12 h-12 rounded-lg border border-app-border bg-app-bg-muted overflow-hidden shrink-0 group">
-                        <img src={newAgentFace} alt="Agent icon preview" className="w-full h-full object-cover" />
-                        <button
-                          type="button"
-                          onClick={() => setNewAgentFace('')}
-                          className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white transition-opacity duration-200"
-                        >
-                          <span className="text-[10px] font-bold">Remove</span>
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="w-12 h-12 rounded-lg border border-dashed border-app-border-light bg-app-bg-muted/30 flex items-center justify-center text-app-text-muted/40 shrink-0">
-                        <Users className="w-5 h-5" />
-                      </div>
-                    )}
-                    <div className="flex-1">
+              <div className="flex-1 overflow-y-auto px-6 py-4 scrollbar-thin scrollbar-thumb-app-border">
+                <div className={`grid grid-cols-1 ${isConfiguringTemplate || skillsContent ? 'md:grid-cols-2 gap-6' : 'gap-4'} pt-2`}>
+                  
+                  {/* Left Column: Metadata Inputs */}
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-bold text-app-text-muted uppercase tracking-wider mb-1.5">
+                        Agent Name
+                      </label>
                       <input
-                        type="file"
-                        accept="image/*"
-                        id="agent-face-upload"
-                        onChange={handleFaceChange}
-                        className="hidden"
+                        type="text"
+                        value={newAgentName}
+                        onChange={(e) => setNewAgentName(e.target.value)}
+                        placeholder="e.g. Frontend Architect, QA Specialist"
+                        className="w-full px-3 py-2 bg-app-bg-muted/50 border border-app-border-light rounded-lg text-sm text-app-text-main focus:outline-none focus:border-app-primary placeholder:text-app-text-muted/60 transition-colors"
+                        disabled={addingAgent}
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-app-text-muted uppercase tracking-wider mb-1.5">
+                        Agent Icon / Avatar
+                      </label>
+                      <div className="flex items-center gap-3">
+                        {newAgentFace ? (
+                          <div className="relative w-12 h-12 rounded-lg border border-app-border bg-app-bg-muted overflow-hidden shrink-0 group">
+                            <img src={newAgentFace} alt="Agent icon preview" className="w-full h-full object-cover" />
+                            <button
+                              type="button"
+                              onClick={() => setNewAgentFace('')}
+                              className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white transition-opacity duration-200"
+                            >
+                              <span className="text-[10px] font-bold">Remove</span>
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="w-12 h-12 rounded-lg border border-dashed border-app-border-light bg-app-bg-muted/30 flex items-center justify-center text-app-text-muted/40 shrink-0">
+                            <Users className="w-5 h-5" />
+                          </div>
+                        )}
+                        <div className="flex-1">
+                          <input
+                            type="file"
+                            accept="image/*"
+                            id="agent-face-upload"
+                            onChange={handleFaceChange}
+                            className="hidden"
+                            disabled={addingAgent}
+                          />
+                          <label
+                            htmlFor="agent-face-upload"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-app-bg-muted/70 hover:bg-app-bg-muted border border-app-border-light rounded-lg text-app-text-main cursor-pointer hover:border-app-primary transition-colors"
+                          >
+                            <Upload className="w-3.5 h-3.5" />
+                            Upload Image
+                          </label>
+                          <p className="text-[10px] text-app-text-muted mt-1">PNG, JPG or SVG</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-app-text-muted uppercase tracking-wider mb-1.5">
+                        Specialization Tags
+                      </label>
+                      <input
+                        type="text"
+                        value={newAgentTags}
+                        onChange={(e) => setNewAgentTags(e.target.value)}
+                        placeholder="e.g. React, FastApi, PostgreSQL, Pytest (comma-separated)"
+                        className="w-full px-3 py-2 bg-app-bg-muted/50 border border-app-border-light rounded-lg text-sm text-app-text-main focus:outline-none focus:border-app-primary placeholder:text-app-text-muted/60 transition-colors"
                         disabled={addingAgent}
                       />
-                      <label
-                        htmlFor="agent-face-upload"
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-app-bg-muted/70 hover:bg-app-bg-muted border border-app-border-light rounded-lg text-app-text-main cursor-pointer hover:border-app-primary transition-colors"
-                      >
-                        <Upload className="w-3.5 h-3.5" />
-                        Upload Image
-                      </label>
-                      <p className="text-[10px] text-app-text-muted mt-1">PNG, JPG or SVG</p>
+                      <p className="text-[10px] text-app-text-muted mt-1">Used by Master Agent to match task capabilities.</p>
                     </div>
-                  </div>
-                </div>
 
-                <div>
-                  <label className="block text-xs font-bold text-app-text-muted uppercase tracking-wider mb-1.5">
-                    Specialization Tags
-                  </label>
-                  <input
-                    type="text"
-                    value={newAgentTags}
-                    onChange={(e) => setNewAgentTags(e.target.value)}
-                    placeholder="e.g. React, FastApi, PostgreSQL, Pytest (comma-separated)"
-                    className="w-full px-3 py-2 bg-app-bg-muted/50 border border-app-border-light rounded-lg text-sm text-app-text-main focus:outline-none focus:border-app-primary placeholder:text-app-text-muted/60 transition-colors"
-                    disabled={addingAgent}
-                  />
-                  <p className="text-[10px] text-app-text-muted mt-1">Used by Master Agent to match task capabilities.</p>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-app-text-muted uppercase tracking-wider mb-1.5">
-                    Upload Skills File (skills.md)
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="file"
-                      accept=".md"
-                      id="skills-file-upload"
-                      onChange={handleFileChange}
-                      className="hidden"
-                      disabled={addingAgent}
-                    />
-                    <label
-                      htmlFor="skills-file-upload"
-                      className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-app-border-light rounded-lg cursor-pointer bg-app-bg-muted/20 hover:bg-app-bg-muted/40 transition-colors"
-                    >
-                      <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                        <Upload className="w-8 h-8 text-app-text-muted mb-2" />
-                        <p className="text-sm font-semibold text-app-text-main">
-                          {skillsFileName || 'Click to select skills.md'}
-                        </p>
-                        <p className="text-xs text-app-text-muted mt-1">
-                          Markdown file (.md) only
-                        </p>
+                    {/* If skillsContent is NOT present, show the upload box here in the single column view */}
+                    {!skillsContent && (
+                      <div>
+                        <label className="block text-xs font-bold text-app-text-muted uppercase tracking-wider mb-1.5">
+                          Upload Skills File (skills.md)
+                        </label>
+                        <div className="relative">
+                          <input
+                            type="file"
+                            accept=".md"
+                            id="skills-file-upload"
+                            onChange={handleFileChange}
+                            className="hidden"
+                            disabled={addingAgent}
+                          />
+                          <label
+                            htmlFor="skills-file-upload"
+                            className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-app-border-light rounded-lg cursor-pointer bg-app-bg-muted/20 hover:bg-app-bg-muted/40 transition-colors"
+                          >
+                            <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                              <Upload className="w-8 h-8 text-app-text-muted mb-2" />
+                              <p className="text-sm font-semibold text-app-text-main">
+                                {skillsFileName || 'Click to select skills.md'}
+                              </p>
+                              <p className="text-xs text-app-text-muted mt-1">
+                                Markdown file (.md) only
+                              </p>
+                            </div>
+                          </label>
+                        </div>
                       </div>
-                    </label>
+                    )}
                   </div>
+
+                  {/* Right Column / Conditional Editor for Skills Content */}
+                  {(isConfiguringTemplate || skillsContent) && (
+                    <div className="flex flex-col h-full space-y-2">
+                      <div className="flex items-center justify-between">
+                        <label className="block text-xs font-bold text-app-text-muted uppercase tracking-wider">
+                          Skills Markdown File Content
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSkillsContent('');
+                            setSkillsFileName('');
+                          }}
+                          className="text-[10px] font-bold text-red-400 hover:text-red-300 transition-colors flex items-center gap-1"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>Clear / Reset</span>
+                        </button>
+                      </div>
+                      
+                      <div className="flex-1 flex flex-col rounded-lg border border-app-border bg-app-bg-page overflow-hidden">
+                        {skillsFileName && (
+                          <div className="px-3 py-2 bg-app-bg-muted/40 border-b border-app-border-light/60 text-[10px] text-app-text-muted font-mono flex items-center justify-between">
+                            <span className="truncate max-w-[200px]" title={skillsFileName}>📄 {skillsFileName}</span>
+                            <span className="text-emerald-400 font-bold uppercase tracking-wider text-[8px] bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">Loaded</span>
+                          </div>
+                        )}
+                        <textarea
+                          value={skillsContent}
+                          onChange={(e) => setSkillsContent(e.target.value)}
+                          placeholder="# Agent Skills&#10;&#10;## Role&#10;Describe role here..."
+                          className="w-full min-h-[250px] md:flex-1 p-3 bg-app-bg-muted/10 text-xs text-app-text-main font-mono focus:outline-none placeholder:text-app-text-muted/40 resize-y md:resize-none scrollbar-thin scrollbar-thumb-app-border leading-relaxed"
+                          disabled={addingAgent}
+                          required
+                        />
+                      </div>
+                      <p className="text-[10px] text-app-text-muted mt-1 leading-normal">
+                        You can view and directly edit the instructions above. This markdown controls the agent behavior.
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 {addAgentError && (
-                  <div className="p-3 text-xs rounded-lg bg-app-status-error/10 border border-app-status-error/20 text-red-400">
+                  <div className="mt-4 p-3 text-xs rounded-lg bg-app-status-error/10 border border-app-status-error/20 text-red-400 animate-in fade-in duration-200">
                     {addAgentError}
                   </div>
                 )}
               </div>
 
               {/* Actions Footer */}
-              <div className="p-6 pt-4 border-t border-app-border-light flex items-center justify-end gap-2 flex-shrink-0 bg-app-bg-card">
+              <div className="p-6 pt-4 border-t border-app-border-light flex items-center justify-end gap-2 flex-shrink-0 bg-app-bg-card/50">
                 <button
                   type="button"
                   onClick={() => {
                     setShowAddAgentModal(false);
+                    setIsConfiguringTemplate(false);
+                    setEditingAgentId(null);
                     setNewAgentName('');
                     setSkillsContent('');
                     setSkillsFileName('');
@@ -981,20 +1267,36 @@ export default function AgentsPage({ projects = [] }) {
                   {addingAgent ? (
                     <>
                       <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      <span>Adding...</span>
+                      <span>{editingAgentId ? 'Saving...' : isConfiguringTemplate ? 'Deploying...' : 'Adding...'}</span>
                     </>
                   ) : (
                     <>
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>Create Agent</span>
+                      {editingAgentId ? (
+                        <>
+                          <CheckCircle className="w-3.5 h-3.5" />
+                          <span>Save Changes</span>
+                        </>
+                      ) : isConfiguringTemplate ? (
+                        <>
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Create from Template</span>
+                        </>
+                      ) : (
+                        <>
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Create Agent</span>
+                        </>
+                      )}
                     </>
                   )}
                 </button>
               </div>
+
             </form>
           </div>
         </div>
       )}
+
     </div>
   );
 }
