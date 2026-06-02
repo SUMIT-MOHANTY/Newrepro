@@ -43,6 +43,7 @@ CRITICAL RULES:
 4. Follow the exact file paths specified
 5. If modifying files, preserve existing functionality unless explicitly changing it
 6. Use the FILE marker format for each file
+7. **CRITICAL JSX QUOTING RULE:** Never use raw, unescaped double quotes `"` inside JSX string attributes. For example, in `className="... bg-[url('data:image/svg+xml,... width="60" ...')] ..."` the inner double quotes terminate the `className` attribute early, breaking the entire file's brace matching and causing compilation errors (such as "Unexpected token `div`. Expected jsx identifier"). Instead, use single quotes `'` (or URL-encoded `%27`) or avoid inline arbitrary SVG tags.
 
 OUTPUT FORMAT:
 For each file, use this exact format:
@@ -236,15 +237,10 @@ Now generate the complete code for this task:
     
     def validate_task_output(self, task: 'Task') -> Dict[str, Any]:
         """
-        Validate that all expected files were created
-        
-        Returns:
-            {
-                "valid": bool,
-                "missing_files": List[str],
-                "extra_files": List[str]
-            }
+        Validate that all expected files were created and compile successfully
+        based on the detected workspace technology stack.
         """
+        import subprocess
         expected_files = set(task.files_to_create + task.files_to_modify)
         actual_files = set()
         
@@ -254,9 +250,75 @@ Now generate the complete code for this task:
                 actual_files.add(file_path)
         
         missing = expected_files - actual_files
-        
+        if missing:
+            return {
+                "valid": False,
+                "missing_files": list(missing),
+                "created_files": list(actual_files),
+                "error": f"Missing expected files: {', '.join(missing)}"
+            }
+            
+        # Detect Tech Stack on the fly
+        tech_stack = []
+        try:
+            # Check for package.json
+            if (self.workspace_dir / "package.json").exists() or any((self.workspace_dir).rglob("package.json")):
+                tech_stack.append("nodejs")
+            # Check for dotnet csproj/sln
+            if any((self.workspace_dir).rglob("*.csproj")) or any((self.workspace_dir).rglob("*.sln")):
+                tech_stack.append("dotnet")
+            # Check for Python
+            if (self.workspace_dir / "requirements.txt").exists() or any((self.workspace_dir).rglob("*.py")):
+                tech_stack.append("python")
+            # Check for Go
+            if (self.workspace_dir / "go.mod").exists():
+                tech_stack.append("go")
+        except Exception:
+            pass
+            
+        # Run compile checks for the detected stacks
+        error_msg = None
+        try:
+            if "nodejs" in tech_stack:
+                # If there's a package.json, make sure node_modules exist, else install them first
+                node_modules_dir = self.workspace_dir / "node_modules"
+                if not node_modules_dir.exists():
+                    subprocess.run(["npm", "install"], cwd=str(self.workspace_dir), capture_output=True, text=True, timeout=90)
+                
+                res = subprocess.run(["npm", "run", "build"], cwd=str(self.workspace_dir), capture_output=True, text=True, timeout=120)
+                if res.returncode != 0:
+                    error_msg = f"NPM build compilation failed:\n{res.stderr or res.stdout}"
+            elif "dotnet" in tech_stack:
+                res = subprocess.run(["dotnet", "build"], cwd=str(self.workspace_dir), capture_output=True, text=True, timeout=90)
+                if res.returncode != 0:
+                    error_msg = f"Dotnet build failed:\n{res.stderr or res.stdout}"
+            elif "python" in tech_stack:
+                # Check syntax of all created/modified python files
+                for f in actual_files:
+                    if f.endswith(".py"):
+                        full_f = self.workspace_dir / f
+                        res = subprocess.run(["python3", "-m", "py_compile", str(full_f)], capture_output=True, text=True, timeout=10)
+                        if res.returncode != 0:
+                            error_msg = f"Python syntax compilation failed for {f}:\n{res.stderr or res.stdout}"
+                            break
+            elif "go" in tech_stack:
+                res = subprocess.run(["go", "build", "./..."], cwd=str(self.workspace_dir), capture_output=True, text=True, timeout=40)
+                if res.returncode != 0:
+                    error_msg = f"Go build failed:\n{res.stderr or res.stdout}"
+        except Exception as e:
+            # Let compilation failures proceed if subprocess commands fail to execute (e.g. missing binary)
+            print(f"⚠️ Validation command execution error: {e}")
+            
+        if error_msg:
+            return {
+                "valid": False,
+                "missing_files": [],
+                "created_files": list(actual_files),
+                "error": error_msg
+            }
+            
         return {
-            "valid": len(missing) == 0,
-            "missing_files": list(missing),
+            "valid": True,
+            "missing_files": [],
             "created_files": list(actual_files)
         }

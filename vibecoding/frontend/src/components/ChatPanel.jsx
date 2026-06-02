@@ -311,6 +311,7 @@ const ChatPanel = ({
               onRestore={onRestore}
               messageIndex={idx}
               executingTaskId={executingTaskId}
+              isLatest={idx === processedMessages.length - 1}
             />
           );
         })}

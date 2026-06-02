@@ -1,4 +1,5 @@
-import { CheckCircle2, Loader2 } from 'lucide-react';
+import React, { useState } from 'react';
+import { CheckCircle2, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const TaskCard = ({ task, index, darkMode, isExecuting }) => {
@@ -48,7 +49,8 @@ const TaskBreakdown = ({
   taskPlan, 
   darkMode, 
   onExecuteAll,
-  executingTaskId 
+  executingTaskId,
+  isLatest
 }) => {
   if (!taskPlan || !taskPlan.tasks || taskPlan.tasks.length === 0) {
     return null;
@@ -58,25 +60,41 @@ const TaskBreakdown = ({
   const completedCount = tasks.filter(t => t.status === 'completed').length;
   const progressPercentage = total_tasks > 0 ? Math.round((completedCount / total_tasks) * 100) : 0;
 
+  const allCompleted = completedCount === total_tasks;
+  const hasActiveTask = tasks.some(t => t.status === 'in_progress' || t.task_id === executingTaskId);
+  
+  // Collapse by default if the plan is completed, or if it is an older message and has no active tasks in progress
+  const [isCollapsed, setIsCollapsed] = useState(allCompleted || (!isLatest && !hasActiveTask));
+
   return (
     <div className={cn(
-      'rounded-lg border overflow-hidden',
+      'rounded-lg border overflow-hidden transition-all duration-300',
       darkMode 
         ? 'bg-white/5 border-white/10' 
         : 'bg-gray-50 border-gray-200'
     )}>
-      {/* Header */}
-      <div className={cn(
-        'px-4 py-3 border-b',
-        darkMode ? 'border-white/10' : 'border-gray-200'
-      )}>
+      {/* Header (Clickable to Collapse/Expand) */}
+      <div 
+        onClick={() => setIsCollapsed(!isCollapsed)}
+        className={cn(
+          'px-4 py-3 border-b cursor-pointer select-none hover:bg-black/5 dark:hover:bg-white/5 transition-colors flex flex-col',
+          darkMode ? 'border-white/10' : 'border-gray-200'
+        )}
+      >
         <div className="flex items-center justify-between gap-3 mb-2">
-          <h3 className={cn(
-            'text-sm font-semibold',
-            darkMode ? 'text-white' : 'text-gray-900'
-          )}>
-            Tasks ({completedCount}/{total_tasks})
-          </h3>
+          <div className="flex items-center gap-1.5">
+            {isCollapsed ? (
+              <ChevronRight className={cn("w-4 h-4", darkMode ? "text-gray-400" : "text-gray-500")} />
+            ) : (
+              <ChevronDown className={cn("w-4 h-4", darkMode ? "text-gray-400" : "text-gray-500")} />
+            )}
+            <h3 className={cn(
+              'text-sm font-semibold',
+              darkMode ? 'text-white' : 'text-gray-900'
+            )}>
+              Tasks ({completedCount}/{total_tasks})
+            </h3>
+          </div>
           <span className={cn(
             'text-xs font-medium',
             darkMode ? 'text-gray-400' : 'text-gray-600'
@@ -102,18 +120,20 @@ const TaskBreakdown = ({
         </div>
       </div>
 
-      {/* Task List */}
-      <div className="p-2 max-h-[400px] overflow-y-auto">
-        {tasks.map((task, index) => (
-          <TaskCard
-            key={task.task_id}
-            task={task}
-            index={index}
-            darkMode={darkMode}
-            isExecuting={executingTaskId === task.task_id}
-          />
-        ))}
-      </div>
+      {/* Task List (Only rendered when expanded) */}
+      {!isCollapsed && (
+        <div className="p-2 max-h-[400px] overflow-y-auto divide-y dark:divide-white/5 divide-gray-100">
+          {tasks.map((task, index) => (
+            <TaskCard
+              key={task.task_id}
+              task={task}
+              index={index}
+              darkMode={darkMode}
+              isExecuting={executingTaskId === task.task_id}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 };

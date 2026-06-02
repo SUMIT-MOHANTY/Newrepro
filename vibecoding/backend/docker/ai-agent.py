@@ -1080,8 +1080,8 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
         
         # Get backend URL from environment variable
         # Default to host.docker.internal for Docker-to-host communication
-        # backend_url = os.environ.get('BACKEND_URL', 'http://host.docker.internal:8001')
-        backend_url = os.environ.get('BACKEND_URL', 'https://dsuite-backend.bourntec.com')
+        backend_url = os.environ.get('BACKEND_URL', 'http://host.docker.internal:8001')
+        # backend_url = os.environ.get('BACKEND_URL', 'https://dsuite-backend.bourntec.com')
         api_endpoint = f'{backend_url}/vibecoding/api/agent/message'
         
         payload = {
@@ -1593,6 +1593,10 @@ def nginx_reload() -> bool:
         log(f'Nginx reload failed: {r.stderr}. Attempting clean restart...')
         
     # If not running or reload failed, stop and start cleanly
+    try:
+        kill_process_listening_on_port(80)
+    except Exception as ke:
+        log(f"Warning: native port 80 kill failed: {ke}")
     subprocess.run('pkill -9 nginx || true', shell=True, capture_output=True)
     time.sleep(0.5)  # Let TIME_WAIT settle
     
@@ -2505,6 +2509,15 @@ npm run build
 PORT=3000 npx serve -s dist -l 3000 >> /tmp/app.log 2>&1 &
 ```
 
+Pattern B2: Next.js app (SSR) with no backend
+```bash
+cd /project/workspace
+rm -rf dist build .next out node_modules/.vite
+npm install
+npm run build
+PORT=3000 nohup npm run start -- -p 3000 >> /tmp/app.log 2>&1 &
+```
+
 CRITICAL: For serve command, ALWAYS use both PORT env var AND -l flag:
   PORT=3000 npx serve -s dist -l 3000
 This ensures the app binds to the correct port reliably.
@@ -2613,6 +2626,13 @@ Single-page app (Vite/React):
   npm install
   npm run build
   npx serve -s dist -l 3000 &
+
+Next.js app (Node.js SSR):
+  cd /project/workspace
+  rm -rf dist build .next out node_modules/.vite
+  npm install
+  npm run build
+  PORT=3000 nohup npm run start -- -p 3000 >> /tmp/app.log 2>&1 &
 
 Nested frontend:
   cd /project/workspace/frontend
@@ -4267,7 +4287,7 @@ def _health_check(app_port: int = None) -> tuple:
     Returns:
         tuple: (healthy: bool, status_message: str, actual_port: int or None)
     """
-    max_retries = 3
+    max_retries = 5
     retry_delay = 15  # seconds between retries
     
     for attempt in range(1, max_retries + 1):
@@ -5252,18 +5272,10 @@ class Agent:
             deploy(error_context={'reason': prompt})
             return
         
-        # Detect if this is a large/complex requirement
-        is_large_requirement = self._is_large_requirement(prompt)
-        
-        if is_large_requirement and is_empty:
-            # Generate task plan for large new projects
-            self._handle_task_planning(prompt)
-        elif not is_empty and len(existing) > 0:
-            # Existing project - use incremental task-based approach
-            self._handle_incremental_development(prompt, existing)
-        else:
-            # Simple request - use legacy direct generation
-            self._handle_direct_generation(prompt, existing, is_empty)
+        # Route all requests directly to the visual-first code generation and deployment engine.
+        # This completely avoids creating any complex task plans or checklist cards,
+        # yielding a clean, premium, and distraction-free user experience.
+        self._handle_direct_generation(prompt, existing, is_empty)
     
     def _handle_dsuite_handoff(self):
         """
@@ -5404,48 +5416,72 @@ Please analyze the BRD above and create a complete, production-ready application
             self._handle_direct_generation(prompt, {}, True)
     
     def _present_task_plan(self, plan: Dict[str, Any]):
-        """Present task breakdown to user and automatically start execution"""
+        """Present task breakdown and execute ONLY the baseline visual prototype"""
         summary = plan.get('project_summary', '')
-        tasks = plan.get('tasks', [])
         
-        # Build user-friendly task list for display
-        task_list = []
-        for i, task in enumerate(tasks, 1):
-            task_dict = task if isinstance(task, dict) else task.to_dict()
-            priority_emoji = {'high': '🔴', 'medium': '🟡', 'low': '🟢'}.get(task_dict['priority'], '⚪')
-            task_list.append(
-                f"{i}. {priority_emoji} **{task_dict['title']}**\n"
-                f"   {task_dict['description'][:100]}...\n"
-                f"   Files: {len(task_dict['files_to_create'])} to create, "
-                f"{len(task_dict['files_to_modify'])} to modify"
-            )
-        
-        message = f"""📋 **Task Breakdown Complete!**
+        message = f"""📋 **Project Blueprint Designed!**
 
 {summary}
-
-I've broken this down into **{len(tasks)} tasks**. Starting execution automatically...
 """
-        
-        # Send task plan with metadata for UI rendering
+        # Send task plan with metadata for UI rendering (OMIT task_plan to avoid UI clutter)
         report(
             message, 
             message_type='status',
             metadata={
-                'task_plan': plan,
-                'awaiting_task_selection': False,  # Changed to False since we auto-execute
+                'awaiting_task_selection': False,
                 'type': 'task_breakdown',
-                'loading_complete': True  # Signal to stop loader
+                'loading_complete': True
             },
-            summary='Task breakdown ready'
+            summary='Visual prototype plan ready'
         )
         
         # Automatically start task execution after a brief delay
-        # This gives the UI time to render the task breakdown
         time.sleep(1)
-        log('🚀 Auto-starting task execution...')
-        self._execute_tasks_sequentially()
-    
+        if self.task_planner.tasks:
+            first_task = self.task_planner.tasks[0]
+            log(f'🚀 Auto-starting Visual Prototype: {first_task.title}')
+            self._execute_single_task(first_task)
+            
+            # Run deploy pipeline on the prototype if Task 1 succeeded
+            if first_task.status == 'completed':
+                deploy(changed_files=first_task.files_to_create)
+                
+            self._propose_next_task_suggestions()
+
+    def _propose_next_task_suggestions(self):
+        """Construct custom chat suggestion buttons for the next pending tasks"""
+        tasks = self.task_planner.tasks
+        pending_tasks = [t for t in tasks if t.status == 'pending']
+        
+        progress = self.task_planner.get_progress_summary()
+        if progress['completed'] == progress['total_tasks']:
+            report(
+                f"🎉 **All features completed successfully!**\n\nYour application is fully built and deployed. Let me know if you would like to run any custom tweaks or styling updates!",
+                message_type='success',
+                summary='All features complete'
+            )
+            return
+            
+        suggestions = []
+        # Get tasks with met dependencies
+        executable = self.task_planner.get_executable_tasks()
+        display_list = executable if executable else pending_tasks
+        
+        for t in display_list[:3]:
+            suggestions.append({
+                'text': f"Integrate {t.title}",
+                'action': 'custom',
+                'icon': '👉',
+                'prompt': f"TASK:EXECUTE:{t.task_id.replace('task_', '')}"
+            })
+            
+        report(
+            f"🎨 **Visual Prototype Deployed & Live!**\n\nThe preview screen has been updated. Select which component or feature you would like to build and integrate next:",
+            message_type='success',
+            suggestions=suggestions,
+            summary=f"Visual prototype ready"
+        )
+
     def _handle_task_command(self, prompt: str):
         """Handle task-related commands"""
         command = prompt[5:].strip().upper()  # Remove 'TASK:' prefix
@@ -5529,8 +5565,10 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
             
             # Continue to next iteration to get newly executable tasks
     
+
+    
     def _execute_specific_tasks(self, task_ids: List[str]):
-        """Execute specific tasks by ID"""
+        """Execute specific tasks by ID, deploy them, and propose suggestions"""
         for task_id_str in task_ids:
             task_id = f"task_{task_id_str.strip().zfill(3)}"
             task = self.task_planner.get_task_by_id(task_id)
@@ -5554,7 +5592,13 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
                 continue
             
             self._execute_single_task(task)
-    
+            
+            # Run deploy pipeline if the task succeeded
+            if task.status == 'completed':
+                deploy(changed_files=task.files_to_create + task.files_to_modify)
+                
+            self._propose_next_task_suggestions()
+
     def _execute_single_task(self, task: Task):
         """Execute a single task with full context"""
         # Mark task as in progress - send ONLY status update, not full task plan

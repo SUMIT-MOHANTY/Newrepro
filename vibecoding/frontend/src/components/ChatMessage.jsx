@@ -189,7 +189,8 @@ const ChatMessage = ({
   onEditTask,
   onRestore,
   messageIndex,
-  executingTaskId
+  executingTaskId,
+  isLatest
 }) => {
   // Debug: Log message to see what we're receiving
   if (!message.role || message.role === 'assistant') {
@@ -264,6 +265,8 @@ const ChatMessage = ({
   }, [message.versionId, message.version_id, codeVersions]);
 
 
+  const hasTaskPlan = !!message.metadata?.task_plan;
+
   // Function to clean message content for non-technical users
   const cleanMessageContent = (content) => {
     if (!content || isUser) return content;
@@ -275,17 +278,19 @@ const ChatMessage = ({
     cleaned = cleaned.replace(/<<<SEARCH[\s\S]*?>>>/g, '');
     cleaned = cleaned.replace(/<<<REPLACE[\s\S]*?>>>/g, '');
 
-    // 3. Remove task lists (bullet points) since we display them separately
-    const lines = cleaned.split('\n');
-    const nonTaskLines = [];
-    for (const line of lines) {
-      const trimmed = line.trim();
-      // Skip bullet points and numbered lists
-      if (!trimmed.match(/^[•\-\*]\s+/) && !trimmed.match(/^\d+\.\s+/)) {
-        nonTaskLines.push(line);
+    // 3. Remove task lists (bullet points) since we display them separately (only if we have task breakdown metadata)
+    if (hasTaskPlan) {
+      const lines = cleaned.split('\n');
+      const nonTaskLines = [];
+      for (const line of lines) {
+        const trimmed = line.trim();
+        // Skip bullet points and numbered lists
+        if (!trimmed.match(/^[•\-\*]\s+/) && !trimmed.match(/^\d+\.\s+/)) {
+          nonTaskLines.push(line);
+        }
       }
+      cleaned = nonTaskLines.join('\n');
     }
-    cleaned = nonTaskLines.join('\n');
 
     // 4. Remove code blocks that look like full file contents
     cleaned = cleaned.replace(/```[\s\S]*?```/g, (match) => {
@@ -399,78 +404,7 @@ const ChatMessage = ({
             {message.metadata?.is_background_log && message.thinkingLogs && message.thinkingLogs.length > 0 ? null : (
               <>
 
-                {/* Task Breakdown Display */}
-                {!isUser && message.metadata?.task_plan && (
-                  <>
-                    {console.log('TaskBreakdown metadata:', message.metadata)}
-                    <TaskBreakdown
-                      taskPlan={message.metadata.task_plan}
-                      darkMode={darkMode}
-                      onExecuteTask={onExecuteTask}
-                      onExecuteAll={onExecuteAllTasks}
-                      onEditTask={onEditTask}
-                      executingTaskId={executingTaskId}
-                    />
-                  </>
-                )}
 
-                {/* Task Breakdown Display - for planning/thinking messages */}
-                {!isUser && !message.metadata?.task_plan && (() => {
-                  // Parse content for task lists
-                  const lines = (message.content || '').split('\n');
-                  const tasks = [];
-                  let introText = '';
-                  let foundTasks = false;
-
-                  for (const line of lines) {
-                    const trimmed = line.trim();
-                    if (trimmed.match(/^[•\-\*]\s+/) || trimmed.match(/^\d+\.\s+/)) {
-                      foundTasks = true;
-                      const taskText = trimmed.replace(/^[•\-\*]\s+/, '').replace(/^\d+\.\s+/, '');
-                      tasks.push(taskText);
-                    } else if (trimmed && !foundTasks) {
-                      introText += (introText ? ' ' : '') + trimmed;
-                    }
-                  }
-
-                  // Only show task breakdown if we have tasks
-                  if (tasks.length > 0) {
-                    return (
-                      <div className="mb-3">
-                        {introText && (
-                          <p className={cn(
-                            "text-sm mb-3 font-medium",
-                            darkMode ? "text-gray-300" : "text-gray-700"
-                          )}>
-                            {introText}
-                          </p>
-                        )}
-                        <div className={cn(
-                          "rounded-lg border p-3 space-y-2",
-                          darkMode
-                            ? "bg-purple-500/5 border-purple-500/20"
-                            : "bg-purple-50 border-purple-200"
-                        )}>
-                          {tasks.map((task, idx) => (
-                            <div key={idx} className="flex items-start gap-2">
-                              <CheckCircle2 className={cn(
-                                "w-4 h-4 mt-0.5 flex-shrink-0",
-                                darkMode ? "text-purple-400" : "text-purple-600"
-                              )} />
-                              <span className={cn(
-                                "text-sm",
-                                darkMode ? "text-gray-200" : "text-gray-800"
-                              )}>
-                                {task}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  }
-                  return null;
-                })()}
 
                 {/* Chat Content */}
                 {!isUser && aiSummary && !showOriginal && hasCodeOrVersion && !message.metadata?.task_plan ? (
