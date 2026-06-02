@@ -328,6 +328,7 @@ class TaskManagementService:
 
     async def assign_task(self, task_id: int, assignees: list, task_token: Optional[str] = None) -> dict:
         """Assign users to a task in external task management API via task-assign-in."""
+        self._clear_cache(task_token)
         # Grab the primary assignee off the list (which is either a string or a dict containing username)
         primary_assignee = ""
         if assignees:
@@ -345,10 +346,12 @@ class TaskManagementService:
 
     async def update_task_tags(self, payload: dict, task_token: Optional[str] = None) -> dict:
         """Update tags for a task (e.g., adding 'blocked')."""
+        self._clear_cache(task_token)
         return await self._make_request("POST", "/api/agent/task-update-tags/", task_token=task_token, json=payload)
 
     async def unassign_task(self, payload: dict, task_token: Optional[str] = None) -> dict:
         """Unassign an agent/user from a task."""
+        self._clear_cache(task_token)
         return await self._make_request("POST", "/api/agent/task-unassign/", task_token=task_token, json=payload)
 
 
@@ -422,6 +425,7 @@ class TaskManagementService:
 
     async def add_checklist_to_task(self, task_id: Any, checklist_items: list, task_token: Optional[str] = None) -> dict:
         """Add checklist items to a task via the external task management API."""
+        self._clear_cache(task_token)
         normalized_task_id = str(task_id).strip()
         if not normalized_task_id:
             raise Exception("Invalid task_id for checklist update")
@@ -441,10 +445,12 @@ class TaskManagementService:
 
     async def update_task_progress(self, payload: dict, task_token: Optional[str] = None) -> dict:
         """Update progress for a task."""
+        self._clear_cache(task_token)
         return await self._make_request("POST", "/api/agent/task-progress/", task_token=task_token, json=payload)
 
     async def complete_task(self, payload: dict, task_token: Optional[str] = None) -> dict:
         """Mark a task as completed."""
+        self._clear_cache(task_token)
         return await self._make_request("POST", "/api/agent/task-complete/", task_token=task_token, json=payload)
 
     async def post_timer_log(self, payload: dict, task_token: Optional[str] = None) -> dict:
@@ -469,6 +475,7 @@ class TaskManagementService:
 
     async def opt_in_task(self, payload: dict, task_token: Optional[str] = None) -> dict:
         """Opt in to a task in the external task management API using X-API-Key."""
+        self._clear_cache(task_token)
         if task_token:
             return await self._make_request("POST", "/api/agent/task-opt-in/", task_token=task_token, json=payload)
 

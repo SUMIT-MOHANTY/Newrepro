@@ -522,6 +522,32 @@ def _parse_task_json(content: str) -> List[Dict[str, Any]]:
         return []
 
 
+def clean_repository_structure_string(repo_structure: str) -> str:
+    """Strip top-level container folder from ASCII directory tree if present"""
+    if not repo_structure:
+        return ""
+        
+    lines = [line for line in repo_structure.split('\n') if line.strip()]
+    if not lines:
+        return ""
+        
+    first_line = lines[0].strip()
+    # A root container directory name usually contains no tree-drawing characters
+    if not any(c in first_line for c in ['│', '├', '└', '─', ' ']):
+        is_container = True
+        for line in lines[1:]:
+            stripped = line.strip()
+            if stripped and not any(line.startswith(c) for c in [' ', '│', '├', '└', '─', '┌', '┬', '┴']):
+                is_container = False
+                break
+        
+        if is_container:
+            cleaned_lines = lines[1:]
+            return "\n".join(cleaned_lines)
+            
+    return repo_structure
+
+
 def _validate_task_structure(task: Dict[str, Any]) -> bool:
     """Validate that task has required fields"""
     
@@ -551,40 +577,77 @@ def _generate_bootstrap_checklist(repo_structure: str, project_name: str) -> Lis
     """Generate detailed checklist items from repository structure for TASK-00"""
     
     checklist = []
-    
-    # Parse the repository structure to extract directories and files
     import re
     
-    # Extract all directory paths (lines ending with /)
-    dir_pattern = r'[\s│├└─`|]*([a-zA-Z0-9_\-./]+/)[\s]*$'
-    # Extract all file paths (lines with file extensions or specific files)
-    file_pattern = r'[\s│├└─`|]*([a-zA-Z0-9_\-./]+\.[a-zA-Z0-9]+)[\s]*$'
+    # Pre-clean the repo structure tree string
+    repo_structure = clean_repository_structure_string(repo_structure)
     
+    # Indentation-aware stack parser to reconstruct full hierarchical parent-child directory and file paths
+    path_stack = []
     directories = []
     files = []
     
     for line in repo_structure.split('\n'):
-        # Skip empty lines and root project line
-        if not line.strip() or line.strip() == project_name or line.strip().endswith(project_name + '/'):
+        stripped = line.strip()
+        if not stripped:
             continue
+            
+        # Match directory or file name at the end of the line
+        match = re.search(r'([a-zA-Z0-9_\-./]+/?)\s*$', line)
+        if not match:
+            continue
+            
+        full_name = match.group(1).strip()
+        is_dir = full_name.endswith('/')
+        name = full_name.rstrip('/')
         
-        # Check for directory
-        dir_match = re.search(dir_pattern, line)
-        if dir_match:
-            dir_path = dir_match.group(1).strip()
-            if dir_path and dir_path not in directories:
-                directories.append(dir_path)
+        if not name or name == project_name:
+            continue
+            
+        # Determine indentation level by replacing tree-drawing characters with spaces and counting
+        leading_part = line[:match.start()]
+        leading_stripped = re.sub(r'[│├└─]', ' ', leading_part)
+        level = (len(leading_stripped) - len(leading_stripped.lstrip(' '))) // 4
         
-        # Check for file
-        file_match = re.search(file_pattern, line)
-        if file_match:
-            file_path = file_match.group(1).strip()
-            if file_path and file_path not in files:
-                files.append(file_path)
+        # Pop standard stack levels to match our current depth
+        while path_stack and path_stack[-1][0] >= level:
+            path_stack.pop()
+            
+        if is_dir:
+            path_stack.append((level, name))
+            full_path = "/".join([folder for _, folder in path_stack])
+            if full_path not in directories:
+                directories.append(full_path)
+        else:
+            parent_path = "/".join([folder for _, folder in path_stack])
+            full_path = f"{parent_path}/{name}" if parent_path else name
+            if full_path not in files:
+                files.append(full_path)
+                
+    # Normalize paths: strip common top-level container directory if all paths start with it
+    if directories:
+        root_candidates = [d for d in directories if '/' not in d]
+        if len(root_candidates) == 1:
+            root_dir = root_candidates[0]
+            is_container = True
+            for d in directories:
+                if d != root_dir and not d.startswith(root_dir + '/'):
+                    is_container = False
+                    break
+            for f in files:
+                if not f.startswith(root_dir + '/'):
+                    is_container = False
+                    break
+            
+            if is_container:
+                prefix_len = len(root_dir) + 1
+                directories = [d[prefix_len:] for d in directories if d != root_dir]
+                files = [f[prefix_len:] for f in files]
+                logger.info(f"Stripped top-level container folder '{root_dir}' from bootstrap checklist paths.")
     
     # Add checklist items
     checklist.append({
-        "text": f"Create root project directory: mkdir -p {project_name}",
+        "text": "Verify working directory is /workspace (the repo root). DO NOT create a subdirectory.",
         "completed": False
     })
     
@@ -598,7 +661,7 @@ def _generate_bootstrap_checklist(repo_structure: str, project_name: str) -> Lis
         # Create main directories first
         main_dirs = [d for d in directories if d.count('/') <= 2]
         if main_dirs:
-            dirs_str = ' '.join([f"{project_name}/{d.rstrip('/')}" for d in main_dirs[:5]])
+            dirs_str = ' '.join([d.rstrip('/') for d in main_dirs[:5]])
             checklist.append({
                 "text": f"Create main directory structure: mkdir -p {dirs_str}",
                 "completed": False
@@ -609,7 +672,7 @@ def _generate_bootstrap_checklist(repo_structure: str, project_name: str) -> Lis
         if sub_dirs:
             for i in range(0, min(len(sub_dirs), 10), 3):
                 batch = sub_dirs[i:i+3]
-                dirs_str = ' '.join([f"{project_name}/{d.rstrip('/')}" for d in batch])
+                dirs_str = ' '.join([d.rstrip('/') for d in batch])
                 checklist.append({
                     "text": f"Create subdirectories: mkdir -p {dirs_str}",
                     "completed": False
@@ -618,61 +681,106 @@ def _generate_bootstrap_checklist(repo_structure: str, project_name: str) -> Lis
     # Add file creation items
     if files:
         # Group files by type
-        config_files = [f for f in files if any(x in f.lower() for x in ['.env', '.json', '.yml', '.yaml', '.toml', '.ini', '.config'])]
+        config_files = [f for f in files if any(x in f.lower() for x in ['.env', '.json', '.yml', '.yaml', '.toml', '.ini', '.config', '.html'])]
         json_files = [f for f in files if f.endswith('.json')]
         code_files = [f for f in files if any(f.endswith(ext) for ext in ['.py', '.js', '.ts', '.jsx', '.tsx'])]
         doc_files = [f for f in files if any(f.endswith(ext) for ext in ['.md', '.txt', '.rst'])]
         
         if config_files:
-            for config_file in config_files[:5]:
+            for config_file in config_files:
                 checklist.append({
-                    "text": f"Create config file: touch {project_name}/{config_file}",
+                    "text": f"Create config file: touch {config_file}",
                     "completed": False
                 })
         
-        # NEW: Add JSON validation step
+        # JSON validation step (cross-platform)
         if json_files:
-            json_paths = ' '.join([f'{project_name}/{f}' for f in json_files[:10]])
             checklist.append({
-                "text": f"Validate JSON syntax for all JSON files: for f in {json_paths}; do python3 -m json.tool \"$f\" > /dev/null || echo \"Invalid JSON: $f\"; done",
+                "text": "Validate JSON syntax: python3 -m json.tool package.json > /dev/null && echo 'package.json OK'",
                 "completed": False
             })
         
         if doc_files:
             checklist.append({
-                "text": f"Create documentation files: touch {' '.join([f'{project_name}/{f}' for f in doc_files[:3]])}",
+                "text": f"Create documentation files: touch {' '.join([f for f in doc_files[:3]])}",
                 "completed": False
             })
         
         if code_files:
             checklist.append({
-                "text": f"Create placeholder code files: touch {' '.join([f'{project_name}/{f}' for f in code_files[:5]])}",
+                "text": f"Create placeholder code files: touch {' '.join(code_files)}",
                 "completed": False
             })
     
+    # --- Tech-stack-aware dependency installation step ---
+    _all_file_basenames = [f.split('/')[-1].lower() for f in files]
+    _has_package_json = 'package.json' in _all_file_basenames
+    _has_requirements = 'requirements.txt' in _all_file_basenames
+    _has_pyproject = 'pyproject.toml' in _all_file_basenames
+
+    if _has_package_json:
+        checklist.append({
+            "text": "Install Node.js dependencies: npm install (verify node_modules/ is created and package-lock.json updated)",
+            "completed": False
+        })
+    elif _has_requirements:
+        checklist.append({
+            "text": "Install Python dependencies: pip install -r requirements.txt (verify all packages install without errors)",
+            "completed": False
+        })
+    elif _has_pyproject:
+        checklist.append({
+            "text": "Install Python project in editable mode: pip install -e . (verify package is importable)",
+            "completed": False
+        })
+
     # Add .gitignore
     checklist.append({
-        "text": f"Create .gitignore with appropriate rules for the tech stack",
+        "text": "Create .gitignore with appropriate rules for the tech stack",
         "completed": False
     })
-    
+
     # Add README
     checklist.append({
-        "text": f"Create README.md with project overview and setup instructions",
+        "text": "Create README.md with project overview and setup instructions",
         "completed": False
     })
-    
-    # Add verification step
+
+    # Cross-platform structure verification (replaces Linux-only ls -R | wc -l)
     checklist.append({
-        "text": f"Verify all directories and files exist: ls -R {project_name} | wc -l (should show more than 10 items)",
+        "text": (
+            "Verify project structure (cross-platform): "
+            "python3 -c \"import os; total=sum(len(d)+len(f) for _,d,f in os.walk('.') if '.git' not in _); "
+            "print(f'Structure OK: {total} items found')\" "
+            "(expect > 10 items)"
+        ),
         "completed": False
     })
-    
+
+    # Enforce verification checklist items (Change #3 and Change #7) - Tech-stack agnostic
+    primary_scaffold_file = "package.json" if _has_package_json else ("requirements.txt" if _has_requirements else "README.md")
     checklist.append({
-        "text": "Commit initial structure: git add . && git commit -m 'Initial project structure'",
+        "text": f"Verify file exists: run `test -f {primary_scaffold_file}` and verify exit code 0",
         "completed": False
     })
-    
+
+    build_cmd = "npm run build" if _has_package_json else ("python3 -m py_compile $(find . -name '*.py')" if (_has_requirements or _has_pyproject) else "true")
+    checklist.append({
+        "text": f"Verify production build: run `{build_cmd}` and verify exit code 0 (no compilation errors)",
+        "completed": False
+    })
+
+    dev_cmd = "npm run dev" if _has_package_json else ("python3 main.py --help" if (_has_requirements or _has_pyproject) else "true")
+    checklist.append({
+        "text": f"Verify development server: run `{dev_cmd}` and verify server/toolchain starts without console errors",
+        "completed": False
+    })
+
+    checklist.append({
+        "text": "Commit initial scaffold: git init && git add . && git commit -m 'chore: initial project scaffold'",
+        "completed": False
+    })
+
     return checklist
 
 
@@ -784,7 +892,8 @@ def _build_project_context(
             context["brd_analysis"] = raw_analysis
             
             # Extract repository structure from section 0.5.1
-            context["repository_structure"] = _extract_repository_structure(raw_analysis)
+            raw_struct = _extract_repository_structure(raw_analysis)
+            context["repository_structure"] = clean_repository_structure_string(raw_struct)
             
             if "project_type" in analysis:
                 context["project_type"] = analysis["project_type"]
@@ -1113,8 +1222,77 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
         model=model,
         project_token=project_token,
     )
-    # Renumber starting at 0 (TASK-00 stays TASK-00)
-    sprint1_tasks = _renumber_task_ids(sprint1_tasks, start_index=1)
+    # Programmatically split TASK-00 into TASK-00A and TASK-00B
+    sprint1_tasks_split = []
+    task_00 = next((t for t in sprint1_tasks if t.get("task_id") == "TASK-00"), None)
+    if task_00:
+        # Create TASK-00A
+        task_00a = dict(task_00)
+        task_00a["task_id"] = "TASK-00A"
+        task_00a["taskName"] = "Project Scaffold & Toolchain Creation"
+        task_00a["task_wallet"] = 5
+        task_00a["description"] = (
+            "PHASE A BOOTSTRAP — Toolchain and manifest configuration.\n\n"
+            "This task sets up the core manifest/config files and empty directory structures for the project. "
+            "It establishes the compile and build configuration so the project can be built and run. "
+            "DO NOT write actual mock data or UI component code in this task.\n\n"
+            "[WHAT THIS TASK BUILDS]\n"
+            "1. Repository configuration: manifest files (e.g. package.json, pyproject.toml, requirements.txt, pom.xml, build.gradle, go.mod).\n"
+            "2. Toolchain configuration: tsconfig.json, vite.config.ts, tailwind.config.js, .env.example, README.md.\n"
+            "3. Skeleton directory structure: Create all necessary source and output directory roots.\n"
+            "4. Empty entry points: Create empty files for the main entry points (e.g. index.html, src/main.jsx, src/App.jsx, backend/main.py) to confirm compilation works."
+        )
+        task_00a["checklist"] = [
+            {"text": "Initialize workspace directories and toolchain configurations", "completed": False},
+            {"text": "Create core build/manifest file (e.g. package.json, requirements.txt, pom.xml, csproj)", "completed": False},
+            {"text": "Create config files (e.g. .env.example, .gitignore, README, tsconfig.json)", "completed": False},
+            {"text": "Run packaging tool install (e.g. npm install, pip install, dotnet restore, mvn dependency:resolve)", "completed": False},
+            {"text": "Verify empty build: run build command and ensure it compiles successfully with exit code 0", "completed": False}
+        ]
+        sprint1_tasks_split.append(task_00a)
+
+        # Create TASK-00B
+        task_00b = dict(task_00)
+        task_00b["task_id"] = "TASK-00B"
+        task_00b["taskName"] = "Shared Core, Styling & Mock Data Store"
+        task_00b["task_wallet"] = 5
+        task_00b["linked_tasks"] = ["TASK-00A"]
+        task_00b["description"] = (
+            "PHASE B BOOTSTRAP — Design tokens, core styling, shared component kit, and mock data stores.\n\n"
+            "Depends on TASK-00A. Creates the styling foundations, shared reusable components, and mocks that "
+            "all subsequent screen tasks will import from.\n\n"
+            "[WHAT THIS TASK BUILDS]\n"
+            "1. Styling & Design Tokens: CSS custom properties/variables for colors, typography, spacing, shadows.\n"
+            "2. Shared Reusable Component Kit: standard UI helpers (Buttons, Cards, Badges, DataTable, SearchInput, Modals, Drawer).\n"
+            "3. Global Mock Data Store: Exports typed lists/tables of realistic mock records for all domain entities.\n"
+            "4. Main Navigation Shell Layout: AppLayout.tsx with collapsible sidebar, sidebar links, top navbar, breadcrumbs, user menu dropdown."
+        )
+        task_00b["checklist"] = [
+            {"text": "Implement design token styling custom properties (colors, typography, spacing, shadows)", "completed": False},
+            {"text": "Build shared reusable UI component kit (Button, Badge, Card, Modal, Drawer, DataTable)", "completed": False},
+            {"text": "Create AppLayout.tsx collapsible sidebar layout with complete navigation shell", "completed": False},
+            {"text": "Populate global mock data store with 8-10 typed realistic records for each business entity", "completed": False},
+            {"text": "Run build verification suite: run production compilation and verify exit code is 0", "completed": False}
+        ]
+        sprint1_tasks_split.append(task_00b)
+        
+        # Add all other tasks, updating TASK-00 reference in linked_tasks
+        for t in sprint1_tasks:
+            if t.get("task_id") != "TASK-00":
+                t_updated = dict(t)
+                linked = t_updated.get("linked_tasks", [])
+                if "TASK-00" in linked:
+                    linked = ["TASK-00A", "TASK-00B"] + [lt for lt in linked if lt != "TASK-00"]
+                else:
+                    linked = ["TASK-00A", "TASK-00B"] + linked
+                t_updated["linked_tasks"] = linked
+                sprint1_tasks_split.append(t_updated)
+        
+        sprint1_tasks = sprint1_tasks_split
+    else:
+        # Renumber starting at 1 (TASK-00 stays TASK-00)
+        sprint1_tasks = _renumber_task_ids(sprint1_tasks, start_index=1)
+        
     # Sprint 1 tasks get sprint[0] as default
     for t in sprint1_tasks:
         t.setdefault("sprint",     sprints[0]["name"])
@@ -1122,7 +1300,7 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
     all_tasks.extend(sprint1_tasks)
 
     next_index = max(
-        (int(t["task_id"].replace("TASK-", "")) for t in sprint1_tasks if t.get("task_id", "").startswith("TASK-") and t["task_id"] != "TASK-00"),
+        (int(t["task_id"].replace("TASK-", "")) for t in sprint1_tasks if t.get("task_id", "").startswith("TASK-") and not t["task_id"].startswith("TASK-00")),
         default=0
     ) + 1
 
@@ -1147,13 +1325,20 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
     for t in sprint2_tasks:
         t.setdefault("sprint",    sprints[1]["name"])
         t.setdefault("milestone", milestones[1]["name"])
-        # Guarantee TASK-00 is always in linked_tasks
-        if "TASK-00" not in t.get("linked_tasks", []):
-            t.setdefault("linked_tasks", []).insert(0, "TASK-00")
+        # Guarantee TASK-00A & TASK-00B are always in linked_tasks
+        linked = t.setdefault("linked_tasks", [])
+        if "TASK-00" in linked:
+            linked = ["TASK-00A", "TASK-00B"] + [lt for lt in linked if lt != "TASK-00"]
+        if "TASK-00A" not in linked:
+            linked.insert(0, "TASK-00A")
+        if "TASK-00B" not in linked:
+            idx = linked.index("TASK-00A")
+            linked.insert(idx + 1, "TASK-00B")
+        t["linked_tasks"] = linked
     all_tasks.extend(sprint2_tasks)
 
     next_index = max(
-        (int(t["task_id"].replace("TASK-", "")) for t in sprint2_tasks if t.get("task_id", "").startswith("TASK-") and t["task_id"] != "TASK-00"),
+        (int(t["task_id"].replace("TASK-", "")) for t in sprint2_tasks if t.get("task_id", "").startswith("TASK-") and not t["task_id"].startswith("TASK-00")),
         default=next_index - 1
     ) + 1
 
@@ -1180,12 +1365,20 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
     for t in sprint3_tasks:
         t.setdefault("sprint",    sprints[2]["name"])
         t.setdefault("milestone", milestones[2]["name"])
-        if "TASK-00" not in t.get("linked_tasks", []):
-            t.setdefault("linked_tasks", []).insert(0, "TASK-00")
+        # Guarantee TASK-00A & TASK-00B are always in linked_tasks
+        linked = t.setdefault("linked_tasks", [])
+        if "TASK-00" in linked:
+            linked = ["TASK-00A", "TASK-00B"] + [lt for lt in linked if lt != "TASK-00"]
+        if "TASK-00A" not in linked:
+            linked.insert(0, "TASK-00A")
+        if "TASK-00B" not in linked:
+            idx = linked.index("TASK-00A")
+            linked.insert(idx + 1, "TASK-00B")
+        t["linked_tasks"] = linked
     all_tasks.extend(sprint3_tasks)
 
     next_index = max(
-        (int(t["task_id"].replace("TASK-", "")) for t in sprint3_tasks if t.get("task_id", "").startswith("TASK-") and t["task_id"] != "TASK-00"),
+        (int(t["task_id"].replace("TASK-", "")) for t in sprint3_tasks if t.get("task_id", "").startswith("TASK-") and not t["task_id"].startswith("TASK-00")),
         default=next_index - 1
     ) + 1
 
@@ -1210,8 +1403,16 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
     for t in sprint4_tasks:
         t.setdefault("sprint",    sprints[3]["name"])
         t.setdefault("milestone", milestones[3]["name"])
-        if "TASK-00" not in t.get("linked_tasks", []):
-            t.setdefault("linked_tasks", []).insert(0, "TASK-00")
+        # Guarantee TASK-00A & TASK-00B are always in linked_tasks
+        linked = t.setdefault("linked_tasks", [])
+        if "TASK-00" in linked:
+            linked = ["TASK-00A", "TASK-00B"] + [lt for lt in linked if lt != "TASK-00"]
+        if "TASK-00A" not in linked:
+            linked.insert(0, "TASK-00A")
+        if "TASK-00B" not in linked:
+            idx = linked.index("TASK-00A")
+            linked.insert(idx + 1, "TASK-00B")
+        t["linked_tasks"] = linked
     all_tasks.extend(sprint4_tasks)
 
     logger.info(f"[{project_token}] All phases complete — {len(all_tasks)} total tasks before validation")
@@ -1250,7 +1451,7 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
 
         # ── Inject repo structure ──────────────────────────────────────────────
         if repo_structure:
-            if task.get("task_id") == "TASK-00":
+            if task.get("task_id") == "TASK-00A":
                 structure_block = (
                     f"\n\n===BEGIN_DIRECTORY_STRUCTURE===\n{repo_structure}\n===END_DIRECTORY_STRUCTURE===\n\n"
                     "CRITICAL: This is the CANONICAL directory structure for the entire project. "
@@ -1263,7 +1464,7 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
                 detailed_checklist = _generate_bootstrap_checklist(repo_structure, project_name)
                 if detailed_checklist:
                     task["checklist"] = detailed_checklist
-                    logger.info(f"✅ TASK-00: injected repo structure + {len(detailed_checklist)} checklist items")
+                    logger.info(f"✅ TASK-00A: injected repo structure + {len(detailed_checklist)} checklist items")
             else:
                 structure_reference = (
                     f"\n\n===CANONICAL_REPOSITORY_STRUCTURE===\n{repo_structure}\n===END_STRUCTURE===\n\n"
@@ -1274,12 +1475,49 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
                 )
                 task["description"] = task.get("description", "") + structure_reference
 
+        # Enforce verification checklist items for other Sprint 1 tasks (Change #3 and Change #7)
+        task_id = task.get("task_id", "")
+        if task_id not in ["TASK-00A", "TASK-00B"] and task.get("sprint") == sprints[0]["name"]:
+            checklist = task.setdefault("checklist", [])
+            
+            # Check if build/dev server checks already exist to avoid duplicates
+            has_build_check = any("run build" in item.get("text", "").lower() or "production build" in item.get("text", "").lower() for item in checklist)
+            has_dev_check = any("run dev" in item.get("text", "").lower() or "development server" in item.get("text", "").lower() for item in checklist)
+            
+            # Smart file target detection from description or files
+            import re
+            file_matches = re.findall(r'(src/[a-zA-Z0-9_\-/]+\.(?:tsx|jsx|ts|js|css))', task.get("description", ""))
+            primary_file = file_matches[0] if file_matches else "src/App.tsx"
+            
+            if not any(f"test -f {primary_file}" in item.get("text", "") for item in checklist):
+                checklist.append({
+                    "text": f"Verify file exists: run `test -f {primary_file}` and verify exit code 0",
+                    "completed": False
+                })
+            if not has_build_check:
+                checklist.append({
+                    "text": "Verify production build: run `npm run build` (or matching stack build command) and verify exit code 0 (no compile errors)",
+                    "completed": False
+                })
+            if not has_dev_check:
+                checklist.append({
+                    "text": "Verify development server: run `npm run dev` (or matching stack run command) and verify server starts without console errors",
+                    "completed": False
+                })
+
         valid_tasks.append(task)
 
-    # ── 7. Guarantee TASK-00 is the first element ──────────────────────────────
-    task_00 = next((t for t in valid_tasks if t.get("task_id") == "TASK-00"), None)
-    if task_00:
-        valid_tasks = [task_00] + [t for t in valid_tasks if t.get("task_id") != "TASK-00"]
+    # ── 7. Guarantee TASK-00A and TASK-00B are the first elements ──────────────
+    task_00a = next((t for t in valid_tasks if t.get("task_id") == "TASK-00A"), None)
+    task_00b = next((t for t in valid_tasks if t.get("task_id") == "TASK-00B"), None)
+    
+    first_elements = []
+    if task_00a:
+        first_elements.append(task_00a)
+    if task_00b:
+        first_elements.append(task_00b)
+        
+    valid_tasks = first_elements + [t for t in valid_tasks if t.get("task_id") not in ["TASK-00A", "TASK-00B"]]
 
     logger.info(f"[{project_token}] ✅ Sprint-wise generation complete — {len(valid_tasks)} valid tasks")
     for t in valid_tasks:

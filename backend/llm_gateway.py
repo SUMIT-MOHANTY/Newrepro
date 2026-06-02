@@ -268,18 +268,31 @@ async def call_llm(
                 response.raise_for_status()
                 data = response.json()
                 
-                # Print raw response for debugging
-                print("\n" + "="*80)
-                print("RAW LLM RESPONSE (call_llm)")
-                print("="*80)
-                print(f"URL: {url}")
-                print(f"Model: {model_name}")
-                print(f"Status Code: {response.status_code}")
-                print(f"Response Headers: {dict(response.headers)}")
-                print("-"*80)
-                print("Response Body:")
-                print(json.dumps(data, indent=2))  # First 2000 chars
-                print("="*80 + "\n")
+                # Clearly track the AI call (prompts and exact response with tokens)
+                try:
+                    from llm_logs import log_ai_tracker
+                    log_ai_tracker(messages, data)
+                except Exception as tracker_err:
+                    logger.warning(f"Failed to track AI call: {tracker_err}")
+                
+                # Print raw response for debugging (safely to prevent CP1252 crashes on Windows)
+                try:
+                    import sys
+                    sys_encoding = sys.stdout.encoding or 'utf-8'
+                    safe_data_str = json.dumps(data, indent=2).encode(sys_encoding, errors='replace').decode(sys_encoding)
+                    print("\n" + "="*80)
+                    print("RAW LLM RESPONSE (call_llm)")
+                    print("="*80)
+                    print(f"URL: {url}")
+                    print(f"Model: {model_name}")
+                    print(f"Status Code: {response.status_code}")
+                    print(f"Response Headers: {dict(response.headers)}")
+                    print("-"*80)
+                    print("Response Body:")
+                    print(safe_data_str)
+                    print("="*80 + "\n")
+                except Exception as print_err:
+                    logger.debug(f"Failed to safely print LLM response: {print_err}")
                 
                 last_err = None
                 break
@@ -319,15 +332,21 @@ async def call_llm_and_extract(
     )
     content = extract_content_from_response(data)
     
-    # Print extracted content for debugging
-    print("\n" + "="*80)
-    print("EXTRACTED CONTENT (call_llm_and_extract)")
-    print("="*80)
-    print(f"Content Length: {len(content)} chars")
-    print("-"*80)
-    print("Content Preview:")
-    print(content)  # First 1000 chars
-    print("="*80 + "\n")
+    # Print extracted content for debugging safely (preventing CP1252 crashes on Windows)
+    try:
+        import sys
+        sys_encoding = sys.stdout.encoding or 'utf-8'
+        safe_content = content.encode(sys_encoding, errors='replace').decode(sys_encoding)
+        print("\n" + "="*80)
+        print("EXTRACTED CONTENT (call_llm_and_extract)")
+        print("="*80)
+        print(f"Content Length: {len(content)} chars")
+        print("-"*80)
+        print("Content Preview:")
+        print(safe_content)  # First 1000 chars
+        print("="*80 + "\n")
+    except Exception as print_err:
+        logger.debug(f"Failed to safely print extracted content: {print_err}")
     
     # Strip <think> blocks from models that embed reasoning in content
     content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()

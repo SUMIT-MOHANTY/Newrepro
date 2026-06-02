@@ -273,7 +273,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const [isDeploying, setIsDeploying] = useState(false);
     const [isFixing, setIsFixing] = useState(false);
     const [showPreviewLogs, setShowPreviewLogs] = useState(false);
+    const [deployLogs, setDeployLogs] = useState([]);
+    const wsRef = useRef(null);
     const [processMode, setProcessMode] = useState(() => getProcessModeForProject(localStorage.getItem(PROJECT_STORAGE_KEY) || ''));
+    const currentPreviewLogs = (deployLogs && deployLogs.length > 0) ? deployLogs : (previewStatus?.logs || []);
 
 
     // ── External Task API State ──────────────────────────────────────
@@ -1060,8 +1063,81 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         }
     }, [token, selectedProjectKey, fetchPreviewStatus]);
 
+    // WebSocket log streaming for Deploy Preview
+    useEffect(() => {
+        if (!selectedProjectKey || (previewStatus.status !== 'deploying' && previewStatus.status !== 'running')) {
+            if (wsRef.current) {
+                wsRef.current.close();
+                wsRef.current = null;
+            }
+            return;
+        }
+
+        const wsUrl = API_ENDPOINTS.AGENT_PREVIEW_WS(selectedProjectKey);
+        console.log(`[Preview WS] Connecting to ${wsUrl}`);
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+            console.log('[Preview WS] ✅ Connected');
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                if (data.type === 'deploy_log') {
+                    const newLog = {
+                        time: data.timestamp || new Date().toISOString(),
+                        message: data.content,
+                        metadata: data.metadata,
+                    };
+                    setDeployLogs((prev) => {
+                        if (prev.some(l => l.message === newLog.message && l.time === newLog.time)) {
+                            return prev;
+                        }
+                        return [...prev, newLog];
+                    });
+
+                    // Auto-transition preview status if agent reported success
+                    if (data.metadata?.status === 'success') {
+                        setPreviewStatus(prev => ({
+                            ...prev,
+                            status: 'running',
+                            preview_url: data.metadata.preview_url || `/app/${selectedProjectKey}/`,
+                            stack: prev.stack || 'auto',
+                        }));
+                        refreshRoadmap();
+                    } else if (data.metadata?.status === 'error') {
+                        setPreviewStatus(prev => ({
+                            ...prev,
+                            status: 'error',
+                        }));
+                    }
+                }
+            } catch (err) {
+                console.error('[Preview WS] Failed to parse message:', err);
+            }
+        };
+
+        ws.onerror = (err) => {
+            console.warn('[Preview WS] Error:', err);
+        };
+
+        ws.onclose = () => {
+            console.log('[Preview WS] Connection closed');
+        };
+
+        return () => {
+            if (wsRef.current) {
+                wsRef.current.close();
+                wsRef.current = null;
+            }
+        };
+    }, [selectedProjectKey, previewStatus.status, refreshRoadmap]);
+
     const handleDeployPreview = async () => {
         setIsDeploying(true);
+        setDeployLogs([]);
         try {
             const params = selectedProjectKey ? `?project_token=${selectedProjectKey}` : '';
             const res = await fetch(`${API_ENDPOINTS.AGENT_PREVIEW_DEPLOY}${params}`, {
@@ -1089,6 +1165,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
     const handleFixWithAI = async () => {
         setIsFixing(true);
+        setDeployLogs([]);
         try {
             const params = selectedProjectKey ? `?project_token=${selectedProjectKey}` : '';
             const res = await fetch(`${API_ENDPOINTS.AGENT_PREVIEW_FIX}${params}`, {
@@ -2459,10 +2536,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                                 </button>
                                                             </div>
 
-                                                            {showPreviewLogs && previewStatus.logs && (
+                                                            {showPreviewLogs && currentPreviewLogs && (
                                                                 <div className="mt-2 bg-app-text-main rounded-lg p-2 max-h-32 overflow-y-auto">
                                                                     <div className="space-y-0.5 font-mono text-[9px]">
-                                                                        {previewStatus.logs.map((log, i) => (
+                                                                        {currentPreviewLogs.map((log, i) => (
                                                                             <div key={i} className="text-app-text-light">
                                                                                 <span className="text-app-text-label mr-1">[{new Date(log.time).toLocaleTimeString()}]</span>
                                                                                 {log.message}
@@ -2483,10 +2560,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                                 <Loader2 className="w-4 h-4 animate-spin text-app-primary" />
                                                                 <span className="text-[11px] font-medium">Deploying preview...</span>
                                                             </div>
-                                                            {previewStatus.logs && previewStatus.logs.length > 0 && (
+                                                            {currentPreviewLogs && currentPreviewLogs.length > 0 && (
                                                                 <div className="bg-app-text-main rounded-lg p-2 h-20 overflow-y-auto">
                                                                     <div className="space-y-0.5 font-mono text-[9px]">
-                                                                        {previewStatus.logs.map((log, i) => (
+                                                                        {currentPreviewLogs.map((log, i) => (
                                                                             <div key={i} className="text-app-text-light">
                                                                                 <span className="text-violet-400 mr-1">›</span>
                                                                                 {log.message}
@@ -2495,6 +2572,15 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                                     </div>
                                                                 </div>
                                                             )}
+                                                            {previewStatus.server_log && (
+                                                                <div className="bg-slate-950 rounded-lg p-2.5 max-h-40 overflow-y-auto border border-violet-500/20 shadow-inner">
+                                                                    <div className="text-[9px] font-bold text-violet-400 mb-1 font-mono flex items-center gap-1.5">
+                                                                        <span className="w-1.5 h-1.5 rounded-full bg-violet-400 animate-pulse"></span>
+                                                                        Live Container Console Output:
+                                                                    </div>
+                                                                    <pre className="font-mono text-[8px] text-emerald-400 whitespace-pre-wrap leading-relaxed select-all" ref={(el) => { if (el) el.scrollTop = el.scrollHeight; }}>{previewStatus.server_log}</pre>
+                                                                 </div>
+                                                             )}
                                                         </div>
                                                     ) : previewStatus.status === 'error' ? (
                                                         <div className="space-y-3">
@@ -2502,15 +2588,24 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                                 <AlertCircle className="w-3.5 h-3.5" />
                                                                 <span>Deployment Failed</span>
                                                             </div>
-                                                            {previewStatus.logs && previewStatus.logs.length > 0 && (
+                                                            {currentPreviewLogs && currentPreviewLogs.length > 0 && (
                                                                 <div className="bg-app-text-main rounded-lg p-2 max-h-24 overflow-y-auto">
                                                                     <div className="space-y-0.5 font-mono text-[9px]">
-                                                                        {previewStatus.logs.slice(-5).map((log, i) => (
+                                                                        {currentPreviewLogs.slice(-5).map((log, i) => (
                                                                             <div key={i} className="text-red-400/80">
                                                                                 {log.message}
                                                                             </div>
                                                                         ))}
                                                                     </div>
+                                                                </div>
+                                                            )}
+                                                            {previewStatus.server_log && (
+                                                                <div className="bg-slate-950 rounded-lg p-2.5 max-h-44 overflow-y-auto border border-red-500/20 shadow-inner">
+                                                                    <div className="text-[9px] font-bold text-red-400 mb-1 font-mono flex items-center gap-1.5">
+                                                                        <span className="w-1.5 h-1.5 rounded-full bg-red-400"></span>
+                                                                        Container Build/Server Logs:
+                                                                    </div>
+                                                                    <pre className="font-mono text-[8px] text-red-300 whitespace-pre-wrap leading-relaxed select-all">{previewStatus.server_log}</pre>
                                                                 </div>
                                                             )}
                                                             <div className="flex items-center gap-2">

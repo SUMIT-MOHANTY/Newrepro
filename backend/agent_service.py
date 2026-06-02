@@ -1080,7 +1080,7 @@ def _pick_best_dev_agent(project_token: Optional[str]) -> str:
     return active[0]
 
 
-def get_default_agents() -> List[Dict[str, Any]]:
+def get_default_agents(project_token: Optional[str] = None) -> List[Dict[str, Any]]:
     return [
         _make_agent(GIT_MANAGER_AGENT_ID, 0),
         _make_agent(MASTER_AGENT_ID, 1),
@@ -1210,7 +1210,7 @@ agent_states = _get_agent_states(None)
 
 # ── Agent System Prompts ────────────────────────────────────────────────────
 # Agents MUST create real files inside /workspace/ in the container.
-# CRITICAL: Keep scripts compact (<300 lines) to avoid AI token-limit truncation.
+# CRITICAL: Keep scripts compact (<1000 lines) to avoid AI token-limit truncation.
 
 _BULLETPROOF_CODE_RULES = """
 
@@ -1237,7 +1237,7 @@ CRITICAL: WORKING IN EXISTING PROJECT STRUCTURE (POST-BOOTSTRAP):
 - Your job is to IMPLEMENT features in existing files, NOT to create new files
 
 CRITICAL SCRIPT SIZE RULES:
-- Return a Bash shell script UNDER 300 lines total. This is very important.
+- Return a Bash shell script UNDER 1000 lines total. This is very important.
 - Use shell commands to inspect files: ls, find, grep -q, cat
 - Write content to EXISTING files with heredocs: cat <<'EOF' > path or cat <<'EOF' >> path
 - DO NOT use Python code to write files
@@ -1437,7 +1437,7 @@ TEST FILES MUST GO IN tests/ DIRECTORY: Test files (.test.tsx, .test.ts, .spec.t
 NEVER create .test.tsx, .test.ts, .test.js, .spec.tsx, .spec.ts, .spec.js files inside src/ directory
 """
 
-# CRITICAL: Keep scripts compact (<300 lines) to avoid AI token-limit truncation.
+# CRITICAL: Keep scripts compact (<1000 lines) to avoid AI token-limit truncation.
 
 
 
@@ -1613,12 +1613,27 @@ Given a task description and Technical Specification, you must:
 3. CREATE ALL FILES SECOND using touch or cat (files need their parent directories to exist first)
 4. VERIFY each checklist item to ensure correctness
 5. READ the Master Agent's Canonical Project Tree carefully to determine file locations
-5. Generate a BASH SHELL SCRIPT that CREATES all necessary files and directories using 'cat <<EOF'
-6. Use commands like mkdir -p, cat, grep, sed, ls, and find to create or update real files
-7. Write real, production-quality code into each file
-8. NEVER create __pycache__ directories or .pyc files
-9. Print [CREATED] for each file, [CHECK] PASS/FAIL for validations
-10. Print === SUMMARY === at the end
+6. Generate a BASH SHELL SCRIPT that CREATES all necessary files and directories using 'cat <<EOF'
+7. Use commands like mkdir -p, cat, grep, sed, ls, and find to create or update real files
+8. Write real, production-quality code into each file
+9. NEVER create __pycache__ directories or .pyc files
+10. Print [CREATED] for each file, [CHECK] PASS/FAIL for validations
+11. Print === SUMMARY === at the end
+
+=========================================================
+GOLDEN BUILD & QUALITY RULES (MUST ENFORCE UNIVERSALLY):
+=========================================================
+1. Before you finish, you MUST verify:
+   a. Any build command (e.g. npm run build, dotnet build, mvn package, go build) exits with code 0 (no errors).
+   b. The development/local server starts without console or toolchain errors.
+   c. All files referenced in import statements actually exist on disk (no broken imports).
+   d. CSS module files (.module.css) exist for every component that imports one.
+   e. Every component that uses state or hooks is properly initialized.
+2. COMPONENT STRUCTURE: For every new component, follow this pattern:
+   - Component.jsx / Component.tsx (with complete code, absolutely NO TODOs or placeholders).
+   - Component.module.css (with all custom styling defined - do not reference missing modules).
+   - index.js / index.ts (with named and default exports).
+3. EXPLICIT COMPLETENESS: Never leave files partially implemented. If you reference a dependency, file, or utility, create it!
 """ + _BULLETPROOF_CODE_RULES,
 
     "risk": """You are a Security and Risk Analysis Builder AI Agent.
@@ -2303,6 +2318,159 @@ Write ONLY the system prompt text. Do not include any meta-commentary."""
         return static_prompt
 
 
+def _detect_stack_build_commands(container_name: str, project_root: str = "/workspace") -> Dict[str, str]:
+    """
+    Detect the tech stack inside the container and return the appropriate install, build, and dev commands.
+    """
+    import subprocess
+    # 1. Node.js (React, Angular, Vue, Next.js)
+    chk = subprocess.run(["docker", "exec", container_name, "test", "-f", f"{project_root}/package.json"], capture_output=True, check=False)
+    if chk.returncode == 0:
+        return {
+            "type": "nodejs",
+            "install": "npm install --silent",
+            "build": "npm run build",
+            "dev": "npm run dev"
+        }
+        
+    # 2. Python
+    chk = subprocess.run(["docker", "exec", container_name, "test", "-f", f"{project_root}/requirements.txt"], capture_output=True, check=False)
+    if chk.returncode == 0:
+        return {
+            "type": "python",
+            "install": "pip install --quiet -r requirements.txt",
+            "build": "python3 -m py_compile $(find . -name '*.py' -not -path '*/.*' -not -path '*/node_modules/*')",
+            "dev": "python3 main.py --help"
+        }
+        
+    # 3. .NET (C#)
+    chk = subprocess.run(["docker", "exec", container_name, "sh", "-c", f"find {project_root} -name '*.csproj' -o -name '*.sln' | grep ."], capture_output=True, check=False)
+    if chk.returncode == 0:
+        return {
+            "type": "dotnet",
+            "install": "dotnet restore",
+            "build": "dotnet build --configuration Release",
+            "dev": "dotnet run --no-build"
+        }
+        
+    # 4. Go
+    chk = subprocess.run(["docker", "exec", container_name, "test", "-f", f"{project_root}/go.mod"], capture_output=True, check=False)
+    if chk.returncode == 0:
+        return {
+            "type": "go",
+            "install": "go mod download",
+            "build": "go build ./...",
+            "dev": "go run ."
+        }
+        
+    # 5. Java (Maven)
+    chk = subprocess.run(["docker", "exec", container_name, "test", "-f", f"{project_root}/pom.xml"], capture_output=True, check=False)
+    if chk.returncode == 0:
+        return {
+            "type": "java_maven",
+            "install": "mvn dependency:resolve",
+            "build": "mvn clean compile",
+            "dev": "mvn spring-boot:run"
+        }
+        
+    # 6. Java (Gradle)
+    chk = subprocess.run(["docker", "exec", container_name, "test", "-f", f"{project_root}/build.gradle"], capture_output=True, check=False)
+    if chk.returncode == 0:
+        return {
+            "type": "java_gradle",
+            "install": "./gradlew dependencies",
+            "build": "./gradlew compileJava",
+            "dev": "./gradlew bootRun"
+        }
+
+    return {}
+
+
+def _run_build_validation_in_container(container_name: str, project_root: str = "/workspace") -> Dict[str, Any]:
+    """
+    DYNAMIC TECH-STACK AGNOSTIC validation inside the container to verify if code compiles and runs.
+    """
+    import subprocess
+    commands = _detect_stack_build_commands(container_name, project_root)
+    if not commands:
+        logger.info("No supported tech stack manifest found. Skipping build validation.")
+        return {
+            "success": True,
+            "exit_code": 0,
+            "stdout": "No manifest file found (package.json, requirements.txt,csproj, go.mod, pom.xml). Skip.",
+            "stderr": ""
+        }
+
+    logger.info(f"Detected stack '{commands['type']}'. Running build verification...")
+    
+    # 1. Run Manifest Installation if needed
+    install_run = subprocess.run(
+        ["docker", "exec", "-w", project_root, container_name, "sh", "-c", commands["install"]],
+        capture_output=True, text=True, timeout=120
+    )
+    if install_run.returncode != 0:
+        logger.warning(f"Install validation failed in container: {install_run.stderr}")
+        return {
+            "success": False,
+            "exit_code": install_run.returncode,
+            "stdout": install_run.stdout,
+            "stderr": f"Manifest installation failed:\n{install_run.stderr}"
+        }
+
+    # 2. Run Build/Compile validation
+    build_run = subprocess.run(
+        ["docker", "exec", "-w", project_root, container_name, "sh", "-c", commands["build"]],
+        capture_output=True, text=True, timeout=180
+    )
+    if build_run.returncode != 0:
+        logger.warning(f"Build validation failed in container: {build_run.stderr}")
+        return {
+            "success": False,
+            "exit_code": build_run.returncode,
+            "stdout": build_run.stdout,
+            "stderr": f"Code compilation/build failed:\n{build_run.stderr}"
+        }
+
+    logger.info("Build verification PASSED.")
+    return {
+        "success": True,
+        "exit_code": 0,
+        "stdout": f"Build success (stack: {commands['type']}).\n{build_run.stdout}",
+        "stderr": ""
+    }
+
+
+def _validate_task_dependencies(project_token: Optional[str], task: Dict[str, Any], container_name: Optional[str] = None) -> bool:
+    """Verify that all files owned by linked_tasks actually exist and build/load correctly."""
+    linked_tasks = task.get("linked_tasks", [])
+    if not linked_tasks:
+        return True
+        
+    state = _ensure_project_state(project_token)
+    ledger = state.get("task_ledger", {})
+    
+    for dep_id in linked_tasks:
+        dep_entry = ledger.get(dep_id)
+        # If the dependency is in the ledger, make sure it is 'done'
+        if dep_entry and dep_entry.status != "done":
+            logger.warning(f"Dependency validation failed: linked task {dep_id} status is {dep_entry.status} (expected 'done')")
+            return False
+            
+        # Verify files exist in the container if container_name is provided
+        if container_name and dep_entry and dep_entry.files_written:
+            for file_path in dep_entry.files_written:
+                # Run a docker exec test -f to verify the file exists on the container disk
+                check_file = subprocess.run(
+                    ["docker", "exec", container_name, "test", "-f", f"/workspace/{file_path}"],
+                    capture_output=True, check=False
+                )
+                if check_file.returncode != 0:
+                    logger.warning(f"Dependency validation failed: file {file_path} from {dep_id} does not exist in container!")
+                    return False
+                    
+    return True
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # LAYER 4 ENHANCEMENT: Pre-Compilation Check + KG-Aware Error Analysis
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2871,6 +3039,198 @@ def _is_workspace_empty(container_name: str) -> bool:
 
 # ── Helper: Call AI Model ───────────────────────────────────────────────────
 
+async def _call_ai_for_code_chunked(
+    task_description: str,
+    agent_type: str,
+    code_context: str = "",
+    system_prompt_override: str = "",
+    tech_spec: str = "",
+    workspace_tree: str = "",
+    live_repo_tree: str = "",
+    peer_context: str = "",
+    project_root: str = "/workspace",
+    agent_id: str = "",
+    agent_output_log: list = None,
+    checklist: list = None,
+    task: dict = None,
+) -> tuple[str, str]:
+    """Call AI model to generate a project-building shell script using step-by-step chunks."""
+    url = llm_gateway.resolve_url()
+    key = llm_gateway.resolve_key()
+    model_name = llm_gateway.resolve_model()
+    
+    logger.info(f"AI Code Generation (Chunked) - Model: {model_name}, Agent Type: {agent_type}, Steps: {len(checklist)}")
+    if agent_output_log is not None:
+        agent_output_log.append({
+            "time": datetime.utcnow().isoformat(),
+            "type": "info",
+            "message": f"🧱 Starting chunked script generation over {len(checklist)} checklist steps..."
+        })
+
+    # Prepare system prompt
+    system_prompt = system_prompt_override if system_prompt_override else AGENT_SYSTEM_PROMPTS.get(agent_type, AGENT_SYSTEM_PROMPTS["validator"])
+
+    # Prepare standard context layers
+    context_parts = []
+    if project_root and project_root != "/workspace":
+        project_name = project_root.split("/")[-1]
+        context_parts.append(
+            f"🎯 PROJECT ROOT DIRECTORY:\nALL files MUST be created inside: {project_root}/\nProject name: {project_name}\n"
+        )
+    if tech_spec:
+        context_parts.append(f"TECHNICAL SPECIFICATION:\n{tech_spec[:3000]}\n")
+    if workspace_tree:
+        context_parts.append(f"MASTER CANONICAL TREE:\n{workspace_tree[:3000]}\n")
+    if live_repo_tree:
+        context_parts.append(f"LIVE REPOSITORY STRUCTURE:\n{live_repo_tree[:3000]}\n")
+    if code_context:
+        context_parts.append(f"RELEVANT CODEBASE CONTEXT:\n{code_context[:3000]}\n")
+    if peer_context:
+        context_parts.append(f"PEER CONTEXT:\n{peer_context[:3000]}\n")
+        
+    base_context = "\n".join(context_parts)
+
+    messages = [
+        {"role": "system", "content": system_prompt}
+    ]
+    
+    script_chunks = []
+    thought_chunks = []
+    
+    # Track accumulated chat size to trigger summary resets
+    MAX_CHAR_THRESHOLD = 30000
+
+    for idx, item in enumerate(checklist, 1):
+        item_text = item.get("text", str(item)) if isinstance(item, dict) else str(item)
+        if agent_output_log is not None:
+            agent_output_log.append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"⚙️ Generating chunk {idx}/{len(checklist)}: {item_text[:60]}..."
+            })
+
+        # Build prompt for current step
+        step_instruction = (
+            f"You are executing Step {idx} of {len(checklist)} of the project checklist.\n\n"
+            f"CURRENT CHECKLIST STEP TO IMPLEMENT:\n"
+            f"**{item_text}**\n\n"
+            f"CONTEXT CONSTRAINTS:\n{base_context}\n\n"
+            f"INSTRUCTIONS:\n"
+            f"1. Generate a valid BASH shell script chunk that ONLY implements the current checklist step.\n"
+            f"2. Use cat <<'EOF' > filename ... EOF to create/modify files.\n"
+            f"3. Do NOT repeat code or actions from previous steps. Only generate the code needed for THIS step.\n"
+            f"4. If previous steps created parent folders or related files, reference them correctly.\n"
+            f"5. Ensure your response is wrapped in standard ```bash ... ``` markdown code block.\n"
+            f"6. ⚠️ CRITICAL: Git does NOT track empty directories. If this step creates any directory that will remain empty, "
+            f"you MUST create a .gitkeep placeholder file inside it: touch <dir>/.gitkeep\n"
+        )
+        
+        # Check if conversation size exceeds threshold to summarize and reset
+        total_history_len = sum(len(str(m.get("content", ""))) for m in messages[1:])
+        if total_history_len > MAX_CHAR_THRESHOLD:
+            if agent_output_log is not None:
+                agent_output_log.append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"🧹 Context chain full ({total_history_len} chars). Auto-summarizing and starting a fresh session..."
+                })
+            
+            # Request summary from model
+            summary_messages = messages + [
+                {"role": "user", "content": "Please summarize exactly what directories, files, and actions have been created and completed in the bash script chunks generated so far. Keep it concise."}
+            ]
+            try:
+                summary = await llm_gateway.call_llm_and_extract(
+                    messages=summary_messages,
+                    api_url=url,
+                    api_key=key,
+                    model=model_name,
+                    timeout=60.0
+                )
+            except Exception as sum_err:
+                summary = f"Completed {idx-1} steps out of {len(checklist)} checklist items."
+                logger.warning(f"Failed to generate summary: {sum_err}")
+
+            # Reset message history with summary context
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"PROGRESS SO FAR:\n{summary}\n\nWe are now continuing with the remaining checklist items. Here is the context of what has been built. Please proceed with the next step."}
+            ]
+
+        messages.append({"role": "user", "content": step_instruction})
+        
+        # Call LLM for this chunk
+        content = ""
+        for attempt in range(3):
+            try:
+                if attempt > 0:
+                    await asyncio.sleep(3 * attempt)
+                content = await llm_gateway.call_llm_and_extract(
+                    messages=messages,
+                    api_url=url,
+                    api_key=key,
+                    model=model_name,
+                    timeout=90.0
+                )
+                break
+            except Exception as e:
+                logger.error(f"AI chunk {idx} attempt {attempt + 1} failed: {e}")
+                if attempt == 2:
+                    raise e
+
+        # Extract code and thought
+        script_chunk, thought_chunk = _clean_ai_code_response(content)
+        
+        # Add to message history so next turn knows about it
+        messages.append({"role": "assistant", "content": f"```bash\n{script_chunk}\n```"})
+        
+        if script_chunk.strip():
+            script_chunks.append(script_chunk.strip())
+        if thought_chunk.strip():
+            thought_chunks.append(f"Step {idx}: {thought_chunk.strip()}")
+
+    # Compile the final script
+    final_script_lines = [
+        "#!/usr/bin/env bash",
+        "set -e",
+        f"cd {project_root}",
+        ""
+    ]
+    
+    # Append all chunks, stripping extra shebangs or set -e statements inside chunks
+    for chunk in script_chunks:
+        clean_lines = []
+        for line in chunk.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#!/") or stripped == "set -e" or stripped.startswith("cd "):
+                continue
+            clean_lines.append(line)
+        final_script_lines.append("\n".join(clean_lines))
+        final_script_lines.append("")
+
+    final_script = "\n".join(final_script_lines)
+    final_thought = "\n\n".join(thought_chunks)
+    
+    # Log successful chunked generation to ai_calls_tracker
+    try:
+        from llm_logs import log_ai_tracker
+        log_ai_tracker(messages, {
+            "model": model_name,
+            "choices": [{"message": {"content": f"Chunked execution complete. Total chunks: {len(checklist)}"}}]
+        })
+    except Exception:
+        pass
+
+    if agent_output_log is not None:
+        agent_output_log.append({
+            "time": datetime.utcnow().isoformat(),
+            "type": "success",
+            "message": f"✅ Chunked build script generated successfully in {len(checklist)} chunks!"
+        })
+
+    return final_script, final_thought
+
+
 async def _call_ai_for_code(
     task_description: str,
     agent_type: str,
@@ -2883,6 +3243,8 @@ async def _call_ai_for_code(
     project_root: str = "/workspace",  # NEW: Bootstrap-defined project root
     agent_id: str = "",  # NEW: For logging
     agent_output_log: list = None,  # NEW: For logging
+    checklist: list = None,
+    task: dict = None,
 ) -> tuple[str, str]:
     """Call AI model to generate a project-building shell script.
     
@@ -2897,7 +3259,35 @@ async def _call_ai_for_code(
         project_root: The bootstrap-defined project root (e.g., /workspace/my-todo-app)
         agent_id: Agent ID for logging
         agent_output_log: Agent's output log for prompt logging
+        checklist: Checklist items for chunked generation
+        task: Dict representing the current task
     """
+    if checklist and len(checklist) > 0:
+        try:
+            return await _call_ai_for_code_chunked(
+                task_description=task_description,
+                agent_type=agent_type,
+                code_context=code_context,
+                system_prompt_override=system_prompt_override,
+                tech_spec=tech_spec,
+                workspace_tree=workspace_tree,
+                live_repo_tree=live_repo_tree,
+                peer_context=peer_context,
+                project_root=project_root,
+                agent_id=agent_id,
+                agent_output_log=agent_output_log,
+                checklist=checklist,
+                task=task
+            )
+        except Exception as chunk_err:
+            logger.warning(f"Chunked generation failed: {chunk_err}. Falling back to single-shot call.")
+            if agent_output_log is not None:
+                agent_output_log.append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "warning",
+                    "message": f"⚠️ Chunked generation failed: {str(chunk_err)[:80]}. Falling back to single-shot code generation..."
+                })
+
     url = llm_gateway.resolve_url()
     key = llm_gateway.resolve_key()
     model_name = llm_gateway.resolve_model()
@@ -3121,7 +3511,7 @@ The error was:
 ORIGINAL TASK:
 {task_description}
 {supplementary_context}
-You MUST generate a NEW, SHORTER shell script (UNDER 300 lines) that creates the project.
+You MUST generate a NEW, SHORTER shell script (UNDER 1000 lines) that creates the project.
 The /workspace/ directory is currently EMPTY - you need to create everything from scratch.
 
 CRITICAL SHELL COMPATIBILITY RULES TO AVOID CRASHING:
@@ -3136,7 +3526,7 @@ CRITICAL RULES TO AVOID CRASHING AGAIN:
 1. Start with a valid shell script for bash.
 2. Use shell commands like mkdir -p, cat <<'EOF' > path, grep -q, sed -i, ls, and find.
 3. Do NOT use Python to write files.
-4. Keep the script under 300 lines total.
+4. Keep the script under 1000 lines total.
 5. Focus on the 10-15 most important files only.
 
 ⚠️ MANDATORY DIRECTORY CREATION RULE:
@@ -3165,7 +3555,7 @@ CRITICAL: If you see shell compatibility errors (pipefail, \\r characters, inval
 - Remove any Windows line endings (\\r characters)
 - Use simple, compatible shell commands only
 
-Generate a NEW shell script (UNDER 300 lines) that:
+Generate a NEW shell script (UNDER 1000 lines) that:
 1. FIXES each issue by modifying or creating files under /workspace/
 2. Actually writes/overwrites the files that need fixing
 3. Creates any missing files, directories, or configurations
@@ -3177,7 +3567,7 @@ Generate a NEW shell script (UNDER 300 lines) that:
 IMPORTANT RULES:
 - Use shell commands like mkdir -p, cat <<'EOF' > path, grep -q, sed -i, ls, and find.
 - Do NOT use Python helpers or Python file-writing code.
-- Keep under 300 lines. Use ONLY ASCII characters.
+- Keep under 1000 lines. Use ONLY ASCII characters.
 - Exit with code 0 if all fixes pass, 1 if any remain.
 
 ⚠️ MANDATORY DIRECTORY CREATION RULE:
@@ -11289,6 +11679,14 @@ async def _build_master_recommended_assignments(
         task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "").strip()
         if not task_id:
             continue
+        
+        # Ensure bootstrap task is completed and pushed before recommending any other tasks
+        is_bt = (
+            task_id == "TASK-00"
+            or "project bootstrap" in str(task.get("title") or task.get("taskName") or "").strip().lower()
+        )
+        if not is_bootstrap_pushed(project_token) and not is_bt:
+            continue
         lane = _classify_task_assignment_lane(task)
         domain = str(_normalize_task_domain(task) or "").strip().lower()
         upstream_assignee = str(task.get("assigned_agent") or "").strip()
@@ -11402,7 +11800,7 @@ async def _build_master_recommended_assignments(
 
 
 async def _master_assign_recommended_tasks(
-    recommended_assignments: List[Dict[str, Any]],
+    recommended_assignments: List[Dict[str, Any]] = None,
     project_token: Optional[str] = None,
     task_token: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -11410,6 +11808,19 @@ async def _master_assign_recommended_tasks(
     Master Agent actively assigns tasks to agents via API.
     This enforces assignments instead of just recommending.
     """
+    if recommended_assignments is None:
+        try:
+            tasks = await _fetch_external_tasks(project_token)
+            task_plan = list(_get_master_task_plan_map(project_token).values())
+            recommended_assignments = await _build_master_recommended_assignments(
+                tasks=tasks,
+                task_plan=task_plan,
+                project_token=project_token,
+            )
+        except Exception as build_err:
+            logger.warning(f"Failed to dynamically build recommended assignments: {build_err}")
+            recommended_assignments = []
+
     if not recommended_assignments:
         return {"assigned": 0, "failed": 0, "total": 0}
     
@@ -12519,9 +12930,15 @@ def _extract_paths_from_workspace_tree(workspace_tree: str) -> List[str]:
         except Exception:
             pass
 
-    for path in _extract_task_paths_from_text(raw):
-        add_path(path)
+    try:
+        import context_manager as ctx_mgr
+        for path in ctx_mgr._extract_file_paths_from_canonical_tree(raw):
+            add_path(path)
+    except Exception:
+        for path in _extract_task_paths_from_text(raw):
+            add_path(path)
     return paths
+
 
 
 def _resolve_repo_manifest_path(path: str, repo_root: str) -> str:
@@ -16696,29 +17113,19 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 # Bootstrap task has no dependencies - it's always first
                 logger.info(f"[{agent_id}] Bootstrap task {tid} selected - will create project structure")
             else:
-                # Check if a bootstrap task exists in the list
-                task00 = next(
-                    (ext_t for ext_t in external_tasks
-                     if (
-                         (ext_t.get("task_id") or ext_t.get("external_task_id") or "").strip().upper() == "TASK-00"
-                         or "project bootstrap" in (ext_t.get("title") or ext_t.get("taskName") or "").strip().lower()
-                     )),
-                    None
-                )
-                if task00:
-                    _proj_key = _project_key(project_token)
-                    if not is_bootstrap_pushed(project_token):
-                        msg = f"⏸️ Task {tid} waiting for bootstrap to push scaffold"
-                        logger.info(f"[{agent_id}] {msg}")
-                        if agent:
-                            agent["output_log"].append({
-                                "time": datetime.utcnow().isoformat(),
-                                "type": "info",
-                                "message": msg
-                            })
-                        skip_reasons.setdefault("bootstrap_pending", 0)
-                        skip_reasons["bootstrap_pending"] += 1
-                        continue
+                # If this is not the bootstrap task, and bootstrap is not completed and pushed, wait for it
+                if not is_bootstrap_pushed(project_token):
+                    msg = f"⏸️ Task {tid} waiting for bootstrap to push scaffold"
+                    logger.info(f"[{agent_id}] {msg}")
+                    if agent:
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": msg
+                        })
+                    skip_reasons.setdefault("bootstrap_pending", 0)
+                    skip_reasons["bootstrap_pending"] += 1
+                    continue
 
             # If the task explicitly has the "BLOCKED" tag or status, skip it
             task_tags = [str(tag).lower() for tag in (t.get("tags") or [])]
@@ -16952,6 +17359,19 @@ async def _dag_progress_watcher(project_token: Optional[str]) -> None:
             completed_ids = _ledger_get_completed_ids(project_token)
             in_progress_ids = _ledger_get_in_progress_ids(project_token)
             ready_ids = _get_ready_task_ids(dag, completed_ids, in_progress_ids)
+
+            if not is_bootstrap_pushed(project_token):
+                bootstrap_ready = []
+                for rid in ready_ids:
+                    # Find task in state["tasks"] to verify if it is a bootstrap task
+                    task = next((t for t in state.get("tasks", []) if str(_normalize_task_id(t) or t.get("external_id") or t.get("id") or "") == rid), None)
+                    is_bt = (
+                        rid == "TASK-00"
+                        or (task and "project bootstrap" in str(task.get("title") or task.get("taskName") or "").strip().lower())
+                    )
+                    if is_bt:
+                        bootstrap_ready.append(rid)
+                ready_ids = bootstrap_ready
 
             if not ready_ids:
                 continue
@@ -17195,6 +17615,9 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
         except Exception as exc:
             logger.warning("[%s] Failed to restore persisted assignment for %s: %s", project_token or "", agent_id, exc)
 
+    # Clear any previous run error context at start of execution
+    agent["previous_run_error"] = None
+
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             result = await _run_agent_once(
@@ -17242,9 +17665,13 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     "type": "warning",
                     "message": retry_msg,
                 })
+                # Preserve task identity on retry (Change #8)
+                assigned_task = agent.get("current_task") or assigned_task
+                
+                # Capture compiler/execution error output (Change #8)
+                agent["previous_run_error"] = f"Attempt {attempt} failed:\nstdout:\n{result.get('stdout', '')}\nstderr:\n{result.get('stderr', '')}\nerror:\n{error_msg}"
+                
                 await asyncio.sleep(delay)
-                # Reset for next attempt
-                assigned_task = None  # re-pick task on retry
                 continue
             else:
                 # All retries exhausted - CRITICAL FAILURE
@@ -17298,8 +17725,13 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     "type": "warning",
                     "message": retry_msg,
                 })
+                # Preserve task identity on retry (Change #8)
+                assigned_task = agent.get("current_task") or assigned_task
+                
+                # Capture previous error context (Change #8)
+                agent["previous_run_error"] = f"Attempt {attempt} crashed:\n{str(e)}"
+                
                 await asyncio.sleep(delay)
-                assigned_task = None
                 continue
             else:
                 # All retries exhausted - CRITICAL FAILURE
@@ -17710,6 +18142,42 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             or "project bootstrap" in (task.get("title") or task.get("taskName") or "").strip().lower()
         )
         
+        # ═══ CRITICAL IDEMPOTENCY BYPASS: Skip bootstrap task if already pushed ═══
+        if is_bootstrap_task and is_bootstrap_pushed(project_token):
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": "✅ Bootstrap has already been successfully pushed to git. Skipping bootstrap execution (idempotent bypass)."
+            })
+            username = build_external_agent_username(agent_id, agent.get("name"))
+            try:
+                await _opt_in_task(task, username, project_token=project_token, task_token=task_token)
+            except Exception:
+                pass
+            await _post_task_progress(task, 100, "Bootstrap already completed successfully", task_token=task_token)
+            await _post_task_complete(task, task_token=task_token)
+            
+            # Ensure bootstrap branch is recorded in state
+            bootstrap_branch = get_bootstrap_branch(project_token)
+            if bootstrap_branch:
+                state.setdefault("repo_bootstrap", {})
+                state["repo_bootstrap"]["source_branch"] = bootstrap_branch
+                state["repo_bootstrap"]["status"] = "completed"
+                state["repo_bootstrap"]["required"] = True
+                state["repo_bootstrap_event"].set()
+            
+            agent["current_task"] = None
+            agent["resume_pending_task"] = False
+            agent["status"] = "idle"
+            agent["progress"] = 100
+            agent["progress_message"] = "Bootstrap already completed"
+            return {
+                "success": True,
+                "agent_id": agent_id,
+                "tasks_completed": 1,
+                "message": "Bootstrap already completed (idempotent bypass)",
+            }
+        
         if not is_bootstrap_task:
             # Check if bootstrap exists in project
             try:
@@ -17909,14 +18377,20 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 })
             
             username = build_external_agent_username(agent_id, agent.get("name"))
-            # Opt-in already happened inside _pick_next_task (serial opt-in).
-            # Just log confirmation here.
-            agent["output_log"].append({
-                "time": datetime.utcnow().isoformat(),
-                "type": "info",
-                "message": f"API: task opt-in already completed during serial task pick (agent: {username})"
-            })
-
+            # If the task was explicitly assigned, we must formally opt-in. Otherwise, it was picked via Priority 3 which already did opt-in.
+            if assigned_task or resumed_existing_task:
+                opt_ok = await _opt_in_task(task, username, project_token=project_token, task_token=task_token)
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"API: task opt-in {'completed successfully' if opt_ok else 'failed'} (agent: {username})"
+                })
+            else:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": f"API: task opt-in already completed during serial task pick (agent: {username})"
+                })
             clock_in_ok = await _post_timer_log(task, "clock_in", task_token=task_token)
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
@@ -18396,6 +18870,19 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             branch_name = None
             if use_git:
                 branch_name = force_branch if force_branch else _branch_name_for_task(task)
+
+            # ── Dependency Verification Gate (Change #5 / #6) ──────────
+            agent["progress"] = 12
+            agent["progress_message"] = "Verifying task dependencies..."
+            dep_valid = _validate_task_dependencies(project_token, task, container_name)
+            if not dep_valid:
+                error_msg = f"Task dependency validation failed. Some dependency files or tasks are missing/incomplete."
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "error",
+                    "message": f"❌ {error_msg}"
+                })
+                raise ValueError(error_msg)
 
             # ── Structure Validation Before Code Generation ────────────
             agent["progress"] = 14
@@ -18937,6 +19424,19 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 checklist_text += "For bootstrap tasks, the checklist defines the EXACT directory structure to create.\n"
                 task_description_with_checklist = task["description"] + checklist_text
 
+            # Change #8: Inject previous run compilation error context if available
+            previous_error = agent.get("previous_run_error")
+            if previous_error:
+                error_context_text = (
+                    "\n\n==================================================\n"
+                    "🔴 PREVIOUS ATTEMPT FAILED WITH COMPILATION/EXECUTION ERROR:\n"
+                    f"{previous_error}\n"
+                    "==================================================\n"
+                    "Please analyze the compilation errors or failure output above carefully, "
+                    "identify the root cause, and ensure your new implementation resolves it entirely.\n\n"
+                )
+                task_description_with_checklist = error_context_text + task_description_with_checklist
+
             generated_code, thought = await _call_ai_for_code(
                 canonical_files_prefix + task_description_with_checklist, agent["type"],
                 code_context=jit_context,
@@ -18948,6 +19448,8 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 project_root=project_root,  # Pass bootstrap project root
                 agent_id=agent_id,  # For prompt logging
                 agent_output_log=agent["output_log"],  # For prompt logging
+                checklist=checklist_items,
+                task=task,
             )
             if thought:
                 await _post_task_message(task, f"🤔 {agent_id} thought:\n{thought}", task_token=task_token)
@@ -19081,6 +19583,20 @@ NOW GENERATE THE COMPLETE SCRIPT:"""
             result = await asyncio.to_thread(
                 _exec_script_in_container, container_name, generated_code, f"build_{agent_id}", project_token
             )
+            
+            # ── Run Build Validation (Change #1 & Change #4) ─────────
+            if result.get("exit_code") == 0:
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "info",
+                    "message": "🔍 Verifying toolchain compilation/build..."
+                })
+                val_root = locals().get("project_root") or locals().get("capture_root") or "/workspace"
+                val_res = _run_build_validation_in_container(container_name, val_root)
+                if not val_res["success"]:
+                    result["exit_code"] = val_res["exit_code"]
+                    result["stdout"] = (result.get("stdout") or "") + "\n" + val_res["stdout"]
+                    result["stderr"] = (result.get("stderr") or "") + "\n" + val_res["stderr"]
             
             # ── Post-execution structure validation ──────────────────
             # Validate structure after files are created
@@ -19913,12 +20429,15 @@ Agent {agent_id} will proceed to next available task.
                         pass
 
                     # Generate and execute code
+                    lt_checklist_items = linked_task.get("checklist") or []
                     lt_code, thought = await _call_ai_for_code(
                         linked_task.get("description", lt_title), 
                         agent["type"], 
                         code_context=lt_jit_context,
                         agent_id=agent_id,  # For prompt logging
                         agent_output_log=agent["output_log"],  # For prompt logging
+                        checklist=lt_checklist_items,
+                        task=linked_task,
                     )
                     if thought:
                         await _post_task_message(linked_task, f"🤔 {agent_id} thought:\n{thought}", task_token=task_token)
@@ -20365,34 +20884,42 @@ Agent {agent_id} will proceed to next available task.
                                         # Pure asset dirs (assets/, images/, static/, media/, public/) are never
                                         # promoted to project root so they don't misdirect all subsequent agents.
                                         project_root = "/workspace"
-                                        import re as _re_bootstrap
-                                        tree_lines = actual_tree.splitlines()
-                                        excluded_dirs = {'node_modules', '.git', '__pycache__', 'dist', 'build', '.vscode',
-                                                        'venv', 'env', '.env', 'coverage', '.pytest_cache', '.mypy_cache',
-                                                        'assets', 'static', 'media', 'public', 'images', 'fonts', 'icons'}
-                                        for line in tree_lines:
-                                            line = line.strip()
-                                            # Match patterns like: ./my-todo-app or ./my-todo-app/
-                                            match = _re_bootstrap.match(r'^\./([a-zA-Z0-9_-]+)/?$', line)
-                                            if match:
-                                                dir_name = match.group(1)
-                                                if dir_name not in excluded_dirs:
-                                                    # Only accept as root if it actually contains non-placeholder source files
-                                                    _verify_src = subprocess.run(
-                                                        ["docker", "exec", container_name, "find",
-                                                         f"/workspace/{dir_name}", "-maxdepth", "3",
-                                                         "-type", "f", "!", "-name", ".gitkeep",
-                                                         "!", "-name", ".DS_Store"],
-                                                        capture_output=True, text=True, timeout=10,
-                                                    )
-                                                    _has_src = bool(_verify_src.returncode == 0 and _verify_src.stdout.strip())
-                                                    if _has_src:
-                                                        project_root = f"/workspace/{dir_name}"
-                                                        logger.info(f"[Bootstrap] Detected project root: {project_root}")
-                                                    else:
-                                                        logger.info(f"[Bootstrap] Skipping '{dir_name}/' as root "
-                                                                    f"(no source files, only placeholders) -- keeping /workspace")
+                                        
+                                        # Check if the project is actually directly in the /workspace root
+                                        has_root_files = False
+                                        for rf in ["package.json", "requirements.txt", "pyproject.toml", "README.md", "index.html"]:
+                                            _chk = subprocess.run(
+                                                ["docker", "exec", container_name, "test", "-f", f"/workspace/{rf}"],
+                                                capture_output=True, check=False
+                                            )
+                                            if _chk.returncode == 0:
+                                                has_root_files = True
                                                 break
+                                                
+                                        if not has_root_files:
+                                            import re as _re_bootstrap
+                                            tree_lines = actual_tree.splitlines()
+                                            excluded_dirs = {'node_modules', '.git', '__pycache__', 'dist', 'build', '.vscode',
+                                                            'venv', 'env', '.env', 'coverage', '.pytest_cache', '.mypy_cache',
+                                                            'assets', 'static', 'media', 'public', 'images', 'fonts', 'icons', 'tests', 'test'}
+                                            for line in tree_lines:
+                                                line = line.strip()
+                                                match = _re_bootstrap.match(r'^\./([a-zA-Z0-9_-]+)/?$', line)
+                                                if match:
+                                                    dir_name = match.group(1)
+                                                    if dir_name not in excluded_dirs:
+                                                        _verify_src = subprocess.run(
+                                                            ["docker", "exec", container_name, "find",
+                                                             f"/workspace/{dir_name}", "-maxdepth", "3",
+                                                             "-type", "f", "!", "-name", ".gitkeep",
+                                                             "!", "-name", ".DS_Store"],
+                                                            capture_output=True, text=True, timeout=10,
+                                                        )
+                                                        _has_src = bool(_verify_src.returncode == 0 and _verify_src.stdout.strip())
+                                                        if _has_src:
+                                                            project_root = f"/workspace/{dir_name}"
+                                                            logger.info(f"[Bootstrap] Detected project root: {project_root}")
+                                                            break
                                         
                                         # Store project root in state for all subsequent tasks
                                         state["repo_bootstrap"]["project_root"] = project_root
@@ -21963,12 +22490,20 @@ async def deploy_preview(
 ) -> Dict[str, Any]:
     """
     Deploy the agent/integration branch into a live Docker container using dsuite-deploy-agent.py.
+    Runs non-blocking and streams logs to the frontend via WebSocket.
     """
     pk = _project_key(project_token)
 
-    # Stop any existing preview for this project
-    if pk in _preview_states and _preview_states[pk].get("status") == "running":
-        await stop_preview(project_token)
+    # 0. Ensure the agent runtime image is built
+    image_status = await asyncio.to_thread(_ensure_agent_runtime_image)
+    if not image_status.get("success"):
+        return {
+            "status": "error",
+            "error": f"Failed to build/ensure agent runtime image: {image_status.get('error')}",
+        }
+
+    # Stop any existing preview container
+    await stop_preview(project_token)
 
     existing_pstate = _preview_states.get(pk)
     if is_retry and existing_pstate:
@@ -22011,69 +22546,52 @@ async def deploy_preview(
         auth_config = _get_git_auth_config(git_repo_url, git_token)
         import json
 
+        # Host backend URL to report logs to
+        backend_url = os.environ.get("BACKEND_URL", "http://host.docker.internal:8000")
+
         # 1. Run container using dsuite-agent-runtime
+        docker_cmd = [
+            "docker", "run", "-d",
+            "--name", container_name,
+            "-p", f"{host_port}:80",
+            "--add-host", "host.docker.internal:host-gateway",
+            "-e", f"GIT_AUTH_URL={auth_url}",
+            "-e", f"GIT_CONFIG_ARGS={json.dumps(auth_config)}",
+            "-e", f"SPRINT_BRANCH={GIT_INTEGRATION_BRANCH}",
+            "-e", f"LLM_API_KEY={os.environ.get('LLM_API_KEY') or settings.ai_api_key or ''}",
+            "-e", f"LLM_API_URL={os.environ.get('LLM_API_URL') or settings.ai_api_url or 'https://api.openai.com/v1/chat/completions'}",
+            "-e", f"LLM_MODEL={os.environ.get('LLM_MODEL') or settings.ai_model or 'gpt-4o-mini'}",
+            "-e", f"AI_API_KEY={os.environ.get('AI_API_KEY') or settings.ai_api_key or ''}",
+            "-e", f"AI_API_URL={os.environ.get('AI_API_URL') or os.environ.get('AI_BASE_URL') or settings.ai_api_url or 'https://integrate.api.nvidia.com/v1/chat/completions'}",
+            "-e", f"AI_BASE_URL={os.environ.get('AI_BASE_URL') or os.environ.get('AI_API_URL') or settings.ai_api_url or 'https://integrate.api.nvidia.com/v1/chat/completions'}",
+            "-e", f"AI_MODEL={os.environ.get('AI_MODEL') or settings.ai_model or 'gpt-4o-mini'}",
+            "-e", f"AI_PROVIDER={os.environ.get('AI_PROVIDER', 'openai')}",
+            "-e", f"USE_BRN_LLAMA={'true' if (os.environ.get('USE_BRN_LLAMA', '').lower() == 'true' or settings.use_brn_llama) else 'false'}",
+            "-e", f"BRN_LLAMA_URL={os.environ.get('BRN_LLAMA_URL') or settings.brn_llama_url or 'https://brn-llama.bourntec.com/api/process'}",
+            "-e", f"BRN_AGENT_ID={os.environ.get('BRN_AGENT_ID') or settings.brn_agent_id or ''}",
+            "-e", f"BRN_MODEL={os.environ.get('BRN_MODEL') or settings.brn_model or 'BournAI'}",
+            "-e", f"BRN_PLATFORM_ID={os.environ.get('BRN_PLATFORM_ID') or settings.brn_platform_id or 'DSuite'}",
+            "-e", f"BRN_TEMPERATURE={os.environ.get('BRN_TEMPERATURE') or str(settings.brn_temperature) or '0.7'}",
+            "-e", f"BACKEND_URL={backend_url}",
+            "-e", f"PROJECT_TOKEN={pk}",
+            "dsuite-agent-runtime:latest"
+        ]
+
         docker_run = subprocess.run(
-            ["docker", "run", "-d",
-             "--name", container_name,
-             "-p", f"{host_port}:80",
-             "-e", f"GIT_AUTH_URL={auth_url}",
-             "-e", f"GIT_CONFIG_ARGS={json.dumps(auth_config)}",
-             "-e", f"SPRINT_BRANCH={GIT_INTEGRATION_BRANCH}",
-             "-e", f"LLM_API_KEY={os.environ.get('LLM_API_KEY', '')}",
-             "-e", f"LLM_API_URL={os.environ.get('LLM_API_URL', 'https://api.openai.com/v1/chat/completions')}",
-             "-e", f"LLM_MODEL={os.environ.get('LLM_MODEL', 'gpt-4o-mini')}",
-             "dsuite-agent-runtime:latest",
-             "sleep", "infinity"],
+            docker_cmd,
             capture_output=True, text=True, timeout=30,
         )
         if docker_run.returncode != 0:
             raise RuntimeError(f"Docker run failed: {docker_run.stderr}")
 
-        # 2. Start the agent script in the background
-        _log("Starting deployment agent inside container...")
-        subprocess.run(
-            ["docker", "exec", "-d", container_name, "python3", "/usr/local/bin/dsuite-deploy-agent.py"],
-            capture_output=True, check=True
-        )
+        # The container automatically starts dsuite-deploy-agent.py upon booting
+        _log("Started deployment agent inside container. Streaming logs in real-time...")
 
-        preview_url = f"http://localhost:{host_port}"
-        
-        # 4. Wait for application to be healthy
-        _log(f"Waiting for deployment at {preview_url} (this may take a few minutes as the agent installs dependencies and self-heals)...")
-        import urllib.request
-        import urllib.error
-        
-        healthy = False
-        html = ""
-        start_wait = time.time()
-        while time.time() - start_wait < 600: # Wait up to 10 minutes
-            try:
-                req = urllib.request.Request(preview_url, headers={'User-Agent': 'MasterAgent/1.0'})
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    if response.getcode() < 500:
-                        healthy = True
-                        html = response.read().decode('utf-8', errors='ignore')
-                        break
-            except Exception:
-                pass
-            await asyncio.sleep(5)
-            
-        if not healthy:
-            # Try to grab logs from the agent script
-            log_check = subprocess.run(
-                ["docker", "exec", container_name, "cat", "/tmp/app.log"],
-                capture_output=True, text=True
-            )
-            pstate["server_log"] = log_check.stdout[-1000:] if log_check.stdout else ""
-            raise RuntimeError("Deployment timeout or crash. The autonomous agent failed to heal the application.")
+        preview_url = f"/app/{pk}/"
 
-        pstate["status"] = "running"
-        pstate["preview_url"] = preview_url
-        pstate["stack"] = {"type": "auto"}
-        _log("âœ… Preview is live and verified!")
-
+        # Return immediately so that the frontend can listen to WebSocket logs
         return {
-            "status": "running",
+            "status": "deploying",
             "preview_url": preview_url,
             "host_port": host_port,
             "container_name": container_name,
@@ -22084,7 +22602,7 @@ async def deploy_preview(
         pstate["status"] = "error"
         pstate["logs"].append({
             "time": datetime.utcnow().isoformat(),
-            "message": f"â Œ Deploy failed: {str(e)}",
+            "message": f"❌ Deploy failed: {str(e)}",
         })
         try:
             _destroy_container(container_name)
@@ -22340,7 +22858,7 @@ def get_preview_status(project_token: Optional[str] = None) -> Dict[str, Any]:
             pstate["status"] = "stopped"
 
     # Grab recent server logs
-    if pstate.get("container_name") and pstate["status"] == "running":
+    if pstate.get("container_name") and pstate["status"] in ("running", "deploying"):
         try:
             log_result = subprocess.run(
                 ["docker", "exec", pstate["container_name"], "sh", "-c",
@@ -22387,6 +22905,19 @@ async def stop_preview(project_token: Optional[str] = None) -> Dict[str, Any]:
 
 
 # ── Agent & Task Management Helpers ─────────────────────────────────────────
+
+
+
+def _set_preview_success(project_token: Optional[str], preview_url: str):
+    """Callback to update the preview status to running once deploy is success."""
+    pk = _project_key(project_token)
+    if pk in _preview_states:
+        _preview_states[pk]["status"] = "running"
+        _preview_states[pk]["preview_url"] = preview_url
+        _preview_states[pk]["logs"].append({
+            "time": datetime.utcnow().isoformat(),
+            "message": "✅ Preview deployment is fully online and verified!",
+        })
 
 def get_pending_tasks(project_token: Optional[str] = None) -> List[Dict[str, Any]]:
     state = _ensure_project_state(project_token)
@@ -23351,6 +23882,19 @@ async def _master_supervisor_loop(
                 if task_type not in ["TASK", "BUG", "FEATURE"]:
                     continue
                 available_tasks.append(task)
+            
+            # Ensure bootstrap task is completed and pushed before recommending or assigning any other tasks
+            if not is_bootstrap_pushed(project_token):
+                bootstrap_tasks = [
+                    t for t in available_tasks
+                    if (
+                        str(_normalize_task_id(t) or t.get("external_id") or t.get("id") or "").strip().upper() == "TASK-00"
+                        or "project bootstrap" in str(t.get("title") or t.get("taskName") or "").strip().lower()
+                    )
+                ]
+                # If bootstrap is not pushed, ONLY the bootstrap task can be assigned.
+                # If the bootstrap task is not available (already in progress or claimed), do not assign anything.
+                available_tasks = bootstrap_tasks
             
             # Log supervisor status every iteration
             _log_master_agent(
@@ -24463,7 +25007,7 @@ CONFIDENCE REQUIRED: 90%+
 BUILDER CRASHED: {builder_crashed}
 
 MANDATORY SUCCESS REQUIREMENTS:
-1. Script MUST be under 300 lines
+1. Script MUST be under 1000 lines
 2. Script MUST use ONLY compatible shell commands
 3. Script MUST create ALL necessary files
 4. Script MUST include error handling for every operation
@@ -24766,6 +25310,14 @@ async def _bulletproof_self_healing_loop(
                 fix_code, 
                 f"bulletproof_fix_{iteration}"
             )
+            
+            # Run build validation check (Change #1 & Change #4)
+            if result.get("exit_code") == 0:
+                val_res = _run_build_validation_in_container(container_name, project_root)
+                if not val_res["success"]:
+                    result["exit_code"] = val_res["exit_code"]
+                    result["stdout"] = (result.get("stdout") or "") + "\n" + val_res["stdout"]
+                    result["stderr"] = (result.get("stderr") or "") + "\n" + val_res["stderr"]
             
             all_generated_code += f"\n\n# === BULLETPROOF FIX ITERATION {iteration} ===\n" + fix_code
             all_stdout += f"\n\n--- BULLETPROOF FIX ITERATION {iteration} ---\n" + result.get("stdout", "")

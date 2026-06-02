@@ -122,7 +122,7 @@ def set_bootstrap_failed(project_token: str, error_message: str):
 def is_bootstrap_pushed(project_token: str) -> bool:
     """Check if bootstrap has been successfully pushed (replaces _bootstrap_pushed dict)"""
     state = get_bootstrap_state(project_token)
-    return state.get("pushed", False)
+    return state.get("pushed", False) and state.get("bootstrap_branch") is not None
 
 
 def get_bootstrap_branch(project_token: str) -> Optional[str]:

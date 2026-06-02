@@ -7474,7 +7474,7 @@ def _ensure_default_governance_questions(db: Session) -> None:
 # Seed sample tasks on startup
 def _startup_init() -> None:
     # Ensure Docker image is ready before anything else
-    print("🚀 Initializing Docker runtime environment...")
+    print("Initializing Docker runtime environment...")
     img_res = agent_service._ensure_agent_runtime_image()
     if img_res.get("success"):
         if img_res.get("built"):
@@ -7584,7 +7584,7 @@ def _cleanup_legacy_default_dev_agents(db: Session) -> None:
 def _ensure_default_agents(db: Session, project_token: Optional[str] = None) -> None:
     project_token = _normalize_project_token(project_token)
     _cleanup_legacy_default_dev_agents(db)
-    default_agents = agent_service.get_default_agents()
+    default_agents = agent_service.get_default_agents(project_token)
     stored_ids = [_stored_agent_id(agent["id"], project_token) for agent in default_agents]
     existing_agents = {
         agent.id: agent
@@ -7621,7 +7621,7 @@ def _ensure_default_agents_for_org(
     org = _normalized_text(organization_name)
     if not org:
         return
-    for agent in agent_service.get_default_agents():
+    for agent in agent_service.get_default_agents(project_token):
         stored_id = _stored_agent_id(agent["id"], project_token)
         _ensure_org_agent_mapping(db, org, stored_id, project_token, is_default=True)
 
@@ -7893,7 +7893,7 @@ async def list_agents(
                     records.append(existing)
                 else:
                     logger.error(f"[GET /agents] Could not find existing record for {mid} after insert failure!")
-        elif existing_by_id[mid].project_token != project_token:
+        elif project_token is not None and existing_by_id[mid].project_token != project_token:
             # Fix stale project_token
             logger.info(f"[GET /agents] Updating project_token for {mid}")
             existing_by_id[mid].project_token = project_token
@@ -8537,6 +8537,116 @@ async def stop_preview(
     """Stop and destroy the preview environment."""
     project_token = _normalize_project_token(project_token)
     return await agent_service.stop_preview(project_token)
+
+
+# ─────────────────────────────── Preview Log Streaming ───────────────────────
+# Mirrors VibeCoding's /vibecoding/api/agent/message + /vibecoding/ws/{project_id}
+# The deploy agent inside the container POSTs log lines here.
+# The frontend connects via WebSocket to receive them in real-time.
+
+from fastapi import WebSocket, WebSocketDisconnect
+
+# In-memory log store: project_token → list of log entries
+_preview_log_store: Dict[str, List[Dict[str, Any]]] = {}
+# WebSocket connection manager: project_token → list of active WebSocket connections
+_preview_ws_connections: Dict[str, List[WebSocket]] = {}
+
+
+class PreviewLogMessage(BaseModel):
+    project_token: str
+    content: str
+    metadata: Optional[Dict[str, Any]] = None
+    timestamp: Optional[str] = None
+
+
+@app.post("/agents/preview/log")
+async def receive_preview_log(log_msg: PreviewLogMessage):
+    """
+    Receive a log message from the deploy agent running inside Docker.
+    No auth required — this is called from inside the container.
+    Stores the log and broadcasts it to all connected WebSocket clients.
+    """
+    pt = log_msg.project_token or ""
+
+    # Initialize log store for this project
+    if pt not in _preview_log_store:
+        _preview_log_store[pt] = []
+
+    entry = {
+        "type": "deploy_log",
+        "content": log_msg.content,
+        "metadata": log_msg.metadata or {},
+        "timestamp": log_msg.timestamp or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    _preview_log_store[pt].append(entry)
+
+    # If this is a success message, update the preview status in agent_service
+    if log_msg.metadata and log_msg.metadata.get("status") == "success":
+        preview_url = log_msg.metadata.get("preview_url", f"/app/{pt}/")
+        try:
+            agent_service._set_preview_success(pt, preview_url)
+        except Exception:
+            pass
+
+    # Broadcast to all connected WebSocket clients for this project
+    if pt in _preview_ws_connections:
+        dead = []
+        for ws in _preview_ws_connections[pt]:
+            try:
+                await ws.send_json(entry)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            try:
+                _preview_ws_connections[pt].remove(ws)
+            except ValueError:
+                pass
+
+    return {"success": True}
+
+
+@app.websocket("/ws/preview/{project_token}")
+async def websocket_preview_logs(websocket: WebSocket, project_token: str):
+    """
+    WebSocket endpoint for real-time deploy preview logs.
+    The frontend connects here when a deploy starts.
+    On connection, sends all buffered past logs immediately,
+    then keeps the connection open for new logs from the container.
+    """
+    await websocket.accept()
+    pt = project_token or ""
+
+    # Register connection
+    if pt not in _preview_ws_connections:
+        _preview_ws_connections[pt] = []
+    _preview_ws_connections[pt].append(websocket)
+
+    try:
+        # Send all buffered past logs immediately (so UI has history)
+        past_logs = _preview_log_store.get(pt, [])
+        for entry in past_logs:
+            await websocket.send_json(entry)
+
+        # Keep connection alive — new logs come via /agents/preview/log broadcasting
+        while True:
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                # Echo heartbeat pings
+                if data == "ping":
+                    await websocket.send_json({"type": "pong"})
+            except asyncio.TimeoutError:
+                # Send keepalive
+                await websocket.send_json({"type": "keepalive"})
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        try:
+            if pt in _preview_ws_connections:
+                _preview_ws_connections[pt].remove(websocket)
+        except ValueError:
+            pass
 
 
 @app.get("/agents/{agent_id}/status")
@@ -9321,6 +9431,7 @@ async def add_agent_with_skills(
             "face": request.face,
         }
     }
+
 
 class UpdateAgentSkillsRequest(BaseModel):
     name: str

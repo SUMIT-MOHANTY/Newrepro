@@ -13,7 +13,10 @@ RUN apt-get update -o Acquire::Retries=5 && \
         -o Acquire::http::Timeout=60 \
         -o Acquire::https::Timeout=60 \
         ca-certificates \
-        git && \
+        git \
+        nginx \
+        curl \
+        procps && \
     mkdir -p /workspace && \
     rm -rf /var/lib/apt/lists/*
 
@@ -24,9 +27,11 @@ RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && 
     ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
     ln -sf /usr/local/lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack
 
+RUN pip install --no-cache-dir requests
+
 COPY dsuite-deploy-agent.py /usr/local/bin/dsuite-deploy-agent.py
 RUN chmod +x /usr/local/bin/dsuite-deploy-agent.py
 
 WORKDIR /workspace
 
-CMD ["sleep", "infinity"]
+CMD ["python3", "/usr/local/bin/dsuite-deploy-agent.py"]

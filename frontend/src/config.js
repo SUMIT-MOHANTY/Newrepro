@@ -119,6 +119,7 @@ export const API_ENDPOINTS = {
     AGENT_PREVIEW_STATUS: `${API_BASE_URL}/agents/preview/status`,
     AGENT_PREVIEW_STOP: `${API_BASE_URL}/agents/preview/stop`,
     AGENT_PREVIEW_FIX: `${API_BASE_URL}/agents/preview/fix`,
+    AGENT_PREVIEW_WS: (projectToken) => `${API_BASE_URL.replace('http', 'ws')}/ws/preview/${projectToken}`,
 
     // External Task Management API
     AGENT_AUTO_GENERATE: `${API_BASE_URL}/api/agent/auto-generate/`,
