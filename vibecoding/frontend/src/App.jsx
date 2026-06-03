@@ -195,9 +195,14 @@ function Workspace({ user, logout, isAuthenticated }) {
       setMessages(prev => {
         // Find the most recent background log message in the array
         // (not just the last one — there might be regular messages after it)
+        // Match any background log as long as no user or non-log assistant message came after it.
         let lastBgIndex = -1;
         for (let i = prev.length - 1; i >= 0; i--) {
-          if (prev[i]?.metadata?.is_background_log && !prev[i]?.metadata?.grouped) {
+          const msg = prev[i];
+          if (msg?.role === 'user' || (msg?.role === 'assistant' && !msg?.metadata?.is_background_log)) {
+            break;
+          }
+          if (msg?.metadata?.is_background_log) {
             lastBgIndex = i;
             break;
           }

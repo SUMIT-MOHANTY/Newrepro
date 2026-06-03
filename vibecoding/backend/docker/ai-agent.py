@@ -1080,8 +1080,8 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
         
         # Get backend URL from environment variable
         # Default to host.docker.internal for Docker-to-host communication
-        # backend_url = os.environ.get('BACKEND_URL', 'http://host.docker.internal:8001')
-        backend_url = os.environ.get('BACKEND_URL', 'https://dsuite-backend.bourntec.com')
+        backend_url = os.environ.get('BACKEND_URL', 'http://host.docker.internal:8001')
+        # backend_url = os.environ.get('BACKEND_URL', 'https://dsuite-backend.bourntec.com')
         api_endpoint = f'{backend_url}/vibecoding/api/agent/message'
         
         payload = {
@@ -1265,6 +1265,8 @@ Each suggestion should be:
 - Under 50 characters
 - Actionable and specific
 - Written as a complete sentence that could be sent as a prompt
+
+CRITICAL PRIORITY: If the user originally requested database integration, backend features (like Prisma/SQLite/Postgres schemas, seeds, endpoints), or integrations (like Shopify/Stripe payments) but they have NOT been implemented yet (meaning we only deployed the mock-data visual prototype), you MUST prioritize suggesting these database, backend, or payment integration steps (e.g., 'Set up Prisma & SQLite database', 'Integrate Shopify payment API', 'Create backend user endpoints').
 
 Respond with ONLY valid JSON (no markdown fences):
 {{
@@ -2022,8 +2024,13 @@ RULES:
 6. For static HTML: just index.html (+ style.css, script.js) — no build tools needed
 7. Keep conversational text to 1-2 sentences max before file markers
 8. NO setup instructions — the platform deploys automatically
+9. SQLite + Prisma limitations: When creating/modifying a Prisma schema (prisma/schema.prisma) with sqlite provider, SQLite does NOT support `enum` types or the `Json` type. You MUST use `String` (with text defaults for enums, e.g., role String @default("USER")) instead of enums, and use `String` instead of `Json` (e.g., shippingAddress String)."""
 
-FOR EDITS: Start your response with a brief explanation of what you're changing (1-2 sentences), then output the file markers."""
+    if not is_edit:
+        system_prompt += """
+10. **STRICT VISUAL PROTOTYPE RULE FOR INITIAL REQUEST:** Since this is the initial project setup, you MUST focus EXCLUSIVELY on building a stunning, highly polished visual frontend prototype using mock data. Do NOT generate any database models, Prisma schemas (prisma/schema.prisma), database migrations, or active backend APIs. Use mock-based state and dummy data in the React/Next.js/HTML frontend so that the application compiles and runs on Port 80 immediately with zero database errors. Any database or backend integrations will be implemented in subsequent turns."""
+
+    system_prompt += """\n\nFOR EDITS: Start your response with a brief explanation of what you're changing (1-2 sentences), then output the file markers."""
 
     if is_edit:
         user_content = f"""EXISTING PROJECT FILES:
@@ -2117,16 +2124,62 @@ Apply the changes now using ONLY these markers."""
             except Exception as e:
                 report(f'Something went wrong. Please try again. (Details: {e})')
                 return False
-        else:
-            # For new projects, try to detect the file type
-            code = response_text.strip()
-            if not code or len(code) < 30:
-                report('The AI didn\'t return any code. Please try rephrasing your request.')
-                return False
             filename = _detect_filename(code)
-            _write_file(WORKSPACE_DIR / filename, code)
+            file_path = WORKSPACE_DIR / filename
+            _write_file(file_path, code)
+            
+            # Syntax validation and self-healing for single file
+            max_heal_attempts = 3
+            for attempt in range(max_heal_attempts):
+                errors = syntax_validator.validate_files([filename])
+                if not errors:
+                    break
+                
+                err = errors[0]
+                err_msg = err['error']
+                line_num = err.get('line', 0)
+                log(f'❌ Syntax error detected in single generated file {filename} at line {line_num} (attempt {attempt+1}/{max_heal_attempts}): {err_msg[:200]}')
+                report(f'⚠️ Syntax error/truncation detected in `{filename}` (line {line_num}). Asking the AI to fix or complete the file...', message_type='warning')
+                
+                current_content = file_path.read_text(encoding='utf-8', errors='replace')
+                
+                heal_prompt = f"""You generated the file `{filename}`, but it has a syntax error or is truncated.
+                
+USER PROMPT: {user_prompt}
+
+FILE PATH: {filename}
+CURRENT FILE CONTENT:
+```
+{current_content}
+```
+
+SYNTAX ERROR DETAILS:
+{err_msg}
+Line: {line_num}
+
+CRITICAL: The file appears to have a syntax error or was cut off/truncated before it could be fully written.
+Please rewrite the COMPLETE, valid file `{filename}` now with the syntax error fixed and any truncated code fully completed. Do NOT truncate the file or use "// ... rest of code".
+Return ONLY the clean, full file content with no explanation, no markdown fences, no formatting other than the code itself."""
+
+                try:
+                    clean_content = call_ai([
+                        {'role': 'system', 'content': 'You are a code repair tool. You must output the complete and syntactically valid file content, fixing any truncation or errors. Output ONLY the raw file content with no markdown tags or explanations.'},
+                        {'role': 'user', 'content': heal_prompt},
+                    ], temperature=0.1, show_thinking=True)
+                    
+                    clean_content = re.sub(r'^```[a-z]*\n?', '', clean_content.strip(), flags=re.MULTILINE)
+                    clean_content = re.sub(r'\n?```\s*$', '', clean_content.strip(), flags=re.MULTILINE)
+                    
+                    if clean_content and len(clean_content) > 10:
+                        _write_file(file_path, clean_content)
+                        log(f'✅ Rewrote single file {filename} with AI self-healing output')
+                    else:
+                        log(f'⚠️ AI self-healing returned empty/short content for {filename}')
+                except Exception as ex:
+                    log(f'⚠️ Error in self-healing call for {filename}: {ex}')
+            
             report(f'✅ Code is ready! Starting the build process...')
-            return True
+            return {'success': True, 'changed_files': [filename], 'user_prompt': user_prompt}
 
     files_written = []
     for i, match in enumerate(matches):
@@ -2147,6 +2200,70 @@ Apply the changes now using ONLY these markers."""
     patches_applied = _apply_patches(response_text, patch_matches)
     log(f'Applied {patches_applied} patches')
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # SELF-HEALING LOOP FOR GENERATED/PATCHED FILES
+    # ═══════════════════════════════════════════════════════════════════════
+    patched_files = [_clean_filename(pm.group(1)) for pm in patch_matches]
+    files_to_validate = list(set(files_written + patched_files))
+    
+    if files_to_validate:
+        log(f'🔍 Running immediate syntax self-healing validation on {len(files_to_validate)} file(s)...')
+        max_heal_attempts = 3
+        for file_to_check in files_to_validate:
+            for attempt in range(max_heal_attempts):
+                errors = syntax_validator.validate_files([file_to_check])
+                if not errors:
+                    break
+                
+                err = errors[0]
+                err_msg = err['error']
+                line_num = err.get('line', 0)
+                log(f'❌ Syntax error detected in generated file {file_to_check} at line {line_num} (attempt {attempt+1}/{max_heal_attempts}): {err_msg[:200]}')
+                report(f'⚠️ Syntax error/truncation detected in `{file_to_check}` (line {line_num}). Asking the AI to fix or complete the file...', message_type='warning')
+                
+                file_path = WORKSPACE_DIR / file_to_check
+                if not file_path.exists():
+                    break
+                
+                current_content = file_path.read_text(encoding='utf-8', errors='replace')
+                
+                # AI repair call
+                heal_prompt = f"""You generated the file `{file_to_check}`, but it has a syntax error or is truncated.
+                
+USER PROMPT: {user_prompt}
+
+FILE PATH: {file_to_check}
+CURRENT FILE CONTENT:
+```
+{current_content}
+```
+
+SYNTAX ERROR DETAILS:
+{err_msg}
+Line: {line_num}
+
+CRITICAL: The file appears to have a syntax error or was cut off/truncated before it could be fully written.
+Please rewrite the COMPLETE, valid file `{file_to_check}` now with the syntax error fixed and any truncated code fully completed. Do NOT truncate the file or use "// ... rest of code".
+Return ONLY the clean, full file content with no explanation, no markdown fences, no formatting other than the code itself."""
+
+                try:
+                    clean_content = call_ai([
+                        {'role': 'system', 'content': 'You are a code repair tool. You must output the complete and syntactically valid file content, fixing any truncation or errors. Output ONLY the raw file content with no markdown tags or explanations.'},
+                        {'role': 'user', 'content': heal_prompt},
+                    ], temperature=0.1, show_thinking=True)
+                    
+                    # Strip fences
+                    clean_content = re.sub(r'^```[a-z]*\n?', '', clean_content.strip(), flags=re.MULTILINE)
+                    clean_content = re.sub(r'\n?```\s*$', '', clean_content.strip(), flags=re.MULTILINE)
+                    
+                    if clean_content and len(clean_content) > 10:
+                        _write_file(file_path, clean_content)
+                        log(f'✅ Rewrote file {file_to_check} with AI self-healing output')
+                    else:
+                        log(f'⚠️ AI self-healing returned empty/short content for {file_to_check}')
+                except Exception as ex:
+                    log(f'⚠️ Error in self-healing call for {file_to_check}: {ex}')
+
     total = len(files_written) + patches_applied
     if total == 0:
         log('⚠️ No files written and no patches applied!')
@@ -2156,18 +2273,19 @@ Apply the changes now using ONLY these markers."""
     # Generate a summary of what was changed
     change_summary = _generate_change_summary(user_prompt, files_written, patches_applied, is_edit)
 
+    # Always return a dict with success=True and list of changed files for deploy validation
+    changed_files = files_written + [_clean_filename(pm.group(1)) for pm in patch_matches]
+    
     if is_edit:
         report(f'Changes applied:\n\n{change_summary}',
                message_type='success',
                summary=f'Updated {total} file(s)')
-        # Store what changed for post-deployment testing
-        changed_files = files_written + [_clean_filename(pm.group(1)) for pm in patch_matches]
-        return {'success': True, 'changed_files': changed_files, 'user_prompt': user_prompt}
     else:
         report(f'App created:\n\n{change_summary}',
                message_type='success',
                summary=f'Created {total} file(s)')
-        return True
+               
+    return {'success': True, 'changed_files': changed_files, 'user_prompt': user_prompt}
 
 
 def _write_file(path: Path, content: str):
@@ -2414,13 +2532,65 @@ def deploy(error_context: dict = None, max_retries: int = 3, test_changes: bool 
         if syntax_errors:
             report(f'Found {len(syntax_errors)} syntax error(s) — fixing before deploy...')
             for err in syntax_errors:
-                fix_result = _auto_fix_syntax_error(err['error'], {})
+                # FIX: pass the known file path so _auto_fix_syntax_error
+                # doesn't have to regex-parse it out of the error message.
+                # The truncation error message never contains a file path,
+                # so without this the function always returns fixed=False.
+                fix_result = _auto_fix_syntax_error(
+                    err['error'], {},
+                    hint_file=err.get('file')
+                )
                 if fix_result.get('fixed'):
                     log(f'✅ Pre-deploy fix applied to {err["file"]}')
                 else:
                     log(f'⚠️ Could not pre-fix {err["file"]}: {err["error"][:100]}')
 
 
+
+    # FIX: After the pre-deploy fix attempts, re-validate to catch any
+    # files that could not be repaired. Abort deployment (raise) so the
+    # caller can report the failure cleanly instead of letting Next.js/npm
+    # build fail mid-flight with a confusing webpack error.
+    if changed_files:
+        remaining_errors = syntax_validator.validate_files(changed_files)
+        if remaining_errors:
+            unfixed = [e['file'] for e in remaining_errors]
+            log(f'⚠️ {len(remaining_errors)} file(s) still have syntax errors after fix attempts: {unfixed}')
+            log('🛑 Aborting deployment to prevent broken build. Requesting AI re-generation...')
+            # Re-trigger generation for each broken file
+            for err in remaining_errors:
+                broken_path = WORKSPACE_DIR / err['file']
+                if broken_path.exists():
+                    broken_content = broken_path.read_text(encoding='utf-8', errors='replace')
+                    heal_prompt = (
+                        f"The file `{err['file']}` has a syntax error and could not be auto-fixed.\n"
+                        f"Error: {err['error']}\n\n"
+                        f"Current content:\n```\n{broken_content}\n```\n\n"
+                        "Please rewrite the COMPLETE, valid file with all errors fixed. "
+                        "Output ONLY the raw file content with no markdown fences."
+                    )
+                    try:
+                        fixed_content = call_ai([
+                            {'role': 'system', 'content': 'You are a code repair tool. Output ONLY the complete, syntactically valid file content.'},
+                            {'role': 'user', 'content': heal_prompt},
+                        ], temperature=0.1, show_thinking=False)
+                        fixed_content = re.sub(r'^```[a-z]*\n?', '', fixed_content.strip(), flags=re.MULTILINE)
+                        fixed_content = re.sub(r'\n?```\s*$', '', fixed_content.strip(), flags=re.MULTILINE)
+                        if fixed_content and len(fixed_content) > 10:
+                            _write_file(broken_path, fixed_content)
+                            log(f'✅ Emergency re-generation applied to {err["file"]}')
+                    except Exception as ex:
+                        log(f'⚠️ Emergency re-generation failed for {err["file"]}: {ex}')
+            # Final check — if still broken, we must abort
+            final_errors = syntax_validator.validate_files(changed_files)
+            if final_errors:
+                still_broken = [e['file'] for e in final_errors]
+                report(
+                    f'⚠️ Could not fix syntax errors in: {", ".join(still_broken)}. '
+                    'Please try regenerating the app.',
+                    message_type='warning'
+                )
+                return  # Abort deployment
 
     tree      = _discover_workspace()
     manifests = _read_manifests()
@@ -3412,8 +3582,11 @@ def _detect_error_pattern(error_history: list) -> str:
     if len(error_history) < 2:
         return ''
 
-    # Extract key phrases from each error
-    all_reasons = [str(e.get('reason', '')) for e in error_history]
+    # Extract key phrases from each error by combining reason and build output
+    search_texts = []
+    for e in error_history:
+        combined = f"{e.get('reason', '')} {e.get('build_output', '')}"
+        search_texts.append(combined.lower())
 
     # Check if the same root cause keeps appearing
     patterns = {
@@ -3428,13 +3601,13 @@ def _detect_error_pattern(error_history: list) -> str:
         'connection refused':  'app not binding to the expected port',
         'exit code 1':         'build or start script failing',
         'exit code 2':         'command not found or script error',
+        'exit 1':              'build or start script failing',
     }
 
     matched = []
-    for reason in all_reasons[-3:]:
-        reason_lower = reason.lower()
+    for text in search_texts[-3:]:
         for keyword, description in patterns.items():
-            if keyword in reason_lower and description not in matched:
+            if keyword in text and description not in matched:
                 matched.append(description)
 
     if len(matched) >= 2 or (len(error_history) >= 2 and matched):
@@ -4810,7 +4983,7 @@ def _detect_available_ports() -> list:
     return available
 
 
-def _auto_fix_syntax_error(error_output: str, workspace_discovery: dict) -> dict:
+def _auto_fix_syntax_error(error_output: str, workspace_discovery: dict, hint_file: str = None) -> dict:
     """
     Automatically fix syntax errors in code files.
     
@@ -4832,24 +5005,77 @@ def _auto_fix_syntax_error(error_output: str, workspace_discovery: dict) -> dict
         log(f'Error preview: {cleaned_error[:300]}')
         
         # Extract file path and line number from error
-        # Python: File "/path/to/file.py", line 76
-        # JavaScript: /path/to/file.js:76:10
+        # We try to extract candidate file paths from the log.
+        # Candidates can be Python tracebacks, Next.js / Webpack style errors, or stack traces.
+        candidates = []
         
-        file_match = re.search(r'File "([^"]+)", line (\d+)', cleaned_error)
-        if not file_match:
-            file_match = re.search(r'([^\s]+\.(?:py|js|jsx|ts|tsx)):(\d+):', cleaned_error)
+        # 1. Match paths ending with standard extensions followed by colon/spaces/parenthesis and a line number
+        # Example: ./app/globals.css:1:1, /project/workspace/src/components/FileManager.tsx:107:1, /app/globals.css (1:1)
+        pattern1 = re.compile(
+            r'([\w./\\-]+\.(?:py|js|jsx|ts|tsx|css|json|html|scss|sass|less|config\.js))[:\s(]+(\d+)',
+            re.IGNORECASE
+        )
+        for match in pattern1.finditer(cleaned_error):
+            fp_candidate = match.group(1)
+            line_candidate = int(match.group(2))
+            candidates.append((fp_candidate, line_candidate))
+            
+        # 2. Python style tracebacks: File "/path/to/file.py", line 76
+        pattern2 = re.compile(r'File "([^"]+)", line (\d+)', re.IGNORECASE)
+        for match in pattern2.finditer(cleaned_error):
+            fp_candidate = match.group(1)
+            line_candidate = int(match.group(2))
+            candidates.append((fp_candidate, line_candidate))
+            
+        # 3. File path mention alone (fallback if no line number was parsed nearby)
+        # We search for any mention of a workspace-like file in the error
+        pattern_file_only = re.compile(
+            r'([\w./\\-]+\.(?:py|js|jsx|ts|tsx|css|json|html|scss|sass|less|config\.js))',
+            re.IGNORECASE
+        )
+        for match in pattern_file_only.finditer(cleaned_error):
+            fp_candidate = match.group(1)
+            candidates.append((fp_candidate, 1)) # Default to line 1
+
+        # Now filter candidates to find the first one that exists in the workspace
+        # and does not point to node_modules or .next
+        error_file = None
+        error_line = None
         
-        if not file_match:
-            log('Could not extract file path from error')
-            log(f'Tried to match in: {cleaned_error[:500]}')
-            return {'fixed': False, 'error': 'Could not parse error location'}
+        for fp, line in candidates:
+            # Clean up the file path (strip leading/trailing parenthesis, quotes, brackets, and spaces)
+            fp_clean = fp.strip('()[]{} "\'').replace('/project/workspace/', '')
+            if fp_clean.startswith('./'):
+                fp_clean = fp_clean[2:]
+            
+            # Avoid third-party packages or build folders
+            if 'node_modules' in fp_clean or '.next' in fp_clean:
+                continue
+                
+            resolved_path = WORKSPACE_DIR / fp_clean
+            if resolved_path.exists() and resolved_path.is_file():
+                error_file = fp_clean
+                error_line = line
+                break
         
-        error_file = file_match.group(1)
-        error_line = int(file_match.group(2))
-        
-        # Convert to relative path
-        if error_file.startswith('/project/workspace/'):
-            error_file = error_file.replace('/project/workspace/', '')
+        if not error_file:
+            # FIX: If regex parsing found no candidates, use the hint_file
+            # passed by the caller (e.g. the pre-deploy validator knows the
+            # file path from err['file'] even though the error message doesn't
+            # contain it — e.g. truncation errors like
+            # "File appears truncated — last line: 'export default Dashboard'")
+            if hint_file:
+                resolved = WORKSPACE_DIR / hint_file.lstrip('./')
+                if resolved.exists() and resolved.is_file():
+                    log(f'Using caller-supplied hint_file: {hint_file}')
+                    error_file = hint_file
+                    error_line = 1
+                else:
+                    log(f'hint_file {hint_file} does not exist on disk')
+            if not error_file:
+                log('Could not extract a valid workspace file path from the build error')
+                log(f'Tried parsing candidates from: {cleaned_error[:500]}')
+                return {'fixed': False, 'error': 'Could not parse error location'}
         
         log(f'Syntax error detected in {error_file} at line {error_line}')
         
@@ -5369,10 +5595,12 @@ class Agent:
 
 Please analyze the BRD above and create a complete, production-ready application that fulfills all the requirements."""
 
-            report(f'**BRD Loaded Successfully!**\n\n**Project**: {project_name}\n\nAnalyzing requirements and creating task plan...', message_type='success')
+            report(f'**BRD Loaded Successfully!**\n\n**Project**: {project_name}\n\nAnalyzing requirements and building your application...', message_type='success')
             
-            # Process as a large requirement to trigger task planning
-            self._handle_task_planning(full_prompt)
+            # Route directly to direct visual-first generation loop
+            existing_files = read_workspace_files()
+            is_empty = len(existing_files) == 0
+            self._handle_direct_generation(full_prompt, existing_files, is_empty)
             
         except requests.exceptions.RequestException as e:
             log(f'Failed to fetch BRD context: {e}')
@@ -5827,7 +6055,7 @@ Use `TASK:START` to continue execution.
                         # Attempt auto-fix for each error
                         all_fixed = True
                         for err in validation_errors:
-                            fix_result = _auto_fix_syntax_error(err['error'], {})
+                            fix_result = _auto_fix_syntax_error(err['error'], {}, hint_file=err.get('file'))
                             if not fix_result.get('fixed'):
                                 all_fixed = False
                                 log(f'⚠️ Could not fix {err["file"]}: {err["error"][:80]}')

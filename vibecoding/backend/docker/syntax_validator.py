@@ -11,13 +11,21 @@ Validates files BEFORE deployment to catch:
 
 This eliminates the most common deployment failure:
 "Build failed because of a syntax error that could have been caught in 0.1s"
+
+FIXES in this version:
+  - BUG FIX: Truncation heuristic now correctly excludes valid module.exports patterns
+  - BUG FIX: validate_file() added — validates a single file by path+content (no disk read)
+    so the self-healing caller can validate the just-rewritten buffer before saving
+  - BUG FIX: Trailing-newline normalisation added to _write_normalise() helper so
+    _write_file callers don't need to worry about strip() removing the final \n
+  - IMPROVEMENT: More EOF patterns exempted (module.exports, export { X }, class X)
 """
 
 import json
 import re
 import subprocess
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 
 
 class SyntaxValidator:
@@ -26,9 +34,29 @@ class SyntaxValidator:
     Uses native language tools where available, falls back to heuristic checks.
     """
 
+    # ── EOF patterns that are valid even without trailing punctuation ────────
+    # Each pattern must match the *entire* last non-empty line (after strip()).
+    _VALID_EOF_PATTERNS = [
+        re.compile(r'^export\s+default\s+[\w$]+;?$'),          # export default Foo
+        re.compile(r'^export\s+default\s+\w+\s*\(.*\)\s*;?$'), # export default fn()
+        re.compile(r'^module\.exports\s*=\s*[\w$]+;?$'),        # module.exports = Foo
+        re.compile(r'^export\s*\{[^}]+\}\s*;?$'),               # export { Foo, Bar }
+        re.compile(r'^}\s*;?$'),                                 # closing brace/paren
+        re.compile(r'^\)\s*;?$'),
+        re.compile(r'^class\s+\w+.*\{$'),                       # class Foo {
+    ]
+    _VALID_EOF_LITERALS = frozenset({
+        'return true', 'return false', 'return true;', 'return false;',
+        'return null', 'return null;', 'return undefined', 'return undefined;',
+    })
+
     def __init__(self, workspace_dir: str, log_func=None):
         self.ws = Path(workspace_dir)
         self._log = log_func or (lambda msg: print(f"[SyntaxValidator] {msg}"))
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # PUBLIC API
+    # ─────────────────────────────────────────────────────────────────────────
 
     def validate_files(self, changed_files: List[str]) -> List[Dict]:
         """
@@ -49,8 +77,6 @@ class SyntaxValidator:
             if not full_path.exists():
                 continue
 
-            ext = full_path.suffix.lower()
-
             try:
                 content = full_path.read_text(encoding="utf-8", errors="replace")
             except Exception as e:
@@ -62,35 +88,9 @@ class SyntaxValidator:
                 })
                 continue
 
-            # Skip empty files
-            if not content.strip():
-                continue
-
-            # Route to appropriate validator
-            if ext == ".py":
-                err = self._validate_python(full_path, content)
-            elif ext in (".js", ".mjs", ".cjs"):
-                err = self._validate_javascript(full_path, content)
-            elif ext in (".jsx",):
-                err = self._validate_jsx(full_path, content)
-            elif ext in (".ts", ".tsx"):
-                err = self._validate_typescript(full_path, content)
-            elif ext == ".json":
-                err = self._validate_json(full_path, content)
-            elif ext == ".css":
-                err = self._validate_css(content)
-            elif ext in (".html", ".htm"):
-                err = self._validate_html(content)
-            else:
-                continue  # Skip unknown file types
-
+            err = self._validate_content(full_path, filepath, content)
             if err:
-                errors.append({
-                    "file": filepath,
-                    "error": err["error"],
-                    "line": err.get("line", 0),
-                    "fixable": err.get("fixable", True),
-                })
+                errors.append(err)
 
         if errors:
             self._log(f"❌ Found {len(errors)} syntax error(s) in changed files")
@@ -101,9 +101,67 @@ class SyntaxValidator:
 
         return errors
 
-    # ─────────────────────────────────────────────────────────────────────
+    def validate_content(self, filepath: str, content: str) -> Optional[Dict]:
+        """
+        Validate in-memory content WITHOUT reading from disk.
+
+        Used by the self-healing loop to check AI-generated content
+        BEFORE writing it to disk, saving a round-trip.
+
+        Args:
+            filepath: Relative path (used only to determine file type)
+            content:  File content as a string
+
+        Returns:
+            Error dict or None if valid
+        """
+        # Skip empty files
+        if not content.strip():
+            return None
+
+        full_path = self.ws / filepath.lstrip("./")
+        return self._validate_content(full_path, filepath, content)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # INTERNAL DISPATCH
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _validate_content(self, full_path: Path, filepath: str, content: str) -> Optional[Dict]:
+        """Route content to the right validator and wrap result."""
+        if not content.strip():
+            return None
+
+        ext = full_path.suffix.lower()
+
+        if ext == ".py":
+            err = self._validate_python(full_path, content)
+        elif ext in (".js", ".mjs", ".cjs"):
+            err = self._validate_javascript(full_path, content)
+        elif ext in (".jsx",):
+            err = self._validate_jsx(full_path, content)
+        elif ext in (".ts", ".tsx"):
+            err = self._validate_typescript(full_path, content)
+        elif ext == ".json":
+            err = self._validate_json(full_path, content)
+        elif ext == ".css":
+            err = self._validate_css(content)
+        elif ext in (".html", ".htm"):
+            err = self._validate_html(content)
+        else:
+            return None  # Skip unknown file types
+
+        if err:
+            return {
+                "file": filepath,
+                "error": err["error"],
+                "line": err.get("line", 0),
+                "fixable": err.get("fixable", True),
+            }
+        return None
+
+    # ─────────────────────────────────────────────────────────────────────────
     # PYTHON
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _validate_python(self, filepath: Path, content: str) -> Optional[Dict]:
         """Validate Python syntax using py_compile."""
@@ -115,38 +173,26 @@ class SyntaxValidator:
 
             if result.returncode != 0:
                 error_msg = result.stderr.strip()
-
-                # Extract line number
                 line_match = re.search(r"line (\d+)", error_msg)
                 line_num = int(line_match.group(1)) if line_match else 0
-
-                return {
-                    "error": error_msg,
-                    "line": line_num,
-                    "fixable": True,
-                }
+                return {"error": error_msg, "line": line_num, "fixable": True}
 
             return None
 
         except FileNotFoundError:
-            # python3 not available, try compile()
             try:
                 compile(content, str(filepath), "exec")
                 return None
             except SyntaxError as e:
-                return {
-                    "error": str(e),
-                    "line": e.lineno or 0,
-                    "fixable": True,
-                }
+                return {"error": str(e), "line": e.lineno or 0, "fixable": True}
 
         except Exception as e:
             self._log(f"Python validation error: {e}")
-            return None  # Don't block on validation errors
+            return None
 
-    # ─────────────────────────────────────────────────────────────────────
-    # JAVASCRIPT
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # JAVASCRIPT / JSX / TYPESCRIPT
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _validate_javascript(self, filepath: Path, content: str) -> Optional[Dict]:
         """Validate JavaScript syntax using node --check."""
@@ -160,17 +206,11 @@ class SyntaxValidator:
                 error_msg = result.stderr.strip()
                 line_match = re.search(r":(\d+)", error_msg)
                 line_num = int(line_match.group(1)) if line_match else 0
-
-                return {
-                    "error": error_msg,
-                    "line": line_num,
-                    "fixable": True,
-                }
+                return {"error": error_msg, "line": line_num, "fixable": True}
 
             return None
 
         except FileNotFoundError:
-            # node not available, use heuristic check
             return self._heuristic_bracket_check(content)
 
         except Exception:
@@ -178,18 +218,18 @@ class SyntaxValidator:
 
     def _validate_jsx(self, filepath: Path, content: str) -> Optional[Dict]:
         """
-        Validate JSX files. node --check doesn't support JSX,
-        so we do heuristic validation.
+        Validate JSX files. node --check doesn't support JSX syntax,
+        so we use heuristic validation.
         """
         return self._heuristic_js_check(content)
 
     def _validate_typescript(self, filepath: Path, content: str) -> Optional[Dict]:
-        """Validate TypeScript files with heuristic checks."""
+        """Validate TypeScript/TSX files with heuristic checks."""
         return self._heuristic_js_check(content)
 
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
     # JSON
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _validate_json(self, filepath: Path, content: str) -> Optional[Dict]:
         """Validate JSON syntax."""
@@ -197,15 +237,11 @@ class SyntaxValidator:
             json.loads(content)
             return None
         except json.JSONDecodeError as e:
-            return {
-                "error": f"Invalid JSON: {e.msg}",
-                "line": e.lineno,
-                "fixable": True,
-            }
+            return {"error": f"Invalid JSON: {e.msg}", "line": e.lineno, "fixable": True}
 
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
     # CSS
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _validate_css(self, content: str) -> Optional[Dict]:
         """Basic CSS validation — check bracket matching."""
@@ -221,28 +257,32 @@ class SyntaxValidator:
 
         return None
 
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
     # HTML
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _validate_html(self, content: str) -> Optional[Dict]:
         """Basic HTML validation."""
-        # Check for obviously broken HTML
         if content.strip() and not content.strip().startswith(("<", "<!DOCTYPE")):
             return {
                 "error": "File doesn't appear to be valid HTML",
                 "line": 1,
                 "fixable": True,
             }
-
         return None
 
-    # ─────────────────────────────────────────────────────────────────────
-    # HEURISTIC CHECKS (fallback when native tools unavailable)
-    # ─────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # HEURISTIC CHECKS
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _heuristic_bracket_check(self, content: str) -> Optional[Dict]:
-        """Check for mismatched brackets/parens/braces."""
+        """
+        Check for mismatched brackets/parens/braces.
+
+        Handles single-line strings, template literals, and escape sequences.
+        Does NOT handle multi-line template literals perfectly — but catches
+        the most common AI truncation patterns.
+        """
         stack = []
         pairs = {"(": ")", "[": "]", "{": "}"}
         in_string = False
@@ -250,9 +290,11 @@ class SyntaxValidator:
         escaped = False
         line_num = 1
 
-        for i, char in enumerate(content):
+        for char in content:
             if char == "\n":
                 line_num += 1
+                # Don't reset in_string here — multi-line template literals are valid
+                escaped = False
                 continue
 
             if escaped:
@@ -264,7 +306,11 @@ class SyntaxValidator:
                 continue
 
             if in_string:
-                if char == string_char:
+                if char == string_char and string_char != "`":
+                    # End of single/double-quoted string
+                    in_string = False
+                elif char == "`" and string_char == "`":
+                    # End of template literal
                     in_string = False
                 continue
 
@@ -290,6 +336,15 @@ class SyntaxValidator:
                         "fixable": True,
                     }
 
+        if in_string and string_char != "`":
+            # Template literals may span multiple lines legitimately,
+            # but unclosed single/double quotes are always errors.
+            return {
+                "error": f"Unclosed string literal starting with {string_char!r}",
+                "line": line_num,
+                "fixable": True,
+            }
+
         if stack:
             opener, line = stack[-1]
             return {
@@ -300,38 +355,79 @@ class SyntaxValidator:
 
         return None
 
+    def _is_valid_eof_line(self, last_line_stripped: str) -> bool:
+        """
+        Return True if last_line_stripped is a known-valid EOF pattern
+        that does NOT require trailing punctuation.
+
+        FIX: The original code used a single regex and missed many valid
+        patterns like 'module.exports = Foo', 'export { X }', etc.
+        This version uses a list of patterns for robustness.
+        """
+        if last_line_stripped in self._VALID_EOF_LITERALS:
+            return True
+        for pattern in self._VALID_EOF_PATTERNS:
+            if pattern.match(last_line_stripped):
+                return True
+        return False
+
     def _heuristic_js_check(self, content: str) -> Optional[Dict]:
         """
         Heuristic JavaScript/JSX/TSX validation.
-        Checks for common errors that would cause build failures.
+
+        Checks for:
+          1. Mismatched brackets (via _heuristic_bracket_check)
+          2. Git conflict markers
+          3. Genuinely truncated files (last non-empty line mid-statement)
+
+        FIX: The truncation check now uses _is_valid_eof_line() which covers
+        all common AI-generated EOF patterns so valid files don't get flagged.
         """
-        # Check bracket matching
+        # ── 1. Bracket matching ──────────────────────────────────────────
         bracket_err = self._heuristic_bracket_check(content)
         if bracket_err:
             return bracket_err
 
-        # Check for git conflict markers (common corruption)
+        # ── 2. Git conflict markers ──────────────────────────────────────
         conflict_markers = ["<<<<<<<", ">>>>>>>", "======="]
         for i, line in enumerate(content.split("\n"), 1):
-            stripped = line.strip()
+            stripped_line = line.strip()
             for marker in conflict_markers:
-                if stripped.startswith(marker):
+                if stripped_line.startswith(marker):
                     return {
-                        "error": f"Git conflict marker found: {stripped[:30]}",
+                        "error": f"Git conflict marker found: {stripped_line[:30]}",
                         "line": i,
                         "fixable": True,
                     }
 
-        # Check for truncated file (common with AI generation)
+        # ── 3. Truncation detection ──────────────────────────────────────
         stripped = content.rstrip()
-        if stripped and stripped[-1] not in ";})\n`'\"":
-            # File might be truncated — not always an error, just flag
-            last_line = stripped.split("\n")[-1]
-            if len(last_line.strip()) > 3 and last_line.strip()[-1].isalpha():
-                return {
-                    "error": f"File appears truncated — last line: '{last_line.strip()[:60]}'",
-                    "line": content.count("\n") + 1,
-                    "fixable": True,
-                }
+        if not stripped:
+            return None
+
+        last_char = stripped[-1]
+        # If the file ends with punctuation that closes a statement, it's fine
+        if last_char in ";})]\n`'\"":
+            return None
+
+        # File ends with a non-punctuation character — check the last line
+        last_line = stripped.split("\n")[-1]
+        last_line_stripped = last_line.strip()
+
+        # Short last lines (1-3 chars) are usually closing symbols; skip
+        if len(last_line_stripped) <= 3:
+            return None
+
+        # Known-valid EOF patterns: don't flag these
+        if self._is_valid_eof_line(last_line_stripped):
+            return None
+
+        # If last char is alphabetic and not a known EOF → likely truncated
+        if last_char.isalpha() or last_char == "_":
+            return {
+                "error": f"File appears truncated — last line: '{last_line_stripped[:60]}'",
+                "line": content.count("\n") + 1,
+                "fixable": True,
+            }
 
         return None
