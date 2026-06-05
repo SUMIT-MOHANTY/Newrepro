@@ -197,6 +197,10 @@ class SyntaxValidator:
     def _validate_javascript(self, filepath: Path, content: str) -> Optional[Dict]:
         """Validate JavaScript syntax using node --check."""
         try:
+            # Check for ES module and JSX patterns first
+            if any(p in content for p in ["import ", "export ", "<", "use client"]):
+                return self._heuristic_js_check(content)
+
             result = subprocess.run(
                 ["node", "--check", str(filepath)],
                 capture_output=True, text=True, timeout=10,
@@ -204,6 +208,10 @@ class SyntaxValidator:
 
             if result.returncode != 0:
                 error_msg = result.stderr.strip()
+                # If node --check failed because of ESM/JSX syntax (missed by simple checks), fall back to heuristics
+                if "Cannot use import statement" in error_msg or "Unexpected token" in error_msg:
+                    return self._heuristic_js_check(content)
+
                 line_match = re.search(r":(\d+)", error_msg)
                 line_num = int(line_match.group(1)) if line_match else 0
                 return {"error": error_msg, "line": line_num, "fixable": True}

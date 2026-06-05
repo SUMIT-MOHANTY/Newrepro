@@ -1080,8 +1080,8 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
         
         # Get backend URL from environment variable
         # Default to host.docker.internal for Docker-to-host communication
-        # backend_url = os.environ.get('BACKEND_URL', 'http://host.docker.internal:8001')
-        backend_url = os.environ.get('BACKEND_URL', 'https://dsuite-backend.bourntec.com')
+        backend_url = os.environ.get('BACKEND_URL', 'http://host.docker.internal:8001')
+        # backend_url = os.environ.get('BACKEND_URL', 'https://dsuite-backend.bourntec.com')
         api_endpoint = f'{backend_url}/vibecoding/api/agent/message'
         
         payload = {
@@ -2032,15 +2032,16 @@ RULES:
     if not is_edit:
         system_prompt += """
 10. **STRICT VISUAL PROTOTYPE RULE FOR INITIAL REQUEST:** Since this is the initial project setup, you MUST focus EXCLUSIVELY on building a stunning, highly polished visual frontend prototype using mock data. Do NOT generate any database models, Prisma schemas (prisma/schema.prisma), database migrations, or active backend APIs. Use mock-based state and dummy data in the React/Next.js/HTML frontend so that the application compiles and runs on Port 80 immediately with zero database errors. Any database or backend integrations will be implemented in subsequent turns.
-11. **10K OUTPUT TOKEN LIMIT:** Ensure the total generated response is compact and stays strictly within 10,000 output tokens to prevent any response truncation."""
+11. **10K OUTPUT TOKEN LIMIT:** Ensure the total generated response is compact and stays strictly within 10,000 output tokens to prevent any response truncation.
+12. **MINIMAL FILE ECONOMY:** Minimize the initial file count by combining visual components and local mock states directly into a single `page.js` (or a few key files) instead of creating 10+ separate files. This prevents response truncation and keeps the initial deployment fast."""
 
     if is_handoff:
         system_prompt += """
-12. **D-SUITE HANDOFF SUMMARY:** Write a 50-100 word summary of what needs to be built at the very beginning of your response, followed immediately by the code files/markers."""
+13. **D-SUITE HANDOFF SUMMARY:** Write a 50-100 word summary of what needs to be built at the very beginning of your response, followed immediately by the code files/markers."""
 
     # Add continuation rule for both edits and new builds
     system_prompt += """
-13. **CONTINUATION PATTERN:** If the user asks you to "continue", "proceed", or if the code is cut off, read the existing files/history and seamlessly continue generating the remaining files or patches starting exactly from where you left off, preserving the layout and mock states."""
+14. **CONTINUATION PATTERN:** If the user asks you to "continue", "proceed", or if the code is cut off, read the existing files/history and seamlessly continue generating the remaining files or patches starting exactly from where you left off, preserving the layout and mock states."""
 
     system_prompt += """\n\nFOR EDITS: Start your response with a brief explanation of what you're changing (1-2 sentences), then output the file markers."""
 
@@ -6156,7 +6157,7 @@ Use `TASK:START` to continue execution.
         # Deploy with testing enabled for edits
         deploy_result = deploy(
             error_context=None,
-            test_changes=bool(changed_files),
+            test_changes=bool(changed_files) and not is_empty,
             changed_files=changed_files,
             user_prompt=user_prompt,
             snapshot_id=snapshot_id,
@@ -6370,11 +6371,11 @@ if __name__ == '__main__':
             sys.path.append('/usr/local/bin')
             import supervisor
             supervisor_instance = supervisor.VersionSupervisor()
-            t = threading.Thread(target=supervisor_instance.run, daemon=True)
-            t.start()
-            log('Supervisor launched in background.')
+            log('Starting supervisor in main thread...')
+            supervisor_instance.run()  # This blocks forever to manage child processes
+            sys.exit(0)
         except Exception as e:
-            log(f'Failed to launch supervisor: {e}')
+            log(f'Failed to launch supervisor: {e}. Falling back to standalone mode...')
     else:
         log(f'Running under supervisor management (version: {current_version})')
 
