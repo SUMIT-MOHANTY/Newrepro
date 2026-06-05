@@ -64,3 +64,4 @@ backend/preview_deploy_dump_utf8.txt
 backend/check_tasks.py
 backend/migrate_agent_namespaces.py
 backend/get_external_agents.py
+vibecoding/backend/clear_db_data.py

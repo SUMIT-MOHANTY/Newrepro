@@ -1245,7 +1245,7 @@ def _generate_summary(message: str) -> str:
     return clean[:100]
 
 
-def _generate_ai_suggestions_for_success(user_prompt: str, changed_files: list = None) -> list:
+def _generate_ai_suggestions_for_success(user_prompt: str, changed_files: list = None, is_new_project: bool = False) -> list:
     """
     Use AI to generate 3 contextual suggestions for what the user might want to do next
     after successfully deploying their app.
@@ -1255,6 +1255,7 @@ def _generate_ai_suggestions_for_success(user_prompt: str, changed_files: list =
         context = f"User requested: {user_prompt}\n"
         if changed_files:
             context += f"Files modified: {', '.join(changed_files[:5])}\n"
+        context += f"Is this a brand new project initialization? {'Yes' if is_new_project else 'No'}\n"
         
         suggestion_prompt = f"""Based on what was just built/deployed, suggest exactly 3 short, actionable next steps the user might want to take.
 
@@ -1266,7 +1267,7 @@ Each suggestion should be:
 - Actionable and specific
 - Written as a complete sentence that could be sent as a prompt
 
-CRITICAL PRIORITY: If the user originally requested database integration, backend features (like Prisma/SQLite/Postgres schemas, seeds, endpoints), or integrations (like Shopify/Stripe payments) but they have NOT been implemented yet (meaning we only deployed the mock-data visual prototype), you MUST prioritize suggesting these database, backend, or payment integration steps (e.g., 'Set up Prisma & SQLite database', 'Integrate Shopify payment API', 'Create backend user endpoints').
+CRITICAL PRIORITY: Since {"this is a new project setup" if is_new_project else "the user may have requested database/backend integration"}, if the user originally requested database integration, backend features (like Prisma/SQLite/Postgres schemas, seeds, endpoints), or integrations (like Shopify/Stripe payments) but they have NOT been implemented yet (meaning we only deployed the mock-data visual prototype), you MUST prioritize suggesting these database, backend, or payment integration steps (e.g., 'Set up Prisma & SQLite database', 'Integrate Shopify payment API', 'Create backend user endpoints').
 
 Respond with ONLY valid JSON (no markdown fences):
 {{
@@ -1964,21 +1965,22 @@ def _extract_and_show_thinking(response_text: str):
 
 
 # ── Phase 1: Code Generation ───────────────────────────────────────────────────
-def generate_code(user_prompt: str, existing_files: dict = None) -> bool:
+def generate_code(user_prompt: str, existing_files: dict = None, is_handoff: bool = False) -> bool:
     is_edit = bool(existing_files)
 
-    if is_edit:
-        # Generate task breakdown for edits
-        task_summary = _generate_task_breakdown(user_prompt, existing_files)
-        report(f'Got your request! Here\'s what I\'ll do:\n\n{task_summary}', 
-               message_type='thinking',
-               summary='Analyzing changes needed')
-    else:
-        # Generate task breakdown for new projects
-        task_summary = _generate_task_breakdown(user_prompt, None)
-        report(f'🧠 Planning your app:\n\n{task_summary}',
-               message_type='thinking', 
-               summary='Planning application structure')
+    if not is_handoff:
+        if is_edit:
+            # Generate task breakdown for edits
+            task_summary = _generate_task_breakdown(user_prompt, existing_files)
+            report(f'Got your request! Here\'s what I\'ll do:\n\n{task_summary}', 
+                   message_type='thinking',
+                   summary='Analyzing changes needed')
+        else:
+            # Generate task breakdown for new projects
+            task_summary = _generate_task_breakdown(user_prompt, None)
+            report(f'🧠 Planning your app:\n\n{task_summary}',
+                   message_type='thinking', 
+                   summary='Planning application structure')
 
     WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -2024,11 +2026,21 @@ RULES:
 6. For static HTML: just index.html (+ style.css, script.js) — no build tools needed
 7. Keep conversational text to 1-2 sentences max before file markers
 8. NO setup instructions — the platform deploys automatically
-9. SQLite + Prisma limitations: When creating/modifying a Prisma schema (prisma/schema.prisma) with sqlite provider, SQLite does NOT support `enum` types or the `Json` type. You MUST use `String` (with text defaults for enums, e.g., role String @default("USER")) instead of enums, and use `String` instead of `Json` (e.g., shippingAddress String)."""
+9. SQLite + Prisma limitations: When creating/modifying a Prisma schema (prisma/schema.prisma) with sqlite provider, SQLite does NOT support `enum` types or the `Json` type. You MUST use `String` (with text defaults for enums, e.g., role String @default("USER")) instead of enums, and use `String` instead of `Json` (e.g., shippingAddress String).
+10. Vite/React Bundling Safety: When creating `vite.config.js` for React/Vite projects, do NOT configure custom manual chunks (`manualChunks`) in `build.rollupOptions` that reference uninstalled or optional packages (e.g., `@mui/lab`, `lodash`, `react-hook-form`, etc.). Only reference packages explicitly declared in `package.json`. Additionally, configure Rollup to ignore/silence warnings for `"use client"` directives from `@mui/material` and `@mui/icons-material` in the build options (using an `onwarn` handler in `rollupOptions` that returns for `'MODULE_LEVEL_DIRECTIVE'` warnings containing `'use client'`)."""
 
     if not is_edit:
         system_prompt += """
-10. **STRICT VISUAL PROTOTYPE RULE FOR INITIAL REQUEST:** Since this is the initial project setup, you MUST focus EXCLUSIVELY on building a stunning, highly polished visual frontend prototype using mock data. Do NOT generate any database models, Prisma schemas (prisma/schema.prisma), database migrations, or active backend APIs. Use mock-based state and dummy data in the React/Next.js/HTML frontend so that the application compiles and runs on Port 80 immediately with zero database errors. Any database or backend integrations will be implemented in subsequent turns."""
+10. **STRICT VISUAL PROTOTYPE RULE FOR INITIAL REQUEST:** Since this is the initial project setup, you MUST focus EXCLUSIVELY on building a stunning, highly polished visual frontend prototype using mock data. Do NOT generate any database models, Prisma schemas (prisma/schema.prisma), database migrations, or active backend APIs. Use mock-based state and dummy data in the React/Next.js/HTML frontend so that the application compiles and runs on Port 80 immediately with zero database errors. Any database or backend integrations will be implemented in subsequent turns.
+11. **10K OUTPUT TOKEN LIMIT:** Ensure the total generated response is compact and stays strictly within 10,000 output tokens to prevent any response truncation."""
+
+    if is_handoff:
+        system_prompt += """
+12. **D-SUITE HANDOFF SUMMARY:** Write a 50-100 word summary of what needs to be built at the very beginning of your response, followed immediately by the code files/markers."""
+
+    # Add continuation rule for both edits and new builds
+    system_prompt += """
+13. **CONTINUATION PATTERN:** If the user asks you to "continue", "proceed", or if the code is cut off, read the existing files/history and seamlessly continue generating the remaining files or patches starting exactly from where you left off, preserving the layout and mock states."""
 
     system_prompt += """\n\nFOR EDITS: Start your response with a brief explanation of what you're changing (1-2 sentences), then output the file markers."""
 
@@ -2124,6 +2136,9 @@ Apply the changes now using ONLY these markers."""
             except Exception as e:
                 report(f'Something went wrong. Please try again. (Details: {e})')
                 return False
+        else:
+            # For new projects, if no markers, treat entire response as a single file
+            code = response_text.strip()
             filename = _detect_filename(code)
             file_path = WORKSPACE_DIR / filename
             _write_file(file_path, code)
@@ -2289,6 +2304,18 @@ Return ONLY the clean, full file content with no explanation, no markdown fences
 
 
 def _write_file(path: Path, content: str):
+    # Clean trailing LLM summaries and explanation text from code files
+    if path.suffix.lower() not in ('.md', '.txt'):
+        fence_match = re.search(r'```[a-z]*\s*\n(.*?)\n```', content, re.DOTALL | re.IGNORECASE)
+        if fence_match:
+            content = fence_match.group(1).strip()
+        else:
+            # Discard text following any trailing code fences
+            if '```' in content:
+                parts = content.split('```')
+                if len(parts) > 0 and len(parts[0].strip()) > 10:
+                    content = parts[0].strip()
+
     # CRITICAL: Remove markdown code fences that corrupt files
     # Remove opening fence: ```json, ```javascript, ```jsx, etc.
     content = re.sub(r'^```[a-z]*\n?', '', content, flags=re.MULTILINE)
@@ -2514,7 +2541,7 @@ Return ONLY the clean file content with no explanation, no markers, no fences.""
 
 
 # ── Phase 2: Deployment ────────────────────────────────────────────────────────
-def deploy(error_context: dict = None, max_retries: int = 3, test_changes: bool = False, changed_files: list = None, user_prompt: str = None, snapshot_id: str = "") -> bool:
+def deploy(error_context: dict = None, max_retries: int = 3, test_changes: bool = False, changed_files: list = None, user_prompt: str = None, snapshot_id: str = "", is_new_project: bool = False) -> bool:
     report('Figuring out the best way to run your app...')
     
     # Show loading page immediately so users see progress
@@ -3221,7 +3248,16 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
                     # ═══════════════════════════════════════════════════════════════
                     # AUTO-FIX: Detect and fix syntax errors automatically
                     # ═══════════════════════════════════════════════════════════════
-                    has_syntax_error = 'SyntaxError' in full_error or 'IndentationError' in full_error or 'TabError' in full_error
+                    has_syntax_error = (
+                        'SyntaxError' in full_error or 
+                        'IndentationError' in full_error or 
+                        'TabError' in full_error or
+                        'Syntax Error' in full_error or
+                        'Failed to compile' in full_error or
+                        'Expected \';\'' in full_error or
+                        'Expected \'}\'' in full_error or
+                        'Expected <eof>' in full_error
+                    )
                     log(f'Syntax error detected: {has_syntax_error}')
                     
                     if has_syntax_error:
@@ -3351,7 +3387,7 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
         
         if healthy:
             # Generate dynamic AI suggestions based on what was built
-            ai_suggestions = _generate_ai_suggestions_for_success(user_prompt, changed_files)
+            ai_suggestions = _generate_ai_suggestions_for_success(user_prompt, changed_files, is_new_project=is_new_project)
 
             # ── Build compact file-diff footer ──────────────────────────────
             # Show which files were added / modified in a git-style summary.
@@ -5600,7 +5636,7 @@ Please analyze the BRD above and create a complete, production-ready application
             # Route directly to direct visual-first generation loop
             existing_files = read_workspace_files()
             is_empty = len(existing_files) == 0
-            self._handle_direct_generation(full_prompt, existing_files, is_empty)
+            self._handle_direct_generation(full_prompt, existing_files, is_empty, is_handoff=True)
             
         except requests.exceptions.RequestException as e:
             log(f'Failed to fetch BRD context: {e}')
@@ -5975,7 +6011,7 @@ Use `TASK:START` to continue execution.
             # For small changes, use direct generation
             self._handle_direct_generation(prompt, existing_files, False)
     
-    def _handle_direct_generation(self, prompt: str, existing_files: dict, is_empty: bool):
+    def _handle_direct_generation(self, prompt: str, existing_files: dict, is_empty: bool, is_handoff: bool = False):
         """Direct code generation with EditEngine integration + Git backup"""
         
         # Check if this is a deployment-only fix
@@ -6027,7 +6063,7 @@ Use `TASK:START` to continue execution.
                 # IMPORTANT: Pass existing_files so the AI has context of the current
                 # codebase and doesn't rebuild from scratch on existing projects.
                 log('📝 CREATE_APP mode - using legacy generate_code()')
-                result = generate_code(prompt, existing_files=existing_files if not is_empty else None)
+                result = generate_code(prompt, existing_files=existing_files if not is_empty else None, is_handoff=is_handoff)
                 
                 if not result:
                     return
@@ -6094,7 +6130,7 @@ Use `TASK:START` to continue execution.
             else:
                 # EditEngine failed - fall back to legacy
                 log('⚠️ EditEngine failed - falling back to legacy generate_code()')
-                result = generate_code(prompt, existing_files=existing_files if not is_empty else None)
+                result = generate_code(prompt, existing_files=existing_files if not is_empty else None, is_handoff=is_handoff)
                 
                 if not result:
                     return
@@ -6108,7 +6144,7 @@ Use `TASK:START` to continue execution.
             log(f'❌ EditEngine exception: {e}')
             report('Advanced edit engine encountered an issue. Falling back to standard code generation...')
             
-            result = generate_code(prompt, existing_files=existing_files if not is_empty else None)
+            result = generate_code(prompt, existing_files=existing_files if not is_empty else None, is_handoff=is_handoff)
             
             if not result:
                 return
@@ -6123,7 +6159,8 @@ Use `TASK:START` to continue execution.
             test_changes=bool(changed_files),
             changed_files=changed_files,
             user_prompt=user_prompt,
-            snapshot_id=snapshot_id
+            snapshot_id=snapshot_id,
+            is_new_project=is_empty
         )
 
 
