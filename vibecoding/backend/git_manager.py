@@ -128,8 +128,9 @@ target/
                     logger.warning(f"⚠️ Failed to remove stale index.lock: {e}")
 
         try:
+            git_exe = "/usr/bin/git" if os.name != "nt" else "git"
             result = subprocess.run(
-                ["git"] + args,
+                [git_exe] + args,
                 cwd=workspace_dir,
                 capture_output=True,
                 text=True,
@@ -322,8 +323,9 @@ target/
         # Git clone requires the directory to be empty or doesn't exist
         # Alternative: clone to a temp dir and move, or just run git clone url .
         try:
+            git_exe = "/usr/bin/git" if os.name != "nt" else "git"
             result = subprocess.run(
-                ["git", "clone", clone_url, "."],
+                [git_exe, "clone", clone_url, "."],
                 cwd=workspace_dir,
                 capture_output=True,
                 text=True,

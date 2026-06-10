@@ -524,7 +524,8 @@ target/
 
     def _run_git(self, *args, timeout: int = 30) -> str:
         """Run a git command in the workspace directory."""
-        cmd = ["git"] + list(args)
+        git_exe = "/usr/bin/git" if os.name != "nt" else "git"
+        cmd = [git_exe] + list(args)
         try:
             result = subprocess.run(
                 cmd,
