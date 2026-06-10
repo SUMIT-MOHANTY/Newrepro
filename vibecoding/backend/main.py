@@ -1937,8 +1937,15 @@ async def git_init(request: GitRequest):
     try:
         # If remote_url is provided, we clone instead of just init
         if request.remote_url:
+            if not request.token:
+                return {"status": "error", "message": "Personal Access Token (PAT) is required."}
+            
             # 1. Validate connection first
-            val_res = await git_manager.validate_github_connection(request.remote_url, request.token)
+            if "dev.azure.com" in request.remote_url.lower() or "visualstudio.com" in request.remote_url.lower():
+                val_res = await git_manager.validate_azure_devops_connection(request.remote_url, request.token)
+            else:
+                val_res = await git_manager.validate_github_connection(request.remote_url, request.token)
+                
             if val_res["status"] == "error":
                 return val_res
             
@@ -1965,7 +1972,13 @@ async def git_validate(request: GitRequest):
     try:
         if not request.remote_url:
             raise HTTPException(status_code=400, detail="Remote URL is required")
-        result = await git_manager.validate_github_connection(request.remote_url, request.token)
+        if not request.token:
+            return {"status": "error", "message": "Personal Access Token (PAT) is required."}
+            
+        if "dev.azure.com" in request.remote_url.lower() or "visualstudio.com" in request.remote_url.lower():
+            result = await git_manager.validate_azure_devops_connection(request.remote_url, request.token)
+        else:
+            result = await git_manager.validate_github_connection(request.remote_url, request.token)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

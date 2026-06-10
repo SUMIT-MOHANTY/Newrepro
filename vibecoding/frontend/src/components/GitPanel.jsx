@@ -128,6 +128,13 @@ const GitPanel = ({
       });
       return;
     }
+    if (remoteUrl && !token.trim()) {
+      setValidationStatus({
+        status: 'error',
+        message: 'Personal Access Token (PAT) is required to clone a repository.'
+      });
+      return;
+    }
 
     setLoading(true);
     setValidationStatus({ status: 'loading', message: remoteUrl ? 'Validating & Cloning...' : 'Initializing...' });
@@ -176,6 +183,13 @@ const GitPanel = ({
       return;
     }
     if (!remoteUrl) return;
+    if (!token.trim()) {
+      setValidationStatus({
+        status: 'error',
+        message: 'Personal Access Token (PAT) is required to test the connection.'
+      });
+      return;
+    }
 
     setLoading(true);
     setValidationStatus({ status: 'loading', message: 'Validating connection...' });
@@ -306,6 +320,10 @@ const GitPanel = ({
 
   const handleSaveRemote = async () => {
     if (!projectId || !remoteUrl.trim()) return;
+    if (!token.trim()) {
+      alert('Personal Access Token (PAT) is required to save remote settings.');
+      return;
+    }
 
     setLoading(true);
     try {
@@ -596,13 +614,13 @@ const GitPanel = ({
                   <div className="space-y-4">
                     <div className="text-left">
                       <label className="block text-[10px] font-bold mb-1.5 uppercase tracking-wider pl-1" style={{ color: darkMode ? 'rgba(255, 255, 255, 0.4)' : 'rgba(0, 0, 0, 0.4)' }}>
-                        GitHub Repository URL
+                        Repository URL (GitHub / Azure DevOps)
                       </label>
                       <input
                         type="text"
                         value={remoteUrl}
                         onChange={(e) => setRemoteUrl(e.target.value)}
-                        placeholder="https://github.com/username/repo.git"
+                        placeholder="https://github.com/username/repo.git or https://dev.azure.com/org/project/_git/repo"
                         className="w-full px-4 py-3 rounded-xl text-sm transition-all outline-none"
                         style={{
                           background: darkMode ? 'rgba(255, 255, 255, 0.04)' : 'rgba(0, 0, 0, 0.02)',
@@ -619,7 +637,7 @@ const GitPanel = ({
                         type="password"
                         value={token}
                         onChange={(e) => setToken(e.target.value)}
-                        placeholder="ghp_xxxxxxxxxxxx"
+                        placeholder={remoteUrl && (remoteUrl.includes('dev.azure.com') || remoteUrl.includes('visualstudio.com')) ? "Azure DevOps PAT" : "ghp_xxxxxxxxxxxx"}
                         className="w-full px-4 py-3 rounded-xl text-sm transition-all outline-none"
                         style={{
                           background: darkMode ? 'rgba(255, 255, 255, 0.04)' : 'rgba(0, 0, 0, 0.02)',
@@ -704,7 +722,7 @@ const GitPanel = ({
                             Remote Repository
                           </h3>
                           <p className="text-xs" style={{ color: darkMode ? 'rgba(255, 255, 255, 0.4)' : 'rgba(0, 0, 0, 0.4)' }}>
-                            Connect to GitHub, GitLab, or any Git remote
+                            Connect to GitHub, Azure DevOps, GitLab, or any Git remote
                           </p>
                         </div>
                       </div>
@@ -715,13 +733,13 @@ const GitPanel = ({
                             className="block text-xs font-bold mb-2 uppercase tracking-wider"
                             style={{ color: darkMode ? 'rgba(255, 255, 255, 0.5)' : 'rgba(0, 0, 0, 0.5)' }}
                           >
-                            Repository URL
+                            Repository URL (GitHub / Azure DevOps)
                           </label>
                           <input
                             type="text"
                             value={remoteUrl}
                             onChange={(e) => setRemoteUrl(e.target.value)}
-                            placeholder="https://github.com/username/repo.git"
+                            placeholder="https://github.com/username/repo.git or https://dev.azure.com/org/project/_git/repo"
                             className="w-full px-4 py-3.5 rounded-xl transition-all outline-none"
                             style={{
                               background: darkMode ? 'rgba(255, 255, 255, 0.04)' : 'rgba(0, 0, 0, 0.03)',
@@ -788,7 +806,7 @@ const GitPanel = ({
                                 type="password"
                                 value={token}
                                 onChange={(e) => setToken(e.target.value)}
-                                placeholder="ghp_xxxxxxxxxxxx"
+                                placeholder={remoteUrl && (remoteUrl.includes('dev.azure.com') || remoteUrl.includes('visualstudio.com')) ? "Azure DevOps PAT" : "ghp_xxxxxxxxxxxx"}
                                 className="w-full pl-10 pr-4 py-3.5 rounded-xl transition-all outline-none"
                                 style={{
                                   background: darkMode ? 'rgba(255, 255, 255, 0.04)' : 'rgba(0, 0, 0, 0.03)',
@@ -810,19 +828,43 @@ const GitPanel = ({
                           </div>
                         </div>
 
-                        <div className="pt-3">
-                          <button
-                            onClick={handleSaveRemote}
-                            disabled={loading || !remoteUrl}
-                            className="w-full py-3.5 rounded-xl font-bold transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
-                            style={{
-                              background: 'linear-gradient(135deg, #8B5CF6 0%, #7C3AED 100%)',
-                              color: 'white',
-                              boxShadow: '0 4px 20px rgba(139, 92, 246, 0.3)'
-                            }}
-                          >
-                            Save Remote Settings
-                          </button>
+                        <div className="flex flex-col gap-3">
+                          <div className="flex gap-3 pt-3">
+                            <button
+                              onClick={handleValidateConnection}
+                              disabled={loading || !remoteUrl || !token}
+                              className="flex-1 py-3.5 rounded-xl font-bold transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+                              style={{
+                                background: darkMode ? 'rgba(255, 255, 255, 0.03)' : 'rgba(0, 0, 0, 0.02)',
+                                border: darkMode ? '1px solid rgba(255, 255, 255, 0.1)' : '1px solid rgba(0, 0, 0, 0.1)',
+                                color: darkMode ? 'white' : '#1a1a1a'
+                              }}
+                            >
+                              Test Connection
+                            </button>
+                            <button
+                              onClick={handleSaveRemote}
+                              disabled={loading || !remoteUrl || !token}
+                              className="flex-[2] py-3.5 rounded-xl font-bold transition-all duration-200 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+                              style={{
+                                background: 'linear-gradient(135deg, #8B5CF6 0%, #7C3AED 100%)',
+                                color: 'white',
+                                boxShadow: '0 4px 20px rgba(139, 92, 246, 0.3)'
+                              }}
+                            >
+                              Save Remote Settings
+                            </button>
+                          </div>
+                          {validationStatus.message && (
+                            <div className={cn(
+                              "p-3 rounded-xl text-[11px] font-medium animate-in fade-in slide-in-from-top-2",
+                              validationStatus.status === 'success' ? "bg-green-500/10 text-green-400 border border-green-500/20" : 
+                              validationStatus.status === 'error' ? "bg-red-500/10 text-red-400 border border-red-500/20" :
+                              "bg-blue-500/10 text-blue-400 border border-blue-500/20"
+                            )}>
+                              {validationStatus.message}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>
