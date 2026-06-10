@@ -525,6 +525,17 @@ target/
     def _run_git(self, *args, timeout: int = 30) -> str:
         """Run a git command in the workspace directory."""
         git_exe = "/usr/bin/git" if os.name != "nt" else "git"
+        
+        # Ensure safe.directory is configured before running any git command
+        try:
+            subprocess.run(
+                [git_exe, "config", "--global", "--add", "safe.directory", "/project/workspace"],
+                capture_output=True,
+                timeout=5
+            )
+        except Exception:
+            pass
+
         cmd = [git_exe] + list(args)
         try:
             result = subprocess.run(
