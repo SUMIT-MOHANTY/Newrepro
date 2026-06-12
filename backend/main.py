@@ -205,6 +205,89 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from llm_gateway import current_user_id_var, current_project_token_var
+from database import SessionLocal
+import models
+from jose import jwt
+from fastapi import Request
+
+@app.middleware("http")
+async def log_user_activities(request: Request, call_next):
+    # 1. Resolve user and project from auth token or request
+    auth_header = request.headers.get("Authorization")
+    user_id = None
+    email = None
+    if auth_header and auth_header.startswith("Bearer "):
+        try:
+            token = auth_header.split(" ")[1]
+            payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+            email = payload.get("sub")
+            if email:
+                db_session = SessionLocal()
+                try:
+                    user = db_session.query(models.User).filter(models.User.email == email).first()
+                    if user:
+                        user_id = user.id
+                finally:
+                    db_session.close()
+        except Exception:
+            pass
+
+    # Extract project token
+    project_token = request.headers.get("x-task-token") or request.headers.get("X-Task-Token")
+    if not project_token:
+        project_token = request.query_params.get("project_token")
+    if not project_token:
+        referer = request.headers.get("referer") or ""
+        if "project_token=" in referer:
+            try:
+                import urllib.parse
+                parsed = urllib.parse.urlparse(referer)
+                queries = urllib.parse.parse_qs(parsed.query)
+                token_list = queries.get("project_token")
+                if token_list:
+                    project_token = token_list[0]
+            except Exception:
+                pass
+
+    # Set context variables for LLM log tracking
+    token_user = current_user_id_var.set(user_id)
+    token_proj = current_project_token_var.set(project_token)
+
+    try:
+        response = await call_next(request)
+    finally:
+        current_user_id_var.reset(token_user)
+        current_project_token_var.reset(token_proj)
+
+    # 2. Log user activity to user_activity_logs (skip static, heartbeat, or log-polling paths to prevent db bloat)
+    path = request.url.path
+    # Ignore patterns
+    if not any(pat in path for pat in ["/static", "/favicon", "/assets", "/api/agent/tasks-list", "/api/agent/status", "/metrics", "/health"]):
+        # Create an action description
+        action = f"{request.method} {path}"
+        
+        # Log to db
+        db_session = SessionLocal()
+        try:
+            activity = models.UserActivityLog(
+                user_id=user_id,
+                action=action,
+                method=request.method,
+                path=path,
+                ip_address=request.client.host if request.client else None,
+                user_agent=request.headers.get("user-agent"),
+            )
+            db_session.add(activity)
+            db_session.commit()
+        except Exception as e:
+            logger.error(f"Failed to save user activity log: {e}")
+        finally:
+            db_session.close()
+
+    return response
+
+
 from fastapi.responses import RedirectResponse, StreamingResponse
 from coordination_api import router as coordination_router
 

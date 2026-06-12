@@ -572,4 +572,29 @@ class ShareProject(Base):
     shared_documents = relationship("SharedDocument", back_populates="share_project")
 
 
-# Update SharedDocument to include share_project_id
+class AIUsageLog(Base):
+    """Store AI usage logs for cost calculation and metrics"""
+    __tablename__ = "ai_usage_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=True)
+    project_token = Column(String, index=True, nullable=True)
+    model = Column(String, nullable=True)
+    prompt_tokens = Column(Integer, default=0)
+    completion_tokens = Column(Integer, default=0)
+    cost = Column(Float, default=0.0)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class UserActivityLog(Base):
+    """Store detailed user activity logs for security/audit tracking"""
+    __tablename__ = "user_activity_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=True)
+    action = Column(String, nullable=False)
+    method = Column(String, nullable=True)
+    path = Column(String, nullable=True)
+    ip_address = Column(String, nullable=True)
+    user_agent = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
