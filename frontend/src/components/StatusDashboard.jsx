@@ -596,7 +596,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
         setTaskListError(null);
         try {
-            const url = page > 1 ? `${API_ENDPOINTS.AGENT_TASKS}?page=${page}` : API_ENDPOINTS.AGENT_TASKS;
+            const url = page > 1 ? `${API_ENDPOINTS.AGENT_TASKS_TOTAL}?page=${page}` : API_ENDPOINTS.AGENT_TASKS_TOTAL;
             const headers = { 'Authorization': `Bearer ${token}` };
             if (hasValidTaskToken) headers['x-task-token'] = taskToken;
 
@@ -604,16 +604,18 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             if (res.ok) {
                 const data = await res.json();
                 if (Array.isArray(data)) {
-                    setTaskList(data);
-                    setTotalTaskCount(data.length);
+                    const processed = data.map(item => (item.is_completed || item.task_progress === 100) ? { ...item, taskStatus: 'Completed', task_progress: 100 } : item);
+                    setTaskList(processed);
+                    setTotalTaskCount(processed.length);
 
                 } else if (data && Array.isArray(data.results)) {
+                    const processedResults = data.results.map(item => (item.is_completed || item.task_progress === 100) ? { ...item, taskStatus: 'Completed', task_progress: 100 } : item);
                     if (append) {
-                        setTaskList(prev => [...prev, ...data.results]);
+                        setTaskList(prev => [...prev, ...processedResults]);
                     } else {
-                        setTaskList(data.results);
+                        setTaskList(processedResults);
                     }
-                    setTotalTaskCount(data.count || data.results.length);
+                    setTotalTaskCount(data.count || processedResults.length);
 
                     setNextPageUrl(data.next);
                 } else if (data && typeof data.count === 'number') {
@@ -2833,7 +2835,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         <div>
                                             <h3 className="text-sm font-bold text-app-text-main">Generated Tasks</h3>
                                             <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">
-                                                {taskList.length} of {totalTaskCount} task{totalTaskCount !== 1 ? 's' : ''} from NXDUNE{taskList.length > 0 ? ` • ${sprintCount} sprint${sprintCount !== 1 ? 's' : ''}` : ''}
+                                                {taskList.length} of {totalTaskCount} task{totalTaskCount !== 1 ? 's' : ''} • synced with NXDune{taskList.length > 0 ? ` • ${sprintCount} sprint${sprintCount !== 1 ? 's' : ''}` : ''}
                                             </p>
                                         </div>
                                     </div>

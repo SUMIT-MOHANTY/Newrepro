@@ -522,8 +522,72 @@ def _parse_task_json(content: str) -> List[Dict[str, Any]]:
         return []
 
 
+def _sanitize_repository_tree_hierarchical(repo_structure: str) -> str:
+    """Helper to strip python directories and files from src/ folders to avoid tree hallucinations"""
+    if not repo_structure:
+        return ""
+    import re
+    lines = repo_structure.split('\n')
+    cleaned_lines = []
+    path_stack = []
+    ignore_until_level = None
+    
+    for line in lines:
+        if not line.strip():
+            cleaned_lines.append(line)
+            continue
+            
+        match = re.search(r'([a-zA-Z0-9_\-\.\/]+(?:/)?)$', line)
+        if not match:
+            cleaned_lines.append(line)
+            continue
+            
+        full_name = match.group(1).strip()
+        is_dir = full_name.endswith('/')
+        name = full_name.rstrip('/')
+        
+        # Determine indentation level
+        leading_part = line[:match.start()]
+        leading_stripped = re.sub(r'[│├└─]', ' ', leading_part)
+        level = len(leading_stripped) - len(leading_stripped.lstrip(' '))
+        
+        while path_stack and path_stack[-1][0] >= level:
+            path_stack.pop()
+            
+        if is_dir:
+            path_stack.append((level, name))
+        else:
+            path_stack.append((level, name))
+            
+        current_path = "/".join([folder for _, folder in path_stack])
+        
+        # Check if we should pop out of ignored hierarchy
+        if ignore_until_level is not None:
+            if level <= ignore_until_level:
+                ignore_until_level = None
+            else:
+                if is_dir:
+                    path_stack.pop()
+                continue
+                
+        # Check if we should start ignoring python files/folders inside frontend src/app
+        if current_path.startswith("src/app") or "src/app/" in current_path:
+            is_python = name.endswith('.py') or name in ['database', 'models', 'routers', 'schemas', 'services', 'migrations', '__init__.py']
+            if is_python:
+                ignore_until_level = level
+                if is_dir:
+                    path_stack.pop()
+                continue
+                
+        cleaned_lines.append(line)
+        if not is_dir:
+            path_stack.pop()
+            
+    return "\n".join(cleaned_lines)
+
+
 def clean_repository_structure_string(repo_structure: str) -> str:
-    """Strip top-level container folder from ASCII directory tree if present"""
+    """Strip top-level container folder from ASCII directory tree if present and sanitize duplicate paths"""
     if not repo_structure:
         return ""
         
@@ -543,9 +607,10 @@ def clean_repository_structure_string(repo_structure: str) -> str:
         
         if is_container:
             cleaned_lines = lines[1:]
-            return "\n".join(cleaned_lines)
+            repo_structure = "\n".join(cleaned_lines)
             
-    return repo_structure
+    # Sanitize duplicate python folders inside frontend directories
+    return _sanitize_repository_tree_hierarchical(repo_structure)
 
 
 def _validate_task_structure(task: Dict[str, Any]) -> bool:
@@ -1222,73 +1287,14 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
         model=model,
         project_token=project_token,
     )
-    # Programmatically split TASK-00 into TASK-00A and TASK-00B
-    sprint1_tasks_split = []
     task_00 = next((t for t in sprint1_tasks if t.get("task_id") == "TASK-00"), None)
     if task_00:
-        # Create TASK-00A
-        task_00a = dict(task_00)
-        task_00a["task_id"] = "TASK-00A"
-        task_00a["taskName"] = "Project Scaffold & Toolchain Creation"
-        task_00a["task_wallet"] = 5
-        task_00a["description"] = (
-            "PHASE A BOOTSTRAP — Toolchain and manifest configuration.\n\n"
-            "This task sets up the core manifest/config files and empty directory structures for the project. "
-            "It establishes the compile and build configuration so the project can be built and run. "
-            "DO NOT write actual mock data or UI component code in this task.\n\n"
-            "[WHAT THIS TASK BUILDS]\n"
-            "1. Repository configuration: manifest files (e.g. package.json, pyproject.toml, requirements.txt, pom.xml, build.gradle, go.mod).\n"
-            "2. Toolchain configuration: tsconfig.json, vite.config.ts, tailwind.config.js, .env.example, README.md.\n"
-            "3. Skeleton directory structure: Create all necessary source and output directory roots.\n"
-            "4. Empty entry points: Create empty files for the main entry points (e.g. index.html, src/main.jsx, src/App.jsx, backend/main.py) to confirm compilation works."
-        )
-        task_00a["checklist"] = [
-            {"text": "Initialize workspace directories and toolchain configurations", "completed": False},
-            {"text": "Create core build/manifest file (e.g. package.json, requirements.txt, pom.xml, csproj)", "completed": False},
-            {"text": "Create config files (e.g. .env.example, .gitignore, README, tsconfig.json)", "completed": False},
-            {"text": "Run packaging tool install (e.g. npm install, pip install, dotnet restore, mvn dependency:resolve)", "completed": False},
-            {"text": "Verify empty build: run build command and ensure it compiles successfully with exit code 0", "completed": False}
-        ]
-        sprint1_tasks_split.append(task_00a)
-
-        # Create TASK-00B
-        task_00b = dict(task_00)
-        task_00b["task_id"] = "TASK-00B"
-        task_00b["taskName"] = "Shared Core, Styling & Mock Data Store"
-        task_00b["task_wallet"] = 5
-        task_00b["linked_tasks"] = ["TASK-00A"]
-        task_00b["description"] = (
-            "PHASE B BOOTSTRAP — Design tokens, core styling, shared component kit, and mock data stores.\n\n"
-            "Depends on TASK-00A. Creates the styling foundations, shared reusable components, and mocks that "
-            "all subsequent screen tasks will import from.\n\n"
-            "[WHAT THIS TASK BUILDS]\n"
-            "1. Styling & Design Tokens: CSS custom properties/variables for colors, typography, spacing, shadows.\n"
-            "2. Shared Reusable Component Kit: standard UI helpers (Buttons, Cards, Badges, DataTable, SearchInput, Modals, Drawer).\n"
-            "3. Global Mock Data Store: Exports typed lists/tables of realistic mock records for all domain entities.\n"
-            "4. Main Navigation Shell Layout: AppLayout.tsx with collapsible sidebar, sidebar links, top navbar, breadcrumbs, user menu dropdown."
-        )
-        task_00b["checklist"] = [
-            {"text": "Implement design token styling custom properties (colors, typography, spacing, shadows)", "completed": False},
-            {"text": "Build shared reusable UI component kit (Button, Badge, Card, Modal, Drawer, DataTable)", "completed": False},
-            {"text": "Create AppLayout.tsx collapsible sidebar layout with complete navigation shell", "completed": False},
-            {"text": "Populate global mock data store with 8-10 typed realistic records for each business entity", "completed": False},
-            {"text": "Run build verification suite: run production compilation and verify exit code is 0", "completed": False}
-        ]
-        sprint1_tasks_split.append(task_00b)
-        
-        # Add all other tasks, updating TASK-00 reference in linked_tasks
+        # Ensure TASK-00 is not split, but guarantee dependencies for other tasks
         for t in sprint1_tasks:
             if t.get("task_id") != "TASK-00":
-                t_updated = dict(t)
-                linked = t_updated.get("linked_tasks", [])
-                if "TASK-00" in linked:
-                    linked = ["TASK-00A", "TASK-00B"] + [lt for lt in linked if lt != "TASK-00"]
-                else:
-                    linked = ["TASK-00A", "TASK-00B"] + linked
-                t_updated["linked_tasks"] = linked
-                sprint1_tasks_split.append(t_updated)
-        
-        sprint1_tasks = sprint1_tasks_split
+                linked = t.setdefault("linked_tasks", [])
+                if "TASK-00" not in linked:
+                    linked.insert(0, "TASK-00")
     else:
         # Renumber starting at 1 (TASK-00 stays TASK-00)
         sprint1_tasks = _renumber_task_ids(sprint1_tasks, start_index=1)
@@ -1325,15 +1331,10 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
     for t in sprint2_tasks:
         t.setdefault("sprint",    sprints[1]["name"])
         t.setdefault("milestone", milestones[1]["name"])
-        # Guarantee TASK-00A & TASK-00B are always in linked_tasks
+        # Guarantee TASK-00 is always in linked_tasks
         linked = t.setdefault("linked_tasks", [])
-        if "TASK-00" in linked:
-            linked = ["TASK-00A", "TASK-00B"] + [lt for lt in linked if lt != "TASK-00"]
-        if "TASK-00A" not in linked:
-            linked.insert(0, "TASK-00A")
-        if "TASK-00B" not in linked:
-            idx = linked.index("TASK-00A")
-            linked.insert(idx + 1, "TASK-00B")
+        if "TASK-00" not in linked:
+            linked.insert(0, "TASK-00")
         t["linked_tasks"] = linked
     all_tasks.extend(sprint2_tasks)
 
@@ -1365,15 +1366,10 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
     for t in sprint3_tasks:
         t.setdefault("sprint",    sprints[2]["name"])
         t.setdefault("milestone", milestones[2]["name"])
-        # Guarantee TASK-00A & TASK-00B are always in linked_tasks
+        # Guarantee TASK-00 is always in linked_tasks
         linked = t.setdefault("linked_tasks", [])
-        if "TASK-00" in linked:
-            linked = ["TASK-00A", "TASK-00B"] + [lt for lt in linked if lt != "TASK-00"]
-        if "TASK-00A" not in linked:
-            linked.insert(0, "TASK-00A")
-        if "TASK-00B" not in linked:
-            idx = linked.index("TASK-00A")
-            linked.insert(idx + 1, "TASK-00B")
+        if "TASK-00" not in linked:
+            linked.insert(0, "TASK-00")
         t["linked_tasks"] = linked
     all_tasks.extend(sprint3_tasks)
 
@@ -1403,15 +1399,10 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
     for t in sprint4_tasks:
         t.setdefault("sprint",    sprints[3]["name"])
         t.setdefault("milestone", milestones[3]["name"])
-        # Guarantee TASK-00A & TASK-00B are always in linked_tasks
+        # Guarantee TASK-00 is always in linked_tasks
         linked = t.setdefault("linked_tasks", [])
-        if "TASK-00" in linked:
-            linked = ["TASK-00A", "TASK-00B"] + [lt for lt in linked if lt != "TASK-00"]
-        if "TASK-00A" not in linked:
-            linked.insert(0, "TASK-00A")
-        if "TASK-00B" not in linked:
-            idx = linked.index("TASK-00A")
-            linked.insert(idx + 1, "TASK-00B")
+        if "TASK-00" not in linked:
+            linked.insert(0, "TASK-00")
         t["linked_tasks"] = linked
     all_tasks.extend(sprint4_tasks)
 
@@ -1451,7 +1442,7 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
 
         # ── Inject repo structure ──────────────────────────────────────────────
         if repo_structure:
-            if task.get("task_id") == "TASK-00A":
+            if task.get("task_id") == "TASK-00":
                 structure_block = (
                     f"\n\n===BEGIN_DIRECTORY_STRUCTURE===\n{repo_structure}\n===END_DIRECTORY_STRUCTURE===\n\n"
                     "CRITICAL: This is the CANONICAL directory structure for the entire project. "
@@ -1464,7 +1455,7 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
                 detailed_checklist = _generate_bootstrap_checklist(repo_structure, project_name)
                 if detailed_checklist:
                     task["checklist"] = detailed_checklist
-                    logger.info(f"✅ TASK-00A: injected repo structure + {len(detailed_checklist)} checklist items")
+                    logger.info(f"✅ TASK-00: injected repo structure + {len(detailed_checklist)} checklist items")
             else:
                 structure_reference = (
                     f"\n\n===CANONICAL_REPOSITORY_STRUCTURE===\n{repo_structure}\n===END_STRUCTURE===\n\n"
@@ -1477,7 +1468,7 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
 
         # Enforce verification checklist items for other Sprint 1 tasks (Change #3 and Change #7)
         task_id = task.get("task_id", "")
-        if task_id not in ["TASK-00A", "TASK-00B"] and task.get("sprint") == sprints[0]["name"]:
+        if task_id != "TASK-00" and task.get("sprint") == sprints[0]["name"]:
             checklist = task.setdefault("checklist", [])
             
             # Check if build/dev server checks already exist to avoid duplicates
@@ -1494,6 +1485,39 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
                     "text": f"Verify file exists: run `test -f {primary_file}` and verify exit code 0",
                     "completed": False
                 })
+                
+            # --- Smart subcomponent integration check ---
+            desc_text = task.get("description", "")
+            title_text = task.get("taskName", "")
+            task_files = re.findall(r'(src/[a-zA-Z0-9_\-/]+\.(?:tsx|jsx|ts|js))', desc_text)
+            
+            # Find React component names mentioned in the description, excluding common React terms
+            matches = set(re.findall(r'\b(Task[A-Z][a-zA-Z0-9]+|[A-Z][a-zA-Z0-9]+List|[A-Z][a-zA-Z0-9]+Item|[A-Z][a-zA-Z0-9]+Filter|[A-Z][a-zA-Z0-9]+Form|[A-Z][a-zA-Z0-9]+Stats)\b', desc_text + " " + title_text))
+            
+            subcomponents = []
+            for comp in matches:
+                is_sub = True
+                for tf in task_files:
+                    if comp in tf:
+                        is_sub = False
+                        break
+                if is_sub and comp not in ['React', 'Component', 'AppLayout', 'App', 'LoadingSpinner', 'Button', 'Badge', 'Card', 'Modal', 'Drawer', 'Toast', 'EmptyState', 'PageHeader']:
+                    subcomponents.append(comp)
+            
+            if subcomponents and task_files:
+                sub_list = sorted(list(set(subcomponents)))[:3]
+                sub_check_cmds = []
+                for sub in sub_list:
+                    check_parts = [f'grep -qi "{sub}" {tf}' for tf in task_files]
+                    sub_check_cmds.append(f"({ ' || '.join(check_parts) })")
+                
+                if sub_check_cmds:
+                    verify_cmd = " && ".join(sub_check_cmds)
+                    checklist.append({
+                        "text": f"Verify subcomponent integration: ensure subcomponents {', '.join(sub_list)} are imported and referenced in the task files (run: `{verify_cmd}`)",
+                        "completed": False
+                    })
+            # --- End Smart subcomponent integration check ---
             if not has_build_check:
                 checklist.append({
                     "text": "Verify production build: run `npm run build` (or matching stack build command) and verify exit code 0 (no compile errors)",
@@ -1507,17 +1531,14 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
 
         valid_tasks.append(task)
 
-    # ── 7. Guarantee TASK-00A and TASK-00B are the first elements ──────────────
-    task_00a = next((t for t in valid_tasks if t.get("task_id") == "TASK-00A"), None)
-    task_00b = next((t for t in valid_tasks if t.get("task_id") == "TASK-00B"), None)
+    # ── 7. Guarantee TASK-00 is the first element ──────────────
+    task_00 = next((t for t in valid_tasks if t.get("task_id") == "TASK-00"), None)
     
     first_elements = []
-    if task_00a:
-        first_elements.append(task_00a)
-    if task_00b:
-        first_elements.append(task_00b)
+    if task_00:
+        first_elements.append(task_00)
         
-    valid_tasks = first_elements + [t for t in valid_tasks if t.get("task_id") not in ["TASK-00A", "TASK-00B"]]
+    valid_tasks = first_elements + [t for t in valid_tasks if t.get("task_id") != "TASK-00"]
 
     logger.info(f"[{project_token}] ✅ Sprint-wise generation complete — {len(valid_tasks)} valid tasks")
     for t in valid_tasks:

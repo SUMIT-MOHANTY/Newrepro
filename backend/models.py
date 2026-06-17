@@ -598,3 +598,165 @@ class UserActivityLog(Base):
     ip_address = Column(String, nullable=True)
     user_agent = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class ProjectRuntimeState(Base):
+    """Store active project runtime states like claimed tasks, agent state logs, etc."""
+    __tablename__ = "project_runtime_states"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_token = Column(String, unique=True, index=True, nullable=False)
+    master_tree_created = Column(Boolean, default=False)
+    claimed_task_ids = Column(JSON, default=list)  # List/Set of claimed task IDs
+    agent_states = Column(JSON, default=dict)      # Agent status & output logs
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ── Local-First State Management Models ──────────────────────────────────────
+# These models form the primary source of truth for agent orchestration.
+# NXDune is treated as a secondary synchronization layer only.
+
+class AgentTaskOwnership(Base):
+    """
+    Canonical record of which agent owns which task, written atomically at claim time.
+    Survives server restarts — eliminates the "Skipping persisted assignment restore" problem.
+    Local DB wins over NXDune for completed tasks (NXDune may have stale status).
+    """
+    __tablename__ = "agent_task_ownerships"
+    __table_args__ = (
+        UniqueConstraint("project_token", "task_id", name="uq_agent_task_ownership"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_token = Column(String, index=True, nullable=False)
+    task_id = Column(String, index=True, nullable=False)        # e.g. "TASK-01"
+    agent_id = Column(String, index=True, nullable=False)       # which agent owns it
+
+    # Task metadata snapshot (stored at claim time so agents can resume without NXDune)
+    task_title = Column(String, nullable=True)
+    task_data = Column(JSON, nullable=True)                     # Full task dict snapshot
+    task_lane = Column(String, nullable=True)                   # "frontend" | "backend" | "qa" | "devops"
+
+    # Execution lifecycle
+    status = Column(String, nullable=False, default="claimed")  # claimed | in_progress | done | failed
+    claimed_at = Column(DateTime, nullable=True, index=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    # Output artifacts
+    branch_name = Column(String, nullable=True)                 # git branch e.g. "agent/task-01-auth"
+    files_written = Column(JSON, default=list)                  # list of file paths created/modified
+    error_message = Column(Text, nullable=True)
+
+    # NXDune sync tracking
+    nxdune_synced = Column(Boolean, default=False)
+    nxdune_synced_at = Column(DateTime, nullable=True)
+    nxdune_sync_attempts = Column(Integer, default=0)
+
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ProjectCanonicalState(Base):
+    """
+    Immutable bootstrap artifacts: canonical project tree, technical spec, and tech stack.
+    Written ONCE when the bootstrap task completes successfully.
+    Subsequent writes are no-ops unless force_reset=True is explicitly passed.
+
+    All agents read from here instead of re-generating or querying NXDune.
+    Resolves: repeated canonical tree/spec regeneration across restarts.
+    """
+    __tablename__ = "project_canonical_states"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_token = Column(String, unique=True, index=True, nullable=False)
+
+    # Immutable bootstrap artifacts
+    canonical_tree = Column(Text, nullable=True)        # JSON string of the project tree
+    technical_spec = Column(Text, nullable=True)        # Full technical specification text
+    tech_stack = Column(JSON, nullable=True)            # Detected tech stack dict
+    bootstrap_branch = Column(String, nullable=True)    # Branch where bootstrap was pushed
+
+    # Domain-to-paths mapping for targeted context injection
+    # {domain: [file_paths]} — populated from canonical_tree after bootstrap
+    domain_file_map = Column(JSON, nullable=True)
+
+    # State flags
+    is_ready = Column(Boolean, default=False)           # True = bootstrap fully completed
+    force_reset = Column(Boolean, default=False)        # True = allow overwrite (admin only)
+
+    # Version tracking for debugging
+    version = Column(Integer, default=1)
+    last_agent_id = Column(String, nullable=True)       # Which agent wrote this
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AgentExecutionCheckpoint(Base):
+    """
+    Versioned snapshots of per-agent execution progress.
+    Written at each major execution milestone so agents can resume after server restart
+    without re-querying NXDune or losing progress context.
+    """
+    __tablename__ = "agent_execution_checkpoints"
+    __table_args__ = (
+        UniqueConstraint("project_token", "agent_id", name="uq_agent_execution_checkpoint"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_token = Column(String, index=True, nullable=False)
+    agent_id = Column(String, index=True, nullable=False)
+
+    # Latest task context
+    current_task_id = Column(String, nullable=True, index=True)
+    current_task_data = Column(JSON, nullable=True)     # Full task dict
+    current_task_status = Column(String, nullable=True) # "claimed" | "in_progress" | "done"
+
+    # Execution state for resume
+    progress = Column(Integer, default=0)               # 0-100
+    progress_message = Column(String, nullable=True)
+    last_milestone = Column(String, nullable=True)      # Last completed milestone name
+
+    # Files written so far in current task (for file ownership tracking)
+    files_written_so_far = Column(JSON, default=list)
+
+    # Version counter — incremented on every update
+    version = Column(Integer, default=1)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class NXDuneSyncLog(Base):
+    """
+    Audit trail of all NXDune sync attempts.
+    When NXDune updates fail, the failure is recorded here so no state is lost.
+    Agents can query this to determine if their last push reached NXDune or is pending retry.
+    No background service — the existing NXDune update flow writes here on failure.
+    """
+    __tablename__ = "nxdune_sync_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_token = Column(String, index=True, nullable=False)
+    agent_id = Column(String, index=True, nullable=True)
+    task_id = Column(String, index=True, nullable=True)
+
+    # What operation was attempted
+    operation = Column(String, nullable=False)          # "task_complete" | "progress_update" | "task_claim"
+    payload = Column(JSON, nullable=True)               # The data that was (or should be) sent to NXDune
+
+    # Result
+    success = Column(Boolean, nullable=False)
+    status_code = Column(Integer, nullable=True)
+    error_message = Column(Text, nullable=True)
+    response_body = Column(Text, nullable=True)
+
+    # Retry tracking
+    retry_count = Column(Integer, default=0)
+    last_retry_at = Column(DateTime, nullable=True)
+    permanently_failed = Column(Boolean, default=False)  # True = stop retrying
+
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+

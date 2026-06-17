@@ -305,7 +305,7 @@ class MasterTaskManager:
 
         return True
 
-    def choose_best_agent_for_task_public(
+    async def choose_best_agent_for_task_public(
         self,
         task: Dict[str, Any],
         idle_agent_ids: List[str],
@@ -317,35 +317,26 @@ class MasterTaskManager:
         Returns the agent_id of the highest-scoring agent, or ``None`` if no
         suitable agent is found.
         """
-        return self._choose_best_agent_for_task(task, idle_agent_ids)
+        return await self._choose_best_agent_for_task(task, idle_agent_ids)
     
-    def _choose_best_agent_for_task(self, task: Dict[str, Any], idle_agents: List[str]) -> str:
+    async def _choose_best_agent_for_task(self, task: Dict[str, Any], idle_agents: List[str]) -> Optional[str]:
         """Choose the best agent for a specific task using dynamic scoring based on specialization,
         skills tags, and dedicated/shared boundary enforcement."""
         if not idle_agents:
             return None
 
-        # 1. Classify the task into Testing or Development
-        title = task.get("title", "").lower()
-        description = task.get("description", "").lower()
-        task_text = f"{title} {description}"
-        task_project_token = task.get("project_token") or task.get("projectToken")
-
-        test_keywords = ["test", "qa", "assert", "check", "verify", "mock", "unittest", "pytest"]
-        is_testing = any(keyword in task_text for keyword in test_keywords)
-        classified_spec = "Testing" if is_testing else "Development"
-
-        logger.info(f"Classified task '{task.get('title')}' as specialization: {classified_spec}")
-
-        # 2. Open DB session to fetch specialization, skills_tags, AND agent kind/project binding
+        # 1. Open DB session to fetch specialization, skills_tags, AND agent kind/project binding
         agent_db_map = {}
         session = SessionLocal()
         try:
             db_agents = session.query(models.Agent).filter(models.Agent.id.in_(idle_agents)).all()
             for a in db_agents:
                 agent_db_map[a.id] = {
+                    "id": a.id,
+                    "name": a.name,
                     "specialization": a.specialization,
                     "skills_tags": a.skills_tags,
+                    "skills_summary": a.skills_content or a.skills_summary,
                     "agent_kind": "shared",       # default
                     "assigned_project_token": None # default
                 }
@@ -365,78 +356,169 @@ class MasterTaskManager:
 
         except Exception as e:
             logger.error(f"Error fetching agent data from DB: {e}")
+            return idle_agents[0]
         finally:
             session.close()
 
-        # 3. Score idle agents dynamically
-        agent_scores = {}
-        for agent_id in idle_agents:
-            agent_data = agent_db_map.get(agent_id, {})
-            score = 0
-
-            # ── Dedicated/Shared boundary enforcement ───────────────────────────
-            agent_kind = agent_data.get("agent_kind", "shared")
-            assigned_project = agent_data.get("assigned_project_token")
-
-            if agent_kind == "dedicated":
-                if task_project_token and assigned_project and assigned_project != task_project_token:
-                    # Dedicated agent is bound to a DIFFERENT project — SKIP
-                    logger.info(
-                        f"Agent {agent_id} is DEDICATED to project {assigned_project}, "
-                        f"skipping for task on project {task_project_token}"
-                    )
+        # 2. Hard Lane Check: filter candidates
+        try:
+            from agent_service import _classify_task_assignment_lane, _infer_agent_assignment_lanes
+            task_lane = _classify_task_assignment_lane(task)
+            
+            filtered_agents = []
+            for agent_id, agent_data in agent_db_map.items():
+                agent_lanes = _infer_agent_assignment_lanes(agent_id, agent_data)
+                
+                # Check dedicated project boundary
+                agent_kind = agent_data.get("agent_kind", "shared")
+                assigned_project = agent_data.get("assigned_project_token")
+                task_project_token = task.get("project_token") or task.get("projectToken")
+                
+                if agent_kind == "dedicated" and assigned_project and assigned_project != task_project_token:
+                    logger.info(f"Agent {agent_id} is dedicated to different project {assigned_project} - skipping")
                     continue
-                elif assigned_project and assigned_project == task_project_token:
-                    # Perfect dedicated match — strong bonus
-                    score += 300
-                    logger.info(f"Agent {agent_id} is DEDICATED to this project — +300 bonus")
-            else:
-                # Shared agent — eligible for any project, moderate bonus
-                score += 50
-                logger.info(f"Agent {agent_id} is SHARED — +50 bonus")
+                    
+                # Hard lane check
+                if task_lane in ["frontend", "backend", "qa", "devops"]:
+                    if task_lane not in agent_lanes:
+                        logger.info(f"[Master Task Manager] Skipping agent {agent_id} due to lane mismatch (Task: {task_lane}, Agent: {agent_lanes})")
+                        continue
+                filtered_agents.append(agent_data)
+        except Exception as le:
+            logger.warning(f"Error checking lanes: {le}")
+            filtered_agents = list(agent_db_map.values())
 
-            # ── Specialization match ────────────────────────────────────────────
-            spec = agent_data.get("specialization")
+        if not filtered_agents:
+            logger.warning("No eligible agents left after lane/boundary check")
+            return None
+
+        # If only one agent is eligible, return it immediately
+        if len(filtered_agents) == 1:
+            return filtered_agents[0]["id"]
+
+        # 3. Call AI to choose the best agent among the filtered candidates
+        try:
+            from llm_gateway import llm_gateway
+            import json
+            
+            candidate_profiles = []
+            for agent in filtered_agents:
+                skills_tags = agent.get("skills_tags", [])
+                if isinstance(skills_tags, str):
+                    try:
+                        skills_tags = json.loads(skills_tags)
+                    except Exception:
+                        skills_tags = []
+                candidate_profiles.append({
+                    "agent_id": agent["id"],
+                    "agent_name": agent["name"],
+                    "specialization": agent["specialization"],
+                    "skills_tags": skills_tags if isinstance(skills_tags, list) else [],
+                    "skills_summary": agent["skills_summary"] or ""
+                })
+                
+            task_details = {
+                "title": task.get("title") or task.get("taskName") or "",
+                "description": (task.get("description") or "")[:500],
+                "phase": task.get("phase") or task.get("task_phase") or "",
+                "domain": task.get("domain") or ""
+            }
+            
+            prompt = f"""You are a Master Agent responsible for matching a task to the most appropriate agent.
+Given the following task details and list of candidate agents, select the single best agent to perform this task.
+
+**Task Details:**
+{json.dumps(task_details, indent=2)}
+
+**Candidate Agents:**
+{json.dumps(candidate_profiles, indent=2)}
+
+**Rules:**
+1. Match the task to the agent whose skills_tags, specialization, and technical summary best fit the task's requirements.
+2. If the task is frontend React/UI/Vite, choose the agent with frontend capabilities.
+3. If the task is backend FastAPI/API/Python, choose the agent with backend capabilities.
+
+**Output Format:**
+Return ONLY a valid JSON object with the chosen "agent_id" and "reason". Example:
+{{
+  "agent_id": "agent_id_here",
+  "reason": "Explain briefly why this agent is the best fit."
+}}
+
+Do not include any other text, markdown blocks, or explanations outside the JSON."""
+
+            ai_content = await llm_gateway.call_llm_and_extract(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=1000
+            )
+            
+            if "```json" in ai_content:
+                ai_content = ai_content.split("```json")[1].split("```")[0].strip()
+            elif "```" in ai_content:
+                ai_content = ai_content.split("```")[1].split("```")[0].strip()
+                
+            res_json = json.loads(ai_content.strip())
+            best_id = res_json.get("agent_id")
+            reason = res_json.get("reason", "")
+            
+            if best_id in [a["id"] for a in filtered_agents]:
+                logger.info(f"[Master Task Manager] AI chose agent {best_id} for task '{task_details['title']}' | Reason: {reason}")
+                return best_id
+        except Exception as ai_err:
+            logger.error(f"[Master Task Manager] AI matchmaking failed: {ai_err}. Falling back to rule-based matchmaking.")
+
+        # 4. Fallback to scoring logic
+        agent_scores = {}
+        for agent in filtered_agents:
+            score = 0
+            agent_id = agent["id"]
+            
+            agent_kind = agent.get("agent_kind", "shared")
+            assigned_project = agent.get("assigned_project_token")
+            task_project_token = task.get("project_token") or task.get("projectToken")
+            
+            if agent_kind == "dedicated" and assigned_project == task_project_token:
+                score += 300
+            elif agent_kind == "shared":
+                score += 50
+                
+            title = task_details["title"].lower()
+            description = task_details["description"].lower()
+            task_text = f"{title} {description}"
+            
+            test_keywords = ["test", "qa", "assert", "check", "verify", "mock", "unittest", "pytest"]
+            is_testing = any(keyword in task_text for keyword in test_keywords)
+            classified_spec = "Testing" if is_testing else "Development"
+            
+            spec = agent.get("specialization")
             if spec and spec.strip().lower() == classified_spec.lower():
                 score += 500
-
-            # ── Skills tags keyword match ───────────────────────────────────────
-            skills_tags = agent_data.get("skills_tags")
+                
+            skills_tags = agent.get("skills_tags")
             tags = []
             if isinstance(skills_tags, list):
                 tags = skills_tags
             elif isinstance(skills_tags, str):
                 try:
-                    import json as _json
-                    tags = _json.loads(skills_tags)
+                    tags = json.loads(skills_tags)
                 except Exception:
                     pass
-
             if tags:
                 for tag in tags:
                     if tag and str(tag).lower() in task_text:
                         score += 50
-
             agent_scores[agent_id] = score
-            logger.info(f"Agent {agent_id} final score: {score} (kind: {agent_kind}, spec: {spec}, tags: {tags})")
 
-        if not agent_scores:
-            # All agents were dedicated to other projects — fall back to any idle agent
-            logger.warning("No eligible agents after kind boundary enforcement — falling back to any idle agent")
-            return idle_agents[0] if idle_agents else None
+        if agent_scores:
+            max_score = max(agent_scores.values())
+            highest_scoring_agents = [aid for aid, s in agent_scores.items() if s == max_score]
+            if len(highest_scoring_agents) == 1:
+                return highest_scoring_agents[0]
+            else:
+                return self._select_least_busy_agent(highest_scoring_agents)
 
-        # 4. Select highest-scoring agent; break ties with least-busy
-        max_score = max(agent_scores.values())
-        highest_scoring_agents = [aid for aid, s in agent_scores.items() if s == max_score]
-
-        if len(highest_scoring_agents) == 1:
-            best_agent = highest_scoring_agents[0]
-            logger.info(f"Selected highest scoring agent: {best_agent} with score {max_score}")
-            return best_agent
-        else:
-            best_agent = self._select_least_busy_agent(highest_scoring_agents)
-            logger.info(f"Tie on max score {max_score} between {highest_scoring_agents}. Selected least-busy: {best_agent}")
-            return best_agent
+        return filtered_agents[0]["id"]
     
     def _get_agent_capabilities(self, agent_id: str) -> Dict[str, List[str]]:
         """Get agent capabilities - FLEXIBLE ASSIGNMENT SYSTEM"""

@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 import uuid
+import re
 import re as _re
 from collections import Counter
 from datetime import datetime, timezone
@@ -21,7 +22,10 @@ from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 from config import settings
 import httpx
-from bootstrap_persistence import is_bootstrap_pushed, set_bootstrap_success, get_bootstrap_branch, set_bootstrap_branch
+from bootstrap_persistence import (
+    is_bootstrap_pushed, set_bootstrap_success, get_bootstrap_branch, set_bootstrap_branch,
+    guard_canonical_regeneration, get_immutable_canonical_artifacts, save_bootstrap_canonical_artifacts,
+)
 from agent_communication_hooks import broadcast_task_started, broadcast_task_completed, broadcast_task_failed, broadcast_bootstrap_waiting
 import logging
 import llm_gateway
@@ -425,6 +429,8 @@ def _is_system_agent_id(agent_id: Optional[str]) -> bool:
     if not agent_id:
         return False
     aid = str(agent_id).strip().lower()
+    if "::" in aid:
+        aid = aid.split("::")[-1]
     # Explicit system agent IDs
     if aid in {GIT_MANAGER_AGENT_ID.lower(), MASTER_AGENT_ID.lower(), DEPLOY_AGENT_ID.lower()}:
         return True
@@ -499,8 +505,37 @@ def build_external_agent_username(agent_id: Optional[str], fallback_name: Option
     source_id = raw_id.lower()
     
     # System agents keep their own ID format (preserve format for external stg-nxdune username)
-    if source_id.startswith("m_agent_") or source_id.startswith("g_agent_"):
+    if source_id.startswith("m_agent_") or source_id.startswith("g_agent_") or "::" in source_id:
         return raw_id
+
+    # 1. Query the database to resolve sequential "agentX" based on project agents list
+    try:
+        from database import SessionLocal
+        import models as db_models
+        db = SessionLocal()
+        try:
+            agent_rec = db.query(db_models.Agent).filter(db_models.Agent.id == raw_id).first()
+            if agent_rec and agent_rec.project_token:
+                project_token = agent_rec.project_token
+                # Get all agents for this project, ordered by created_at and id
+                project_agents = db.query(db_models.Agent).filter(
+                    db_models.Agent.project_token == project_token
+                ).order_by(db_models.Agent.created_at.asc(), db_models.Agent.id.asc()).all()
+                
+                # Filter out system agents
+                dev_agents = [
+                    a for a in project_agents 
+                    if not (a.id.lower().startswith("m_agent_") or a.id.lower().startswith("g_agent_") or "::" in a.id)
+                ]
+                
+                # Find the index of agent_id in dev_agents
+                for idx, a in enumerate(dev_agents):
+                    if a.id == raw_id:
+                        return f"agent{idx + 1}"
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Failed to resolve external agent username from DB: {e}")
         
     # Check for instance suffix with "#" (e.g. agent_01#2)
     if "#" in source_id:
@@ -2180,9 +2215,10 @@ async def _generate_dynamic_prompt(
     kg_context: str = "",
     cross_agent_info: str = "",
     task_messages: str = "",
-    file_ownership_block: str = "",   # Fix 3: injected by caller
+    file_ownership_block: str = "",          # Fix 3: injected by caller
     canonical_files: Optional[List[str]] = None,  # Fix 4: injected by caller
-    project_token: str = "",  # For contract store lookup
+    canonical_project_context: str = "",     # Fix 5: post-bootstrap canonical context
+    project_token: str = "",                 # For contract store lookup
 ) -> str:
     """
     LAYER 3: Dynamic Prompt Writer.
@@ -2259,6 +2295,7 @@ Description: {task_desc}
 Checklist: {checklist_text}
 {canonical_files_text}
 {contract_store_text}
+{canonical_project_context[:2500] if canonical_project_context else ""}
 TECHNICAL SPECIFICATION (from Architect Agent):
 {tech_spec[:3000] if tech_spec else "Not available."}
 
@@ -2282,8 +2319,8 @@ Write a system prompt for the Coding Agent that:
 5. Tells it what files/symbols already exist (from KG) that it should import/reference
 6. EXPLICITLY lists every file in FILE OWNERSHIP CONSTRAINTS as forbidden to overwrite
 7. Specifies the exact naming conventions to follow
-8. **CRITICAL: MUST perfectly follow the provided Canonical Project Tree (the Master Agent's structure). DO NOT invent your own file nesting or directories.**
-9. **CRITICAL: If you have ANY doubts about where to put a file, DO NOT guess. You MUST strictly follow the exact structure defined by the Master Agent. Agents cannot decide on their own entirely new architectural structures.**
+8. **CRITICAL: MUST perfectly follow the CANONICAL PROJECT CONTEXT block above. Every file path MUST match the canonical tree exactly. DO NOT invent paths or directories not shown.**
+9. **CRITICAL: The CANONICAL PROJECT CONTEXT block contains paths relevant to YOUR task's domain. All files you create MUST be in those paths. Do not create files in other agents' domains.**
 10. Ends with the shell generation rules (create files under /workspace/, use mkdir/cat/grep/sed/find, etc.)
 
 The prompt MUST include these code generation rules at the end:
@@ -2386,11 +2423,284 @@ def _detect_stack_build_commands(container_name: str, project_root: str = "/work
     return {}
 
 
+def _run_integrity_and_casing_checks(container_name: str, project_root: str) -> Optional[str]:
+    """
+    Run TSConfig strictness, Package.json script integrity, and case-sensitive import checks inside the container.
+    """
+    import subprocess
+    import json
+    
+    script_content = """import os
+import re
+import sys
+import json
+import subprocess
+
+project_root = sys.argv[1] if len(sys.argv) > 1 else "/workspace"
+violations = []
+warnings = []
+
+# --- TSConfig Check ---
+def check_tsconfig():
+    tsconfig_path = os.path.join(project_root, "tsconfig.json")
+    if not os.path.isfile(tsconfig_path):
+        return
+        
+    try:
+        git_show = subprocess.run(
+            ["git", "show", "HEAD:tsconfig.json"],
+            cwd=project_root, capture_output=True, text=True, check=True
+        )
+        head_text = git_show.stdout
+    except Exception:
+        return
+        
+    try:
+        with open(tsconfig_path, "r", encoding="utf-8", errors="ignore") as f:
+            curr_text = f.read()
+    except Exception:
+        return
+        
+    try:
+        def clean_json(text):
+            text = re.sub(r'//.*', '', text)
+            text = re.sub(r'/\\\\*.*?\\\\*/', '', text, flags=re.DOTALL)
+            return text
+            
+        head_data = json.loads(clean_json(head_text))
+        curr_data = json.loads(clean_json(curr_text))
+        
+        head_opts = head_data.get("compilerOptions", {})
+        curr_opts = curr_data.get("compilerOptions", {})
+        
+        strict_keys = [
+            "strict", "noImplicitAny", "strictNullChecks", "noUnusedLocals",
+            "noUnusedParameters", "strictBindCallApply", "strictFunctionTypes",
+            "strictPropertyInitialization", "noImplicitThis", "alwaysStrict"
+        ]
+        
+        tsconfig_violations = []
+        for key in strict_keys:
+            head_val = head_opts.get(key)
+            curr_val = curr_opts.get(key)
+            if head_val is True and curr_val is not True:
+                tsconfig_violations.append(f"'{key}' relaxed from true to {curr_val}")
+                
+        if tsconfig_violations:
+            subprocess.run(["git", "checkout", "--", "tsconfig.json"], cwd=project_root)
+            violations.append(f"TSConfig integrity violation: Modified compilerOptions strict settings: {', '.join(tsconfig_violations)}. Restored original tsconfig.json.")
+    except Exception as e:
+        warnings.append(f"TSConfig parse error: {e}")
+
+# --- Package.json Check ---
+def check_package_json():
+    package_path = os.path.join(project_root, "package.json")
+    if not os.path.isfile(package_path):
+        return
+        
+    try:
+        git_show = subprocess.run(
+            ["git", "show", "HEAD:package.json"],
+            cwd=project_root, capture_output=True, text=True, check=True
+        )
+        head_text = git_show.stdout
+    except Exception:
+        return
+        
+    try:
+        with open(package_path, "r", encoding="utf-8", errors="ignore") as f:
+            curr_text = f.read()
+    except Exception:
+        return
+        
+    try:
+        head_data = json.loads(head_text)
+        curr_data = json.loads(curr_text)
+        
+        head_scripts = head_data.get("scripts", {})
+        curr_scripts = curr_data.get("scripts", {})
+        
+        critical_scripts = ["build", "lint", "test"]
+        package_violations = []
+        for script in critical_scripts:
+            if script in head_scripts:
+                head_cmd = head_scripts[script]
+                curr_cmd = curr_scripts.get(script)
+                if not curr_cmd or curr_cmd.strip() in ["", "true", ":", "echo skip", "echo 'skip'"]:
+                    package_violations.append(f"script '{script}' was disabled or removed")
+                elif "tsc" in head_cmd and "tsc" not in curr_cmd:
+                    package_violations.append(f"script '{script}' had compiler check removed")
+                    
+        if package_violations:
+            subprocess.run(["git", "checkout", "--", "package.json"], cwd=project_root)
+            violations.append(f"Package.json integrity violation: {', '.join(package_violations)}. Restored original package.json.")
+    except Exception as e:
+        warnings.append(f"Package.json parse error: {e}")
+
+# --- Case Sensitivity Check ---
+def check_case_sensitivity():
+    src_dir = os.path.join(project_root, "src")
+    if not os.path.exists(src_dir):
+        src_dir = project_root
+        
+    extensions = (".ts", ".tsx", ".js", ".jsx")
+    import_re = re.compile(
+        r'(?:import|export)\\s+(?:type\\s+)?(?:\\*|[\\w\\s{},]+)\\s+from\\s+["\\']([^"\\']+)["\\']|'
+        r'import\\s+["\\']([^"\\']+)["\\']|'
+        r'require\\s*\\(\\s*["\\']([^"\\']+)["\\']\\s*\\)'
+    )
+    
+    def verify_path_casing(base_dir, rel_path, file_path):
+        parts = rel_path.split('/')
+        current_dir = base_dir
+        
+        for i, part in enumerate(parts):
+            if not part or part == '.':
+                continue
+            if part == '..':
+                current_dir = os.path.dirname(current_dir)
+                continue
+                
+            if not os.path.isdir(current_dir):
+                return
+                
+            try:
+                children = os.listdir(current_dir)
+            except Exception:
+                return
+                
+            is_last = (i == len(parts) - 1)
+            matched_child = None
+            casing_error = False
+            
+            if part in children:
+                matched_child = part
+            else:
+                part_lower = part.lower()
+                for child in children:
+                    if child.lower() == part_lower:
+                        matched_child = child
+                        casing_error = True
+                        break
+                    if is_last:
+                        for ext in ['.tsx', '.ts', '.jsx', '.js', '.css', '.scss', '.json']:
+                            if child.lower() == (part_lower + ext):
+                                matched_child = child
+                                casing_error = True
+                                break
+                                
+            if casing_error and matched_child:
+                violations.append(
+                    f"Case sensitivity violation in '{file_path}': "
+                    f"import refers to '{part}', but physical file on disk is '{matched_child}' in '{rel_path}'."
+                )
+                return
+                
+            if not matched_child:
+                return
+                
+            current_dir = os.path.join(current_dir, matched_child)
+
+    for root, dirs, files in os.walk(src_dir):
+        if "node_modules" in root or ".git" in root:
+            continue
+        for f in files:
+            if f.endswith(extensions):
+                file_path = os.path.join(root, f)
+                try:
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as file_obj:
+                        content = file_obj.read()
+                except Exception:
+                    continue
+                    
+                for match in import_re.finditer(content):
+                    imp = match.group(1) or match.group(2) or match.group(3)
+                    if not imp:
+                        continue
+                    resolved_base = root
+                    rel_imp = imp
+                    if imp.startswith('@/'):
+                        resolved_base = os.path.join(project_root, "src")
+                        rel_imp = imp[2:]
+                    elif not (imp.startswith('./') or imp.startswith('../')):
+                        continue
+                        
+                    verify_path_casing(resolved_base, rel_imp, os.path.relpath(file_path, project_root))
+
+check_tsconfig()
+check_package_json()
+check_case_sensitivity()
+
+print(json.dumps({"violations": violations, "warnings": warnings}))
+"""
+    try:
+        # Write script to container
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write(script_content)
+            temp_name = f.name
+            
+        # Copy to container's /tmp
+        subprocess.run(
+            ["docker", "cp", temp_name, f"{container_name}:/tmp/integrity_and_casing_checks.py"],
+            capture_output=True, check=False
+        )
+        
+        # Run it
+        run_res = subprocess.run(
+            ["docker", "exec", container_name, "python3", "/tmp/integrity_and_casing_checks.py", project_root],
+            capture_output=True, text=True, check=False
+        )
+        
+        # If python3 is not found, try python
+        if run_res.returncode == 127:
+            run_res = subprocess.run(
+                ["docker", "exec", container_name, "python", "/tmp/integrity_and_casing_checks.py", project_root],
+                capture_output=True, text=True, check=False
+            )
+            
+        # Clean up in container
+        subprocess.run(
+            ["docker", "exec", container_name, "rm", "-f", "/tmp/integrity_and_casing_checks.py"],
+            capture_output=True, check=False
+        )
+        
+        # Clean up local temp file
+        import os
+        try:
+            os.remove(temp_name)
+        except Exception:
+            pass
+            
+        if run_res.returncode == 0 and run_res.stdout.strip():
+            result_data = json.loads(run_res.stdout.strip())
+            violations = result_data.get("violations", [])
+            if violations:
+                return "\n".join(violations)
+                
+    except Exception as check_err:
+        logger.warning(f"Integrity & case check exception: {check_err}")
+        
+    return None
+
+
 def _run_build_validation_in_container(container_name: str, project_root: str = "/workspace") -> Dict[str, Any]:
     """
     DYNAMIC TECH-STACK AGNOSTIC validation inside the container to verify if code compiles and runs.
     """
     import subprocess
+    
+    # Run TSConfig / Package.json integrity checks and import casing check
+    integrity_error = _run_integrity_and_casing_checks(container_name, project_root)
+    if integrity_error:
+        logger.warning(f"Integrity/casing validation failed: {integrity_error}")
+        return {
+            "success": False,
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": f"Integrity and Import Casing Check Failed:\n{integrity_error}"
+        }
+        
     commands = _detect_stack_build_commands(container_name, project_root)
     if not commands:
         logger.info("No supported tech stack manifest found. Skipping build validation.")
@@ -3231,6 +3541,298 @@ async def _call_ai_for_code_chunked(
     return final_script, final_thought
 
 
+# ── Two-Phase Code Context Building ──────────────────────────────────────────
+
+def _build_file_snippets(project_root: str, max_chars: int = 300) -> dict:
+    """
+    Walk the workspace directory and collect first `max_chars` characters of
+    every source file. Returns {relative_path: snippet_text} for ALL files.
+
+    Used in Phase 1 context discovery so the AI understands the existing
+    codebase structure before generating new code.
+    """
+    import os as _os
+
+    snippets = {}
+    if not project_root or not _os.path.isdir(project_root):
+        return snippets
+
+    _SKIP_DIRS = {
+        ".git", "node_modules", "__pycache__", ".venv", "venv",
+        "dist", "build", ".next", ".turbo", ".pytest_cache",
+    }
+    _SKIP_EXTS = {
+        ".pyc", ".o", ".exe", ".dll", ".so", ".bin",
+        ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
+        ".pdf", ".zip", ".tar", ".gz",
+    }
+
+    for dirpath, dirnames, filenames in _os.walk(project_root):
+        # Prune ignored directories
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+
+        for fname in filenames:
+            _, ext = _os.path.splitext(fname)
+            if ext.lower() in _SKIP_EXTS:
+                continue
+
+            full_path = _os.path.join(dirpath, fname)
+            rel_path = _os.path.relpath(full_path, project_root).replace("\\", "/")
+
+            try:
+                with open(full_path, "r", encoding="utf-8", errors="replace") as fh:
+                    content = fh.read(max_chars)
+                snippets[rel_path] = content
+            except Exception:
+                pass  # Skip unreadable files silently
+
+    return snippets
+
+
+async def _phase1_context_discovery(
+    task_description: str,
+    file_snippets: dict,
+    workspace_tree: str,
+    project_root: str = "/workspace",
+    agent_id: str = "",
+) -> list:
+    """
+    Phase 1 of the two-phase code generation flow.
+
+    Makes a lightweight AI call with:
+    - Task description
+    - File snippets (first 300 chars of every workspace file)
+    - Workspace tree structure
+
+    Returns a list of relative file paths the AI wants to read in full
+    before generating code. These are then read completely and injected
+    into the Phase 2 (code generation) prompt.
+
+    If the AI call fails or returns no files, returns an empty list —
+    code generation falls back to existing context sources.
+    """
+    if not file_snippets:
+        return []
+
+    # Build the snippet map section (limit total to 12000 chars)
+    snippet_lines = []
+    total_chars = 0
+    for rel_path, snippet in sorted(file_snippets.items()):
+        line = f"\n### {rel_path}\n```\n{snippet}\n```"
+        if total_chars + len(line) > 12000:
+            snippet_lines.append("\n... (more files omitted to fit context) ...")
+            break
+        snippet_lines.append(line)
+        total_chars += len(line)
+
+    snippet_block = "".join(snippet_lines)
+
+    discovery_prompt = f"""You are analyzing an existing codebase to understand its structure before implementing a new task.
+
+## Task to Implement
+{task_description[:2000]}
+
+## Current Workspace Structure
+{workspace_tree[:3000] if workspace_tree else "(no tree available)"}
+
+## Existing File Snippets (first 300 chars each)
+{snippet_block}
+
+## Your Job
+Based on the task and the snippets above, identify which files you need to read in FULL to implement the task correctly (to understand imports, existing patterns, class definitions, API routes, etc.)
+
+Return ONLY a JSON object in this exact format:
+{{
+  "want_to_read": ["path/to/file1.py", "path/to/file2.jsx"],
+  "analysis": "Brief explanation of why these files are needed"
+}}
+
+Rules:
+- Only include files that actually exist in the snippet map above
+- Maximum 8 files
+- Prioritize files most directly related to the task (same domain, same module)
+- If no files are needed, return {{"want_to_read": [], "analysis": "No existing files needed"}}
+"""
+
+    try:
+        response = await llm_gateway.call_llm_and_extract(
+            messages=[{"role": "user", "content": discovery_prompt}],
+            temperature=0.1,
+            max_tokens=500,
+        )
+        # Parse JSON from response
+        import json as _json
+        clean = response.strip()
+        if "```json" in clean:
+            clean = clean.split("```json")[1].split("```")[0].strip()
+        elif "```" in clean:
+            clean = clean.split("```")[1].split("```")[0].strip()
+        parsed = _json.loads(clean)
+        want_to_read = parsed.get("want_to_read", [])
+        analysis = parsed.get("analysis", "")
+        # Filter to only files that exist in snippets
+        valid_files = [f for f in want_to_read if f in file_snippets]
+        logger.info(
+            f"[{agent_id}] Phase1 context discovery: AI wants to read "
+            f"{len(valid_files)} files: {valid_files}. Reason: {analysis[:100]}"
+        )
+        return valid_files
+    except Exception as disc_err:
+        logger.warning(f"[{agent_id}] Phase1 context discovery failed (non-fatal): {disc_err}")
+        return []
+
+
+async def generate_task_execution_order(
+    project_token: str,
+    tasks: list,
+    agent_id: str = "master",
+) -> dict:
+    """
+    Generate a structured task execution order after bootstrap completes.
+    Uses AI to produce a prioritized execution plan organized in waves:
+
+      Wave 0: Bootstrap (TASK-00) — always first, already done by the time this runs
+      Wave 1: Backend core — models, DB, API routes, auth (no frontend deps)
+      Wave 2: Frontend — pages, components, routing (reads from Wave 1 API)
+      Wave 3: Integration & Testing — E2E tests, CI/CD, Docker, deployment
+
+    Within each wave tasks are sorted by priority and sprint order.
+
+    Returns a dict with:
+    {
+        "order": [{"task_id": ..., "title": ..., "wave": ..., "lane": ..., "reason": ...}],
+        "waves": {"0": [...], "1": [...], "2": [...], "3": [...]},
+        "summary": "Human-readable execution plan"
+    }
+
+    This plan is stored in local state and used by agents to pick tasks
+    in the correct order.
+    """
+    if not tasks:
+        return {"order": [], "waves": {}, "summary": "No tasks to order"}
+
+    # Pre-sort tasks with the wave-based sorter to give AI a strong baseline
+    sorted_tasks = _sort_tasks_for_execution(tasks)
+
+    # Build task summary for AI
+    task_summaries = []
+    for t in sorted_tasks[:50]:  # Cap at 50 tasks for prompt size
+        tid = str(t.get("task_id") or t.get("id") or t.get("external_id") or "")
+        title = str(t.get("title") or t.get("taskName") or "Untitled")
+        desc = str(t.get("description") or "")[:200]
+        domain = str(t.get("domain") or t.get("task_domain") or "")
+        phase = str(t.get("phase") or t.get("task_phase") or "")
+        sprint = str(t.get("sprint_id") or "")
+        task_summaries.append({
+            "id": tid, "title": title, "description": desc,
+            "domain": domain, "phase": phase, "sprint": sprint,
+        })
+
+    order_prompt = f"""You are the Master Agent for a software development project. Bootstrap has completed and the project scaffold is ready.
+
+Your job: Create a precise task execution order that agents will follow.
+
+## Tasks (pre-sorted by wave heuristics):
+{json.dumps(task_summaries, indent=2)}
+
+## Wave Assignment Rules:
+- Wave 0: BOOTSTRAP ONLY (skip — already done)
+- Wave 1 (Backend Core): Database models, schemas, API routes, auth, server setup, migrations
+- Wave 2 (Frontend): React components, pages, CSS, routing, UI, forms, dashboards  
+- Wave 3 (Integration/Testing): E2E tests, unit tests, CI/CD, Docker, deployment scripts
+
+## Ordering Rules:
+1. Backend (Wave 1) ALWAYS before Frontend (Wave 2) — frontend reads backend APIs
+2. Within a wave: higher priority tasks first (critical > high > medium > low)
+3. Within same priority: earlier sprint first
+4. Dependent tasks after their dependencies
+5. QA/testing tasks go in Wave 3 (last)
+
+Return ONLY this JSON (no explanation):
+{{
+  "order": [
+    {{"task_id": "...", "title": "...", "wave": 1, "lane": "backend", "reason": "brief reason"}},
+    ...
+  ],
+  "summary": "One paragraph describing the execution strategy"
+}}"""
+
+    try:
+        response = await llm_gateway.call_llm_and_extract(
+            messages=[{"role": "user", "content": order_prompt}],
+            temperature=0.1,
+            max_tokens=3000,
+        )
+        clean = response.strip()
+        if "```json" in clean:
+            clean = clean.split("```json")[1].split("```")[0].strip()
+        elif "```" in clean:
+            clean = clean.split("```")[1].split("```")[0].strip()
+
+        result = json.loads(clean)
+        ordered = result.get("order", [])
+
+        # Organize into waves
+        waves = {"0": [], "1": [], "2": [], "3": []}
+        for item in ordered:
+            wave_key = str(item.get("wave", 1))
+            if wave_key not in waves:
+                wave_key = "1"
+            waves[wave_key].append(item)
+
+        execution_plan = {
+            "order": ordered,
+            "waves": waves,
+            "summary": result.get("summary", ""),
+            "generated_at": datetime.utcnow().isoformat(),
+            "task_count": len(ordered),
+        }
+
+        # Persist to local canonical state for agents to read
+        try:
+            from local_state_manager import get_canonical_state, save_canonical_state
+            cs = get_canonical_state(project_token) or {}
+            tech_stack = cs.get("tech_stack") or {}
+            tech_stack["task_execution_order"] = execution_plan
+            # Update canonical state with execution plan (force_reset to update sub-field)
+            save_canonical_state(
+                project_token=project_token,
+                canonical_tree=cs.get("canonical_tree"),
+                technical_spec=cs.get("technical_spec"),
+                tech_stack=tech_stack,
+                bootstrap_branch=cs.get("bootstrap_branch"),
+                agent_id=agent_id,
+                force_reset=True,
+            )
+            logger.info(
+                f"[{agent_id}] Task execution order generated and saved: "
+                f"{len(ordered)} tasks in {len([w for w in waves.values() if w])} waves"
+            )
+        except Exception as save_err:
+            logger.warning(f"[{agent_id}] Failed to persist task execution order: {save_err}")
+
+        return execution_plan
+
+    except Exception as e:
+        logger.warning(f"[{agent_id}] generate_task_execution_order failed: {e}")
+        # Fallback: build basic wave structure from the pre-sorted tasks
+        fallback_order = []
+        for t in sorted_tasks:
+            tid = str(t.get("task_id") or t.get("id") or t.get("external_id") or "")
+            title = str(t.get("title") or t.get("taskName") or "")
+            lane = _classify_task_assignment_lane(t)
+            wave_map = {"backend": 1, "frontend": 2, "qa": 3, "devops": 3,
+                        "integration": 3, "foundation": 1, "governance": 0, "general": 1}
+            wave = wave_map.get(lane, 1)
+            if "bootstrap" in title.lower() or tid.upper() == "TASK-00":
+                wave = 0
+            fallback_order.append({"task_id": tid, "title": title, "wave": wave, "lane": lane})
+        waves = {"0": [], "1": [], "2": [], "3": []}
+        for item in fallback_order:
+            waves[str(item["wave"])].append(item)
+        return {"order": fallback_order, "waves": waves, "summary": "Fallback wave-based ordering"}
+
+
 async def _call_ai_for_code(
     task_description: str,
     agent_type: str,
@@ -3360,6 +3962,54 @@ async def _call_ai_for_code(
             f"RELEVANT CODEBASE CONTEXT (from Knowledge Graph analysis):\n"
             f"{code_context}\n\n---\n"
         )
+
+    # Layer 3.5: Two-Phase Deep Context (Phase 1 discovery → Phase 2 full file reads)
+    # This runs when we have a project root on disk (not bootstrap task which builds from scratch)
+    _is_bootstrap_call = "bootstrap" in task_description.lower() or "TASK-00" in task_description
+    if not _is_bootstrap_call and project_root and project_root != "/workspace":
+        try:
+            import os as _ctx_os
+            if _ctx_os.path.isdir(project_root):
+                # Phase 1: Build snippet map of ALL workspace files (first 300 chars each)
+                file_snippets = _build_file_snippets(project_root, max_chars=300)
+                if file_snippets:
+                    logger.info(
+                        f"[{agent_id}] Phase1: collected snippets from {len(file_snippets)} workspace files"
+                    )
+                    # Phase 1 AI call: discover which files to read in full
+                    files_to_read = await _phase1_context_discovery(
+                        task_description=task_description,
+                        file_snippets=file_snippets,
+                        workspace_tree=workspace_tree,
+                        project_root=project_root,
+                        agent_id=agent_id,
+                    )
+                    # Phase 2: Read requested files in full and inject as deep context
+                    if files_to_read:
+                        deep_context_parts = [
+                            "DEEP CODEBASE CONTEXT (full file contents — read carefully before generating):\n"
+                        ]
+                        for rel_file in files_to_read[:8]:  # Cap at 8 files
+                            full_path = _ctx_os.path.join(project_root, rel_file.replace("/", _ctx_os.sep))
+                            try:
+                                with open(full_path, "r", encoding="utf-8", errors="replace") as fh:
+                                    content = fh.read(8000)  # Max 8KB per file
+                                deep_context_parts.append(
+                                    f"\n### {rel_file}\n```\n{content}\n```\n"
+                                )
+                                logger.info(f"[{agent_id}] Deep read: {rel_file} ({len(content)} chars)")
+                            except Exception as read_err:
+                                logger.debug(f"[{agent_id}] Could not deep-read {rel_file}: {read_err}")
+
+                        if len(deep_context_parts) > 1:
+                            user_parts.append(
+                                "".join(deep_context_parts) + "\n"
+                                "⚠️ Use the FULL FILE CONTENTS above to understand existing patterns, "
+                                "imports, function signatures, and class structures. "
+                                "Your generated code MUST be compatible with these existing files.\n\n---\n"
+                            )
+        except Exception as phase1_err:
+            logger.warning(f"[{agent_id}] Two-phase context building failed (non-fatal): {phase1_err}")
 
     # Layer 4: Peer context (what other agents have already built)
     if peer_context:
@@ -5324,6 +5974,58 @@ async def _mark_repo_bootstrap_result(
     if success and source_branch:
         set_bootstrap_success(project_token, bootstrap_branch=source_branch)  # Persistent bootstrap state + branch
         set_bootstrap_branch(project_token, source_branch)  # Redundant but ensures branch is persisted
+        # Also persist to ProjectCanonicalState (local-first immutable store)
+        # This enables guard_canonical_regeneration() to return True on restart
+        try:
+            _canonical_state = state.get("master_note_payload") or {}
+            _workspace_tree = _canonical_state.get("workspace_tree") or ""
+            _tech_spec = _canonical_state.get("tech_spec") or ""
+            _tech_stack = _canonical_state.get("tech_stack") or {}
+            if _workspace_tree or _tech_spec:
+                save_bootstrap_canonical_artifacts(
+                    project_token=project_token,
+                    canonical_tree=_workspace_tree,
+                    technical_spec=_tech_spec,
+                    tech_stack=_tech_stack,
+                    bootstrap_branch=source_branch,
+                    agent_id=source_agent,
+                )
+                logger.info(f"[{source_agent}] ✅ Canonical artifacts persisted to local DB (tree={len(_workspace_tree)} chars)")
+
+                # ── GENERATE TASK EXECUTION ORDER ──────────────────────────────
+                # After bootstrap, generate AI-driven wave-based execution plan:
+                # Wave 1 (Backend) → Wave 2 (Frontend) → Wave 3 (Integration/QA)
+                # This plan is persisted to canonical state and read by all agents.
+                try:
+                    _exec_tasks = await _fetch_external_tasks(project_token)
+                    if _exec_tasks:
+                        _exec_plan = await generate_task_execution_order(
+                            project_token=project_token,
+                            tasks=_exec_tasks,
+                            agent_id=source_agent,
+                        )
+                        # Log plan summary to master agent output
+                        _wave_summary = ", ".join(
+                            f"Wave {w}: {len(ts)} task(s)"
+                            for w, ts in (_exec_plan.get("waves") or {}).items()
+                            if ts
+                        )
+                        _log_master_agent(
+                            f"📋 Task execution order generated: {_wave_summary}\n"
+                            f"Strategy: {(_exec_plan.get('summary') or '')[:200]}",
+                            project_token=project_token,
+                        )
+                        logger.info(
+                            f"[{source_agent}] Task execution order: "
+                            f"{_exec_plan.get('task_count', 0)} tasks ordered in waves"
+                        )
+                except Exception as _order_err:
+                    logger.warning(
+                        f"[{source_agent}] Task execution order generation failed (non-critical): {_order_err}"
+                    )
+                # ───────────────────────────────────────────────────────────────
+        except Exception as _can_err:
+            logger.warning(f"[{source_agent}] Canonical artifact persistence failed (non-critical): {_can_err}")
     else:
         set_bootstrap_success(project_token)  # Persistent bootstrap state
     logger.info(f"[{source_agent}] Bootstrap flag set for project {project_token} (branch: {source_branch})")
@@ -8744,7 +9446,7 @@ def _scan_live_repo_tree_from_container(
         return ""
 
 
-def _setup_git_in_container(container_name: str, repo_url: str, token: str, branch_name: str) -> Dict[str, Any]:
+def _setup_git_in_container(container_name: str, repo_url: str, token: str, branch_name: str, project_token: Optional[str] = None) -> Dict[str, Any]:
     """
     Verify toolchain, clone repo into /workspace/, and create the working branch.
     Also detects whether bootstrap coordination is required.
@@ -8919,7 +9621,23 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
         if not repo_empty:
             default_branch = _get_default_branch(container_name)
             has_structure = _repo_has_project_structure(container_name)
-            needs_bootstrap = not has_structure
+            # ── DB-BACKED BOOTSTRAP CHECK ──────────────────────────────────────
+            # A repo with files does NOT mean TASK-00 was executed by our agents.
+            # If the DB says bootstrap was never pushed, we MUST treat it as
+            # needing bootstrap regardless of what files exist in git.
+            # This prevents the "repo has a README" false positive where all agents
+            # skip TASK-00 and start executing their feature tasks from an empty scaffold.
+            _db_says_bootstrap_done = is_bootstrap_pushed(project_token) if project_token else False
+            if has_structure and not _db_says_bootstrap_done:
+                # Repo has files but DB doesn't know about a bootstrap push.
+                # Trust the DB: treat as needing bootstrap so TASK-00 runs.
+                logger.info(
+                    f"Repo has structure but DB shows bootstrap not pushed — "
+                    f"forcing needs_bootstrap=True to ensure TASK-00 runs first"
+                )
+                needs_bootstrap = True
+            else:
+                needs_bootstrap = not has_structure
 
         checkout_cmd = ["git", "checkout", "-B", branch_name]
         if repo_empty:
@@ -9500,6 +10218,69 @@ def _exec_script_in_container(container_name: str, code: str, script_label: str 
             "stderr": "Empty build script",
             "error": "empty_script",
         }
+    
+    # ── Path & Directory Preprocessing for Build Resilience ────────
+    import re
+    import subprocess
+    has_frontend_src = False
+    try:
+        check_res = subprocess.run(
+            ["docker", "exec", container_name, "test", "-d", "/workspace/frontend/src"],
+            capture_output=True, timeout=5
+        )
+        if check_res.returncode == 0:
+            has_frontend_src = True
+    except Exception:
+        pass
+        
+    src_prefix = "frontend/src/" if has_frontend_src else "src/"
+    
+    # Match standalone folder names that are not preceded by src/ or frontend/src/ or backend/ or app/
+    folder_pattern = r'\b(?:(src|frontend/src|frontend|backend|app)/)?\b(components|hooks|pages|styles|services|utils|ui|layout|common)\b'
+    
+    def path_replacer(m):
+        prefix = m.group(1)
+        folder = m.group(2)
+        if prefix:
+            return m.group(0)
+        return f"{src_prefix}{folder}"
+        
+    lines = script_body.split('\n')
+    processed_lines = []
+    in_eof = False
+    eof_marker = "EOF"
+    
+    for line in lines:
+        line_stripped = line.strip()
+        
+        # Check for EOF block end
+        if in_eof and line_stripped == eof_marker:
+            in_eof = False
+            processed_lines.append(line)
+            continue
+            
+        if in_eof:
+            processed_lines.append(line)
+            continue
+            
+        # Check for EOF block start
+        marker_match = re.search(r'<<\s*[\'"]?([a-zA-Z0-9_\-]+)[\'"]?', line_stripped)
+        if marker_match:
+            eof_marker = marker_match.group(1)
+            in_eof = True
+            
+        # Perform path prefix correction
+        processed_line = re.sub(folder_pattern, path_replacer, line)
+        
+        # Ensure parent directory exists for file writes
+        redir_match = re.search(r'(?:>\s*|>>\s*)([a-zA-Z0-9_\-\./]+/[a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9]+)', processed_line)
+        if redir_match:
+            filepath = redir_match.group(1)
+            processed_line = f'mkdir -p $(dirname "{filepath}") && {processed_line}'
+            
+        processed_lines.append(processed_line)
+        
+    script_body = '\n'.join(processed_lines)
     
     # ULTRA-AGGRESSIVE SCRIPT CLEANING - Remove ALL problematic content
     logger.info(f"Original script length: {len(script_body)} chars")
@@ -10132,18 +10913,10 @@ async def _fetch_external_tasks(
                 "_project_token": project_token,
             })
 
-        def _task_sort_key(task: Dict[str, Any]):
-            sprint_rank = _to_int(task.get("sprint_id"))
-            milestone_rank = _to_int(task.get("milestone_id"))
-            return (
-                sprint_rank if sprint_rank is not None else 10**9,
-                milestone_rank if milestone_rank is not None else 10**9,
-                _safe_date_key(task.get("startdate")),
-                _safe_date_key(task.get("deadline")),
-                str(task.get("title") or "").lower(),
-                str(task.get("id") or ""),
-            )
-        normalized.sort(key=_task_sort_key)
+        # NOTE: Do NOT sort here — _sort_tasks_for_execution (wave-based) is the single
+        # canonical sort. Pre-sorting by sprint/milestone overwrites the wave order and
+        # causes bootstrap (Wave 0) to land after sprint-1 tasks if its sprint_id is higher.
+        # Tasks are sorted once by the caller via _sort_tasks_for_execution().
         return normalized
     except Exception as e:
         error_msg = str(e)
@@ -10346,13 +11119,59 @@ async def _restore_persisted_agent_assignments(
     if not target_agent_ids:
         return {"count": 0, "recovered": []}
 
+    # ── LOCAL DB RESTORE (Fix: replaces fragile 2-min in-memory cache) ─────────
+    # Check local DB FIRST — this survives server restarts unlike restore_meta.
+    # The in-memory cache below is kept as a fast-path for repeat calls within the same session.
+    try:
+        from local_state_manager import restore_agent_assignments_from_local_db
+        local_restored = restore_agent_assignments_from_local_db(
+            project_token=project_token or "",
+            agent_ids=target_agent_ids,
+        )
+        if local_restored:
+            # Apply local DB restorations directly to agent states
+            async with task_claim_lock:
+                for restored_agent_id, restored_task in local_restored.items():
+                    agent = agent_states.get(restored_agent_id)
+                    if not agent:
+                        continue
+                    task_id = restored_task.get("_local_task_id") or _task_identity(restored_task)
+                    if not task_id:
+                        continue
+                    # Don't overwrite a task that's actively running
+                    current_tid = _task_identity(agent.get("current_task"))
+                    if current_tid and current_tid == task_id:
+                        continue
+                    agent["current_task"] = restored_task
+                    agent["resume_pending_task"] = True
+                    agent["progress"] = agent.get("progress") or 0
+                    agent["progress_message"] = (
+                        f"Ready to resume: {str(restored_task.get('title') or 'Untitled task')[:80]}"
+                    )
+                    claimed_task_ids.add(task_id)
+                    logger.info(f"[AssignRestore] Restored {restored_agent_id} → {task_id} from local DB")
+            restore_meta.update({
+                "completed": True,
+                "completed_at": time.time(),
+                "task_token": effective_token,
+                "count": len(local_restored),
+                "source": "local_db",
+            })
+            return {
+                "count": len(local_restored),
+                "recovered": [{"agent_id": aid, "task_id": t.get("_local_task_id"), "source": "local_db"}
+                              for aid, t in local_restored.items()],
+            }
+    except Exception as local_restore_err:
+        logger.warning(f"[AssignRestore] Local DB restore failed (falling back to NXDune): {local_restore_err}")
+
     now = time.time()
     last_restore_at = restore_meta.get("completed_at", 0)
     if (
         not force
         and str(restore_meta.get("task_token") or "").strip() == str(effective_token or "").strip()
         and restore_meta.get("completed") is True
-        and (now - last_restore_at < 120)  # 2 minutes cache
+        and (now - last_restore_at < 120)  # 2 minutes in-session cache (fallback only)
     ):
         return {
             "count": 0,
@@ -11205,6 +12024,31 @@ def _build_deterministic_master_tree(
     return _render_tree_from_paths(file_paths, directory_paths, root_label=root_label, output_format="json")
 
 
+def is_task_in_agent_lanes(task_lane: str, agent_lanes: set) -> bool:
+    """
+    Returns True if the agent is allowed to work on a task with the given lane.
+
+    Strict skill-based enforcement (as per user requirement):
+    - 'general' tasks: any agent can take them (no skill restriction).
+    - Agents with ONLY 'general' lane (no skills configured): can take any task
+      for backwards compatibility with legacy/unconfigured agents.
+    - Agents with specific skill lanes: MUST match the task lane — IDLE otherwise.
+      A Frontend Dev agent stays IDLE on backend tasks indefinitely.
+      A QA agent stays IDLE on frontend/backend tasks indefinitely.
+    - This is intentional: agents work strictly within their skill boundaries.
+    """
+    if not task_lane or task_lane == "general":
+        return True  # Any agent can handle general/unclassified tasks
+
+    specific_lanes = agent_lanes - {"general"}
+    if not specific_lanes:
+        # Truly unspecialized agent (no skills configured) — backwards compat
+        return True
+
+    # Specialized agent: strict lane enforcement — stay IDLE if no match
+    return task_lane in specific_lanes
+
+
 def _sanitize_master_planned_files(
     paths: List[str],
     *,
@@ -11371,27 +12215,53 @@ def _workspace_contract_signature(workspace_contract: Optional[Dict[str, Any]] =
 
 
 def _classify_task_assignment_lane(task: Dict[str, Any]) -> str:
-    phase = str(task.get("phase") or task.get("task_phase") or "").strip().lower()
+    def clean_description(desc: Optional[str]) -> str:
+        if not desc:
+            return ""
+        parts = re.split(r"===canonical_repository_structure===", desc, flags=re.IGNORECASE)
+        return parts[0]
+
+    def has_token(combined: str, token: str) -> bool:
+        if token in ("ci", "cd", "qa", "ui"):
+            return bool(re.search(rf"\b{token}\b", combined))
+        return token in combined
+
+    # Check title for qa/devops/governance first
+    title_text = str(task.get("title") or task.get("taskName") or "").lower()
+    if any(has_token(title_text, token) for token in ("test", "jest", "pytest", "cypress", "qa", "smoke", "accessibility")):
+        return "qa"
+    if any(has_token(title_text, token) for token in ("deploy", "docker", "infra", "ci", "cd", "release", "observability", "monitor")):
+        return "devops"
+    if any(has_token(title_text, token) for token in ("governance", "compliance", "risk", "audit", "brd", "policy", "regulation", "assessment")):
+        return "governance"
+
+    phase = str(task.get("task_phase") or task.get("phase") or "").strip().lower()
     domain = str(_normalize_task_domain(task) or "").strip().lower()
+    
     predicted_files = [
         str(path or "").strip().lower()
         for path in _predict_task_file_intents(task)
         if str(path or "").strip()
     ]
+    
+    desc = clean_description(task.get("description"))
+    
     combined = " ".join(
         [
             phase,
             domain,
             str(task.get("title") or task.get("taskName") or ""),
-            str(task.get("description") or ""),
+            desc,
             " ".join(predicted_files),
         ]
     ).lower()
 
-    if any(token in combined for token in ("test", "jest", "pytest", "cypress", "qa", "smoke", "accessibility")):
+    if any(has_token(combined, token) for token in ("test", "jest", "pytest", "cypress", "qa", "smoke", "accessibility")):
         return "qa"
-    if any(token in combined for token in ("deploy", "docker", "infra", "ci", "cd", "release", "observability", "monitor")):
+    if any(has_token(combined, token) for token in ("deploy", "docker", "infra", "ci", "cd", "release", "observability", "monitor")):
         return "devops"
+    if any(has_token(combined, token) for token in ("governance", "compliance", "risk", "audit", "brd", "policy", "regulation", "assessment")):
+        return "governance"
     if phase.startswith("frontend") or domain == "frontend":
         return "frontend"
     if phase.startswith("backend") or domain == "backend":
@@ -11404,18 +12274,50 @@ def _classify_task_assignment_lane(task: Dict[str, Any]) -> str:
         return "frontend"
     if any(token in combined for token in ("fastapi", "express", "api", "service", "route", "database", "schema", "python", "node")):
         return "backend"
+        
     return "general"
+
+
 
 
 def _infer_agent_assignment_lanes(agent_id: str, agent_state: Optional[Dict[str, Any]] = None) -> set[str]:
     """
     Infer agent assignment lanes based on agent metadata, skills_tags, and specialization.
+
     Priority: skills_tags > specialization > name/type pattern matching
+
+    Lanes supported:
+        frontend, backend, qa, devops, governance, integration, general
+
+    SKILL-BASED GOVERNANCE:
+    Governance agents are matched by their skills_tags (e.g. ["governance", "compliance",
+    "risk", "brd", "requirements"]), NOT by a hard-coded type check. This means:
+    - A governance agent with governance skills only works on governance tasks.
+    - If a governance agent also has backend skills, it can also work backend tasks.
+    - A governance agent with NO specific skills defaults to 'general' (can work any task).
+    This resolves the user requirement: agents are assigned tasks based on skills,
+    not hardcoded categories.
     """
     state = agent_state if isinstance(agent_state, dict) else {}
+
+    # PRIORITY 1: Delegate to local_state_manager for canonical skill parsing
+    # This covers: frontend, backend, qa, devops, governance, integration lanes
+    # and handles both list and JSON-string skills_tags formats.
+    try:
+        from local_state_manager import get_agent_lanes_from_skills
+        skills_tags = state.get("skills_tags")
+        specialization = str(state.get("specialization") or "").strip().lower()
+        lanes = get_agent_lanes_from_skills(agent_id, skills_tags, specialization)
+        # Return immediately if ANY specific lane was found (not just "general").
+        # Previously len(lanes) > 1 caused single-lane agents (e.g., only "frontend")
+        # to fall through to pattern matching, potentially adding wrong extra lanes.
+        if lanes - {"general"}:  # Has at least one specific lane
+            return lanes
+    except Exception:
+        pass
+
+    # PRIORITY 2 (fallback): Legacy inline tag matching for backwards compatibility
     lanes = {"general"}
-    
-    # PRIORITY 1: Check skills_tags (most reliable)
     skills_tags = state.get("skills_tags")
     tags = []
     if isinstance(skills_tags, list):
@@ -11426,12 +12328,9 @@ def _infer_agent_assignment_lanes(agent_id: str, agent_state: Optional[Dict[str,
             tags = _json.loads(skills_tags)
         except Exception:
             pass
-    
+
     if tags:
-        # Convert tags to lowercase for matching
         tags_lower = [str(tag).lower() for tag in tags if tag]
-        
-        # Map tags to lanes
         if any(tag in tags_lower for tag in ["frontend", "react", "vue", "angular", "ui", "web", "component", "vite", "tailwind", "css", "html", "javascript", "typescript"]):
             lanes.add("frontend")
         if any(tag in tags_lower for tag in ["backend", "api", "server", "python", "node", "express", "fastapi", "django", "flask", "database", "sql", "sqlite", "postgres", "mysql"]):
@@ -11440,29 +12339,29 @@ def _infer_agent_assignment_lanes(agent_id: str, agent_state: Optional[Dict[str,
             lanes.add("qa")
         if any(tag in tags_lower for tag in ["devops", "infra", "infrastructure", "deploy", "deployment", "release", "ops", "docker", "kubernetes", "ci", "cd"]):
             lanes.add("devops")
+        if any(tag in tags_lower for tag in ["governance", "compliance", "risk", "audit", "policy", "brd", "requirements", "business", "analysis", "assessment"]):
+            lanes.add("governance")
         if any(tag in tags_lower for tag in ["integration", "fullstack", "full-stack", "shared"]):
             lanes.add("integration")
-        
-        # If we found specific lanes from tags, return early (most reliable)
-        if len(lanes) > 1:  # More than just "general"
+        if len(lanes) > 1:
             return lanes
-    
-    # PRIORITY 2: Check specialization field
+
+    # PRIORITY 3: Specialization field
     specialization = str(state.get("specialization") or "").strip().lower()
     if specialization:
-        if specialization in ["testing", "qa", "quality"]:
-            lanes.add("qa")
-        elif specialization in ["development", "dev", "developer"]:
-            # Development is broad, check type or name for more specificity
-            pass
-        elif specialization in ["devops", "operations"]:
-            lanes.add("devops")
-        elif specialization in ["frontend"]:
-            lanes.add("frontend")
-        elif specialization in ["backend"]:
-            lanes.add("backend")
-    
-    # PRIORITY 3: Fallback to name/type pattern matching
+        _SPEC_MAP = {
+            "testing": "qa", "qa": "qa", "quality": "qa",
+            "devops": "devops", "operations": "devops",
+            "frontend": "frontend",
+            "backend": "backend",
+            "governance": "governance", "compliance": "governance",
+            "integration": "integration",
+        }
+        mapped = _SPEC_MAP.get(specialization)
+        if mapped:
+            lanes.add(mapped)
+
+    # PRIORITY 4: Fallback name/type pattern matching
     combined = " ".join(
         [
             str(agent_id or ""),
@@ -11635,18 +12534,40 @@ async def _build_master_recommended_assignments(
         agent.get("skills_tags") or agent.get("skills_summary") or agent.get("specialization")
         for agent in worker_agents
     )
-    
-    if use_ai_assignment and has_skills_data and len(worker_agents) > 1:
+
+    # ── BOOTSTRAP GATE: Only allow the bootstrap task in AI assignment if bootstrap not yet done ──
+    # Without this, the AI sees ALL tasks and may assign TASK-01/TASK-02 to agents before
+    # TASK-00 is executed — those agents then bypass the bootstrap scaffold.
+    _bootstrap_done = is_bootstrap_pushed(project_token)
+    if not _bootstrap_done:
+        _tasks_for_ai = [
+            t for t in tasks
+            if (
+                str(t.get("task_id") or t.get("external_task_id") or "").strip().upper() == "TASK-00"
+                or "project bootstrap" in str(t.get("title") or t.get("taskName") or "").strip().lower()
+            )
+        ]
+        if not _tasks_for_ai:
+            _tasks_for_ai = tasks  # No bootstrap task found — fall back to all tasks
+        else:
+            _log_master_agent(
+                f"🛡️ Bootstrap gate active: restricting AI assignment to {len(_tasks_for_ai)} bootstrap task(s) only",
+                project_token=project_token,
+            )
+    else:
+        _tasks_for_ai = tasks
+
+    if use_ai_assignment and has_skills_data and len(worker_agents) > 1 and _tasks_for_ai:
         _log_master_agent(
-            f"🤖 Attempting AI-based task assignment for {len(tasks)} tasks across {len(worker_agents)} agents",
+            f"🤖 Attempting AI-based task assignment for {len(_tasks_for_ai)} tasks across {len(worker_agents)} agents",
             project_token=project_token,
         )
         ai_assignments = await _ai_assign_tasks_to_agents(
-            tasks=tasks,
+            tasks=_tasks_for_ai,
             agents=worker_agents,
             project_token=project_token,
         )
-        
+
         if ai_assignments:
             _log_master_agent(
                 f"✅ AI successfully assigned {len(ai_assignments)} tasks",
@@ -15790,6 +16711,28 @@ def _sort_tasks_for_execution(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any
 
 
 def _normalize_task_domain(task: Dict[str, Any]) -> Optional[str]:
+    def clean_description(desc: Optional[str]) -> str:
+        if not desc:
+            return ""
+        parts = re.split(r"===canonical_repository_structure===", desc, flags=re.IGNORECASE)
+        return parts[0]
+
+    def has_token(combined: str, token: str) -> bool:
+        if token in ("ci", "cd", "qa", "ui"):
+            return bool(re.search(rf"\b{token}\b", combined))
+        return token in combined
+
+    # 1. Try to classify based on title first
+    title_text = str(task.get("title") or task.get("taskName") or "").lower()
+    
+    # Check for backend keywords in title
+    if any(has_token(title_text, t) for t in ("fastapi", "database", "schema", "sql", "python", "backend", "api", "crud", "sqlalchemy", "alembic")):
+        return "backend"
+    # Check for frontend keywords in title
+    if any(has_token(title_text, t) for t in ("react", "vite", "tsx", "jsx", "component", "css", "scss", "page", "frontend", "ui", "screen", "modal", "dashboard", "button", "filter", "stats", "navigation")):
+        return "frontend"
+
+    # Fallback to description
     raw_domain = str(task.get("domain") or task.get("task_domain") or "").lower().strip()
     if raw_domain in {"backend", "frontend", "integration", "foundation"}:
         return raw_domain
@@ -15804,13 +16747,12 @@ def _normalize_task_domain(task: Dict[str, Any]) -> Optional[str]:
     if phase == "foundation":
         return "foundation"
 
-    text = " ".join(
-        str(task.get(part) or "")
-        for part in ("title", "taskName", "description")
-    ).lower()
-    if any(token in text for token in ("react", "frontend", "ui", "component", "vite", "css", "jsx", "tsx")):
+    desc = clean_description(task.get("description"))
+    text = " ".join([str(task.get("title") or task.get("taskName") or ""), desc]).lower()
+    
+    if any(has_token(text, token) for token in ("react", "frontend", "ui", "component", "vite", "css", "jsx", "tsx")):
         return "frontend"
-    if any(token in text for token in ("backend", "api", "database", "schema", "sql", "fastapi", "python")):
+    if any(has_token(text, token) for token in ("backend", "api", "database", "schema", "sql", "fastapi", "python")):
         return "backend"
 
     return raw_domain or None
@@ -15885,6 +16827,12 @@ def _predict_task_file_intents(task: Dict[str, Any]) -> List[str]:
             task["_predicted_files_source"] = "provided"
         return predicted
 
+    def clean_description(desc: Optional[str]) -> str:
+        if not desc:
+            return ""
+        parts = re.split(r"===canonical_repository_structure===", desc, flags=re.IGNORECASE)
+        return parts[0]
+
     candidates: List[str] = []
     for key in (
         "affected_files",
@@ -15900,7 +16848,7 @@ def _predict_task_file_intents(task: Dict[str, Any]) -> List[str]:
 
     _extend_paths_from_value(candidates, task.get("title"))
     _extend_paths_from_value(candidates, task.get("taskName"))
-    _extend_paths_from_value(candidates, task.get("description"))
+    _extend_paths_from_value(candidates, clean_description(task.get("description")))
     _extend_paths_from_value(candidates, task.get("summary"))
     _extend_paths_from_value(candidates, task.get("acceptance_criteria"))
     _extend_paths_from_value(candidates, task.get("checklist"))
@@ -16014,6 +16962,328 @@ def _check_task_conflicts(
     return False, ""
 
 
+async def _post_task_message(task: Dict[str, Any], message: str, project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
+    """Post task message attempting NXDune sync ONCE. Proceeds immediately on success or failure."""
+    from task_service import task_service
+    task_id = _normalize_task_id(task)
+    if not task_id:
+        return False
+    resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
+    
+    try:
+        await task_service.post_task_message({
+            "task_id": task_id,
+            "message": message
+        }, task_token=task_token or get_project_task_token(resolved_project))
+        return True
+    except Exception as e:
+        logger.warning(f"[agent_service] NXDune post_message failed for task {task_id} (proceeding locally): {e}")
+        # Log failed sync
+        _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
+        if resolved_project and _local_agent_id:
+            try:
+                from local_state_manager import log_nxdune_sync
+                log_nxdune_sync(
+                    project_token=resolved_project,
+                    operation="task_message",
+                    success=False,
+                    agent_id=_local_agent_id,
+                    task_id=str(task_id),
+                    error_message=str(e)[:500],
+                    payload={"task_id": task_id, "message": message}
+                )
+            except Exception:
+                pass
+        return True
+
+
+async def _post_task_progress(task: Dict[str, Any], progress: int, additional_info: str = None,
+                              project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
+    """Post task progress attempting NXDune sync ONCE. Updates local state and proceeds immediately on success or failure."""
+    from task_service import task_service
+    task_id = _normalize_task_id(task)
+    if not task_id:
+        return False
+    resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
+    state = _ensure_project_state(resolved_project)
+    task_key = str(task_id)
+    last_progress = state["task_progress_state"].get(task_key)
+    if last_progress is not None and progress < last_progress:
+        logger.info(
+            f"[agent_service] Skipping progress for task {task_id}: "
+            f"cannot decrease from {last_progress} to {progress}"
+        )
+        return False
+    timer_active = state["timer_log_state"].get(task_key, False)
+    terminal_progress = progress in (0, 100)
+    if not timer_active and not terminal_progress:
+        logger.info(
+            f"[agent_service] Skipping progress for task {task_id}: "
+            "no successful clock_in recorded"
+        )
+        return False
+        
+    try:
+        payload = {
+            "task_id": task_id,
+            "task_progress": progress,
+        }
+        if additional_info:
+            payload["additional_info"] = additional_info
+        effective_token = task_token or get_project_task_token(resolved_project)
+        await task_service.update_task_progress(payload, task_token=effective_token)
+        
+        # Log successful sync
+        _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
+        if resolved_project and _local_agent_id:
+            try:
+                from local_state_manager import log_nxdune_sync
+                log_nxdune_sync(
+                    project_token=resolved_project,
+                    operation="task_progress",
+                    success=True,
+                    agent_id=_local_agent_id,
+                    task_id=str(task_id),
+                    payload=payload
+                )
+            except Exception:
+                pass
+        logger.info(f"[agent_service] Progress {progress}% sync'd to NXDune successfully for task {task_id}")
+    except Exception as e:
+        error_str = _normalize_error_text(e)
+        logger.warning(f"[agent_service] NXDune progress sync failed for task {task_id} (will proceed locally): {e}")
+        
+        # Log failed sync
+        _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
+        if resolved_project and _local_agent_id:
+            try:
+                from local_state_manager import log_nxdune_sync
+                log_nxdune_sync(
+                    project_token=resolved_project,
+                    operation="task_progress",
+                    success=False,
+                    agent_id=_local_agent_id,
+                    task_id=str(task_id),
+                    error_message=error_str[:500],
+                    payload=payload
+                )
+            except Exception:
+                pass
+                
+    # Update local state and trigger completion if progress reaches 100%
+    state["task_progress_state"][task_key] = progress
+    if progress == 100:
+        logger.info(f"[agent_service] Progress reached 100% locally for task {task_id}, triggering task completion...")
+        await _post_task_complete(task, project_token=resolved_project, task_token=task_token)
+        
+    return True
+
+
+async def _post_task_complete(task: Dict[str, Any], project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
+    """Complete task using local-first approach. Attempts NXDune sync ONCE, and proceeds immediately on success or failure."""
+    from task_service import task_service
+    task_id = _normalize_task_id(task)
+    if not task_id:
+        logger.warning("[agent_service] Cannot complete task: no task_id found")
+        return False
+    resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
+    state = _ensure_project_state(resolved_project)
+    ledger = state.setdefault("task_ledger", {})
+    
+    # Always clock out locally first and attempt clock out upstream
+    try:
+        clock_out_success = await _post_timer_log(
+            task, "clock_out", project_token=resolved_project, task_token=task_token
+        )
+        if clock_out_success:
+            logger.info(f"[agent_service] Pre-emptively clocked out task {task_id} before completion")
+    except Exception as clock_err:
+        logger.warning(f"[agent_service] Pre-emptive clock_out error for task {task_id}: {clock_err}")
+    
+    _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
+    files_written = []
+    if task_id in ledger:
+        try:
+            files_written = list(ledger[task_id].files_written)
+        except Exception:
+            pass
+
+    # 1. Write completion to local DB (our primary source of truth)
+    if resolved_project and _local_agent_id and task_id:
+        try:
+            from local_state_manager import complete_task_local
+            complete_task_local(
+                project_token=resolved_project,
+                agent_id=_local_agent_id,
+                task_id=str(task_id),
+                files_written=files_written,
+                branch_name=task.get("_local_branch"),
+            )
+            logger.info(f"[agent_service] Task {task_id} marked as completed in local DB")
+        except Exception as _le:
+            logger.warning(f"[agent_service] Local DB complete hook failed: {_le}")
+
+    # 2. Update local tracking state dictionary immediately
+    completed = state.setdefault("completed_tasks", [])
+    if isinstance(completed, set):
+        completed.add(task_id)
+    else:
+        completed_ids = {str(t.get("id") or t.get("task_id") or t) if isinstance(t, dict) else str(t) for t in completed}
+        if str(task_id) not in completed_ids:
+            completed.append(task)
+    state.get("claimed_task_ids", set()).discard(task_id)
+    if task_id in ledger:
+        ledger[task_id].status = "done"
+
+    # 3. Attempt NXDune API completion ONCE (non-blocking, no retries on failure)
+    try:
+        logger.info(f"[agent_service] Attempting NXDune sync for completing task {task_id}...")
+        await task_service.complete_task({
+            "task_id": task_id
+        }, task_token=task_token or get_project_task_token(resolved_project))
+        
+        # Log successful sync
+        if resolved_project and _local_agent_id:
+            try:
+                from local_state_manager import log_nxdune_sync
+                log_nxdune_sync(
+                    project_token=resolved_project,
+                    operation="task_complete",
+                    success=True,
+                    agent_id=_local_agent_id,
+                    task_id=str(task_id),
+                )
+            except Exception:
+                pass
+        logger.info(f"[agent_service] Task {task_id} completed and sync'd to NXDune successfully")
+    except Exception as e:
+        error_str = _normalize_error_text(e)
+        logger.warning(f"[agent_service] NXDune complete sync failed for task {task_id} (will proceed locally): {e}")
+        
+        # Log failed sync with payload for later retry
+        if resolved_project and _local_agent_id:
+            try:
+                from local_state_manager import log_nxdune_sync
+                log_nxdune_sync(
+                    project_token=resolved_project,
+                    operation="task_complete",
+                    success=False,
+                    agent_id=_local_agent_id,
+                    task_id=str(task_id),
+                    error_message=error_str[:500],
+                    payload={"task_id": task_id}
+                )
+            except Exception:
+                pass
+
+    return True
+
+
+async def _opt_in_task(task: Dict[str, Any], username: str,
+                       project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
+    """Opt in to task attempting NXDune sync ONCE. Proceeds immediately on success or failure."""
+    from task_service import task_service
+    task_id = _normalize_task_id(task)
+    if not task_id:
+        return False
+    resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
+    
+    try:
+        await task_service.opt_in_task({
+            "task_id": task_id,
+            "username": username
+        }, task_token=task_token or get_project_task_token(resolved_project))
+        logger.info(f"[agent_service] Successfully opted in to task {task_id} upstream")
+        
+        # Post check-in message
+        await _post_task_message(task, f"{username} checked in and reviewing task.", project_token=resolved_project, task_token=task_token)
+        return True
+    except Exception as e:
+        error_str = _normalize_error_text(e)
+        logger.warning(f"[agent_service] NXDune opt_in failed for task {task_id} (will proceed locally): {e}")
+        
+        # Log failed sync
+        _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
+        if resolved_project and _local_agent_id:
+            try:
+                from local_state_manager import log_nxdune_sync
+                log_nxdune_sync(
+                    project_token=resolved_project,
+                    operation="task_opt_in",
+                    success=False,
+                    agent_id=_local_agent_id,
+                    task_id=str(task_id),
+                    error_message=error_str[:500],
+                    payload={"task_id": task_id, "username": username}
+                )
+            except Exception:
+                pass
+        return True
+
+
+async def _post_timer_log(task: Dict[str, Any], action: str, project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
+    """Post timer log attempting NXDune sync ONCE. Updates local state and proceeds immediately on success or failure."""
+    from task_service import task_service
+    task_id = _normalize_task_id(task)
+    if not task_id:
+        return False
+    resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
+    task_key = str(task_id)
+    state = _ensure_project_state(resolved_project)
+    
+    try:
+        await task_service.post_timer_log({
+            "task_id": task_id,
+            "action": action
+        }, task_token=task_token or get_project_task_token(resolved_project))
+        
+        # Log successful sync
+        _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
+        if resolved_project and _local_agent_id:
+            try:
+                from local_state_manager import log_nxdune_sync
+                log_nxdune_sync(
+                    project_token=resolved_project,
+                    operation=f"timer_{action}",
+                    success=True,
+                    agent_id=_local_agent_id,
+                    task_id=str(task_id),
+                )
+            except Exception:
+                pass
+        logger.info(f"[agent_service] Timer log {action} sync'd to NXDune successfully for task {task_id}")
+    except Exception as e:
+        normalized_error = _normalize_error_text(e)
+        if action == "clock_out" and _is_clock_out_idempotent_success(normalized_error):
+            logger.info(f"[agent_service] Timer log clock_out for task {task_id} already in desired state: {e}")
+        else:
+            logger.warning(f"[agent_service] NXDune timer_{action} sync failed for task {task_id} (will proceed locally): {e}")
+            # Log failed sync
+            _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
+            if resolved_project and _local_agent_id:
+                try:
+                    from local_state_manager import log_nxdune_sync
+                    log_nxdune_sync(
+                        project_token=resolved_project,
+                        operation=f"timer_{action}",
+                        success=False,
+                        agent_id=_local_agent_id,
+                        task_id=str(task_id),
+                        error_message=normalized_error[:500],
+                        payload={"task_id": task_id, "action": action}
+                    )
+                except Exception:
+                    pass
+                    
+    # Update local state and return True to proceed
+    if action == "clock_in":
+        state["timer_log_state"][task_key] = True
+    elif action == "clock_out":
+        state["timer_log_state"][task_key] = False
+        
+    return True
+
+
 async def _claim_initial_task_assignments(
     agents_config: Dict[str, Dict[str, str]] = None,
     project_token: Optional[str] = None,
@@ -16081,6 +17351,9 @@ async def _claim_initial_task_assignments(
             continue
         if tid in claimed_task_ids:
             continue
+        # Bootstrap gate: if not pushed, worker agents cannot claim any tasks (must wait for master agent to bootstrap)
+        if not is_bootstrap_pushed(project_token):
+            continue
         # FIX: Do NOT skip tasks based on assignedTo — any free agent can claim any task
         # (first-come-first-served via opt_in_task claim lock)
         available_tasks.append(t)
@@ -16106,7 +17379,7 @@ async def _claim_initial_task_assignments(
             _task_for_scoring = dict(_task)
             _task_for_scoring["project_token"] = project_token
             _candidate_ids = [a["id"] for a in unassigned_agents]
-            _best_id = _mtm.choose_best_agent_for_task_public(_task_for_scoring, _candidate_ids)
+            _best_id = await _mtm.choose_best_agent_for_task_public(_task_for_scoring, _candidate_ids)
             if _best_id:
                 task_to_agent[_tid] = _best_id
                 # Remove from pools so they aren't double-assigned
@@ -16116,11 +17389,35 @@ async def _claim_initial_task_assignments(
     except Exception as _skill_err:
         logger.warning(f"[Serial Assignment] Skill scoring failed; falling back to round-robin: {_skill_err}")
 
-    # Phase 2: Round-robin for remaining unmatched tasks/agents
-    for _task, _agent in zip(unassigned_tasks, unassigned_agents):
-        _tid = str(_normalize_task_id(_task) or _task.get("external_id") or _task.get("id") or "")
-        task_to_agent[_tid] = _agent["id"]
-        logger.info(f"[Round-Robin Assignment] Task {_tid} → {_agent['id']}")
+    # Phase 2: Round-robin for remaining unmatched tasks/agents (with lane compatibility check)
+    for _agent in list(unassigned_agents):
+        # Find the first unassigned task that is compatible with this agent's lanes
+        compatible_task = None
+        for _task in unassigned_tasks:
+            _tid = str(_normalize_task_id(_task) or _task.get("external_id") or _task.get("id") or "")
+            
+            # Check if this task is compatible with the agent's lanes
+            _task_lane = _classify_task_assignment_lane(_task)
+            _agent_lanes = _infer_agent_assignment_lanes(_agent["id"], _agent)
+            
+            # Check if bootstrap task (always compatible) or lane-compatible
+            _task_id_str = (_task.get("task_id") or _task.get("external_task_id") or "").strip().upper()
+            _is_bt = _task_id_str == "TASK-00" or "project bootstrap" in (
+                _task.get("title") or _task.get("taskName") or ""
+            ).lower()
+            
+            if _is_bt or is_task_in_agent_lanes(_task_lane, _agent_lanes):
+                compatible_task = _task
+                break
+                
+        if compatible_task:
+            _tid = str(_normalize_task_id(compatible_task) or compatible_task.get("external_id") or compatible_task.get("id") or "")
+            task_to_agent[_tid] = _agent["id"]
+            unassigned_tasks = [t for t in unassigned_tasks if str(_normalize_task_id(t) or t.get("external_id") or t.get("id") or "") != _tid]
+            unassigned_agents = [a for a in unassigned_agents if a["id"] != _agent["id"]]
+            logger.info(f"[Round-Robin Assignment] Task {_tid} → {_agent['id']} (lane-compatible)")
+        else:
+            logger.info(f"[Round-Robin Assignment] No compatible task found for agent {_agent['id']} (staying idle)")
 
     # Build a quick reverse map: agent_id → task
     agent_to_task: Dict[str, Optional[Dict]] = {a["id"]: None for a in serial_agents}
@@ -16199,95 +17496,6 @@ async def _claim_initial_task_assignments(
     }
 
 
-async def _post_task_message(task: Dict[str, Any], message: str, project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
-    """Post task message with retry logic - will retry up to 5 times with exponential backoff."""
-    from task_service import task_service
-    task_id = _normalize_task_id(task)
-    if not task_id:
-        return False
-    resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
-    
-    max_retries = 5
-    base_delay = 1.0
-    
-    for attempt in range(max_retries):
-        try:
-            await task_service.post_task_message({
-                "task_id": task_id,
-                "message": message
-            }, task_token=task_token or get_project_task_token(resolved_project))
-            return True
-        except Exception as e:
-            if attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
-                print(f"[agent_service] Failed to post message for task {task_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
-                await asyncio.sleep(delay)
-            else:
-                print(f"[agent_service] Failed to post message for task {task_id} after {max_retries} attempts: {e}")
-                return False
-    return False
-
-
-async def _post_task_progress(task: Dict[str, Any], progress: int, additional_info: str = None,
-                              project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
-    """Post task progress with retry logic - will retry up to 5 times with exponential backoff."""
-    from task_service import task_service
-    task_id = _normalize_task_id(task)
-    if not task_id:
-        return False
-    resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
-    state = _ensure_project_state(resolved_project)
-    task_key = str(task_id)
-    last_progress = state["task_progress_state"].get(task_key)
-    if last_progress is not None and progress < last_progress:
-        print(
-            f"[agent_service] Skipping progress for task {task_id}: "
-            f"cannot decrease from {last_progress} to {progress}"
-        )
-        return False
-    timer_active = state["timer_log_state"].get(task_key, False)
-    terminal_progress = progress in (0, 100)
-    if not timer_active and not terminal_progress:
-        print(
-            f"[agent_service] Skipping progress for task {task_id}: "
-            "no successful clock_in recorded"
-        )
-        return False
-    if not timer_active and terminal_progress:
-        print(
-            f"[agent_service] Allowing terminal progress {progress}% for task {task_id} "
-            "without active timer"
-        )
-    
-    max_retries = 5
-    base_delay = 1.0
-    
-    for attempt in range(max_retries):
-        try:
-            payload = {
-                "task_id": task_id,
-                "task_progress": progress,
-            }
-            if additional_info:
-                payload["additional_info"] = additional_info
-            effective_token = task_token or get_project_task_token(resolved_project)
-            await task_service.update_task_progress(payload, task_token=effective_token)
-            state["task_progress_state"][task_key] = progress
-            if progress == 100:
-                print(f"[agent_service] Progress reached 100% for task {task_id}, triggering task completion...")
-                await _post_task_complete(task, project_token=resolved_project, task_token=effective_token)
-            return True
-        except Exception as e:
-            if attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
-                print(f"[agent_service] Failed to update progress for task {task_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
-                await asyncio.sleep(delay)
-            else:
-                print(f"[agent_service] Failed to update progress for task {task_id} after {max_retries} attempts: {e}")
-                return False
-    return False
-
-
 def _normalize_error_text(err: Exception) -> str:
     text = str(err).lower()
     for ch in ("-", "_", "/", "\\"):
@@ -16332,120 +17540,7 @@ def _is_clock_out_idempotent_success(error_text: str) -> bool:
     return any(c in error_text for c in checks)
 
 
-async def _post_task_complete(task: Dict[str, Any], project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
-    """Complete task with retry logic. Ensures clock_out happens first if timer is still running."""
-    from task_service import task_service
-    task_id = _normalize_task_id(task)
-    if not task_id:
-        logger.warning("[agent_service] Cannot complete task: no task_id found")
-        return False
-    resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
-    
-    # CRITICAL FIX: Always clock out FIRST before attempting completion
-    # This prevents the "timer still running" error that blocks completion
-    try:
-        clock_out_success = await _post_timer_log(
-            task, "clock_out", project_token=resolved_project, task_token=task_token
-        )
-        if clock_out_success:
-            logger.info(f"[agent_service] Pre-emptively clocked out task {task_id} before completion")
-        else:
-            logger.warning(f"[agent_service] Pre-emptive clock_out failed for task {task_id}, continuing anyway")
-    except Exception as clock_err:
-        logger.warning(f"[agent_service] Pre-emptive clock_out error for task {task_id}: {clock_err}")
-    
-    max_retries = 8  # Increased from 5 to handle network issues
-    base_delay = 2.0  # Increased from 1.0 for better stability
-    
-    for attempt in range(max_retries):
-        try:
-            await task_service.complete_task({
-                "task_id": task_id
-            }, task_token=task_token or get_project_task_token(resolved_project))
-            logger.info(f"[agent_service] Task {task_id} completed successfully")
-            
-            # CRITICAL FIX: Mark task as completed in local state immediately
-            # This prevents the agent from picking it up again
-            state = _ensure_project_state(resolved_project)
-            completed = state.setdefault("completed_tasks", [])
-            if isinstance(completed, set):
-                completed.add(task_id)
-            else:
-                completed_ids = {str(t.get("id") or t.get("task_id") or t) if isinstance(t, dict) else str(t) for t in completed}
-                if str(task_id) not in completed_ids:
-                    completed.append(task)
-            # Remove from claimed tasks
-            state.get("claimed_task_ids", set()).discard(task_id)
-            
-            # Update task ledger
-            ledger = state.setdefault("task_ledger", {})
-            if task_id in ledger:
-                ledger[task_id].status = "done"
-            
-            return True
-        except Exception as e:
-            error_str = _normalize_error_text(e)
 
-            if _is_already_completed_error(error_str):
-                logger.info(f"[agent_service] Task {task_id} already completed upstream. Treating as success.")
-                
-                # CRITICAL FIX: Still mark as completed locally
-                state = _ensure_project_state(resolved_project)
-                completed = state.setdefault("completed_tasks", [])
-                if isinstance(completed, set):
-                    completed.add(task_id)
-                else:
-                    completed_ids = {str(t.get("id") or t.get("task_id") or t) if isinstance(t, dict) else str(t) for t in completed}
-                    if str(task_id) not in completed_ids:
-                        completed.append(task)
-                state.get("claimed_task_ids", set()).discard(task_id)
-                
-            if "linked tasks must be completed first" in error_str.lower():
-                logger.warning(f"[agent_service] Linked tasks blocking upstream completion of task {task_id}. Marking task as completed locally and skipping retries.")
-                state = _ensure_project_state(resolved_project)
-                completed = state.setdefault("completed_tasks", [])
-                if isinstance(completed, set):
-                    completed.add(task_id)
-                else:
-                    completed_ids = {str(t.get("id") or t.get("task_id") or t) if isinstance(t, dict) else str(t) for t in completed}
-                    if str(task_id) not in completed_ids:
-                        completed.append(task)
-                state.get("claimed_task_ids", set()).discard(task_id)
-                return False
-
-            # If timer is still running (shouldn't happen after pre-emptive clock_out), try again
-            if _is_timer_running_error(error_str):
-                logger.warning(f"[agent_service] Task {task_id} timer still running despite pre-emptive clock_out, retrying...")
-                try:
-                    await _post_timer_log(
-                        task, "clock_out", project_token=resolved_project, task_token=task_token
-                    )
-                    await asyncio.sleep(1.0)  # Give the API time to process
-                except Exception:
-                    pass
-             
-            if attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
-                logger.warning(f"[agent_service] Failed to complete task {task_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
-                await asyncio.sleep(delay)
-            else:
-                logger.error(f"[agent_service] Failed to complete task {task_id} after {max_retries} attempts: {e}")
-                
-                # CRITICAL FIX: Even if API fails, mark as completed locally to prevent infinite loop
-                # The task was actually completed (code was pushed), just the API call failed
-                logger.warning(f"[agent_service] Marking task {task_id} as completed locally despite API failure to prevent re-execution")
-                state = _ensure_project_state(resolved_project)
-                completed = state.setdefault("completed_tasks", [])
-                if isinstance(completed, set):
-                    completed.add(task_id)
-                else:
-                    completed_ids = {str(t.get("id") or t.get("task_id") or t) if isinstance(t, dict) else str(t) for t in completed}
-                    if str(task_id) not in completed_ids:
-                        completed.append(task)
-                state.get("claimed_task_ids", set()).discard(task_id)
-                
-                return False
-    return False
 
 
 async def _opt_in_task(task: Dict[str, Any], username: str,
@@ -16929,6 +18024,28 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                             })
                         continue
 
+            # ── BOOTSTRAP GATE FOR ASSIGNED TASK RESUME ──────────────────────
+            # If bootstrap hasn't completed yet, ONLY the bootstrap agent may
+            # resume its assigned task. All other agents must wait — even if they
+            # have a previously-assigned task from a prior run persisted in NXDune.
+            _is_assigned_bootstrap = (
+                tid.upper() == "TASK-00"
+                or "project bootstrap" in task_title.lower()
+            )
+            if not is_bootstrap_pushed(project_token) and not _is_assigned_bootstrap:
+                logger.info(
+                    f"[{agent_id}] Bootstrap gate: assigned task {tid} ({task_title[:30]}) "
+                    f"skipped — waiting for bootstrap to push scaffold first."
+                )
+                if agent:
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"⏸️ Bootstrap gate: assigned task '{task_title}' paused until bootstrap completes."
+                    })
+                continue  # Don't resume this task yet — check next assigned task (may find bootstrap task)
+            # ─────────────────────────────────────────────────────────────────
+
             # This agent already has this task — return it, don't pick another
             logger.info(
                 f"[{agent_id}] 🎯 Resuming assigned task {tid} "
@@ -17006,6 +18123,7 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
             "dependency_blocked": 0,
             "conflict_blocked": 0,
             "explicitly_blocked": 0,
+            "lane_mismatch": 0,
             "opt_in_failed": 0,
         }
         
@@ -17094,6 +18212,25 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 task_id_str == "TASK-00"
                 or "project bootstrap" in task_title_str
             )
+
+            # ── HARD LANE CHECK ──────────────────────────────────────────────────
+            if not is_bootstrap_task:
+                task_lane = _classify_task_assignment_lane(t)
+                agent_lanes = _infer_agent_assignment_lanes(agent_id, agent)
+
+                if task_lane in {"frontend", "backend", "qa", "devops", "governance"}:
+                    if not is_task_in_agent_lanes(task_lane, agent_lanes):
+                        msg = f"⚠️ Skipping task {tid} ('{t.get('title', '')[:30]}...') due to lane mismatch (Task: {task_lane}, Agent: {list(agent_lanes)})"
+                        logger.info(f"[{agent_id}] {msg}")
+                        if agent:
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": msg
+                            })
+                        skip_reasons["lane_mismatch"] += 1
+                        continue
+            # ─────────────────────────────────────────────────────────────────────
 
             # ═══ CRITICAL FIX: Never re-run bootstrap if it's already completed ═══
             # Use the same multi-indicator check as above for consistency
@@ -17228,7 +18365,7 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 # Enrich task with project_token so dedicated/shared boundary logic works
                 _task_for_scoring = dict(t)
                 _task_for_scoring["project_token"] = project_token
-                _best_agent = _mtm.choose_best_agent_for_task_public(_task_for_scoring, _all_idle)
+                _best_agent = await _mtm.choose_best_agent_for_task_public(_task_for_scoring, _all_idle)
                 if _best_agent and _best_agent != agent_id:
                     # Another agent is a better fit — skip so it can claim
                     logger.info(
@@ -17433,51 +18570,6 @@ async def _is_shared_agent(agent_id: str, project_token: Optional[str]) -> bool:
         True if agent is shared, False if dedicated or system
     """
     return False
-
-
-async def _pick_next_task(
-    agent_id: str,
-    project_token: Optional[str],
-    task_token: Optional[str]
-) -> Optional[Dict[str, Any]]:
-    """
-    Pick the next available task for an agent.
-    
-    Args:
-        agent_id: ID of the agent
-        project_token: Project token
-        task_token: Task token for external API
-    
-    Returns:
-        Task dictionary or None if no tasks available
-    """
-    try:
-        state = _ensure_project_state(project_token)
-        
-        # Get external tasks
-        external_tasks = await _fetch_external_tasks(
-            project_token=project_token,
-            task_token=task_token
-        )
-        
-        if not external_tasks:
-            return None
-        
-        # Filter to pending tasks
-        pending_tasks = [
-            task for task in external_tasks
-            if not _task_status_is_done(task.get("status"))
-        ]
-        
-        if not pending_tasks:
-            return None
-        
-        # Return first pending task
-        return pending_tasks[0]
-        
-    except Exception as e:
-        logger.warning(f"Error picking next task for agent {agent_id}: {e}")
-        return None
 
 
 async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = None,
@@ -17872,13 +18964,48 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
         }
     
     # PRIORITY 1: Use explicitly assigned task (from function parameter)
+    # ── BOOTSTRAP GATE: Pre-assigned tasks must still obey the bootstrap rule ──
+    # If bootstrap has not pushed yet and the assigned task is NOT the bootstrap task,
+    # we must NOT execute it — other agents are waiting on the scaffold.
+    # Instead, fall through to _pick_next_task which will find/run the bootstrap task.
     if assigned_task:
-        task = assigned_task
-        agent["output_log"].append({
-            "time": datetime.utcnow().isoformat(),
-            "type": "info",
-            "message": f"📌 Using explicitly assigned task: {assigned_task.get('title', 'Untitled')}"
-        })
+        _at_task_id = str(
+            assigned_task.get("task_id")
+            or assigned_task.get("external_task_id")
+            or ""
+        ).strip().upper()
+        _at_title = str(assigned_task.get("title") or assigned_task.get("taskName") or "").strip().lower()
+        _at_is_bootstrap = (
+            _at_task_id == "TASK-00"
+            or "project bootstrap" in _at_title
+        )
+        _bootstrap_already_pushed = is_bootstrap_pushed(project_token)
+
+        if not _at_is_bootstrap and not _bootstrap_already_pushed:
+            # Pre-assigned non-bootstrap task blocked until bootstrap pushes
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "warning",
+                "message": (
+                    f"⏸️ Pre-assigned task '{assigned_task.get('title', 'Untitled')}' is BLOCKED — "
+                    "bootstrap has not pushed the project scaffold yet. "
+                    "Falling through to pick bootstrap task instead."
+                ),
+            })
+            logger.info(
+                f"[{agent_id}] PRIORITY 1 BLOCKED: '{assigned_task.get('title', 'Untitled')}' "
+                "cannot start before bootstrap is pushed. Switching to _pick_next_task."
+            )
+            # Clear the pre-assignment so we fall through to _pick_next_task
+            assigned_task = None
+            task = await _pick_next_task(agent_id, project_token=project_token, task_token=task_token)
+        else:
+            task = assigned_task
+            agent["output_log"].append({
+                "time": datetime.utcnow().isoformat(),
+                "type": "info",
+                "message": f"📌 Using explicitly assigned task: {assigned_task.get('title', 'Untitled')}"
+            })
     # PRIORITY 2: Resume current task if agent has one in progress
     elif isinstance(agent.get("current_task"), dict):
         resumed_task = _apply_master_task_metadata(dict(agent["current_task"]), project_token=project_token)
@@ -18543,7 +19670,8 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
 
                     git_result = await asyncio.to_thread(
                         _setup_git_in_container, container_name,
-                        agent["git_repo_url"], agent.get("git_token", ""), first_branch
+                        agent["git_repo_url"], agent.get("git_token", ""), first_branch,
+                        project_token
                     )
                     if not git_result["success"]:
                         raise ValueError(f"Git setup failed: {git_result['error']}")
@@ -18821,7 +19949,8 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
 
                     git_result = await asyncio.to_thread(
                         _setup_git_in_container, container_name,
-                        agent["git_repo_url"], agent.get("git_token", ""), bootstrap_branch
+                        agent["git_repo_url"], agent.get("git_token", ""), bootstrap_branch,
+                        project_token
                     )
                     if not git_result["success"]:
                         raise ValueError(f"Git setup failed: {git_result['error']}")
@@ -19151,6 +20280,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 logger.warning(f"[{agent_id}] Peer branch fetch failed: {peer_fetch_err}")
 
             # ── Fix 3: Build file ownership constraint block ─────────
+            # Extended: reads from local DB AgentTaskOwnership for cross-restart accuracy
             file_ownership_block = _build_file_ownership_block(agent_id, project_token)
             if file_ownership_block:
                 agent["output_log"].append({
@@ -19168,10 +20298,41 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 or "project bootstrap" in task_title_str
                 or "bootstrap" in task_title_str
             )
-            
+
+            # ── Fix 5: Build canonical project context for post-bootstrap tasks ─
+            # Reads from ProjectCanonicalState (local DB) — targeted to task domain.
+            # Zero token cost for bootstrap tasks; targeted injection for all others.
+            canonical_project_context_block = ""
+            if not is_bootstrap_task and project_token:
+                try:
+                    from local_state_manager import get_canonical_context_for_task
+                    canonical_project_context_block = get_canonical_context_for_task(
+                        project_token=project_token,
+                        task=task,
+                        max_paths=20,
+                    )
+                    if canonical_project_context_block:
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"📐 Canonical project context injected ({len(canonical_project_context_block)} chars, domain-scoped)"
+                        })
+                except Exception as ctx_err:
+                    logger.warning(f"[{agent_id}] Canonical context injection failed (non-critical): {ctx_err}")
+
             canonical_master_tree = master_note_result.get("workspace_tree", "") if master_note_result else ""
+            # Supplement with canonical tree from local DB if master_note_result is missing
+            if not canonical_master_tree and project_token:
+                try:
+                    from local_state_manager import get_canonical_state
+                    _cs = get_canonical_state(project_token)
+                    if _cs:
+                        canonical_master_tree = _cs.get("canonical_tree") or ""
+                except Exception:
+                    pass
+
             canonical_files = []
-            
+
             if not is_bootstrap_task:
                 canonical_files = _resolve_canonical_files_for_task(task, canonical_master_tree, project_token)
                 if canonical_files:
@@ -19219,9 +20380,10 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         tech_spec=tech_spec,
                         kg_context=jit_context,
                         cross_agent_info=cross_agent_info,
-                        file_ownership_block=file_ownership_block,   # Fix 3
-                        canonical_files=canonical_files,             # Fix 4
-                        project_token=project_token or "",           # Contract store
+                        file_ownership_block=file_ownership_block,            # Fix 3
+                        canonical_files=canonical_files,                      # Fix 4
+                        canonical_project_context=canonical_project_context_block,  # Fix 5
+                        project_token=project_token or "",                    # Contract store
                     )
                     agent["output_log"].append({
                         "time": datetime.utcnow().isoformat(),
@@ -19654,6 +20816,7 @@ NOW GENERATE THE COMPLETE SCRIPT:"""
                     live_repo_tree=repo_tree_context,
                     max_iterations=MAX_FIX_ITERATIONS,
                     project_root=project_root,  # Pass bootstrap project root
+                    canonical_files=canonical_files,
                 )
                 
                 # Update result with bulletproof outcome
@@ -24226,8 +25389,17 @@ Follow the specific instructions to avoid repeating the same failures.
                         level="warning",
                         project_token=project_token,
                     )
-                    if available_tasks:
-                        task = available_tasks.pop(0)
+                    # Find first compatible task
+                    compatible_task_index = -1
+                    for idx, t in enumerate(available_tasks):
+                        task_lane = _classify_task_assignment_lane(t)
+                        agent_lanes = _infer_agent_assignment_lanes(agent_id, project_agents.get(agent_id))
+                        if is_task_in_agent_lanes(task_lane, agent_lanes):
+                            compatible_task_index = idx
+                            break
+
+                    if compatible_task_index != -1:
+                        task = available_tasks.pop(compatible_task_index)
                         task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
                         if task_id:
                             success = await _master_assign_task_to_agent(
@@ -24239,10 +25411,15 @@ Follow the specific instructions to avoid repeating the same failures.
                             )
                             if success:
                                 _log_master_agent(
-                                    f"✅ Assigned task {task_id} to idle agent {agent_id}",
+                                    f"✅ Assigned task {task_id} to idle agent {agent_id} (lane-compatible)",
                                     project_token=project_token,
                                 )
                                 total_assignments += 1
+                    else:
+                        _log_master_agent(
+                            f"ℹ️ No lane-compatible task available for idle agent {agent_id}",
+                            project_token=project_token,
+                        )
                     total_interventions += 1
             
             # Check integration branch readiness
@@ -24868,6 +26045,7 @@ async def _bulletproof_call_ai_for_fix(
     issue_categories: Dict[str, List[str]] = None,
     confidence_score: float = 0.9,
     project_root: str = "/workspace",  # NEW: Bootstrap-defined project root
+    canonical_files: Optional[List[str]] = None,
 ) -> tuple[str, str]:
     """
     BULLETPROOF AI fix generation with 90%+ success guarantee.
@@ -24990,8 +26168,18 @@ Generate a BULLETPROOF script that fixes ALL detected issues:
 """
     
     # Add context and constraints
+    canonical_files_prefix = ""
+    if canonical_files:
+        canonical_files_prefix = (
+            "=== CANONICAL TASK BOUNDARY FILES ===\n"
+            "The current task is strictly bounded. You must ONLY create or modify the following files:\n"
+            + "\n".join(f"  - {f}" for f in canonical_files)
+            + "\nDo NOT edit, modify, or create files outside of this boundary list (e.g. backend code, database connections, api routes, or shared styles outside your component directory).\n"
+            + "=====================================\n\n"
+        )
+        
     full_prompt = f"""
-{fix_prompt}
+{canonical_files_prefix}{fix_prompt}
 
 TASK CONTEXT:
 {task_description[:1000]}
@@ -25218,6 +26406,7 @@ async def _bulletproof_self_healing_loop(
     live_repo_tree: str = "",
     max_iterations: int = 3,
     project_root: str = "/workspace",  # NEW: Bootstrap-defined project root
+    canonical_files: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     BULLETPROOF self-healing loop with guaranteed 90%+ success rate.
@@ -25298,6 +26487,7 @@ async def _bulletproof_self_healing_loop(
                 issue_categories=issue_report["categories"],
                 confidence_score=issue_report["confidence_score"],
                 project_root=project_root,  # Pass bootstrap project root
+                canonical_files=canonical_files,
             )
             
             logger.info(f"Generated bulletproof fix: {len(fix_code)} chars")
