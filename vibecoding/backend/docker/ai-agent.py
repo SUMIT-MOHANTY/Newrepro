@@ -49,15 +49,27 @@ WORKSPACE STATE:
 - file_count: {file_count}
 - files (first 40): {files_json}
 
+FILE SNIPPETS (first 300 chars of key files so you understand what exists):
+{file_snippets}
+
 USER REQUEST:
-{prompt}
+"{prompt}"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CRITICAL RULE — READ THIS FIRST:
+If has_existing_code is true, you MUST NOT return CREATE_APP unless the user
+explicitly says "start over", "rebuild from scratch", "wipe everything", or
+"create a brand new app". ANY other request on an existing project — even vague
+ones like "fix it", "make it look better", "change the color", "it's broken" —
+is an EDIT, never a CREATE_APP. When in doubt: pick EDIT_FILE or FIX_BUG.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Respond with ONLY valid JSON (no markdown fences, no extra text):
 {{
-  "mode": "CREATE_APP",
+  "mode": "EDIT_FILE",
   "confidence": 0.97,
-  "reasoning": "one sentence",
-  "scope": "broad",
+  "reasoning": "one sentence explaining the classification",
+  "scope": "surgical",
   "target_files": [],
   "line_refs": [],
   "is_line_edit": false,
@@ -66,22 +78,37 @@ Respond with ONLY valid JSON (no markdown fences, no extra text):
 }}
 
 mode values (pick exactly one):
-  CREATE_APP     – build from scratch (use ONLY when workspace is empty or user says start over)
-  ADD_FILE       – create a brand-new file
-  EDIT_FILE      – change lines/sections in existing file(s)
-  FIX_BUG        – fix a described bug
-  ADD_FEATURE    – add a feature (may touch several files)
-  REFACTOR       – restructure / rename / clean
-  STYLE_CHANGE   – CSS / visual / theme only
-  CONFIG_CHANGE  – env / config file only
-  DELETE         – remove file or code block
-  EXPLAIN        – user wants explanation, no code change
+  CREATE_APP   – ONLY when workspace is empty OR user explicitly says start over
+  ADD_FILE     – creating a brand-new file that does not exist yet
+  EDIT_FILE    – changing lines/sections in existing file(s)
+  FIX_BUG     – fixing a described bug, visual glitch, broken behaviour, alignment issue
+  ADD_FEATURE  – adding a new capability (may touch several files)
+  REFACTOR     – restructuring / renaming / cleaning with no behaviour change
+  STYLE_CHANGE – CSS / visual / colour / spacing / theme only (no logic change)
+  CONFIG_CHANGE – env / config file only
+  DELETE       – removing a file or code block
+  EXPLAIN      – user wants an explanation, no code change needed
 
 scope: "surgical" (≤2 files, tiny change) | "moderate" | "broad"
-target_files: file paths mentioned by user (empty list if none)
-line_refs: any line numbers mentioned (empty list if none)
-is_line_edit: true when user references specific line numbers
-requires_redeploy: false for EXPLAIN / pure REFACTOR
+target_files: file paths explicitly mentioned by the user (empty list if none)
+line_refs: any line numbers explicitly mentioned (empty list if none)
+is_line_edit: true only when the user references specific line numbers
+requires_redeploy: false only for EXPLAIN, REFACTOR, or pure CSS-variable changes
+requires_new_deps: true only if new npm/pip packages are clearly needed
+
+EXAMPLES of how to classify common user messages on an EXISTING project:
+  "fix the button color"            → STYLE_CHANGE, surgical, requires_redeploy: true
+  "the header looks off"            → FIX_BUG, surgical
+  "center the logo"                 → STYLE_CHANGE, surgical
+  "login is broken"                 → FIX_BUG, moderate
+  "make the font bigger"            → STYLE_CHANGE, surgical
+  "add a dark mode toggle"          → ADD_FEATURE, moderate
+  "why does the sidebar disappear"  → EXPLAIN, requires_redeploy: false
+  "the form doesn't submit"         → FIX_BUG, moderate
+  "it's not working"                → FIX_BUG, moderate
+  "fix it"                          → FIX_BUG, moderate
+  "change background to dark"       → STYLE_CHANGE, surgical
+  "add a new page for settings"     → ADD_FEATURE, moderate
 """
 
 _PLAN_PROMPT = """You are a precise code-modification engine. 
@@ -225,10 +252,32 @@ class EditEngine:
         """
         report(f"Analyzing your request: '{user_prompt[:60]}...'", message_type="thinking")
         intent = self._classify(user_prompt)
-        mode   = intent.get("mode", "ADD_FEATURE")
+        mode   = intent.get("mode", "EDIT_FILE")
 
         log(f"🧭 Intent: {mode} | scope={intent.get('scope')} | confidence={intent.get('confidence', 0):.2f}")
         log(f"   Reason: {intent.get('reasoning', '')}")
+
+        # ── Hard guard: never CREATE_APP on non-empty workspace unless explicit ──
+        existing_files = self._list_files()
+        if mode == "CREATE_APP" and existing_files:
+            p_lower = user_prompt.lower()
+            explicit_reset = bool(re.search(
+                r'\b(start over|rebuild from scratch|create a brand new|completely redo'
+                r'|wipe everything|reset the project)\b',
+                p_lower
+            ))
+            if not explicit_reset:
+                log(
+                    "🛡️  Blocking CREATE_APP on non-empty workspace — "
+                    "user did not explicitly ask to start over. Routing to EDIT_FILE."
+                )
+                mode = "EDIT_FILE"
+                intent["mode"] = "EDIT_FILE"
+                intent["scope"] = intent.get("scope", "moderate")
+                intent["reasoning"] = (
+                    "Overridden: CREATE_APP blocked on existing project. "
+                    "Treating as EDIT_FILE."
+                )
 
         # ── first build → hand back to existing generate_code() ──────────────
         if mode == "CREATE_APP":
@@ -294,70 +343,150 @@ class EditEngine:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _classify(self, prompt: str) -> Dict[str, Any]:
-        """Lightweight AI call → JSON intent.  Fast heuristics tried first."""
+        """
+        AI-first intent classification.
 
-        fast = self._fast_classify(prompt)
-        if fast:
-            return fast
+        Fast path handles only two unambiguous cases:
+          1. Empty workspace → always CREATE_APP
+          2. Explicit 'start over' phrase → CREATE_APP
 
-        tree  = self._list_files()
-        snap  = {
-            "has_code":   len(tree) > 0,
-            "file_count": len(tree),
-            "files_json": json.dumps(tree[:40]),
-            "prompt":     prompt.strip(),
+        Everything else — including vague UI fixes, "it looks off",
+        "change the color", "it's broken" — goes to the AI classifier
+        which receives actual file snippets so it understands context.
+        """
+        tree = self._list_files()
+
+        # ── Fast path 1: empty workspace ─────────────────────────────────────
+        if not tree:
+            return {
+                "mode": "CREATE_APP", "confidence": 0.99,
+                "reasoning": "Workspace is empty — building from scratch",
+                "scope": "broad", "target_files": [], "line_refs": [],
+                "is_line_edit": False, "requires_redeploy": True,
+                "requires_new_deps": True,
+            }
+
+        # ── Fast path 2: unambiguous 'start over' phrases ────────────────────
+        p = prompt.lower().strip()
+        if re.search(
+            r'\b(start over|rebuild from scratch|create a brand new|completely redo'
+            r'|wipe everything|delete everything and|reset the project)\b', p
+        ):
+            return {
+                "mode": "CREATE_APP", "confidence": 0.97,
+                "reasoning": "User explicitly asked to start over",
+                "scope": "broad", "target_files": [], "line_refs": [],
+                "is_line_edit": False, "requires_redeploy": True,
+                "requires_new_deps": True,
+            }
+
+        # ── Fast path 3: explanation-only requests (no code change needed) ───
+        if re.search(
+            r'\b(explain|what is|what does|how does|why does|walk me through'
+            r'|what\'s the difference|tell me about)\b', p
+        ):
+            return {
+                "mode": "EXPLAIN", "confidence": 0.92,
+                "reasoning": "Explanation request — no code change needed",
+                "scope": "surgical", "target_files": [], "line_refs": [],
+                "is_line_edit": False, "requires_redeploy": False,
+                "requires_new_deps": False,
+            }
+
+        # ── AI classification with file content snippets ─────────────────────
+        # Build brief file snippets so the classifier understands what exists.
+        # We read the first 300 chars of the most relevant files.
+        snippets = self._build_classify_snippets(tree)
+
+        snap = {
+            "has_code":      True,
+            "file_count":    len(tree),
+            "files_json":    json.dumps(tree[:40]),
+            "file_snippets": snippets,
+            "prompt":        prompt.strip(),
         }
+
         raw = self._call_ai(
             [
-                {"role": "system",  "content": "You are a request classifier. Output only JSON."},
-                {"role": "user",    "content": _CLASSIFY_PROMPT.format(**snap)},
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a request classifier for a code editor. "
+                        "Output ONLY valid JSON. Never return CREATE_APP for "
+                        "an existing project unless the user explicitly says "
+                        "start over or rebuild from scratch."
+                    ),
+                },
+                {"role": "user", "content": _CLASSIFY_PROMPT.format(**snap)},
             ],
-            temperature=0.0, show_thinking=False
+            temperature=0.0,
+            show_thinking=False,
         )
-        return self._parse_json(raw, default={"mode": "ADD_FEATURE", "confidence": 0.5,
-                                               "requires_redeploy": True, "target_files": [],
-                                               "line_refs": [], "is_line_edit": False,
-                                               "scope": "moderate", "requires_new_deps": False})
 
+        result = self._parse_json(
+            raw,
+            default={
+                "mode": "EDIT_FILE", "confidence": 0.6,
+                "reasoning": "Defaulted to EDIT_FILE (parse failed)",
+                "requires_redeploy": True, "target_files": [],
+                "line_refs": [], "is_line_edit": False,
+                "scope": "moderate", "requires_new_deps": False,
+            },
+        )
+
+        # ── Safety guard: never silently promote to CREATE_APP on non-empty ws ─
+        if result.get("mode") == "CREATE_APP" and result.get("confidence", 1.0) < 0.92:
+            log(
+                f"⚠️  Classifier returned CREATE_APP with low confidence "
+                f"({result.get('confidence'):.2f}) on non-empty workspace — "
+                f"downgrading to EDIT_FILE"
+            )
+            result["mode"] = "EDIT_FILE"
+            result["reasoning"] = (
+                "Downgraded from CREATE_APP: low confidence on non-empty workspace"
+            )
+            result["scope"] = "moderate"
+
+        return result
+
+    def _build_classify_snippets(self, tree: List[str]) -> str:
+        """
+        Return a short string with the first 300 chars of the most important
+        files in the workspace so the AI classifier understands what exists.
+        Caps at 8 files / 3000 total chars so the classify call stays cheap.
+        """
+        priority = [
+            "src/App.jsx", "src/App.tsx", "src/App.js",
+            "src/main.jsx", "src/main.tsx",
+            "app/page.tsx", "app/layout.tsx",
+            "pages/index.tsx", "pages/index.jsx",
+            "index.html", "main.py", "app.py", "server.py",
+            "src/index.css", "src/App.css", "styles/globals.css",
+        ]
+
+        candidates = [f for f in priority if f in tree]
+        for f in tree:
+            if f not in candidates:
+                candidates.append(f)
+
+        parts: List[str] = []
+        total = 0
+        for rel in candidates[:8]:
+            d = self._read_file(rel)
+            if not d:
+                continue
+            snippet = d["raw"][:300].replace("\n", "↵")
+            parts.append(f"[{rel}]: {snippet}")
+            total += len(snippet)
+            if total >= 3000:
+                break
+
+        return "\n".join(parts) if parts else "(no readable files)"
+
+    # kept for legacy call-sites that may reference it — now a no-op stub
     def _fast_classify(self, prompt: str) -> Optional[Dict[str, Any]]:
-        """Regex heuristics — avoids an AI call when the intent is obvious."""
-        tree = self._list_files()
-        p    = prompt.lower().strip()
+        return None  # classification is now fully handled by _classify()
 
-        if not tree:
-            return {"mode": "CREATE_APP", "confidence": 0.99, "reasoning": "empty workspace",
-                    "scope": "broad", "target_files": [], "line_refs": [],
-                    "is_line_edit": False, "requires_redeploy": True, "requires_new_deps": True}
-
-        # Line-number reference + edit verb → surgical edit
-        line_refs = self._extract_line_numbers(prompt)
-        if line_refs and re.search(r'\b(change|edit|fix|update|replace|modify|set|rename|delete|remove)\b', p):
-            return {"mode": "EDIT_FILE", "confidence": 0.94, "scope": "surgical",
-                    "reasoning": f"Line number(s) {line_refs} with edit verb",
-                    "target_files": self._extract_file_mentions(prompt),
-                    "line_refs": line_refs, "is_line_edit": True,
-                    "requires_redeploy": True, "requires_new_deps": False}
-
-        if re.search(r'\b(start over|rebuild from scratch|create a brand new|completely redo)\b', p):
-            return {"mode": "CREATE_APP", "confidence": 0.96, "scope": "broad",
-                    "reasoning": "User asked to start over",
-                    "target_files": [], "line_refs": [], "is_line_edit": False,
-                    "requires_redeploy": True, "requires_new_deps": True}
-
-        if re.search(r'\b(create a new file|add a new file|new file called)\b', p):
-            return {"mode": "ADD_FILE", "confidence": 0.93, "scope": "surgical",
-                    "reasoning": "Explicit new file request",
-                    "target_files": self._extract_file_mentions(prompt),
-                    "line_refs": [], "is_line_edit": False,
-                    "requires_redeploy": True, "requires_new_deps": False}
-
-        if re.search(r'\b(explain|what is|what does|how does|why does|walk me through)\b', p):
-            return {"mode": "EXPLAIN", "confidence": 0.92, "scope": "surgical",
-                    "reasoning": "Explanation request",
-                    "target_files": [], "line_refs": [], "is_line_edit": False,
-                    "requires_redeploy": False, "requires_new_deps": False}
-
-        return None  # no fast path — fall through to AI
 
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 2 — BUILD CONTEXT
@@ -1245,7 +1374,7 @@ def _generate_summary(message: str) -> str:
     return clean[:100]
 
 
-def _generate_ai_suggestions_for_success(user_prompt: str, changed_files: list = None, is_new_project: bool = False) -> list:
+def _generate_ai_suggestions_for_success(user_prompt: str, changed_files: list = None) -> list:
     """
     Use AI to generate 3 contextual suggestions for what the user might want to do next
     after successfully deploying their app.
@@ -1255,7 +1384,6 @@ def _generate_ai_suggestions_for_success(user_prompt: str, changed_files: list =
         context = f"User requested: {user_prompt}\n"
         if changed_files:
             context += f"Files modified: {', '.join(changed_files[:5])}\n"
-        context += f"Is this a brand new project initialization? {'Yes' if is_new_project else 'No'}\n"
         
         suggestion_prompt = f"""Based on what was just built/deployed, suggest exactly 3 short, actionable next steps the user might want to take.
 
@@ -1267,7 +1395,7 @@ Each suggestion should be:
 - Actionable and specific
 - Written as a complete sentence that could be sent as a prompt
 
-CRITICAL PRIORITY: Since {"this is a new project setup" if is_new_project else "the user may have requested database/backend integration"}, if the user originally requested database integration, backend features (like Prisma/SQLite/Postgres schemas, seeds, endpoints), or integrations (like Shopify/Stripe payments) but they have NOT been implemented yet (meaning we only deployed the mock-data visual prototype), you MUST prioritize suggesting these database, backend, or payment integration steps (e.g., 'Set up Prisma & SQLite database', 'Integrate Shopify payment API', 'Create backend user endpoints').
+CRITICAL PRIORITY: If the user originally requested database integration, backend features (like Prisma/SQLite/Postgres schemas, seeds, endpoints), or integrations (like Shopify/Stripe payments) but they have NOT been implemented yet (meaning we only deployed the mock-data visual prototype), you MUST prioritize suggesting these database, backend, or payment integration steps (e.g., 'Set up Prisma & SQLite database', 'Integrate Shopify payment API', 'Create backend user endpoints').
 
 Respond with ONLY valid JSON (no markdown fences):
 {{
@@ -1965,22 +2093,21 @@ def _extract_and_show_thinking(response_text: str):
 
 
 # ── Phase 1: Code Generation ───────────────────────────────────────────────────
-def generate_code(user_prompt: str, existing_files: dict = None, is_handoff: bool = False) -> bool:
+def generate_code(user_prompt: str, existing_files: dict = None) -> bool:
     is_edit = bool(existing_files)
 
-    if not is_handoff:
-        if is_edit:
-            # Generate task breakdown for edits
-            task_summary = _generate_task_breakdown(user_prompt, existing_files)
-            report(f'Got your request! Here\'s what I\'ll do:\n\n{task_summary}', 
-                   message_type='thinking',
-                   summary='Analyzing changes needed')
-        else:
-            # Generate task breakdown for new projects
-            task_summary = _generate_task_breakdown(user_prompt, None)
-            report(f'🧠 Planning your app:\n\n{task_summary}',
-                   message_type='thinking', 
-                   summary='Planning application structure')
+    if is_edit:
+        # Generate task breakdown for edits
+        task_summary = _generate_task_breakdown(user_prompt, existing_files)
+        report(f'Got your request! Here\'s what I\'ll do:\n\n{task_summary}', 
+               message_type='thinking',
+               summary='Analyzing changes needed')
+    else:
+        # Generate task breakdown for new projects
+        task_summary = _generate_task_breakdown(user_prompt, None)
+        report(f'🧠 Planning your app:\n\n{task_summary}',
+               message_type='thinking', 
+               summary='Planning application structure')
 
     WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -2026,22 +2153,11 @@ RULES:
 6. For static HTML: just index.html (+ style.css, script.js) — no build tools needed
 7. Keep conversational text to 1-2 sentences max before file markers
 8. NO setup instructions — the platform deploys automatically
-9. SQLite + Prisma limitations: When creating/modifying a Prisma schema (prisma/schema.prisma) with sqlite provider, SQLite does NOT support `enum` types or the `Json` type. You MUST use `String` (with text defaults for enums, e.g., role String @default("USER")) instead of enums, and use `String` instead of `Json` (e.g., shippingAddress String).
-10. Vite/React Bundling Safety: When creating `vite.config.js` for React/Vite projects, do NOT configure custom manual chunks (`manualChunks`) in `build.rollupOptions` that reference uninstalled or optional packages (e.g., `@mui/lab`, `lodash`, `react-hook-form`, etc.). Only reference packages explicitly declared in `package.json`. Additionally, configure Rollup to ignore/silence warnings for `"use client"` directives from `@mui/material` and `@mui/icons-material` in the build options (using an `onwarn` handler in `rollupOptions` that returns for `'MODULE_LEVEL_DIRECTIVE'` warnings containing `'use client'`)."""
+9. SQLite + Prisma limitations: When creating/modifying a Prisma schema (prisma/schema.prisma) with sqlite provider, SQLite does NOT support `enum` types or the `Json` type. You MUST use `String` (with text defaults for enums, e.g., role String @default("USER")) instead of enums, and use `String` instead of `Json` (e.g., shippingAddress String)."""
 
     if not is_edit:
         system_prompt += """
-10. **STRICT VISUAL PROTOTYPE RULE FOR INITIAL REQUEST:** Since this is the initial project setup, you MUST focus EXCLUSIVELY on building a stunning, highly polished visual frontend prototype using mock data. Do NOT generate any database models, Prisma schemas (prisma/schema.prisma), database migrations, or active backend APIs. Use mock-based state and dummy data in the React/Next.js/HTML frontend so that the application compiles and runs on Port 80 immediately with zero database errors. Any database or backend integrations will be implemented in subsequent turns.
-11. **10K OUTPUT TOKEN LIMIT:** Ensure the total generated response is compact and stays strictly within 10,000 output tokens to prevent any response truncation.
-12. **MINIMAL FILE ECONOMY:** Minimize the initial file count by combining visual components and local mock states directly into a single `page.js` (or a few key files) instead of creating 10+ separate files. This prevents response truncation and keeps the initial deployment fast."""
-
-    if is_handoff:
-        system_prompt += """
-13. **D-SUITE HANDOFF SUMMARY:** Write a 50-100 word summary of what needs to be built at the very beginning of your response, followed immediately by the code files/markers."""
-
-    # Add continuation rule for both edits and new builds
-    system_prompt += """
-14. **CONTINUATION PATTERN:** If the user asks you to "continue", "proceed", or if the code is cut off, read the existing files/history and seamlessly continue generating the remaining files or patches starting exactly from where you left off, preserving the layout and mock states."""
+10. **STRICT VISUAL PROTOTYPE RULE FOR INITIAL REQUEST:** Since this is the initial project setup, you MUST focus EXCLUSIVELY on building a stunning, highly polished visual frontend prototype using mock data. Do NOT generate any database models, Prisma schemas (prisma/schema.prisma), database migrations, or active backend APIs. Use mock-based state and dummy data in the React/Next.js/HTML frontend so that the application compiles and runs on Port 80 immediately with zero database errors. Any database or backend integrations will be implemented in subsequent turns."""
 
     system_prompt += """\n\nFOR EDITS: Start your response with a brief explanation of what you're changing (1-2 sentences), then output the file markers."""
 
@@ -2137,9 +2253,6 @@ Apply the changes now using ONLY these markers."""
             except Exception as e:
                 report(f'Something went wrong. Please try again. (Details: {e})')
                 return False
-        else:
-            # For new projects, if no markers, treat entire response as a single file
-            code = response_text.strip()
             filename = _detect_filename(code)
             file_path = WORKSPACE_DIR / filename
             _write_file(file_path, code)
@@ -2305,18 +2418,6 @@ Return ONLY the clean, full file content with no explanation, no markdown fences
 
 
 def _write_file(path: Path, content: str):
-    # Clean trailing LLM summaries and explanation text from code files
-    if path.suffix.lower() not in ('.md', '.txt'):
-        fence_match = re.search(r'```[a-z]*\s*\n(.*?)\n```', content, re.DOTALL | re.IGNORECASE)
-        if fence_match:
-            content = fence_match.group(1).strip()
-        else:
-            # Discard text following any trailing code fences
-            if '```' in content:
-                parts = content.split('```')
-                if len(parts) > 0 and len(parts[0].strip()) > 10:
-                    content = parts[0].strip()
-
     # CRITICAL: Remove markdown code fences that corrupt files
     # Remove opening fence: ```json, ```javascript, ```jsx, etc.
     content = re.sub(r'^```[a-z]*\n?', '', content, flags=re.MULTILINE)
@@ -2542,7 +2643,7 @@ Return ONLY the clean file content with no explanation, no markers, no fences.""
 
 
 # ── Phase 2: Deployment ────────────────────────────────────────────────────────
-def deploy(error_context: dict = None, max_retries: int = 3, test_changes: bool = False, changed_files: list = None, user_prompt: str = None, snapshot_id: str = "", is_new_project: bool = False) -> bool:
+def deploy(error_context: dict = None, max_retries: int = 3, test_changes: bool = False, changed_files: list = None, user_prompt: str = None, snapshot_id: str = "") -> bool:
     report('Figuring out the best way to run your app...')
     
     # Show loading page immediately so users see progress
@@ -3249,16 +3350,7 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
                     # ═══════════════════════════════════════════════════════════════
                     # AUTO-FIX: Detect and fix syntax errors automatically
                     # ═══════════════════════════════════════════════════════════════
-                    has_syntax_error = (
-                        'SyntaxError' in full_error or 
-                        'IndentationError' in full_error or 
-                        'TabError' in full_error or
-                        'Syntax Error' in full_error or
-                        'Failed to compile' in full_error or
-                        'Expected \';\'' in full_error or
-                        'Expected \'}\'' in full_error or
-                        'Expected <eof>' in full_error
-                    )
+                    has_syntax_error = 'SyntaxError' in full_error or 'IndentationError' in full_error or 'TabError' in full_error
                     log(f'Syntax error detected: {has_syntax_error}')
                     
                     if has_syntax_error:
@@ -3388,7 +3480,7 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
         
         if healthy:
             # Generate dynamic AI suggestions based on what was built
-            ai_suggestions = _generate_ai_suggestions_for_success(user_prompt, changed_files, is_new_project=is_new_project)
+            ai_suggestions = _generate_ai_suggestions_for_success(user_prompt, changed_files)
 
             # ── Build compact file-diff footer ──────────────────────────────
             # Show which files were added / modified in a git-style summary.
@@ -5637,7 +5729,7 @@ Please analyze the BRD above and create a complete, production-ready application
             # Route directly to direct visual-first generation loop
             existing_files = read_workspace_files()
             is_empty = len(existing_files) == 0
-            self._handle_direct_generation(full_prompt, existing_files, is_empty, is_handoff=True)
+            self._handle_direct_generation(full_prompt, existing_files, is_empty)
             
         except requests.exceptions.RequestException as e:
             log(f'Failed to fetch BRD context: {e}')
@@ -6012,31 +6104,11 @@ Use `TASK:START` to continue execution.
             # For small changes, use direct generation
             self._handle_direct_generation(prompt, existing_files, False)
     
-    def _handle_direct_generation(self, prompt: str, existing_files: dict, is_empty: bool, is_handoff: bool = False):
+    def _handle_direct_generation(self, prompt: str, existing_files: dict, is_empty: bool):
         """Direct code generation with EditEngine integration + Git backup"""
-        
-        # Check if this is a deployment-only fix
-        deploy_only_keywords = [
-            '502', 'fix deployment', 'fix the deployment', 'restart', 'redeploy',
-            'not loading', 'broken', 'fix nginx', 'server error'
-        ]
-        is_deploy_fix = (
-            not is_empty and
-            any(kw in prompt.lower() for kw in deploy_only_keywords)
-        )
 
         changed_files = []
         user_prompt = prompt
-        
-        # Skip code generation for deployment-only fixes
-        if is_deploy_fix:
-            deploy_result = deploy(
-                error_context={'reason': prompt},
-                test_changes=False,
-                changed_files=[],
-                user_prompt=prompt
-            )
-            return
         
         # ═══════════════════════════════════════════════════════════════════
         # GIT: Create pre-edit snapshot (rollback point)
@@ -6060,11 +6132,12 @@ Use `TASK:START` to continue execution.
             log(f'EditEngine result: mode={edit_result["mode"]}, handled={edit_result["handled"]}')
             
             if edit_result["mode"] == "CREATE_APP" and not edit_result["handled"]:
-                # App creation or major change — use legacy generate_code()
-                # IMPORTANT: Pass existing_files so the AI has context of the current
-                # codebase and doesn't rebuild from scratch on existing projects.
-                log('📝 CREATE_APP mode - using legacy generate_code()')
-                result = generate_code(prompt, existing_files=existing_files if not is_empty else None, is_handoff=is_handoff)
+                # EditEngine deferred to legacy generate_code.
+                # Always pass existing_files — even for "CREATE_APP" the generate_code
+                # function will use PATCH format when existing_files is non-empty,
+                # preventing a full overwrite of a working project.
+                log('📝 CREATE_APP deferred — calling generate_code() with existing context')
+                result = generate_code(prompt, existing_files=existing_files or None)
                 
                 if not result:
                     return
@@ -6131,7 +6204,7 @@ Use `TASK:START` to continue execution.
             else:
                 # EditEngine failed - fall back to legacy
                 log('⚠️ EditEngine failed - falling back to legacy generate_code()')
-                result = generate_code(prompt, existing_files=existing_files if not is_empty else None, is_handoff=is_handoff)
+                result = generate_code(prompt, existing_files=existing_files if not is_empty else None)
                 
                 if not result:
                     return
@@ -6145,7 +6218,7 @@ Use `TASK:START` to continue execution.
             log(f'❌ EditEngine exception: {e}')
             report('Advanced edit engine encountered an issue. Falling back to standard code generation...')
             
-            result = generate_code(prompt, existing_files=existing_files if not is_empty else None, is_handoff=is_handoff)
+            result = generate_code(prompt, existing_files=existing_files if not is_empty else None)
             
             if not result:
                 return
@@ -6157,11 +6230,10 @@ Use `TASK:START` to continue execution.
         # Deploy with testing enabled for edits
         deploy_result = deploy(
             error_context=None,
-            test_changes=bool(changed_files) and not is_empty,
+            test_changes=bool(changed_files),
             changed_files=changed_files,
             user_prompt=user_prompt,
-            snapshot_id=snapshot_id,
-            is_new_project=is_empty
+            snapshot_id=snapshot_id
         )
 
 
@@ -6371,11 +6443,11 @@ if __name__ == '__main__':
             sys.path.append('/usr/local/bin')
             import supervisor
             supervisor_instance = supervisor.VersionSupervisor()
-            log('Starting supervisor in main thread...')
-            supervisor_instance.run()  # This blocks forever to manage child processes
-            sys.exit(0)
+            t = threading.Thread(target=supervisor_instance.run, daemon=True)
+            t.start()
+            log('Supervisor launched in background.')
         except Exception as e:
-            log(f'Failed to launch supervisor: {e}. Falling back to standalone mode...')
+            log(f'Failed to launch supervisor: {e}')
     else:
         log(f'Running under supervisor management (version: {current_version})')
 
