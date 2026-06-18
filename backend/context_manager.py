@@ -1857,11 +1857,34 @@ async def get_agent_notes_context(
     except Exception:
         return ""
 
+    # Load notes locally first (local-first approach)
+    notes = []
+    use_local = False
     try:
-        notes = await task_service.list_notes(task_token=effective_token)
-    except Exception as e:
-        logger.warning(f"[{project_token}] Failed to list agent notes: {e}")
-        return ""
+        from local_state_manager import list_agent_notes_local
+        local_notes = list_agent_notes_local(project_token)
+        if local_notes:
+            use_local = True
+            for n in local_notes:
+                notes.append({
+                    "id": n.get("id"),
+                    "note_id": n.get("id"),
+                    "title": n.get("title"),
+                    "_local_payload": n.get("content_payload"),
+                    "_local_text": n.get("content_text"),
+                })
+            logger.info(f"[{project_token}] Loaded {len(notes)} notes from local database.")
+    except Exception as local_err:
+        logger.warning(f"[{project_token}] Failed to list local agent notes: {local_err}")
+
+    if not use_local:
+        try:
+            remote_notes = await task_service.list_notes(task_token=effective_token)
+            if isinstance(remote_notes, list):
+                notes = remote_notes
+        except Exception as e:
+            logger.warning(f"[{project_token}] Failed to list agent notes from NXDune: {e}")
+            return ""
 
     if not isinstance(notes, list):
         return ""
@@ -1896,13 +1919,29 @@ async def get_agent_notes_context(
     if master_candidates:
         master_candidates.sort(key=_note_sort_key, reverse=True)
         master_note = master_candidates[0]
-        master_note_id = master_note.get("id") or master_note.get("note_id")
-        if master_note_id:
+        
+        detail = None
+        if isinstance(master_note, dict) and "_local_payload" in master_note:
+            raw_content = master_note.get("_local_text") or ""
+            if not raw_content and master_note.get("_local_payload"):
+                raw_content = json.dumps(master_note["_local_payload"])
+            detail = {
+                "title": master_note.get("title"),
+                "content": raw_content,
+            }
+        else:
+            master_note_id = master_note.get("id") or master_note.get("note_id")
+            if master_note_id:
+                try:
+                    detail = await task_service.get_note_detail(int(master_note_id), task_token=effective_token)
+                except Exception as e:
+                    logger.warning(f"[{project_token}] Failed to read remote master note: {e}")
+                    
+        if detail:
+            raw_content = str(detail.get("content") or "").strip()
+            payload = _parse_note_payload(raw_content)
+            title = str(detail.get("title") or master_note.get("title") or "").strip()
             try:
-                detail = await task_service.get_note_detail(int(master_note_id), task_token=effective_token)
-                raw_content = str(detail.get("content") or "").strip()
-                payload = _parse_note_payload(raw_content)
-                title = str(detail.get("title") or master_note.get("title") or "").strip()
                 structured_master_note = any(
                     key in payload
                     for key in (
@@ -2027,13 +2066,24 @@ async def get_agent_notes_context(
                 logger.warning(f"[{project_token}] Failed to read master note: {e}")
 
     for note in relevant:
-        note_id = (note or {}).get("id") or (note or {}).get("note_id")
-        if not note_id:
-            continue
-        try:
-            detail = await task_service.get_note_detail(int(note_id), task_token=effective_token)
-        except Exception:
-            continue
+        detail = None
+        if isinstance(note, dict) and "_local_payload" in note:
+            raw_content = note.get("_local_text") or ""
+            if not raw_content and note.get("_local_payload"):
+                raw_content = json.dumps(note["_local_payload"])
+            detail = {
+                "title": note.get("title"),
+                "content": raw_content,
+            }
+        else:
+            note_id = (note or {}).get("id") or (note or {}).get("note_id")
+            if not note_id:
+                continue
+            try:
+                detail = await task_service.get_note_detail(int(note_id), task_token=effective_token)
+            except Exception:
+                continue
+                
         title = str(detail.get("title") or note.get("title") or "").strip()
         payload = _parse_note_payload(detail.get("content"))
         payload["title"] = title

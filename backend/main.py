@@ -162,8 +162,19 @@ async def lifespan(app: FastAPI):
     _startup_init()
     # Initialize job manager
     await analysis_job_manager.initialize_job_manager()
+    
+    # Import and start background sync engine
+    from local_sync_service import run_nxdune_sync_worker
+    sync_task = asyncio.create_task(run_nxdune_sync_worker())
+    
     yield
-    # Cleanup job manager
+    
+    # Cancel sync engine and shutdown job manager
+    sync_task.cancel()
+    try:
+        await sync_task
+    except asyncio.CancelledError:
+        pass
     await analysis_job_manager.shutdown_job_manager()
 
 
@@ -11309,12 +11320,67 @@ async def upsert_agent_note(
     current_user: models.User = Depends(auth.get_current_user),
     x_task_token: Optional[str] = Header(None),
 ):
-    """Create or update an agent note in the external task management API."""
+    """Create or update an agent note locally (local-first) and queue sync to NXDune."""
+    project_token = x_task_token
+    if not project_token:
+        # Try extracting from title if header is missing
+        parts = payload.title.split("::")
+        if len(parts) >= 2:
+            project_token = parts[1]
+            
+    if not project_token:
+        raise HTTPException(status_code=400, detail="project_token could not be resolved from header or title")
+
     try:
-        return await task_service.upsert_note(payload.dict(exclude_none=True), task_token=x_task_token)
-    except TaskServiceError as e:
-        _raise_task_service_http_exception(e, "Failed to save note")
+        from local_state_manager import save_agent_note_local, queue_nxdune_sync
+        
+        # 1. Save locally
+        save_agent_note_local(
+            project_token=project_token,
+            title=payload.title,
+            content_payload={"content": payload.content},
+            content_text=payload.content,
+            user=payload.user or current_user.username,
+        )
+        
+        # Get note ID locally to pass back
+        from database import SessionLocal
+        db = SessionLocal()
+        try:
+            note = db.query(models.AgentNote).filter(
+                models.AgentNote.project_token == project_token,
+                models.AgentNote.title == payload.title
+            ).first()
+            resolved_note_id = note.id if note else payload.note_id
+        finally:
+            db.close()
+            
+        # 2. Queue sync log
+        sync_payload = {
+            "title": payload.title,
+            "content": payload.content,
+        }
+        if payload.note_id is not None:
+            sync_payload["note_id"] = payload.note_id
+        if payload.user:
+            sync_payload["user"] = payload.user
+
+        queue_nxdune_sync(
+            project_token=project_token,
+            operation="note_upsert",
+            agent_id=payload.user or current_user.username,
+            task_id=None,
+            payload=sync_payload
+        )
+        
+        return {
+            "success": True,
+            "id": resolved_note_id,
+            "note_id": resolved_note_id,
+            "message": "Note saved locally and sync queued."
+        }
     except Exception as e:
+        logger.error(f"Failed to save note locally: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to save note: {e}")
 
 
@@ -11323,12 +11389,26 @@ async def list_agent_notes(
     current_user: models.User = Depends(auth.get_current_user),
     x_task_token: Optional[str] = Header(None),
 ):
-    """List agent notes from the external task management API."""
+    """List agent notes from the local database first."""
+    if not x_task_token:
+        raise HTTPException(status_code=400, detail="X-Task-Token header (project token) is required")
+        
     try:
-        return await task_service.list_notes(task_token=x_task_token)
-    except TaskServiceError as e:
-        _raise_task_service_http_exception(e, "Failed to fetch notes")
+        from local_state_manager import list_agent_notes_local
+        local_notes = list_agent_notes_local(x_task_token)
+        
+        # Format notes to match the NXDune API return structure (list of dicts)
+        formatted = []
+        for ln in local_notes:
+            formatted.append({
+                "id": ln["nxdune_note_id"] or ln["id"],
+                "title": ln["title"],
+                "content": ln["content_text"] or json.dumps(ln["content_payload"]),
+                "user": ln["user"],
+            })
+        return formatted
     except Exception as e:
+        logger.error(f"Failed to list notes locally: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch notes: {e}")
 
 
@@ -11338,13 +11418,30 @@ async def get_agent_note_detail(
     current_user: models.User = Depends(auth.get_current_user),
     x_task_token: Optional[str] = Header(None),
 ):
-    """Fetch one agent note from the external task management API."""
+    """Fetch one agent note from the local database by local ID or synced NXDune ID."""
+    from database import SessionLocal
+    db = SessionLocal()
     try:
-        return await task_service.get_note_detail(note_id, task_token=x_task_token)
-    except TaskServiceError as e:
-        _raise_task_service_http_exception(e, "Failed to fetch note detail")
+        note = db.query(models.AgentNote).filter(
+            (models.AgentNote.id == note_id) | (models.AgentNote.nxdune_note_id == note_id)
+        ).first()
+        
+        if not note:
+            raise HTTPException(status_code=404, detail="Note not found locally")
+            
+        return {
+            "id": note.nxdune_note_id or note.id,
+            "title": note.title,
+            "content": note.content_text or json.dumps(note.content_payload),
+            "user": note.user,
+        }
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"Failed to get note detail locally: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch note detail: {e}")
+    finally:
+        db.close()
 
 class AutoGenerateRequest(BaseModel):
     project_token: str

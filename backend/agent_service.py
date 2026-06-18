@@ -1259,6 +1259,15 @@ BULLETPROOF SUCCESS RULES - 100% EXECUTION GUARANTEE:
 - Follow language-specific best practices for the detected/specified tech stack
 - Include setup instructions and dependency installation
 
+CRITICAL RULE AGAINST PLACEHOLDERS & HALF-BAKED GENERATION (MANDATORY):
+- NEVER EVER output partial/incomplete code or placeholders like:
+  - "// TODO: implement rest"
+  - "// ... same as before ..."
+  - "# TODO: add fields here"
+  - "/* rest of the code remains unchanged */"
+- You MUST write every function, import, class, and comment completely. If you modify a file, write the FULL working content of the file.
+- Any heredoc blocks (`cat <<'EOF' > filename`) MUST contain the complete, syntactically correct, and fully functional content of the file from top to bottom. Failure to write complete code will break compilation checks and fail the task.
+
 CRITICAL: WORKING IN EXISTING PROJECT STRUCTURE (POST-BOOTSTRAP):
 - The project structure has ALREADY been created by the bootstrap agent
 - Files and directories ALREADY EXIST as empty placeholders - you are adding IMPLEMENTATION ONLY
@@ -2360,15 +2369,46 @@ def _detect_stack_build_commands(container_name: str, project_root: str = "/work
     Detect the tech stack inside the container and return the appropriate install, build, and dev commands.
     """
     import subprocess
+    import json
     # 1. Node.js (React, Angular, Vue, Next.js)
     chk = subprocess.run(["docker", "exec", container_name, "test", "-f", f"{project_root}/package.json"], capture_output=True, check=False)
     if chk.returncode == 0:
-        return {
-            "type": "nodejs",
-            "install": "npm install --silent",
-            "build": "npm run build",
-            "dev": "npm run dev"
-        }
+        # Check package.json scripts to verify if build command exists
+        has_build_script = True
+        try:
+            cat_json = subprocess.run(["docker", "exec", container_name, "cat", f"{project_root}/package.json"], capture_output=True, text=True, check=False)
+            if cat_json.returncode == 0:
+                pjson = json.loads(cat_json.stdout)
+                scripts = pjson.get("scripts", {})
+                has_build_script = "build" in scripts
+        except Exception:
+            pass
+
+        # Check package managers
+        has_pnpm = subprocess.run(["docker", "exec", container_name, "test", "-f", f"{project_root}/pnpm-lock.yaml"], capture_output=True, check=False).returncode == 0
+        has_yarn = subprocess.run(["docker", "exec", container_name, "test", "-f", f"{project_root}/yarn.lock"], capture_output=True, check=False).returncode == 0
+
+        if has_pnpm:
+            return {
+                "type": "nodejs",
+                "install": "pnpm install",
+                "build": "pnpm build" if has_build_script else "echo 'No build script defined in package.json. Skipping.'",
+                "dev": "pnpm dev"
+            }
+        elif has_yarn:
+            return {
+                "type": "nodejs",
+                "install": "yarn install",
+                "build": "yarn build" if has_build_script else "echo 'No build script defined in package.json. Skipping.'",
+                "dev": "yarn dev"
+            }
+        else:
+            return {
+                "type": "nodejs",
+                "install": "npm install --silent",
+                "build": "npm run build" if has_build_script else "echo 'No build script defined in package.json. Skipping.'",
+                "dev": "npm run dev"
+            }
         
     # 2. Python
     chk = subprocess.run(["docker", "exec", container_name, "test", "-f", f"{project_root}/requirements.txt"], capture_output=True, check=False)
@@ -2399,8 +2439,46 @@ def _detect_stack_build_commands(container_name: str, project_root: str = "/work
             "build": "go build ./...",
             "dev": "go run ."
         }
+    # Go fallback if no go.mod but .go files exist
+    chk = subprocess.run(["docker", "exec", container_name, "sh", "-c", f"find {project_root} -name '*.go' | grep ."], capture_output=True, check=False)
+    if chk.returncode == 0:
+        return {
+            "type": "go",
+            "install": "echo 'No go.mod found. Skipping download.'",
+            "build": "go build ./...",
+            "dev": "go run ."
+        }
+
+    # 5. Rust
+    chk = subprocess.run(["docker", "exec", container_name, "test", "-f", f"{project_root}/Cargo.toml"], capture_output=True, check=False)
+    if chk.returncode == 0:
+        return {
+            "type": "rust",
+            "install": "cargo fetch",
+            "build": "cargo check",
+            "dev": "cargo run -- --help"
+        }
+
+    # 6. PHP
+    chk = subprocess.run(["docker", "exec", container_name, "test", "-f", f"{project_root}/composer.json"], capture_output=True, check=False)
+    if chk.returncode == 0:
+        return {
+            "type": "php",
+            "install": "composer install --no-interaction --quiet || true",
+            "build": "find . -name '*.php' -type f -not -path '*/vendor/*' | xargs -n 1 php -l",
+            "dev": "php -S localhost:8000"
+        }
+    # PHP fallback if no composer.json but .php files exist
+    chk = subprocess.run(["docker", "exec", container_name, "sh", "-c", f"find {project_root} -name '*.php' | grep ."], capture_output=True, check=False)
+    if chk.returncode == 0:
+        return {
+            "type": "php",
+            "install": "echo 'No composer.json found. Skipping install.'",
+            "build": "find . -name '*.php' -type f -not -path '*/vendor/*' | xargs -n 1 php -l",
+            "dev": "php -S localhost:8000"
+        }
         
-    # 5. Java (Maven)
+    # 7. Java (Maven)
     chk = subprocess.run(["docker", "exec", container_name, "test", "-f", f"{project_root}/pom.xml"], capture_output=True, check=False)
     if chk.returncode == 0:
         return {
@@ -2410,7 +2488,7 @@ def _detect_stack_build_commands(container_name: str, project_root: str = "/work
             "dev": "mvn spring-boot:run"
         }
         
-    # 6. Java (Gradle)
+    # 8. Java (Gradle)
     chk = subprocess.run(["docker", "exec", container_name, "test", "-f", f"{project_root}/build.gradle"], capture_output=True, check=False)
     if chk.returncode == 0:
         return {
@@ -2689,6 +2767,7 @@ def _run_build_validation_in_container(container_name: str, project_root: str = 
     DYNAMIC TECH-STACK AGNOSTIC validation inside the container to verify if code compiles and runs.
     """
     import subprocess
+    import shlex
     
     # Run TSConfig / Package.json integrity checks and import casing check
     integrity_error = _run_integrity_and_casing_checks(container_name, project_root)
@@ -2701,51 +2780,181 @@ def _run_build_validation_in_container(container_name: str, project_root: str = 
             "stderr": f"Integrity and Import Casing Check Failed:\n{integrity_error}"
         }
         
+    # Collect changed files via git status
+    changed_files = []
+    try:
+        status_run = subprocess.run(
+            ["docker", "exec", "-w", project_root, container_name, "git", "status", "--porcelain"],
+            capture_output=True, text=True, timeout=15
+        )
+        if status_run.returncode == 0:
+            for line in (status_run.stdout or "").splitlines():
+                line = line.strip()
+                if line:
+                    parts = line.split(None, 1)
+                    if len(parts) == 2:
+                        changed_files.append(parts[1])
+    except Exception as e:
+        logger.warning(f"Failed to collect changed files via git status: {e}")
+
     commands = _detect_stack_build_commands(container_name, project_root)
-    if not commands:
-        logger.info("No supported tech stack manifest found. Skipping build validation.")
-        return {
-            "success": True,
-            "exit_code": 0,
-            "stdout": "No manifest file found (package.json, requirements.txt,csproj, go.mod, pom.xml). Skip.",
-            "stderr": ""
-        }
+    build_passed = True
+    build_output = ""
+    build_stderr = ""
+    build_exit_code = 0
 
-    logger.info(f"Detected stack '{commands['type']}'. Running build verification...")
-    
-    # 1. Run Manifest Installation if needed
-    install_run = subprocess.run(
-        ["docker", "exec", "-w", project_root, container_name, "sh", "-c", commands["install"]],
-        capture_output=True, text=True, timeout=120
-    )
-    if install_run.returncode != 0:
-        logger.warning(f"Install validation failed in container: {install_run.stderr}")
+    if commands:
+        logger.info(f"Detected stack '{commands['type']}'. Running build verification...")
+        
+        # 1. Run Manifest Installation if needed
+        install_run = subprocess.run(
+            ["docker", "exec", "-w", project_root, container_name, "sh", "-c", commands["install"]],
+            capture_output=True, text=True, timeout=120
+        )
+        if install_run.returncode != 0:
+            logger.warning(f"Install validation failed in container: {install_run.stderr}")
+            return {
+                "success": False,
+                "exit_code": install_run.returncode,
+                "stdout": install_run.stdout,
+                "stderr": f"Manifest installation failed:\n{install_run.stderr}"
+            }
+
+        # 2. Run Build/Compile validation
+        build_run = subprocess.run(
+            ["docker", "exec", "-w", project_root, container_name, "sh", "-c", commands["build"]],
+            capture_output=True, text=True, timeout=180
+        )
+        build_output = build_run.stdout or ""
+        build_stderr = build_run.stderr or ""
+        build_exit_code = build_run.returncode
+        if build_run.returncode != 0:
+            logger.warning(f"Build validation failed in container: {build_run.stderr}")
+            build_passed = False
+
+    # 3. Run individual file syntax check if build passed or no build command was run
+    if build_passed:
+        syntax_errors = []
+        if changed_files:
+            tools = _probe_container_toolchain(container_name)
+            
+            def _run_syntax_check(cmd_str: str) -> tuple[bool, str]:
+                r = subprocess.run(
+                    ["docker", "exec", "-w", project_root, container_name, "sh", "-c", cmd_str],
+                    capture_output=True, text=True, timeout=15
+                )
+                return r.returncode == 0, (r.stdout or "") + (r.stderr or "")
+
+            for fpath in changed_files:
+                lower = fpath.lower()
+                # Python
+                if lower.endswith(".py") and tools.get("has_python3"):
+                    ok, out = _run_syntax_check(f"python3 -m py_compile {shlex.quote(fpath)}")
+                    if not ok:
+                        syntax_errors.append(f"Python syntax error in {fpath}:\n{out}")
+                
+                # JSON
+                elif lower.endswith(".json") and tools.get("has_python3"):
+                    if not any(x in lower for x in ["package-lock.json", "yarn.lock"]):
+                        ok, out = _run_syntax_check(f"python3 -c 'import json; json.load(open(\"{fpath}\"))'")
+                        if not ok:
+                            syntax_errors.append(f"JSON format error in {fpath}:\n{out}")
+                            
+                # JavaScript (.js, .mjs, .cjs)
+                elif any(lower.endswith(ext) for ext in [".js", ".mjs", ".cjs"]) and tools.get("has_node"):
+                    has_jsx = False
+                    try:
+                        cat_run = subprocess.run(
+                            ["docker", "exec", container_name, "cat", f"{project_root}/{fpath}"],
+                            capture_output=True, text=True, check=False, timeout=10
+                        )
+                        if cat_run.returncode == 0:
+                            content = cat_run.stdout
+                            if "</" in content or "className=" in content or "import React" in content:
+                                has_jsx = True
+                    except Exception:
+                        pass
+                    if not has_jsx:
+                        ok, out = _run_syntax_check(f"node --check {shlex.quote(fpath)}")
+                        if not ok:
+                            syntax_errors.append(f"JavaScript syntax error in {fpath}:\n{out}")
+                            
+                # TypeScript (.ts, .tsx)
+                elif any(lower.endswith(ext) for ext in [".ts", ".tsx"]):
+                    if tools.get("has_tsc"):
+                        has_tsconfig = subprocess.run(
+                            ["docker", "exec", container_name, "test", "-f", f"{project_root}/tsconfig.json"],
+                            capture_output=True, check=False
+                        ).returncode == 0
+                        if has_tsconfig:
+                            ok, out = _run_syntax_check("tsc --noEmit --skipLibCheck")
+                            if not ok:
+                                real_errors = [
+                                    ln for ln in out.splitlines()
+                                    if ln.strip()
+                                    and "Cannot find module" not in ln
+                                    and "Could not find a declaration file" not in ln
+                                    and "error TS2307" not in ln
+                                    and "error TS2792" not in ln
+                                ]
+                                if real_errors:
+                                    syntax_errors.append("TypeScript build compilation errors:\n" + "\n".join(real_errors[:10]))
+                        else:
+                            if lower.endswith(".ts"):
+                                ok, out = _run_syntax_check(
+                                    f"sed 's/:\\s*[A-Za-z<>\\[\\]|&?]*//g; s/<[^>]*>//g' "
+                                    f"{shlex.quote(fpath)} | node --input-type=module --check"
+                                )
+                                if "SyntaxError" in out:
+                                    syntax_errors.append(f"TypeScript syntax error in {fpath}:\n{out}")
+                                    
+                # Go (.go)
+                elif lower.endswith(".go") and tools.get("has_go"):
+                    ok, out = _run_syntax_check(f"go vet {shlex.quote(fpath)}")
+                    if not ok:
+                        syntax_errors.append(f"Go syntax/vet errors in {fpath}:\n{out}")
+                        
+                # Rust (.rs)
+                elif lower.endswith(".rs") and tools.get("has_rustc"):
+                    ok, out = _run_syntax_check(f"rustc --emit=metadata {shlex.quote(fpath)}")
+                    if not ok:
+                        syntax_errors.append(f"Rust compiler error in {fpath}:\n{out}")
+                        
+                # PHP (.php)
+                elif lower.endswith(".php") and tools.get("has_php"):
+                    ok, out = _run_syntax_check(f"php -l {shlex.quote(fpath)}")
+                    if not ok:
+                        syntax_errors.append(f"PHP syntax lint error in {fpath}:\n{out}")
+                        
+                # Shell Script (.sh, .bash)
+                elif lower.endswith(".sh") or lower.endswith(".bash"):
+                    ok, out = _run_syntax_check(f"sh -n {shlex.quote(fpath)}")
+                    if not ok:
+                        syntax_errors.append(f"Shell script syntax error in {fpath}:\n{out}")
+
+        if syntax_errors:
+            logger.warning(f"Syntax validation failed: {len(syntax_errors)} files had syntax errors.")
+            return {
+                "success": False,
+                "exit_code": 1,
+                "stdout": "",
+                "stderr": "Syntax validation errors detected in changed files:\n\n" + "\n\n".join(syntax_errors)
+            }
+
+    if not build_passed:
         return {
             "success": False,
-            "exit_code": install_run.returncode,
-            "stdout": install_run.stdout,
-            "stderr": f"Manifest installation failed:\n{install_run.stderr}"
+            "exit_code": build_exit_code,
+            "stdout": build_output,
+            "stderr": f"Code compilation/build failed:\n{build_stderr}"
         }
 
-    # 2. Run Build/Compile validation
-    build_run = subprocess.run(
-        ["docker", "exec", "-w", project_root, container_name, "sh", "-c", commands["build"]],
-        capture_output=True, text=True, timeout=180
-    )
-    if build_run.returncode != 0:
-        logger.warning(f"Build validation failed in container: {build_run.stderr}")
-        return {
-            "success": False,
-            "exit_code": build_run.returncode,
-            "stdout": build_run.stdout,
-            "stderr": f"Code compilation/build failed:\n{build_run.stderr}"
-        }
-
-    logger.info("Build verification PASSED.")
+    logger.info("Build & Syntax verification PASSED.")
+    stack_type = commands.get("type", "unknown") if commands else "no manifest"
     return {
         "success": True,
         "exit_code": 0,
-        "stdout": f"Build success (stack: {commands['type']}).\n{build_run.stdout}",
+        "stdout": f"Build & Syntax check success (stack: {stack_type}).\n{build_output}",
         "stderr": ""
     }
 
@@ -7267,8 +7476,20 @@ async def _run_git_manager_tests_with_ai(
         js_files = _ext(changed_files, ".js", ".cjs", ".mjs")
         js_errors: List[str] = []
         for fpath in js_files[:40]:
+            # Skip node --check for files containing JSX syntax (which vanilla node doesn't support)
+            try:
+                with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                if "</" in content or "className=" in content or "import React" in content:
+                    continue
+            except Exception:
+                pass
+
             ok, out = _check(f"node --check {shlex.quote(fpath)} 2>&1", timeout=12)
             if not ok:
+                # If it fails due to JSX unexpected token '<', skip the error
+                if "Unexpected token '<'" in out or "unexpected token '<'" in out:
+                    continue
                 js_errors.append(f"{fpath}: {out[:200]}")
         _record_errors("js-syntax", "node --check", js_errors)
 
@@ -7309,6 +7530,17 @@ async def _run_git_manager_tests_with_ai(
             # No tsconfig — fall back to individual file parse via node
             ts_errors: List[str] = []
             for fpath in ts_files[:30]:
+                # Skip .tsx or files containing JSX
+                if fpath.endswith(".tsx"):
+                    continue
+                try:
+                    with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                    if "</" in content or "className=" in content or "import React" in content:
+                        continue
+                except Exception:
+                    pass
+
                 # node can't check .ts natively, but we can catch obvious
                 # syntax errors by stripping types with a trivial sed and
                 # running node --check on the result
@@ -7320,6 +7552,9 @@ async def _run_git_manager_tests_with_ai(
                 # node --check on stripped TS is best-effort; only fail on
                 # unmistakable parse errors (SyntaxError)
                 if "SyntaxError" in out:
+                    # If it fails due to JSX syntax, skip the error
+                    if "Unexpected token '<'" in out or "unexpected token '<'" in out:
+                        continue
                     ts_errors.append(f"{fpath}: {out[:200]}")
             _record_errors("typescript-syntax", "node(stripped-ts)", ts_errors)
 
@@ -10687,242 +10922,155 @@ async def _fetch_external_tasks(
     project_token: Optional[str] = None,
     task_token: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Fetch ALL pages of tasks from the external task management API."""
-    from task_service import task_service
+    """Fetch tasks from the local SQLite database (local-first approach)."""
+    if not project_token:
+        return []
 
-    def _extract_entity_info(raw_value: Any, key: str):
-        entity_id = None
-        entity_name = None
-        if isinstance(raw_value, dict):
-            entity_id = raw_value.get("id") or raw_value.get(f"{key}_id")
-            entity_name = raw_value.get("name") or raw_value.get("title")
-        elif raw_value not in (None, ""):
-            entity_id = raw_value
-        return entity_id, entity_name
+    from database import SessionLocal
+    import models
 
-    def _to_int(value: Any) -> Optional[int]:
-        try:
-            if value in (None, ""):
-                return None
-            return int(str(value).strip())
-        except Exception:
-            return None
-
-    def _safe_date_key(value: Any) -> str:
-        if value in (None, ""):
-            return "9999-12-31"
-        text = str(value).strip()
-        if len(text) >= 10:
-            candidate = text[:10]
-            try:
-                datetime.strptime(candidate, "%Y-%m-%d")
-                return candidate
-            except Exception:
-                pass
-        return "9999-12-31"
-
-    def _normalize_relation_ids(raw_value: Any) -> List[str]:
-        values: List[str] = []
-
-        def _append(value: Any) -> None:
-            if isinstance(value, dict):
-                nested = (
-                    value.get("id")
-                    or value.get("task_id")
-                    or value.get("external_id")
-                    or value.get("value")
-                    or value.get("pk")
-                )
-                if nested not in (None, ""):
-                    _append(nested)
-                return
-            if isinstance(value, (list, tuple, set)):
-                for item in value:
-                    _append(item)
-                return
-            if value in (None, ""):
-                return
-            text = str(value).strip()
-            if text:
-                values.append(text)
-
-        if isinstance(raw_value, str):
-            raw_text = raw_value.strip()
-            if raw_text.startswith("[") and raw_text.endswith("]"):
-                try:
-                    _append(json.loads(raw_text))
-                except Exception:
-                    _append(raw_text)
-            elif "," in raw_text:
-                for part in raw_text.split(","):
-                    _append(part)
-            else:
-                _append(raw_text)
-        else:
-            _append(raw_value)
-
-        deduped: List[str] = []
-        seen = set()
-        for value in values:
-            if value in seen:
-                continue
-            seen.add(value)
-            deduped.append(value)
-        return deduped
-
-    def _extract_primary_assignee(task_payload: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
-        direct_id = (
-            task_payload.get("assigned_agent")
-            or task_payload.get("assignee")
-            or task_payload.get("assigned_to")
-        )
-        direct_name = (
-            task_payload.get("assigned_agent_name")
-            or task_payload.get("assignee_name")
-            or task_payload.get("assigned_to_name")
-        )
-        if direct_id or direct_name:
-            return (
-                str(direct_id).strip() if direct_id not in (None, "") else None,
-                str(direct_name).strip() if direct_name not in (None, "") else None,
-            )
-
-        # Check NXDUNE's camelCase assignedTo field (list of usernames like ["agent1"])
-        assigned_to_list = task_payload.get("assignedTo")
-        if isinstance(assigned_to_list, list) and assigned_to_list:
-            first = assigned_to_list[0]
-            if first not in (None, ""):
-                return str(first).strip(), None
-
-        raw_assignees = task_payload.get("assignees")
-        assignees = raw_assignees if isinstance(raw_assignees, list) else [raw_assignees]
-        for assignee in assignees:
-            if isinstance(assignee, dict):
-                assignee_id = assignee.get("user_id") or assignee.get("id") or assignee.get("agent_id")
-                assignee_name = (
-                    assignee.get("name")
-                    or assignee.get("username")
-                    or assignee.get("full_name")
-                    or assignee.get("email")
-                )
-                return (
-                    str(assignee_id).strip() if assignee_id not in (None, "") else None,
-                    str(assignee_name).strip() if assignee_name not in (None, "") else None,
-                )
-            if assignee not in (None, ""):
-                return str(assignee).strip(), None
-        return None, None
-
+    db = SessionLocal()
     try:
-        if not task_token:
-            task_token = get_project_task_token(project_token)
-        all_tasks = []
-        page = 1
-        while True:
-            data = await task_service.get_tasks(page=page, task_token=task_token)
-            if isinstance(data, list):
-                all_tasks.extend(data)
-                break
-            elif isinstance(data, dict) and "results" in data:
-                all_tasks.extend(data["results"])
-                if not data.get("next"):
-                    break
-                page += 1
-            else:
-                break
-
+        db_tasks = db.query(models.Task).filter(
+            models.Task.project_token == project_token
+        ).all()
+        
+        # Get ownerships to determine status and progress
+        ownerships = db.query(models.AgentTaskOwnership).filter(
+            models.AgentTaskOwnership.project_token == project_token
+        ).all()
+        ownership_map = {ow.task_id: ow for ow in ownerships}
+        
         normalized = []
-        for t in all_tasks:
-            # Parse checklist JSON
-            checklist_raw = t.get("checklist")
-            if checklist_raw in (None, ""):
-                checklist_raw = t.get("checklistItems")
+        for t in db_tasks:
+            clean_id = t.task_id.split("_")[-1] if "_" in t.task_id else t.task_id
+            
+            # Map database status to expected values
+            ow_record = ownership_map.get(t.task_id)
+            if ow_record is None:
+                ow_record = ownership_map.get(clean_id)
+                
+            ow_status = ow_record.status if ow_record else None
+            
+            # Form taskStatus
+            if ow_status == "done":
+                status = "Completed"
+                progress = 100
+            elif ow_status == "failed":
+                status = "Failed"
+                progress = ow_record.task_data.get("task_progress", 0) if (ow_record and ow_record.task_data) else 0
+            elif ow_status == "in_progress":
+                status = "On Going"
+                progress = ow_record.task_data.get("task_progress", 10) if (ow_record and ow_record.task_data) else 10
+            elif ow_status == "claimed":
+                status = "On Going"
+                progress = 10
+            else:
+                status = "To Do"
+                progress = 0
+
+            # Override progress if explicitly set in task_data
+            if ow_record and ow_record.task_data and isinstance(ow_record.task_data, dict):
+                stored_progress = ow_record.task_data.get("task_progress")
+                if stored_progress is not None:
+                    try:
+                        progress = int(stored_progress)
+                    except (ValueError, TypeError):
+                        pass
+
+            # Checklist parsing
             checklist_items = []
-            if isinstance(checklist_raw, list):
-                checklist_items = checklist_raw
-            elif isinstance(checklist_raw, str) and checklist_raw.strip():
+            if t.checklist:
                 try:
-                    parsed = json.loads(checklist_raw)
+                    parsed = json.loads(t.checklist)
                     if isinstance(parsed, list):
                         checklist_items = parsed
                     elif isinstance(parsed, dict):
                         checklist_items = parsed.get("checklistItems", []) or parsed.get("items", [])
                 except Exception:
                     pass
-            elif isinstance(checklist_raw, dict):
-                checklist_items = checklist_raw.get("checklistItems", []) or checklist_raw.get("items", [])
 
-            task_id = t.get("id", uuid.uuid4().hex[:8])
-            external_id = t.get("external_id")
-            sprint_id, sprint_name = _extract_entity_info(t.get("sprint"), "sprint")
-            milestone_id, milestone_name = _extract_entity_info(t.get("milestone"), "milestone")
-            assigned_agent, assigned_agent_name = _extract_primary_assignee(t)
-            linked_task_ids = _normalize_relation_ids(t.get("linked_tasks"))
-            dependency_ids = _normalize_relation_ids(
-                t.get("dependencies") if t.get("dependencies") not in (None, "") else t.get("dependency_ids")
-            )
-            if sprint_id in (None, ""):
-                sprint_id = t.get("sprint_id")
-            if milestone_id in (None, ""):
-                milestone_id = t.get("milestone_id")
-            task_start_date = t.get("startdate") or t.get("start_date")
-            task_deadline = t.get("deadline") or t.get("end_date")
-            task_title = t.get("taskName") or t.get("title") or "Untitled Task"
-            task_description = t.get("description") or t.get("details") or task_title or ""
-            task_phase = str(
-                t.get("phase")
-                or t.get("task_phase")
-                or t.get("taskPhase")
-                or ""
-            ).strip()
-            task_domain = str(
-                t.get("domain")
-                or t.get("task_domain")
-                or t.get("taskDomain")
-                or ""
-            ).strip()
-            wallet_value = _to_int(t.get("task_wallet", t.get("wallet")))
+            # Assignees list parsing
+            assignees_list = []
+            if t.assigned_to:
+                try:
+                    if isinstance(t.assigned_to, list):
+                        assignees_list = t.assigned_to
+                    elif isinstance(t.assigned_to, str):
+                        parsed = json.loads(t.assigned_to)
+                        if isinstance(parsed, list):
+                            assignees_list = parsed
+                except Exception:
+                    pass
+
+            # Extract agent id and name
+            assigned_agent = None
+            assigned_agent_name = None
+            if assignees_list:
+                assigned_agent = assignees_list[0]
+                assigned_agent_name = assignees_list[0]
+
+            # Parse linked tasks and dependencies
+            linked_task_ids = []
+            if t.linked_tasks:
+                try:
+                    if isinstance(t.linked_tasks, list):
+                        linked_task_ids = t.linked_tasks
+                    elif isinstance(t.linked_tasks, str):
+                        parsed = json.loads(t.linked_tasks)
+                        if isinstance(parsed, list):
+                            linked_task_ids = parsed
+                except Exception:
+                    pass
+
+            # Format deadlines
+            days_left = None
+            if t.deadline:
+                try:
+                    deadline_dt = datetime.strptime(t.deadline, "%Y-%m-%d")
+                    days_left = max(0, (deadline_dt.date() - datetime.utcnow().date()).days)
+                except Exception:
+                    pass
+
             normalized.append({
-                "id": str(task_id),
-                "external_id": external_id if external_id is not None else task_id,
-                "title": task_title,
-                "taskName": task_title,
-                "description": task_description,
-                "priority": (t.get("priority") or "medium").lower(),
-                "status": t.get("taskStatus") or t.get("status") or "pending",
-                "task_type": t.get("task_type", "TASK"),
-                "created_at": t.get("created_at") or datetime.utcnow().isoformat(),
+                "id": str(t.nxdune_task_id or t.id),
+                "external_id": t.nxdune_task_id or t.id,
+                "title": t.task_name,
+                "taskName": t.task_name,
+                "description": t.description or "",
+                "priority": (t.priority or "medium").lower(),
+                "status": status.lower(),  # expected lowercase status by agent loop matching
+                "taskStatus": status,
+                "task_progress": progress,
+                "is_completed": status == "Completed",
+                "task_type": t.task_type or "TASK",
+                "created_at": t.created_at.isoformat() if t.created_at else datetime.utcnow().isoformat(),
                 "assigned_agent": assigned_agent,
                 "assigned_agent_name": assigned_agent_name,
-                "started_at": None,
+                "started_at": ow_record.started_at.isoformat() if (ow_record and ow_record.started_at) else None,
                 "linked_tasks": linked_task_ids,
-                "dependencies": dependency_ids,
-                "phase": task_phase,
-                "task_phase": task_phase,
-                "domain": task_domain,
-                "task_domain": task_domain,
-                "wallet": wallet_value if wallet_value is not None else 0,
+                "dependencies": linked_task_ids,  # use linked_tasks for dependencies mapping
+                "phase": t.sprint,
+                "task_phase": t.sprint,
+                "domain": t.milestone,
+                "task_domain": t.milestone,
+                "wallet": t.task_wallet or 0,
                 "checklist": checklist_items,
-                "sprint_id": sprint_id,
-                "sprint_name": sprint_name,
-                "milestone_id": milestone_id,
-                "milestone_name": milestone_name,
-                "startdate": task_start_date,
-                "deadline": task_deadline,
-                "assignees": t.get("assignees") or [],
+                "sprint_id": t.sprint,
+                "sprint_name": t.sprint,
+                "milestone_id": t.milestone,
+                "milestone_name": t.milestone,
+                "startdate": t.startdate,
+                "deadline": t.deadline,
+                "assignees": assignees_list,
                 "_project_token": project_token,
             })
-
-        # NOTE: Do NOT sort here — _sort_tasks_for_execution (wave-based) is the single
-        # canonical sort. Pre-sorting by sprint/milestone overwrites the wave order and
-        # causes bootstrap (Wave 0) to land after sprint-1 tasks if its sprint_id is higher.
-        # Tasks are sorted once by the caller via _sort_tasks_for_execution().
         return normalized
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f"[agent_service] Failed to fetch external tasks: {error_msg}")
-        # Re-raise so caller can handle and log to agent output_log
-        raise Exception(f"Failed to fetch tasks from NXDUNE: {error_msg}")
+        logger.error(f"[agent_service] Failed to fetch local tasks: {e}")
+        return []
+    finally:
+        db.close()
 
 
 async def _mark_checklist_item(task_id, checklist_items: list, item_index: int, project_token: Optional[str] = None, task_token: Optional[str] = None):
@@ -13835,7 +13983,9 @@ def _extract_paths_from_workspace_tree(workspace_tree: str) -> List[str]:
                 children_list = children if isinstance(children, list) else []
                 name_is_file = _looks_like_repo_file_name(name)
                 current_prefix = prefix
-                if name and not is_root:
+                # Only strip root if it is a generic placeholder (like 'project_root', 'workspace', 'project')
+                skip_prefix = is_root and name.lower() in ("project_root", "root", "workspace", "project")
+                if name and not skip_prefix:
                     current_prefix = f"{prefix}/{name}" if prefix else name
                     if name_is_file:
                         add_path(current_prefix)
@@ -15520,42 +15670,17 @@ async def _get_existing_note_payload(
     project_token: Optional[str] = None,
     task_token: Optional[str] = None,
 ) -> Dict[str, Any]:
-    effective_token = task_token or get_project_task_token(project_token)
-    if not effective_token:
-        return {}
-
-    state = _ensure_project_state(project_token)
-    payload_cache = state.setdefault("note_payload_cache", {})
-    cached_entry = payload_cache.get(title)
-    now = time.time()
-    if isinstance(cached_entry, dict):
-        cached_token = str(cached_entry.get("task_token") or "").strip()
-        cached_age = now - float(cached_entry.get("loaded_at") or 0.0)
-        if cached_token == str(effective_token).strip() and cached_age <= NOTE_PAYLOAD_CACHE_TTL_SECONDS:
-            cached_payload = cached_entry.get("payload")
-            if isinstance(cached_payload, dict):
-                return dict(cached_payload)
-
-    note_id = await _find_note_id_by_title(
-        title,
-        project_token=project_token,
-        task_token=effective_token,
-    )
-    if note_id is None:
+    if not project_token:
         return {}
 
     try:
-        from task_service import task_service
-
-        detail = await task_service.get_note_detail(note_id, task_token=effective_token)
-        payload = _parse_agent_note_content((detail or {}).get("content"))
-        payload_cache[title] = {
-            "payload": dict(payload) if isinstance(payload, dict) else {},
-            "loaded_at": now,
-            "task_token": effective_token,
-        }
-        return payload
-    except Exception:
+        from local_state_manager import get_agent_note_local
+        note = get_agent_note_local(project_token, title)
+        if note and isinstance(note.get("content_payload"), dict):
+            return note["content_payload"]
+        return {}
+    except Exception as e:
+        logger.error(f"[agent_service] Failed to get existing note payload locally: {e}")
         return {}
 
 
@@ -15710,35 +15835,16 @@ async def _find_note_id_by_title(
     project_token: Optional[str] = None,
     task_token: Optional[str] = None,
 ) -> Optional[int]:
-    effective_token = task_token or get_project_task_token(project_token)
-    if not effective_token:
+    if not project_token:
         return None
-
-    state = _ensure_project_state(project_token)
-    cache = state.setdefault("note_title_cache", {})
-    cached = cache.get(title)
-    if cached:
-        return cached
-
     try:
-        from task_service import task_service
-
-        notes = await task_service.list_notes(task_token=effective_token)
+        from local_state_manager import get_agent_note_local
+        note = get_agent_note_local(project_token, title)
+        if note:
+            return note.get("nxdune_note_id")
+        return None
     except Exception:
         return None
-
-    if not isinstance(notes, list):
-        return None
-
-    for note in notes:
-        if str((note or {}).get("title") or "").strip() != title:
-            continue
-        note_id = _extract_note_id_from_response(note)
-        if note_id is not None:
-            cache[title] = note_id
-            return note_id
-
-    return None
 
 
 async def _upsert_agent_note(
@@ -15750,58 +15856,58 @@ async def _upsert_agent_note(
     project_token: Optional[str] = None,
     task_token: Optional[str] = None,
 ) -> Dict[str, Any]:
-    effective_token = task_token or get_project_task_token(project_token)
-    if not effective_token:
-        return {"success": False, "skipped": True, "reason": "missing_task_token"}
+    if not project_token:
+        return {"success": False, "error": "missing_project_token"}
 
+    # 1. Save locally first (primary write)
     try:
-        from task_service import task_service
+        from local_state_manager import save_agent_note_local
+        save_agent_note_local(
+            project_token=project_token,
+            title=title,
+            content_payload=content_payload,
+            content_text=content_text,
+            user=user,
+        )
     except Exception as exc:
-        return {"success": False, "error": str(exc)}
+        logger.error(f"[agent_service] Failed to save note locally: {exc}")
+        return {"success": False, "error": f"Failed to save note locally: {exc}"}
 
-    note_id = await _find_note_id_by_title(
-        title,
-        project_token=project_token,
-        task_token=effective_token,
-    )
-
-    payload = {
-        "title": title,
-        "content": (
-            _embed_note_payload(str(content_text).strip(), content_payload)
-            if content_text not in (None, "")
-            else json.dumps(content_payload, ensure_ascii=True, sort_keys=True, indent=2)
-        ),
-    }
-    if note_id is not None:
-        payload["note_id"] = note_id
-    if user:
-        payload["user"] = user
-
+    # 2. Queue NXDune sync request asynchronously
     try:
-        result = await task_service.upsert_note(payload, task_token=effective_token)
-        resolved_note_id = _extract_note_id_from_response(result) or note_id
-        if resolved_note_id is None:
-            resolved_note_id = await _find_note_id_by_title(
-                title,
-                project_token=project_token,
-                task_token=effective_token,
-            )
-        if resolved_note_id is not None:
-            state = _ensure_project_state(project_token)
-            state.setdefault("note_title_cache", {})[title] = resolved_note_id
-            state.setdefault("note_payload_cache", {})[title] = {
-                "payload": dict(content_payload or {}),
-                "loaded_at": time.time(),
-                "task_token": effective_token,
-            }
-        return {
-            "success": True,
-            "note_id": resolved_note_id,
-            "result": result,
+        from local_state_manager import queue_nxdune_sync
+        
+        # Read nxdune_note_id if we have it locally
+        note_id = await _find_note_id_by_title(title, project_token=project_token)
+        
+        payload = {
+            "title": title,
+            "content": (
+                _embed_note_payload(str(content_text).strip(), content_payload)
+                if content_text not in (None, "")
+                else json.dumps(content_payload, ensure_ascii=True, sort_keys=True, indent=2)
+            ),
         }
+        if note_id is not None:
+            payload["note_id"] = note_id
+        if user:
+            payload["user"] = user
+
+        queue_nxdune_sync(
+            project_token=project_token,
+            operation="note_upsert",
+            agent_id=user,
+            task_id=None,
+            payload=payload
+        )
     except Exception as exc:
-        return {"success": False, "error": str(exc)}
+        logger.error(f"[agent_service] Failed to queue note sync: {exc}")
+
+    return {
+        "success": True,
+        "note_id": None,
+        "result": {"message": "Saved locally, sync queued"},
+    }
 
 
 async def ensure_master_workspace_note(
@@ -16963,44 +17069,32 @@ def _check_task_conflicts(
 
 
 async def _post_task_message(task: Dict[str, Any], message: str, project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
-    """Post task message attempting NXDune sync ONCE. Proceeds immediately on success or failure."""
-    from task_service import task_service
+    """Post task message attempting NXDune sync asynchronously (local-first)."""
     task_id = _normalize_task_id(task)
     if not task_id:
         return False
     resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
     
-    try:
-        await task_service.post_task_message({
-            "task_id": task_id,
-            "message": message
-        }, task_token=task_token or get_project_task_token(resolved_project))
-        return True
-    except Exception as e:
-        logger.warning(f"[agent_service] NXDune post_message failed for task {task_id} (proceeding locally): {e}")
-        # Log failed sync
-        _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
-        if resolved_project and _local_agent_id:
-            try:
-                from local_state_manager import log_nxdune_sync
-                log_nxdune_sync(
-                    project_token=resolved_project,
-                    operation="task_message",
-                    success=False,
-                    agent_id=_local_agent_id,
-                    task_id=str(task_id),
-                    error_message=str(e)[:500],
-                    payload={"task_id": task_id, "message": message}
-                )
-            except Exception:
-                pass
-        return True
+    # Queue sync operation asynchronously
+    _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
+    if resolved_project:
+        try:
+            from local_state_manager import queue_nxdune_sync
+            queue_nxdune_sync(
+                project_token=resolved_project,
+                operation="task_message",
+                agent_id=_local_agent_id,
+                task_id=str(task_id),
+                payload={"task_id": task_id, "message": message}
+            )
+        except Exception as e:
+            logger.error(f"[agent_service] Failed to queue task message sync: {e}")
+    return True
 
 
 async def _post_task_progress(task: Dict[str, Any], progress: int, additional_info: str = None,
                               project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
-    """Post task progress attempting NXDune sync ONCE. Updates local state and proceeds immediately on success or failure."""
-    from task_service import task_service
+    """Post task progress attempting NXDune sync asynchronously (local-first)."""
     task_id = _normalize_task_id(task)
     if not task_id:
         return False
@@ -17023,54 +17117,43 @@ async def _post_task_progress(task: Dict[str, Any], progress: int, additional_in
         )
         return False
         
-    try:
-        payload = {
-            "task_id": task_id,
-            "task_progress": progress,
-        }
-        if additional_info:
-            payload["additional_info"] = additional_info
-        effective_token = task_token or get_project_task_token(resolved_project)
-        await task_service.update_task_progress(payload, task_token=effective_token)
-        
-        # Log successful sync
-        _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
-        if resolved_project and _local_agent_id:
-            try:
-                from local_state_manager import log_nxdune_sync
-                log_nxdune_sync(
-                    project_token=resolved_project,
-                    operation="task_progress",
-                    success=True,
-                    agent_id=_local_agent_id,
-                    task_id=str(task_id),
-                    payload=payload
-                )
-            except Exception:
-                pass
-        logger.info(f"[agent_service] Progress {progress}% sync'd to NXDune successfully for task {task_id}")
-    except Exception as e:
-        error_str = _normalize_error_text(e)
-        logger.warning(f"[agent_service] NXDune progress sync failed for task {task_id} (will proceed locally): {e}")
-        
-        # Log failed sync
-        _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
-        if resolved_project and _local_agent_id:
-            try:
-                from local_state_manager import log_nxdune_sync
-                log_nxdune_sync(
-                    project_token=resolved_project,
-                    operation="task_progress",
-                    success=False,
-                    agent_id=_local_agent_id,
-                    task_id=str(task_id),
-                    error_message=error_str[:500],
-                    payload=payload
-                )
-            except Exception:
-                pass
+    _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
+    
+    # 1. Update local database progress
+    if resolved_project and _local_agent_id:
+        try:
+            from local_state_manager import update_task_progress_local
+            update_task_progress_local(
+                project_token=resolved_project,
+                agent_id=_local_agent_id,
+                task_id=str(task_id),
+                progress=progress,
+            )
+        except Exception as e:
+            logger.warning(f"[agent_service] Local DB progress update failed: {e}")
+
+    # 2. Queue NXDune sync operation asynchronously
+    if resolved_project:
+        try:
+            payload = {
+                "task_id": task_id,
+                "task_progress": progress,
+            }
+            if additional_info:
+                payload["additional_info"] = additional_info
                 
-    # Update local state and trigger completion if progress reaches 100%
+            from local_state_manager import queue_nxdune_sync
+            queue_nxdune_sync(
+                project_token=resolved_project,
+                operation="task_progress",
+                agent_id=_local_agent_id,
+                task_id=str(task_id),
+                payload=payload
+            )
+        except Exception as e:
+            logger.error(f"[agent_service] Failed to queue task progress sync: {e}")
+            
+    # Update local memory state and trigger completion if progress reaches 100%
     state["task_progress_state"][task_key] = progress
     if progress == 100:
         logger.info(f"[agent_service] Progress reached 100% locally for task {task_id}, triggering task completion...")
@@ -17080,8 +17163,7 @@ async def _post_task_progress(task: Dict[str, Any], progress: int, additional_in
 
 
 async def _post_task_complete(task: Dict[str, Any], project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
-    """Complete task using local-first approach. Attempts NXDune sync ONCE, and proceeds immediately on success or failure."""
-    from task_service import task_service
+    """Complete task using local-first approach. Queues NXDune sync asynchronously."""
     task_id = _normalize_task_id(task)
     if not task_id:
         logger.warning("[agent_service] Cannot complete task: no task_id found")
@@ -17135,146 +17217,75 @@ async def _post_task_complete(task: Dict[str, Any], project_token: Optional[str]
     if task_id in ledger:
         ledger[task_id].status = "done"
 
-    # 3. Attempt NXDune API completion ONCE (non-blocking, no retries on failure)
-    try:
-        logger.info(f"[agent_service] Attempting NXDune sync for completing task {task_id}...")
-        await task_service.complete_task({
-            "task_id": task_id
-        }, task_token=task_token or get_project_task_token(resolved_project))
-        
-        # Log successful sync
-        if resolved_project and _local_agent_id:
-            try:
-                from local_state_manager import log_nxdune_sync
-                log_nxdune_sync(
-                    project_token=resolved_project,
-                    operation="task_complete",
-                    success=True,
-                    agent_id=_local_agent_id,
-                    task_id=str(task_id),
-                )
-            except Exception:
-                pass
-        logger.info(f"[agent_service] Task {task_id} completed and sync'd to NXDune successfully")
-    except Exception as e:
-        error_str = _normalize_error_text(e)
-        logger.warning(f"[agent_service] NXDune complete sync failed for task {task_id} (will proceed locally): {e}")
-        
-        # Log failed sync with payload for later retry
-        if resolved_project and _local_agent_id:
-            try:
-                from local_state_manager import log_nxdune_sync
-                log_nxdune_sync(
-                    project_token=resolved_project,
-                    operation="task_complete",
-                    success=False,
-                    agent_id=_local_agent_id,
-                    task_id=str(task_id),
-                    error_message=error_str[:500],
-                    payload={"task_id": task_id}
-                )
-            except Exception:
-                pass
+    # 3. Queue sync complete to NXDune asynchronously
+    if resolved_project:
+        try:
+            from local_state_manager import queue_nxdune_sync
+            queue_nxdune_sync(
+                project_token=resolved_project,
+                operation="task_complete",
+                agent_id=_local_agent_id,
+                task_id=str(task_id),
+                payload={"task_id": task_id}
+            )
+        except Exception as e:
+            logger.error(f"[agent_service] Failed to queue task complete sync: {e}")
 
     return True
 
 
 async def _opt_in_task(task: Dict[str, Any], username: str,
                        project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
-    """Opt in to task attempting NXDune sync ONCE. Proceeds immediately on success or failure."""
-    from task_service import task_service
+    """Opt in to task attempting NXDune sync asynchronously (local-first)."""
     task_id = _normalize_task_id(task)
     if not task_id:
         return False
     resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
+    _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
     
-    try:
-        await task_service.opt_in_task({
-            "task_id": task_id,
-            "username": username
-        }, task_token=task_token or get_project_task_token(resolved_project))
-        logger.info(f"[agent_service] Successfully opted in to task {task_id} upstream")
-        
-        # Post check-in message
-        await _post_task_message(task, f"{username} checked in and reviewing task.", project_token=resolved_project, task_token=task_token)
-        return True
-    except Exception as e:
-        error_str = _normalize_error_text(e)
-        logger.warning(f"[agent_service] NXDune opt_in failed for task {task_id} (will proceed locally): {e}")
-        
-        # Log failed sync
-        _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
-        if resolved_project and _local_agent_id:
-            try:
-                from local_state_manager import log_nxdune_sync
-                log_nxdune_sync(
-                    project_token=resolved_project,
-                    operation="task_opt_in",
-                    success=False,
-                    agent_id=_local_agent_id,
-                    task_id=str(task_id),
-                    error_message=error_str[:500],
-                    payload={"task_id": task_id, "username": username}
-                )
-            except Exception:
-                pass
-        return True
+    # 1. Queue sync opt-in to NXDune asynchronously
+    if resolved_project:
+        try:
+            from local_state_manager import queue_nxdune_sync
+            queue_nxdune_sync(
+                project_token=resolved_project,
+                operation="opt_in_task",
+                agent_id=_local_agent_id,
+                task_id=str(task_id),
+                payload={"task_id": task_id, "username": username}
+            )
+        except Exception as e:
+            logger.error(f"[agent_service] Failed to queue task opt-in sync: {e}")
+            
+    # Post check-in message (which will also be queued locally)
+    await _post_task_message(task, f"{username} checked in and reviewing task.", project_token=resolved_project, task_token=task_token)
+    return True
 
 
 async def _post_timer_log(task: Dict[str, Any], action: str, project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
-    """Post timer log attempting NXDune sync ONCE. Updates local state and proceeds immediately on success or failure."""
-    from task_service import task_service
+    """Post timer log attempting NXDune sync asynchronously (local-first)."""
     task_id = _normalize_task_id(task)
     if not task_id:
         return False
     resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
     task_key = str(task_id)
     state = _ensure_project_state(resolved_project)
+    _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
     
-    try:
-        await task_service.post_timer_log({
-            "task_id": task_id,
-            "action": action
-        }, task_token=task_token or get_project_task_token(resolved_project))
-        
-        # Log successful sync
-        _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
-        if resolved_project and _local_agent_id:
-            try:
-                from local_state_manager import log_nxdune_sync
-                log_nxdune_sync(
-                    project_token=resolved_project,
-                    operation=f"timer_{action}",
-                    success=True,
-                    agent_id=_local_agent_id,
-                    task_id=str(task_id),
-                )
-            except Exception:
-                pass
-        logger.info(f"[agent_service] Timer log {action} sync'd to NXDune successfully for task {task_id}")
-    except Exception as e:
-        normalized_error = _normalize_error_text(e)
-        if action == "clock_out" and _is_clock_out_idempotent_success(normalized_error):
-            logger.info(f"[agent_service] Timer log clock_out for task {task_id} already in desired state: {e}")
-        else:
-            logger.warning(f"[agent_service] NXDune timer_{action} sync failed for task {task_id} (will proceed locally): {e}")
-            # Log failed sync
-            _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
-            if resolved_project and _local_agent_id:
-                try:
-                    from local_state_manager import log_nxdune_sync
-                    log_nxdune_sync(
-                        project_token=resolved_project,
-                        operation=f"timer_{action}",
-                        success=False,
-                        agent_id=_local_agent_id,
-                        task_id=str(task_id),
-                        error_message=normalized_error[:500],
-                        payload={"task_id": task_id, "action": action}
-                    )
-                except Exception:
-                    pass
-                    
+    # 1. Queue sync timer log to NXDune asynchronously
+    if resolved_project:
+        try:
+            from local_state_manager import queue_nxdune_sync
+            queue_nxdune_sync(
+                project_token=resolved_project,
+                operation="timer_log",
+                agent_id=_local_agent_id,
+                task_id=str(task_id),
+                payload={"task_id": task_id, "action": action}
+            )
+        except Exception as e:
+            logger.error(f"[agent_service] Failed to queue timer log sync: {e}")
+            
     # Update local state and return True to proceed
     if action == "clock_in":
         state["timer_log_state"][task_key] = True
@@ -17543,82 +17554,8 @@ def _is_clock_out_idempotent_success(error_text: str) -> bool:
 
 
 
-async def _opt_in_task(task: Dict[str, Any], username: str,
-                       project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
-    """Opt in to task with retry logic - will retry up to 5 times with exponential backoff."""
-    from task_service import task_service
-    task_id = _normalize_task_id(task)
-    if not task_id:
-        return False
-    resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
-    
-    max_retries = 5
-    base_delay = 1.0
-    
-    for attempt in range(max_retries):
-        try:
-            await task_service.opt_in_task({
-                "task_id": task_id,
-                "username": username
-            }, task_token=task_token or get_project_task_token(resolved_project))
-            print(f"[agent_service] Successfully opted in to task {task_id}, posting check-in message...")
-            await _post_task_message(task, f"{username} checked in and reviewing task.", project_token=resolved_project, task_token=task_token)
-            return True
-        except Exception as e:
-            if attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
-                print(f"[agent_service] Failed to opt in to task {task_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
-                await asyncio.sleep(delay)
-            else:
-                print(f"[agent_service] Failed to opt in to task {task_id} after {max_retries} attempts: {e}")
-                return False
-    return False
+# Duplicate functions _opt_in_task and _post_timer_log removed to prevent overriding local-first definitions.
 
-
-async def _post_timer_log(task: Dict[str, Any], action: str, project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
-    """Post timer log with retry logic - will retry up to 5 times with exponential backoff."""
-    from task_service import task_service
-    task_id = _normalize_task_id(task)
-    if not task_id:
-        return False
-    resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
-    
-    max_retries = 5
-    base_delay = 1.0
-    
-    for attempt in range(max_retries):
-        try:
-            await task_service.post_timer_log({
-                "task_id": task_id,
-                "action": action
-            }, task_token=task_token or get_project_task_token(resolved_project))
-            task_key = str(task_id)
-            state = _ensure_project_state(resolved_project)
-            if action == "clock_in":
-                state["timer_log_state"][task_key] = True
-            elif action == "clock_out":
-                state["timer_log_state"][task_key] = False
-            return True
-        except Exception as e:
-            normalized_error = _normalize_error_text(e)
-            if action == "clock_out" and _is_clock_out_idempotent_success(normalized_error):
-                # Upstream says there is nothing to clock out; treat as success so completion can proceed.
-                _ensure_project_state(resolved_project)["timer_log_state"][str(task_id)] = False
-                print(
-                    f"[agent_service] Timer log clock_out for task {task_id} already in desired state "
-                    f"(treating as success): {e}"
-                )
-                return True
-            if attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
-                print(f"[agent_service] Failed to post timer log for task {task_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
-                await asyncio.sleep(delay)
-            else:
-                print(f"[agent_service] Failed to post timer log for task {task_id} after {max_retries} attempts: {e}")
-                if action == "clock_in":
-                    _ensure_project_state(resolved_project)["timer_log_state"][str(task_id)] = False
-                return False
-    return False
 
 
 # ── Main Agent Execution ────────────────────────────────────────────────────

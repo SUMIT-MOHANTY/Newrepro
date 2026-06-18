@@ -200,6 +200,35 @@ def complete_task_local(
         db.close()
 
 
+def update_task_progress_local(
+    project_token: str,
+    agent_id: str,
+    task_id: str,
+    progress: int,
+) -> None:
+    """Record task progress locally in database."""
+    db = SessionLocal()
+    try:
+        record = db.query(models.AgentTaskOwnership).filter(
+            models.AgentTaskOwnership.project_token == project_token,
+            models.AgentTaskOwnership.task_id == task_id,
+            models.AgentTaskOwnership.agent_id == agent_id,
+        ).first()
+
+        if record:
+            task_data = dict(record.task_data or {})
+            task_data["task_progress"] = progress
+            record.task_data = _safe_json(task_data)
+            record.updated_at = datetime.utcnow()
+            db.commit()
+            logger.info(f"[LocalState] Task {task_id} progress updated to {progress}% locally for {agent_id}")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"[LocalState] update_task_progress_local failed: {e}")
+    finally:
+        db.close()
+
+
 def fail_task_local(
     project_token: str,
     agent_id: str,
@@ -1130,3 +1159,137 @@ def _extract_spec_section(tech_spec: str, domain: str, task_title: str, max_char
 
     section = "\n".join(section_lines)
     return section[:max_chars]
+
+
+def save_agent_note_local(
+    project_token: str,
+    title: str,
+    content_payload: Dict[str, Any],
+    content_text: Optional[str] = None,
+    user: Optional[str] = None,
+) -> bool:
+    """Save an agent note locally in the database (creating or updating)."""
+    db = SessionLocal()
+    try:
+        # Check if note already exists by project_token and title
+        note = db.query(models.AgentNote).filter(
+            models.AgentNote.project_token == project_token,
+            models.AgentNote.title == title,
+        ).first()
+
+        if note:
+            note.content_payload = _safe_json(content_payload)
+            note.content_text = content_text
+            note.user = user
+            # Reset sync tracking since it has been modified
+            note.synced_to_nxdune = False
+            note.updated_at = datetime.utcnow()
+        else:
+            note = models.AgentNote(
+                project_token=project_token,
+                title=title,
+                content_payload=_safe_json(content_payload),
+                content_text=content_text,
+                user=user,
+                synced_to_nxdune=False,
+            )
+            db.add(note)
+        db.commit()
+        logger.info(f"[LocalState] Saved agent note '{title}' locally.")
+        return True
+    except Exception as e:
+        db.rollback()
+        logger.error(f"[LocalState] save_agent_note_local failed: {e}")
+        return False
+    finally:
+        db.close()
+
+
+def get_agent_note_local(project_token: str, title: str) -> Optional[Dict[str, Any]]:
+    """Retrieve an agent note from the local database."""
+    db = SessionLocal()
+    try:
+        note = db.query(models.AgentNote).filter(
+            models.AgentNote.project_token == project_token,
+            models.AgentNote.title == title,
+        ).first()
+        if note:
+            return {
+                "id": note.id,
+                "project_token": note.project_token,
+                "title": note.title,
+                "content_payload": note.content_payload,
+                "content_text": note.content_text,
+                "user": note.user,
+                "synced_to_nxdune": note.synced_to_nxdune,
+                "nxdune_note_id": note.nxdune_note_id,
+                "created_at": note.created_at.isoformat() if note.created_at else None,
+                "updated_at": note.updated_at.isoformat() if note.updated_at else None,
+            }
+        return None
+    except Exception as e:
+        logger.error(f"[LocalState] get_agent_note_local failed: {e}")
+        return None
+    finally:
+        db.close()
+
+
+def list_agent_notes_local(project_token: str) -> List[Dict[str, Any]]:
+    """List all agent notes for a project from the local database."""
+    db = SessionLocal()
+    try:
+        notes = db.query(models.AgentNote).filter(
+            models.AgentNote.project_token == project_token,
+        ).all()
+        return [
+            {
+                "id": n.id,
+                "project_token": n.project_token,
+                "title": n.title,
+                "content_payload": n.content_payload,
+                "content_text": n.content_text,
+                "user": n.user,
+                "synced_to_nxdune": n.synced_to_nxdune,
+                "nxdune_note_id": n.nxdune_note_id,
+            }
+            for n in notes
+        ]
+    except Exception as e:
+        logger.error(f"[LocalState] list_agent_notes_local failed: {e}")
+        return []
+    finally:
+        db.close()
+
+
+def queue_nxdune_sync(
+    project_token: str,
+    operation: str,
+    agent_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+    payload: Optional[Dict[str, Any]] = None,
+) -> None:
+    """
+    Queue an operation to be synchronized to NXDune asynchronously.
+    Creates a failed/pending sync log entry that the background worker will process.
+    """
+    db = SessionLocal()
+    try:
+        record = models.NXDuneSyncLog(
+            project_token=project_token,
+            agent_id=agent_id,
+            task_id=task_id,
+            operation=operation,
+            payload=_safe_json(payload) if payload else None,
+            success=False,
+            retry_count=0,
+            permanently_failed=False,
+        )
+        db.add(record)
+        db.commit()
+        logger.info(f"[LocalState] Queued NXDune sync for operation '{operation}' on task '{task_id}'")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"[LocalState] queue_nxdune_sync failed: {e}")
+    finally:
+        db.close()
+

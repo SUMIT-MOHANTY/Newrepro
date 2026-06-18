@@ -86,3 +86,6 @@ backend/scratch_simulate_bootstrap.py
 backend/scratch_*
 backend/search_*
 backend/scratch*
+backend/seed_*
+backend/logs_*
+backend/interactive_dashboard_report.html
