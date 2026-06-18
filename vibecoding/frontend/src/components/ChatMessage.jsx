@@ -225,6 +225,23 @@ const ChatMessage = ({
     }
   };
 
+  const formatMessageTime = (timestamp) => {
+    if (!timestamp) return '';
+    try {
+      const date = new Date(timestamp);
+      const options = { 
+        month: 'short', 
+        day: 'numeric', 
+        hour: '2-digit', 
+        minute: '2-digit',
+        hour12: true 
+      };
+      return date.toLocaleDateString([], options);
+    } catch (e) {
+      return '';
+    }
+  };
+
   const isUser = message.role === 'user';
   const [msgVersion, setMsgVersion] = useState(null);
   // Normalise summary from multiple possible fields (DB snake_case or Frontend camelCase)
@@ -524,29 +541,21 @@ const ChatMessage = ({
                       </div>
                     )}
 
-                    {/* Code Generated Badge */}
-                    <div className={`mt-3 pt-3 border-t flex items-center justify-end ${message.role === 'user'
-                      ? 'border-white/20'
-                      : darkMode ? 'border-white/10' : 'border-gray-200'
-                      }`}>
-                      {(msgVersion || message.versionId || message.version_id) && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => onLoadVersion(msgVersion?.hash || message.versionId || message.version_id)}
-                          className={`text-xs px-3 py-1.5 h-auto rounded-lg font-bold transition-all shadow-sm ${selectedVersion === (msgVersion?.hash || message.versionId || message.version_id)
-                            ? (darkMode ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30' : 'bg-blue-50 text-blue-600 border border-blue-200')
-                            : (darkMode ? 'bg-white/5 text-gray-400 hover:text-white border border-white/10 hover:border-white/20' : 'bg-gray-50 text-gray-600 hover:bg-gray-100 border border-gray-200')
-                            }`}
-                        >
-                          <History className="w-3.5 h-3.5 mr-2 opacity-70" />
-                          {selectedVersion === (msgVersion?.hash || message.versionId || message.version_id) ? 'Active Version' : 'View Version'}
-                        </Button>
-                      )}
-                    </div>
+
                   </>
                 )}
               </>
+            )}
+            {/* Local Timestamp */}
+            {message.timestamp && (
+              <div className={cn(
+                "text-[10px] text-right mt-1.5 opacity-60 select-none",
+                isUser 
+                  ? "text-purple-100" 
+                  : darkMode ? "text-gray-400" : "text-gray-500"
+              )}>
+                {formatMessageTime(message.timestamp)}
+              </div>
             )}
           </div>
         </div>

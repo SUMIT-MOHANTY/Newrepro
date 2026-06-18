@@ -144,6 +144,7 @@ RULES:
 6. Multiple ops on the same file are applied in order — line numbers shift after each op,
    so express subsequent ops on that file relative to the ORIGINAL line numbers.
 7. For a small files (< 60 lines) prefer FULL_REWRITE over many REPLACE_LINES.
+8. Do NOT modify frontend/UI files (e.g., HTML, CSS, React components) if the request is purely backend/API-oriented, and do NOT modify backend files if the request is purely frontend-oriented.
 
 {{
   "plan_summary": "one sentence",
@@ -513,8 +514,30 @@ class EditEngine:
         if scope == "surgical" and candidates:
             pass  # only load what was explicitly named
         else:
+            # Check if prompt is purely backend or frontend oriented
+            is_backend_only = False
+            is_frontend_only = False
+            prompt_lower = prompt.lower()
+            backend_keywords = ["backend", "api", "database", "sqlite", "server", "endpoint", "prisma", "models", "route", "query", "controller"]
+            frontend_keywords = ["frontend", "ui", "button", "style", "page", "component", "css", "color", "layout", "nav", "render", "design", "assets"]
+            
+            if any(kw in prompt_lower for kw in backend_keywords) and not any(kw in prompt_lower for kw in frontend_keywords):
+                is_backend_only = True
+            elif any(kw in prompt_lower for kw in frontend_keywords) and not any(kw in prompt_lower for kw in backend_keywords):
+                is_frontend_only = True
+
             # 3. Heuristic entry-points always useful for broader changes
-            for ep in self._heuristic_entrypoints(tree):
+            eps = self._heuristic_entrypoints(tree)
+            if is_backend_only:
+                frontend_extensions = (".jsx", ".tsx", ".html", ".css")
+                frontend_names = ("App.js", "main.js", "index.js", "App.jsx", "App.tsx")
+                eps = [ep for ep in eps if not (ep.endswith(frontend_extensions) or any(name in ep for name in frontend_names))]
+            elif is_frontend_only:
+                backend_extensions = (".py", ".db", ".sqlite")
+                backend_names = ("server", "models", "database")
+                eps = [ep for ep in eps if not (ep.endswith(backend_extensions) or any(name in ep for name in backend_names))]
+
+            for ep in eps:
                 if ep not in candidates:
                     candidates.append(ep)
 
@@ -1056,6 +1079,10 @@ else:
 NGINX_ERROR_LOG = '/var/log/nginx/error.log'
 MAILBOX         = Path('/tmp/vibe_prompt')
 
+TOTAL_PROMPT_TOKENS = 0
+TOTAL_COMPLETION_TOKENS = 0
+
+
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 def log(msg: str):
@@ -1164,10 +1191,16 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
     clean = str(msg).strip()
     print(f'\n💬 {clean}', flush=True)
     
+    global TOTAL_PROMPT_TOKENS, TOTAL_COMPLETION_TOKENS
     # Build metadata
     meta = metadata or {}
     if message_type:
         meta['type'] = message_type
+        
+    meta['token_usage'] = {
+        'prompt_tokens': TOTAL_PROMPT_TOKENS,
+        'completion_tokens': TOTAL_COMPLETION_TOKENS
+    }
 
     # Always mark agent messages so the frontend can group them into ThinkingBlocks
     # even after a page reload (these are never rendered as normal chat messages).
@@ -1209,8 +1242,8 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
         
         # Get backend URL from environment variable
         # Default to host.docker.internal for Docker-to-host communication
-        # backend_url = os.environ.get('BACKEND_URL', 'http://host.docker.internal:8001')
-        backend_url = os.environ.get('BACKEND_URL', 'https://dsuite-backend.bourntec.com')
+        backend_url = os.environ.get('BACKEND_URL', 'http://host.docker.internal:8001')
+        # backend_url = os.environ.get('BACKEND_URL', 'https://dsuite-backend.bourntec.com')
         api_endpoint = f'{backend_url}/vibecoding/api/agent/message'
         
         payload = {
@@ -1978,6 +2011,8 @@ def call_ai(messages: list, temperature: float = 0.2, show_thinking: bool = True
     """
     headers = {'Content-Type': 'application/json'}
 
+    global TOTAL_PROMPT_TOKENS, TOTAL_COMPLETION_TOKENS
+
     if AI_PROVIDER == 'bournai':
         parts = []
         for m in messages:
@@ -1985,16 +2020,19 @@ def call_ai(messages: list, temperature: float = 0.2, show_thinking: bool = True
             content = m.get('content', '')
             tag = {'system': '[System]', 'user': '[User]', 'assistant': '[Assistant]'}.get(role, f'[{role}]')
             parts.append(f'{tag}\n{content}')
+        prompt_text = '\n\n'.join(parts)
         payload = {
             'agent_id': API_KEY,
             'model': AI_MODEL or 'BournAI',
             'platform_id': os.environ.get('BRN_PLATFORM_ID', 'DSuite'),
             'stream': True,
-            'prompt': '\n\n'.join(parts),
+            'prompt': prompt_text,
         }
         resp = requests.post(API_URL, headers=headers, json=payload, stream=True, timeout=180)
         resp.raise_for_status()
         content = ''
+        actual_in = None
+        actual_out = None
         for raw in resp.iter_lines():
             if not raw:
                 continue
@@ -2008,11 +2046,37 @@ def call_ai(messages: list, temperature: float = 0.2, show_thinking: bool = True
                 for part in chunk.get('content', []):
                     if isinstance(part, dict) and part.get('type') == 'text':
                         content += part.get('text', '')
+                
+                # Check for token usage in the streaming chunks
+                if 'usage' in chunk and isinstance(chunk['usage'], dict):
+                    usage = chunk['usage']
+                    if 'input_tokens' in usage:
+                        actual_in = usage['input_tokens']
+                    elif 'prompt_tokens' in usage:
+                        actual_in = usage['prompt_tokens']
+                    if 'output_tokens' in usage:
+                        actual_out = usage['output_tokens']
+                    elif 'completion_tokens' in usage:
+                        actual_out = usage['completion_tokens']
+
                 if chunk.get('stop_reason') == 'end_turn':
+                    if 'usage' in chunk and isinstance(chunk['usage'], dict):
+                        usage = chunk['usage']
+                        if 'input_tokens' in usage:
+                            actual_in = usage['input_tokens']
+                        elif 'prompt_tokens' in usage:
+                            actual_in = usage['prompt_tokens']
+                        if 'output_tokens' in usage:
+                            actual_out = usage['output_tokens']
+                        elif 'completion_tokens' in usage:
+                            actual_out = usage['completion_tokens']
                     break
             except json.JSONDecodeError:
                 pass
         
+        TOTAL_PROMPT_TOKENS += actual_in if actual_in is not None else (len(prompt_text) // 4)
+        TOTAL_COMPLETION_TOKENS += actual_out if actual_out is not None else (len(content) // 4)
+
         # Extract and show thinking if enabled
         if show_thinking and content:
             _extract_and_show_thinking(content)
@@ -2027,8 +2091,19 @@ def call_ai(messages: list, temperature: float = 0.2, show_thinking: bool = True
         }
         resp = requests.post(API_URL, headers=headers, json=payload, timeout=180)
         resp.raise_for_status()
-        content = resp.json()['choices'][0]['message']['content']
+        resp_json = resp.json()
+        content = resp_json['choices'][0]['message']['content']
         
+        usage = resp_json.get('usage', {})
+        if usage:
+            prompt_tok = usage.get('prompt_tokens') or usage.get('input_tokens') or (len(json.dumps(messages)) // 4)
+            comp_tok = usage.get('completion_tokens') or usage.get('output_tokens') or (len(content) // 4)
+            TOTAL_PROMPT_TOKENS += prompt_tok
+            TOTAL_COMPLETION_TOKENS += comp_tok
+        else:
+            TOTAL_PROMPT_TOKENS += len(json.dumps(messages)) // 4
+            TOTAL_COMPLETION_TOKENS += len(content) // 4
+
         # Extract and show thinking if enabled
         if show_thinking and content:
             _extract_and_show_thinking(content)
@@ -2715,9 +2790,10 @@ def deploy(error_context: dict = None, max_retries: int = 3, test_changes: bool 
             if final_errors:
                 still_broken = [e['file'] for e in final_errors]
                 report(
-                    f'⚠️ Could not fix syntax errors in: {", ".join(still_broken)}. '
+                    f'Could not fix syntax errors in: {", ".join(still_broken)}. '
                     'Please try regenerating the app.',
-                    message_type='warning'
+                    message_type='error',
+                    suggestions=["Fix and redeploy"]
                 )
                 return  # Abort deployment
 
@@ -3350,7 +3426,12 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
                     # ═══════════════════════════════════════════════════════════════
                     # AUTO-FIX: Detect and fix syntax errors automatically
                     # ═══════════════════════════════════════════════════════════════
-                    has_syntax_error = 'SyntaxError' in full_error or 'IndentationError' in full_error or 'TabError' in full_error
+                    has_syntax_error = any(kw.lower() in full_error.lower() for kw in [
+                        'SyntaxError', 'IndentationError', 'TabError', 
+                        'RollupError', 'CssSyntaxError', 'Could not resolve',
+                        'error during build', 'Cannot find module', 'Module not found',
+                        'ReferenceError', 'TypeError', 'CompileError', 'failed to compile'
+                    ])
                     log(f'Syntax error detected: {has_syntax_error}')
                     
                     if has_syntax_error:
@@ -4848,93 +4929,113 @@ Output ONLY valid JSON, no explanations."""
         log(f'🧪 Testing: {test["method"]} {test["path"]}')
         report(f'Testing: {test["description"]}')
         
-        try:
-            url = f'http://127.0.0.1:{app_port}{test["path"]}'
-            method = test['method'].upper()
-            payload = test.get('payload')
-            expected_status = test.get('expected_status', 200)
-            expected_contains = test.get('expected_response_contains', [])
-            
-            # Execute request
-            if method == 'GET':
-                result = subprocess.run(
-                    ['curl', '-s', '-w', '\\n%{http_code}', '-X', 'GET', url],
-                    capture_output=True, text=True, timeout=10
-                )
-            elif method == 'POST':
-                payload_json = json.dumps(payload) if payload else '{}'
-                result = subprocess.run(
-                    ['curl', '-s', '-w', '\\n%{http_code}', '-X', 'POST', '-H', 'Content-Type: application/json', '-d', payload_json, url],
-                    capture_output=True, text=True, timeout=10
-                )
-            else:
-                log(f'⚠️ Unsupported method: {method}')
+        # Determine ports to try: Nginx (80) first, then app_port, then other active listening ports
+        ports_to_try = [80, app_port]
+        active_ports = _detect_listening_ports()
+        for p in active_ports:
+            if p not in ports_to_try:
+                ports_to_try.append(p)
+                
+        log(f"Ports to try: {ports_to_try}")
+        
+        test_success = False
+        last_reason = ""
+        last_response_body = ""
+        last_status_code = "000"
+        passed_port = None
+        
+        for port in ports_to_try:
+            try:
+                url = f'http://127.0.0.1:{port}{test["path"]}'
+                method = test['method'].upper()
+                payload = test.get('payload')
+                expected_status = test.get('expected_status', 200)
+                expected_contains = test.get('expected_response_contains', [])
+                
+                # Execute request
+                if method == 'GET':
+                    result = subprocess.run(
+                        ['curl', '-s', '-w', '\\n%{http_code}', '-X', 'GET', url],
+                        capture_output=True, text=True, timeout=10
+                    )
+                elif method == 'POST':
+                    payload_json = json.dumps(payload) if payload else '{}'
+                    result = subprocess.run(
+                        ['curl', '-s', '-w', '\\n%{http_code}', '-X', 'POST', '-H', 'Content-Type: application/json', '-d', payload_json, url],
+                        capture_output=True, text=True, timeout=10
+                    )
+                else:
+                    last_reason = f"Unsupported method: {method}"
+                    break
+                
+                if result.returncode != 0:
+                    last_reason = f"Request failed on port {port}: {result.stderr}"
+                    continue
+                
+                # Parse response
+                output = result.stdout.strip()
+                lines = output.split('\n')
+                status_code = lines[-1] if lines else '000'
+                response_body = '\n'.join(lines[:-1]) if len(lines) > 1 else ''
+                
+                # If Nginx returned 502/504 Bad Gateway, it's not ready or bad config, try direct
+                if port == 80 and status_code in ('502', '504'):
+                    log(f"Nginx returned {status_code} on port 80. Trying direct ports...")
+                    last_reason = f"Nginx returned {status_code}"
+                    continue
+                
+                # Verify status code
+                if status_code != str(expected_status):
+                    last_reason = f"Status code mismatch on port {port}: expected {expected_status}, got {status_code}"
+                    last_status_code = status_code
+                    last_response_body = response_body
+                    # If Nginx returned 404, we can try direct ports since routing might be mismatched
+                    if port == 80:
+                        log(f"Nginx returned {status_code} on port 80. Trying direct ports...")
+                        continue
+                    continue
+                
+                # Verify response contains expected keys/values
+                all_found = True
+                for expected in expected_contains:
+                    if expected not in response_body:
+                        all_found = False
+                        last_reason = f"Expected content '{expected}' not found in response on port {port}"
+                
+                if not all_found:
+                    last_status_code = status_code
+                    last_response_body = response_body
+                    continue
+                
+                # If we get here, the test passed on this port!
+                test_success = True
+                last_status_code = status_code
+                last_response_body = response_body
+                passed_port = port
+                break
+                
+            except Exception as e:
+                last_reason = f"Error testing on port {port}: {e}"
                 continue
-            
-            if result.returncode != 0:
-                log(f'❌ Request failed: {result.stderr}')
-                tests_failed += 1
-                test_results.append({
-                    'test': test['description'],
-                    'status': 'failed',
-                    'reason': f'Request failed: {result.stderr}'
-                })
-                continue
-            
-            # Parse response
-            output = result.stdout.strip()
-            lines = output.split('\n')
-            status_code = lines[-1] if lines else '000'
-            response_body = '\n'.join(lines[:-1]) if len(lines) > 1 else ''
-            
-            log(f'Response status: {status_code}')
-            log(f'Response body preview (first 200 chars):\n{response_body[:200]}\n[... TRUNCATED FOR LOGGING/DISPLAY - ACTUAL RESPONSE IS FULL/COMPLETE ON DISK ...]')
-            
-            # Verify status code
-            if status_code != str(expected_status):
-                log(f'❌ Status code mismatch: expected {expected_status}, got {status_code}')
-                tests_failed += 1
-                test_results.append({
-                    'test': test['description'],
-                    'status': 'failed',
-                    'reason': f'Status code mismatch: expected {expected_status}, got {status_code}',
-                    'response': f"{response_body[:500]}\n[... TRUNCATED FOR LOGGING - ACTUAL RESPONSE IS FULL/COMPLETE ON DISK ...]" if len(response_body) > 500 else response_body
-                })
-                continue
-            
-            # Verify response contains expected keys/values
-            all_found = True
-            for expected in expected_contains:
-                if expected not in response_body:
-                    log(f'❌ Expected "{expected}" not found in response')
-                    all_found = False
-            
-            if not all_found:
-                tests_failed += 1
-                test_results.append({
-                    'test': test['description'],
-                    'status': 'failed',
-                    'reason': f'Expected content not found in response',
-                    'response': f"{response_body[:500]}\n[... TRUNCATED FOR LOGGING - ACTUAL RESPONSE IS FULL/COMPLETE ON DISK ...]" if len(response_body) > 500 else response_body
-                })
-                continue
-            
-            # Test passed!
-            log(f'✅ Test passed: {test["description"]}')
+        
+        if test_success:
+            log(f'✅ Test passed on port {passed_port}: {test["description"]}')
             tests_passed += 1
             test_results.append({
                 'test': test['description'],
                 'status': 'passed',
-                'response': f"{response_body[:200]}\n[... TRUNCATED FOR LOGGING ...]" if len(response_body) > 200 else response_body
+                'port': passed_port,
+                'status_code': last_status_code,
+                'response': f"{last_response_body[:200]}\n[... TRUNCATED FOR LOGGING ...]" if len(last_response_body) > 200 else last_response_body
             })
-            
-        except Exception as e:
-            log(f'❌ Test error: {e}')
+        else:
+            log(f'❌ Test failed: {test["description"]} - {last_reason}')
             tests_failed += 1
             test_results.append({
                 'test': test['description'],
-                'status': 'error',
-                'reason': str(e)
+                'status': 'failed',
+                'reason': last_reason,
+                'response': f"{last_response_body[:500]}\n[... TRUNCATED FOR LOGGING ...]" if len(last_response_body) > 500 else last_response_body
             })
     
     # Report results
@@ -5110,6 +5211,27 @@ def _detect_available_ports() -> list:
         available = [3000, 5000, 8000]
     
     return available
+
+
+def _detect_listening_ports() -> list:
+    """Detect all currently listening TCP ports (excluding Nginx port 80)."""
+    listening = []
+    try:
+        result = subprocess.run(
+            ['ss', '-tlnp'],
+            capture_output=True, text=True, timeout=3
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                # Extract port from lines
+                match = re.search(r':(\d+)\s', line)
+                if match:
+                    port = int(match.group(1))
+                    if port != 80 and port not in listening:
+                        listening.append(port)
+    except Exception as e:
+        log(f'Listening port detection error: {e}')
+    return listening
 
 
 def _auto_fix_syntax_error(error_output: str, workspace_discovery: dict, hint_file: str = None) -> dict:

@@ -148,6 +148,34 @@ def init_db():
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_project_id ON messages(project_id)")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_logs (
+                id TEXT PRIMARY KEY,
+                username TEXT,
+                project_id TEXT NOT NULL,
+                prompt TEXT,
+                response TEXT,
+                prompt_tokens INTEGER DEFAULT 0,
+                completion_tokens INTEGER DEFAULT 0,
+                total_tokens INTEGER DEFAULT 0,
+                feasibility TEXT,
+                feasibility_reason TEXT,
+                status TEXT,
+                timestamp TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS enduser_logs (
+                id TEXT PRIMARY KEY,
+                username TEXT,
+                project_id TEXT,
+                action TEXT NOT NULL,
+                details TEXT,
+                timestamp TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_user_logs_project_id ON user_logs(project_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_enduser_logs_username ON enduser_logs(username)")
         conn.commit()
 
         # Add reset_token columns if they don't exist (migration for existing databases)
@@ -390,6 +418,9 @@ def signup_user(request: SignupRequest) -> AuthResponse:
             "username": request.username.lower()
         })
         
+        # Log action
+        log_enduser_action(request.username.lower(), None, "signup", f"Email: {request.email.lower()}")
+        
         message = "Account created successfully!"
         if generated_password:
             message += " Check your email for your password."
@@ -430,6 +461,9 @@ def login_user(request: LoginRequest) -> AuthResponse:
             "email": user["email"],
             "username": user["username"]
         })
+        
+        # Log action
+        log_enduser_action(user["username"], None, "login", f"Email: {user['email']}")
         
         return AuthResponse(
             token=token,
@@ -579,5 +613,50 @@ def reset_password(request: ResetPasswordRequest) -> dict:
         conn.commit()
         
         return {"message": "Password has been reset successfully. You can now login with your new password."}
+    finally:
+        conn.close()
+
+
+def log_user_feasibility(project_id: str, username: str, prompt: str, response: str, prompt_tokens: int, completion_tokens: int, feasibility: str, feasibility_reason: str = None, status: str = "success"):
+    """Log AI prompt, response, tokens and feasibility to SQLite user_logs table."""
+    conn = get_db()
+    try:
+        import uuid
+        import time
+        from datetime import datetime
+        log_id = f"log_{int(time.time())}_{uuid.uuid4().hex[:4]}"
+        conn.execute(
+            """INSERT INTO user_logs 
+               (id, username, project_id, prompt, response, prompt_tokens, completion_tokens, total_tokens, feasibility, feasibility_reason, status, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (log_id, username, project_id, prompt, response, prompt_tokens, completion_tokens, 
+             prompt_tokens + completion_tokens, feasibility, feasibility_reason, status, datetime.now().astimezone().isoformat())
+        )
+        conn.commit()
+        print(f"Logged user feasibility: {log_id}")
+    except Exception as e:
+        print(f"Failed to log user feasibility: {e}")
+    finally:
+        conn.close()
+
+
+def log_enduser_action(username: str, project_id: str, action: str, details: str = None):
+    """Log an enduser action to SQLite enduser_logs table."""
+    conn = get_db()
+    try:
+        import uuid
+        import time
+        from datetime import datetime
+        log_id = f"act_{int(time.time())}_{uuid.uuid4().hex[:4]}"
+        conn.execute(
+            """INSERT INTO enduser_logs 
+               (id, username, project_id, action, details, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (log_id, username, project_id, action, details, datetime.now().astimezone().isoformat())
+        )
+        conn.commit()
+        print(f"Logged enduser action: {log_id}")
+    except Exception as e:
+        print(f"Failed to log enduser action: {e}")
     finally:
         conn.close()

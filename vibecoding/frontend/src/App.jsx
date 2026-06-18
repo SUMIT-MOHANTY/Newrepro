@@ -237,6 +237,7 @@ function Workspace({ user, logout, isAuthenticated }) {
               ...lastBg,
               content: lastBg.content || content, // Keep original content, don't replace
               timestamp: newLog.timestamp,
+              suggestions: suggestions || lastBg.suggestions || [],
               metadata: {
                 ...lastBg.metadata,
                 type: type || 'status',
@@ -280,6 +281,7 @@ function Workspace({ user, logout, isAuthenticated }) {
       content?.includes('[AGENT] VERIFICATION') ||
       content?.includes('✅ Changes applied') ||
       content?.includes('Deployment error') ||
+      content?.includes('Could not fix syntax errors in') ||
       metadata?.type === 'task_breakdown' ||
       metadata?.task_plan;
 
