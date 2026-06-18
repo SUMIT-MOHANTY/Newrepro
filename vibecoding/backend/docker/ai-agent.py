@@ -1242,8 +1242,8 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
         
         # Get backend URL from environment variable
         # Default to host.docker.internal for Docker-to-host communication
-        backend_url = os.environ.get('BACKEND_URL', 'http://host.docker.internal:8001')
-        # backend_url = os.environ.get('BACKEND_URL', 'https://dsuite-backend.bourntec.com')
+        # backend_url = os.environ.get('BACKEND_URL', 'http://host.docker.internal:8001')
+        backend_url = os.environ.get('BACKEND_URL', 'https://dsuite-backend.bourntec.com')
         api_endpoint = f'{backend_url}/vibecoding/api/agent/message'
         
         payload = {
