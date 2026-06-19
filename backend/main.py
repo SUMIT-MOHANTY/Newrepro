@@ -5029,8 +5029,7 @@ async def create_vibecoding_handoff_token(
             else:
                 agent_analysis_text = str(agent_analysis_raw)
 
-            max_chars = int(os.getenv("AGENT_ANALYSIS_MAX_CHARS", "32000"))
-            project_context["agent_analysis"] = agent_analysis_text[:max_chars]
+            project_context["agent_analysis"] = agent_analysis_text
 
     payload = {
         "email": current_user.email,
