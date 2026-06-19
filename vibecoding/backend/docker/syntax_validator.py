@@ -396,14 +396,15 @@ class SyntaxValidator:
         if bracket_err:
             return bracket_err
 
-        # ── 2. Git conflict markers ──────────────────────────────────────
-        conflict_markers = ["<<<<<<<", ">>>>>>>", "======="]
+        # ── 2. AI Patch/Conflict markers ─────────────────────────────────
+        # FIX: Added AI patch markers that LLMs sometimes leave behind
+        conflict_markers = ["<<<<<<<", ">>>>>>>", "=======", "<<<SEARCH", "<<<PATCH", "<<<REPLACE", "<<<ADD"]
         for i, line in enumerate(content.split("\n"), 1):
             stripped_line = line.strip()
             for marker in conflict_markers:
                 if stripped_line.startswith(marker):
                     return {
-                        "error": f"Git conflict marker found: {stripped_line[:30]}",
+                        "error": f"AI Patch/Conflict marker found: {stripped_line[:30]}",
                         "line": i,
                         "fixable": True,
                     }

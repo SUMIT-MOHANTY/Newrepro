@@ -65,3 +65,8 @@ backend/check_tasks.py
 backend/migrate_agent_namespaces.py
 backend/get_external_agents.py
 vibecoding/backend/clear_db_data.py
+backend/seed*
+backend/interactive_dashboard_report.html
+app.db
+brd_analyzer.db
+vibecoding/frontend/vite.config copy.js

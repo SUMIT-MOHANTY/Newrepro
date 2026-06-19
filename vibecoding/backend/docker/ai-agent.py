@@ -313,6 +313,21 @@ class EditEngine:
             report(f"Applying changes to files: {plan.get('plan_summary', 'Applying edits')}...", message_type="thinking")
             files_changed = self._execute_ops(plan["operations"])
             
+            # ── FIX: RUN NATIVE SYNTAX VALIDATION HERE ──
+            syntax_errors = syntax_validator.validate_files(files_changed)
+            if syntax_errors:
+                # The AI just wrote broken code! Don't deploy, force an immediate fix.
+                log("❌ Syntax errors detected immediately after edit. Forcing fallback...")
+                return {
+                    "mode": mode, "handled": False,
+                    "requires_redeploy": False, "requires_install": False,
+                    "new_packages": [], "files_changed": files_changed,
+                    "plan_summary": "Syntax error post-edit",
+                    "verify_ok": False,
+                    "verify_issues": [e["error"] for e in syntax_errors],
+                    "error": "Post-edit syntax validation failed"
+                }
+
             report("Verifying changed files for correctness...", message_type="thinking")
             verify        = self._verify(user_prompt, plan["operations"], files_changed)
 
@@ -2529,10 +2544,9 @@ def _apply_patches(text: str, patch_matches: list) -> int:
     """
     Apply SEARCH/REPLACE patch hunks to workspace files.
     Also handles git-diff format (@@...@@ / +line / -line) by converting it first.
-    Falls back to rewriting the full file if no hunks match.
+    Falls back to rewriting the full file if no hunks match or application fails.
     """
     applied = 0
-    hunk_re = re.compile(r'<<<SEARCH\n(.*?)\n>>>\n<<<REPLACE\n(.*?)\n>>>', re.DOTALL)
 
     for pm in patch_matches:
         filename = _clean_filename(pm.group(1))
@@ -2543,9 +2557,21 @@ def _apply_patches(text: str, patch_matches: list) -> int:
             continue
 
         file_content = target.read_text(encoding='utf-8')
+        
+        # 1. Extract segment cleanly, preventing leakage from subsequent patch markers
         next_patch = next((p for p in patch_matches if p.start() > pm.start()), None)
         segment_end = next_patch.start() if next_patch else len(text)
         segment = text[pm.end():segment_end]
+        
+        # Split segment into lines to prevent leakage from any missed patch/file markers
+        segment_lines = []
+        for line in segment.splitlines():
+            line_stripped = line.strip()
+            # If we hit a new patch or file marker inside the segment, stop immediately
+            if line_stripped.startswith('// PATCH:') or line_stripped.startswith('// FILE:') or line_stripped.startswith('# FILE:'):
+                break
+            segment_lines.append(line)
+        segment = '\n'.join(segment_lines)
         
         log(f'  Patch segment length: {len(segment)} chars')
 
@@ -2554,45 +2580,125 @@ def _apply_patches(text: str, patch_matches: list) -> int:
             log(f'  Converting git-diff format to SEARCH/REPLACE')
             segment = _git_diff_to_search_replace(segment, file_content)
 
-        hunks = list(hunk_re.finditer(segment))
+        # 2. State-machine based hunk parser (robust against whitespace, CR, line-endings)
+        hunks = []
+        state = 0  # 0: seeking SEARCH, 1: reading SEARCH, 2: seeking REPLACE, 3: reading REPLACE
+        current_search = []
+        current_replace = []
+        
+        for line in segment.splitlines():
+            line_stripped = line.strip()
+            if state == 0:
+                if line_stripped.startswith('<<<SEARCH'):
+                    state = 1
+                    current_search = []
+            elif state == 1:
+                if line_stripped.startswith('>>>'):
+                    state = 2
+                else:
+                    current_search.append(line)
+            elif state == 2:
+                if line_stripped.startswith('<<<REPLACE'):
+                    state = 3
+                    current_replace = []
+                elif line_stripped.startswith('<<<SEARCH'):
+                    state = 1
+                    current_search = []
+            elif state == 3:
+                if line_stripped.startswith('>>>'):
+                    hunks.append({
+                        'search': '\n'.join(current_search),
+                        'replace': '\n'.join(current_replace)
+                    })
+                    state = 0
+                else:
+                    current_replace.append(line)
+
         log(f'  Found {len(hunks)} hunks in patch')
         
-        if not hunks:
-            log(f'  ⚠️ No valid patch hunks found for {filename}')
-            log(f'  Segment preview: {segment[:200]}')
-            continue
+        # 3. Validate and apply hunks individually
+        # Normalize all line endings to '\n' to ensure perfect matching
+        norm_file_content = file_content.replace('\r\n', '\n')
+        temp_content = norm_file_content
+        all_matched = len(hunks) > 0
 
         for idx, hunk in enumerate(hunks):
-            search, replace = hunk.group(1), hunk.group(2)
+            # Normalize hunk line endings to '\n'
+            search = hunk['search'].replace('\r\n', '\n')
+            replace = hunk['replace'].replace('\r\n', '\n')
+            
             log(f'  Hunk {idx+1}: searching for {len(search)} chars, replacing with {len(replace)} chars')
             
-            # Show first and last line of search for debugging
+            # Show first line of search for debugging
             search_lines = search.splitlines()
             if search_lines:
                 log(f'  Search first line: "{search_lines[0][:80]}"')
-                if len(search_lines) > 1:
-                    log(f'  Search last line: "{search_lines[-1][:80]}"')
             
-            if search in file_content:
-                file_content = file_content.replace(search, replace, 1)
-                applied += 1
-                log(f'  ✅ Hunk {idx+1} applied successfully')
+            if search in temp_content:
+                temp_content = temp_content.replace(search, replace, 1)
+                log(f'  ✅ Hunk {idx+1} matched successfully')
             else:
                 log(f'  ⚠️ Hunk {idx+1} not found in {filename}')
-                log(f'  Search text (first 100 chars): {search[:100]}...')
-                
-                # Try to find similar content (for debugging)
-                search_stripped = search.strip()
-                if search_stripped in file_content:
-                    log(f'  ℹ️ Found similar content when ignoring leading/trailing whitespace')
-                else:
-                    # Check if individual lines exist
-                    search_lines = [l.strip() for l in search.splitlines() if l.strip()]
-                    found_lines = sum(1 for l in search_lines if l in file_content)
-                    log(f'  ℹ️ Found {found_lines}/{len(search_lines)} individual lines in file')
+                all_matched = False
+                break
 
-        target.write_text(file_content, encoding='utf-8')
-        log(f'  📄 Updated {filename}')
+        # Check for raw marker leakage in the final result before writing
+        if all_matched and ('<<<SEARCH' in temp_content or '<<<REPLACE' in temp_content):
+            log(f'  ⚠️ Rejecting hunk application for {filename} (contains raw markers)')
+            all_matched = False
+
+        if all_matched:
+            # If the original file had CRLF, preserve it
+            if '\r\n' in file_content:
+                temp_content = temp_content.replace('\n', '\r\n')
+            
+            target.write_text(temp_content, encoding='utf-8')
+            applied += 1
+            log(f'  📄 Updated {filename} (applied {len(hunks)} patch hunks)')
+        else:
+            # 4. Fallback to FULL file rewrite instead of 1-by-1 line replacement or writing half-corrupted file
+            log(f'  ⚠️ Patch application failed for {filename}. Requesting FULL file rewrite fallback...')
+            
+            rewrite_prompt = f"""We tried to apply a SEARCH/REPLACE patch to the file `{filename}`, but it failed to match the file's current content.
+
+FILE PATH: {filename}
+
+CURRENT FILE CONTENT:
+```
+{file_content}
+```
+
+FAILED PATCH SEGMENT:
+```
+{segment}
+```
+
+CRITICAL: Please rewrite the ENTIRE file `{filename}` with the changes from the failed patch segment correctly applied.
+Output the complete, valid file content. Do NOT truncate or use '// ... rest of code'.
+Return ONLY the clean, full file content. No markdown fences, no formatting other than the code itself, and no explanation."""
+
+            try:
+                clean_content = call_ai([
+                    {'role': 'system', 'content': 'You are a code repair tool. You must output the complete and syntactically valid file content. Output ONLY the raw file content with no markdown tags or explanations.'},
+                    {'role': 'user', 'content': rewrite_prompt},
+                ], temperature=0.1, show_thinking=True)
+                
+                # Clean up markdown fences
+                clean_content = re.sub(r'^```[a-z]*\n?', '', clean_content.strip(), flags=re.MULTILINE)
+                clean_content = re.sub(r'\n?```\s*$', '', clean_content.strip(), flags=re.MULTILINE)
+                clean_content = clean_content.strip('`').strip()
+                
+                if clean_content and len(clean_content) > 10 and '<<<SEARCH' not in clean_content and '<<<REPLACE' not in clean_content:
+                    # If the original file had CRLF, preserve it
+                    if '\r\n' in file_content:
+                        clean_content = clean_content.replace('\r\n', '\n').replace('\n', '\r\n')
+                    target.write_text(clean_content, encoding='utf-8')
+                    applied += 1
+                    log(f'  ✅ Successfully recovered and wrote FULL rewrite for {filename}')
+                else:
+                    log(f'  ⚠️ AI returned invalid/empty content or leaked patch markers for rewrite of {filename}')
+            except Exception as e:
+                log(f'  ⚠️ Exception during full rewrite fallback for {filename}: {e}')
 
     return applied
 
@@ -3451,7 +3557,7 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
                         log(f'🔧 Syntax error detected - attempting automatic fix (attempt {syntax_fix_attempts}/{MAX_FIX_ATTEMPTS})')
                         report(f'I found a syntax error in the code. Let me fix it... (attempt {syntax_fix_attempts}/{MAX_FIX_ATTEMPTS})')
                         
-                        fix_result = _auto_fix_syntax_error(full_error, tree)
+                        fix_result = _auto_fix_syntax_error(full_error, tree, attempt=syntax_fix_attempts)
                         log(f'Fix result: {fix_result}')
                         
                         if fix_result.get('fixed'):
@@ -5234,13 +5340,15 @@ def _detect_listening_ports() -> list:
     return listening
 
 
-def _auto_fix_syntax_error(error_output: str, workspace_discovery: dict, hint_file: str = None) -> dict:
+def _auto_fix_syntax_error(error_output: str, workspace_discovery: dict, hint_file: str = None, attempt: int = 1) -> dict:
     """
     Automatically fix syntax errors in code files.
     
     Args:
         error_output: Build error output containing syntax error details
         workspace_discovery: Workspace structure data
+        hint_file: Optional caller-provided filename hint
+        attempt: The current retry attempt (1-indexed)
     
     Returns:
         dict with:
@@ -5256,12 +5364,8 @@ def _auto_fix_syntax_error(error_output: str, workspace_discovery: dict, hint_fi
         log(f'Error preview: {cleaned_error[:300]}')
         
         # Extract file path and line number from error
-        # We try to extract candidate file paths from the log.
-        # Candidates can be Python tracebacks, Next.js / Webpack style errors, or stack traces.
         candidates = []
         
-        # 1. Match paths ending with standard extensions followed by colon/spaces/parenthesis and a line number
-        # Example: ./app/globals.css:1:1, /project/workspace/src/components/FileManager.tsx:107:1, /app/globals.css (1:1)
         pattern1 = re.compile(
             r'([\w./\\-]+\.(?:py|js|jsx|ts|tsx|css|json|html|scss|sass|less|config\.js))[:\s(]+(\d+)',
             re.IGNORECASE
@@ -5271,15 +5375,12 @@ def _auto_fix_syntax_error(error_output: str, workspace_discovery: dict, hint_fi
             line_candidate = int(match.group(2))
             candidates.append((fp_candidate, line_candidate))
             
-        # 2. Python style tracebacks: File "/path/to/file.py", line 76
         pattern2 = re.compile(r'File "([^"]+)", line (\d+)', re.IGNORECASE)
         for match in pattern2.finditer(cleaned_error):
             fp_candidate = match.group(1)
             line_candidate = int(match.group(2))
             candidates.append((fp_candidate, line_candidate))
             
-        # 3. File path mention alone (fallback if no line number was parsed nearby)
-        # We search for any mention of a workspace-like file in the error
         pattern_file_only = re.compile(
             r'([\w./\\-]+\.(?:py|js|jsx|ts|tsx|css|json|html|scss|sass|less|config\.js))',
             re.IGNORECASE
@@ -5287,19 +5388,15 @@ def _auto_fix_syntax_error(error_output: str, workspace_discovery: dict, hint_fi
         for match in pattern_file_only.finditer(cleaned_error):
             fp_candidate = match.group(1)
             candidates.append((fp_candidate, 1)) # Default to line 1
-
-        # Now filter candidates to find the first one that exists in the workspace
-        # and does not point to node_modules or .next
+        
         error_file = None
         error_line = None
         
         for fp, line in candidates:
-            # Clean up the file path (strip leading/trailing parenthesis, quotes, brackets, and spaces)
             fp_clean = fp.strip('()[]{} "\'').replace('/project/workspace/', '')
             if fp_clean.startswith('./'):
                 fp_clean = fp_clean[2:]
             
-            # Avoid third-party packages or build folders
             if 'node_modules' in fp_clean or '.next' in fp_clean:
                 continue
                 
@@ -5310,11 +5407,6 @@ def _auto_fix_syntax_error(error_output: str, workspace_discovery: dict, hint_fi
                 break
         
         if not error_file:
-            # FIX: If regex parsing found no candidates, use the hint_file
-            # passed by the caller (e.g. the pre-deploy validator knows the
-            # file path from err['file'] even though the error message doesn't
-            # contain it — e.g. truncation errors like
-            # "File appears truncated — last line: 'export default Dashboard'")
             if hint_file:
                 resolved = WORKSPACE_DIR / hint_file.lstrip('./')
                 if resolved.exists() and resolved.is_file():
@@ -5330,7 +5422,6 @@ def _auto_fix_syntax_error(error_output: str, workspace_discovery: dict, hint_fi
         
         log(f'Syntax error detected in {error_file} at line {error_line}')
         
-        # Read the problematic file
         file_path = WORKSPACE_DIR / error_file
         if not file_path.exists():
             log(f'File not found: {file_path}')
@@ -5339,17 +5430,14 @@ def _auto_fix_syntax_error(error_output: str, workspace_discovery: dict, hint_fi
         file_content = file_path.read_text(encoding='utf-8')
         lines = file_content.splitlines()
         
-        # Validate line number
         if error_line > len(lines):
             log(f'Error line {error_line} exceeds file length {len(lines)}')
             error_line = len(lines)
         
-        # Get context around the error (30 lines before and after for better context)
         start_line = max(0, error_line - 30)
         end_line = min(len(lines), error_line + 30)
         context = '\n'.join(lines[start_line:end_line])
         
-        # Extract the specific error type from the output
         error_type = 'SyntaxError'
         if 'IndentationError' in cleaned_error:
             error_type = 'IndentationError'
@@ -5358,8 +5446,72 @@ def _auto_fix_syntax_error(error_output: str, workspace_discovery: dict, hint_fi
         
         log(f'Error type: {error_type}')
         log(f'Providing context: lines {start_line+1} to {end_line}')
-        
-        # Ask AI to fix the syntax error
+
+        # ── 5. Use FULL_REWRITE for deep corruption (attempt >= 2) ──
+        if attempt >= 2:
+            log(f"Attempt {attempt} >= 2: requesting FULL file rewrite of {error_file}")
+            fix_prompt = f"""You are a code repair expert. Fix the {error_type} in this code by rewriting the entire file cleanly.
+The file has been corrupted or has persistent syntax errors. Please rewrite the ENTIRE file cleanly.
+
+ERROR OUTPUT:
+{cleaned_error[:1500]}
+
+FILE: {error_file}
+ERROR LINE: {error_line}
+ERROR TYPE: {error_type}
+
+FULL FILE CONTENT:
+```
+{file_content}
+```
+
+CRITICAL INSTRUCTIONS:
+1. Fix the syntax error at or near line {error_line}.
+2. Rewrite the COMPLETE, valid file `{error_file}`.
+3. Do NOT truncate the file or use '// ... rest of code'.
+4. Do NOT use SEARCH/REPLACE patches.
+
+OUTPUT FORMAT:
+// FILE: {error_file}
+[complete file content here]
+
+Output ONLY the file marker and complete content, no explanations."""
+
+            try:
+                response = call_ai([
+                    {'role': 'system', 'content': 'You are a code repair expert. You must output the complete and syntactically valid file content. Output ONLY the raw file content under the // FILE: marker.'},
+                    {'role': 'user', 'content': fix_prompt},
+                ], temperature=0.1, show_thinking=True)
+                
+                # Clean up markdown code fences
+                response = re.sub(r'^```[a-z]*\n?', '', response.strip(), flags=re.MULTILINE)
+                response = re.sub(r'\n?```\s*$', '', response.strip(), flags=re.MULTILINE)
+                
+                file_marker_re = re.compile(
+                    r'(?://\s*FILE:\s*|#\s*FILE:\s*)([^\n]+)\n', re.IGNORECASE
+                )
+                file_matches = list(file_marker_re.finditer(response))
+                if file_matches:
+                    match = file_matches[0]
+                    filename = _clean_filename(match.group(1))
+                    start = match.end()
+                    end = file_matches[1].start() if len(file_matches) > 1 else len(response)
+                    content = response[start:end].strip()
+                    
+                    if content and '<<<SEARCH' not in content and '<<<REPLACE' not in content:
+                        _write_file(WORKSPACE_DIR / filename, content)
+                        log(f'✅ Successfully rewrote {filename} (FULL_REWRITE) on attempt {attempt}')
+                        return {'fixed': True, 'file': filename}
+                    else:
+                        log(f'⚠️ AI response contained raw patch markers or was empty in full rewrite')
+                else:
+                    log(f'⚠️ No FILE marker found in AI rewrite response')
+            except Exception as e:
+                log(f'⚠️ Exception during direct FULL_REWRITE auto-fix: {e}')
+                
+            return {'fixed': False, 'error': 'FULL_REWRITE attempt failed'}
+
+        # ── attempt 1: use PATCH-based workflow ──
         fix_prompt = f"""You are a code repair expert. Fix the {error_type} in this code.
 
 ERROR OUTPUT:
@@ -5406,7 +5558,6 @@ Output ONLY the patch, no explanations."""
         ], temperature=0.1, show_thinking=True)
         
         log(f'AI response length: {len(response)} chars')
-        log(f'AI response preview: {response[:300]}')
         
         # Apply the patch
         patch_marker_re = re.compile(r'//\s*PATCH:\s*([^\n]+)', re.IGNORECASE)
@@ -5415,44 +5566,70 @@ Output ONLY the patch, no explanations."""
         log(f'Found {len(patch_matches)} PATCH markers')
         
         if patch_matches:
-            # First, check if the AI returned identical SEARCH/REPLACE (no actual fix)
-            hunk_re = re.compile(r'<<<SEARCH\n(.*?)\n>>>\n<<<REPLACE\n(.*?)\n>>>', re.DOTALL)
-            hunks = list(hunk_re.finditer(response))
+            # Parse hunks with our state-machine parser
+            hunks = []
+            segment = response[patch_matches[0].end():]
+            segment_lines = []
+            for line in segment.splitlines():
+                line_stripped = line.strip()
+                if line_stripped.startswith('// PATCH:') or line_stripped.startswith('// FILE:') or line_stripped.startswith('# FILE:'):
+                    break
+                segment_lines.append(line)
+            segment = '\n'.join(segment_lines)
             
+            # State-machine parse
+            state = 0
+            current_search = []
+            current_replace = []
+            for line in segment.splitlines():
+                line_stripped = line.strip()
+                if state == 0:
+                    if line_stripped.startswith('<<<SEARCH'):
+                        state = 1
+                        current_search = []
+                elif state == 1:
+                    if line_stripped.startswith('>>>'):
+                        state = 2
+                    else:
+                        current_search.append(line)
+                elif state == 2:
+                    if line_stripped.startswith('<<<REPLACE'):
+                        state = 3
+                        current_replace = []
+                    elif line_stripped.startswith('<<<SEARCH'):
+                        state = 1
+                        current_search = []
+                elif state == 3:
+                    if line_stripped.startswith('>>>'):
+                        hunks.append({
+                            'search': '\n'.join(current_search),
+                            'replace': '\n'.join(current_replace)
+                        })
+                        state = 0
+                    else:
+                        current_replace.append(line)
+
             if hunks:
-                search_text = hunks[0].group(1)
-                replace_text = hunks[0].group(2)
+                search_text = hunks[0]['search']
+                replace_text = hunks[0]['replace']
                 
                 # Check for truncated/corrupted patches
-                search_lines = search_text.splitlines()
                 replace_lines = replace_text.splitlines()
-                
-                # Validation 1: Check for incomplete lines (truncated mid-word)
                 for line in replace_lines:
-                    # Check if line ends with incomplete word (no space, colon, paren, etc.)
                     stripped = line.rstrip()
                     if stripped and len(stripped) > 2:
                         last_chars = stripped[-4:]
-                        # If ends with partial word (letters only, no punctuation)
                         if last_chars.isalpha() and len(stripped) < 10:
                             log(f'⚠️ Detected truncated line in REPLACE: "{line}"')
-                            log(f'This looks like an incomplete/corrupted patch')
                             return {'fixed': False, 'error': 'AI returned truncated/corrupted patch'}
                 
-                # Validation 2: Check if REPLACE is significantly shorter than SEARCH (likely truncated)
                 if len(replace_text) < len(search_text) * 0.5 and len(search_text) > 50:
                     log(f'⚠️ REPLACE block is much shorter than SEARCH ({len(replace_text)} vs {len(search_text)} chars)')
-                    log(f'This suggests the AI response was truncated')
                     return {'fixed': False, 'error': 'AI response appears truncated'}
                 
-                # Validation 3: Check for identical blocks
                 if search_text == replace_text:
                     log('⚠️ AI returned identical SEARCH and REPLACE blocks - no actual fix')
-                    log(f'This means the AI thinks the code is already correct')
-                    log(f'The syntax error might be elsewhere or misidentified')
-                    
-                    # Try to give more context and ask again
-                    log('Attempting second fix with more explicit instructions...')
+                    log('Attempting retry with more explicit instructions...')
                     
                     retry_prompt = f"""CRITICAL: The previous fix attempt returned identical SEARCH/REPLACE blocks.
 
@@ -5472,12 +5649,6 @@ FULL FILE CONTENT:
 
 The error is at or near line {error_line}. Find the ACTUAL syntax error and fix it.
 
-Common Python syntax errors:
-- Missing colon after if/def/class/for/while
-- Missing closing parenthesis/bracket/brace
-- Incorrect indentation
-- Missing quotes
-
 OUTPUT FORMAT:
 // PATCH: {error_file}
 <<<SEARCH
@@ -5494,7 +5665,6 @@ The SEARCH and REPLACE blocks MUST be DIFFERENT. Output ONLY the patch."""
                         {'role': 'user', 'content': retry_prompt},
                     ], temperature=0.2, show_thinking=True)
                     
-                    # Try to apply the retry response
                     retry_patch_matches = list(patch_marker_re.finditer(retry_response))
                     if retry_patch_matches:
                         patches_applied = _apply_patches(retry_response, retry_patch_matches)
@@ -5502,130 +5672,27 @@ The SEARCH and REPLACE blocks MUST be DIFFERENT. Output ONLY the patch."""
                             log(f'✅ Applied {patches_applied} patches from retry')
                             return {'fixed': True, 'file': error_file}
                     
-                    # If retry also failed, continue to fallback
-                    log('Retry also failed, trying fallback...')
-            
+                    log('Retry also failed, trying fallback to full rewrite...')
+                    # Fallback directly to full rewrite
+                    attempt = 2
+                    return _auto_fix_syntax_error(error_output, workspace_discovery, hint_file, attempt)
+
             patches_applied = _apply_patches(response, patch_matches)
             if patches_applied > 0:
                 log(f'✅ Applied {patches_applied} patches to fix syntax error')
                 return {'fixed': True, 'file': error_file}
             else:
-                log('⚠️ Patches found but none applied successfully - trying direct fix approach')
-                
-                # FALLBACK: If patch didn't match, try to fix the specific line directly
-                # This handles cases where AI didn't preserve exact formatting
-                try:
-                    # Extract what the AI thinks the fix should be
-                    hunk_re = re.compile(r'<<<SEARCH\n(.*?)\n>>>\n<<<REPLACE\n(.*?)\n>>>', re.DOTALL)
-                    hunks = list(hunk_re.finditer(response))
-                    
-                    if hunks:
-                        search_text = hunks[0].group(1)
-                        replace_text = hunks[0].group(2)
-                        
-                        # Try to identify what changed between search and replace
-                        search_lines = search_text.splitlines()
-                        replace_lines = replace_text.splitlines()
-                        
-                        log(f'Fallback: Analyzing {len(search_lines)} search lines vs {len(replace_lines)} replace lines')
-                        
-                        # Read the actual file
-                        file_content = file_path.read_text(encoding='utf-8')
-                        file_lines = file_content.splitlines()
-                        
-                        # Strategy 1: Find what changed and apply to error line directly
-                        # Compare search vs replace to understand the fix
-                        for i, (s_line, r_line) in enumerate(zip(search_lines, replace_lines)):
-                            if s_line.strip() != r_line.strip():
-                                log(f'Fallback: Found difference at line {i}')
-                                log(f'  Search:  "{s_line.strip()}"')
-                                log(f'  Replace: "{r_line.strip()}"')
-                                
-                                # Python often reports syntax errors on the NEXT line
-                                # So check error_line AND error_line-1
-                                lines_to_check = []
-                                if error_line <= len(file_lines):
-                                    lines_to_check.append((error_line, file_lines[error_line - 1]))
-                                if error_line > 1:
-                                    lines_to_check.append((error_line - 1, file_lines[error_line - 2]))
-                                
-                                for line_num, actual_line in lines_to_check:
-                                    log(f'Fallback: Checking line {line_num}: "{actual_line.strip()}"')
-                                    
-                                    # If the actual line matches the search pattern (stripped), apply the fix
-                                    if actual_line.strip() == s_line.strip():
-                                        log(f'Fallback: Line {line_num} matches search pattern - applying fix')
-                                        original_indent = len(actual_line) - len(actual_line.lstrip())
-                                        fixed_line = ' ' * original_indent + r_line.strip()
-                                        file_lines[line_num - 1] = fixed_line
-                                        
-                                        # Write back
-                                        file_path.write_text('\n'.join(file_lines), encoding='utf-8')
-                                        log(f'✅ Fallback fix applied to line {line_num}')
-                                        return {'fixed': True, 'file': error_file}
-                                
-                                # Strategy 2: Search nearby lines for the pattern
-                                search_start = max(0, error_line - 10)
-                                search_end = min(len(file_lines), error_line + 10)
-                                
-                                log(f'Fallback: Searching lines {search_start+1} to {search_end} for pattern')
-                                for j in range(search_start, search_end):
-                                    if file_lines[j].strip() == s_line.strip():
-                                        log(f'Fallback: Found matching line at file line {j+1}')
-                                        # Preserve the original indentation
-                                        original_indent = len(file_lines[j]) - len(file_lines[j].lstrip())
-                                        fixed_line = ' ' * original_indent + r_line.strip()
-                                        file_lines[j] = fixed_line
-                                        
-                                        # Write back
-                                        file_path.write_text('\n'.join(file_lines), encoding='utf-8')
-                                        log(f'✅ Fallback fix applied to line {j+1}')
-                                        return {'fixed': True, 'file': error_file}
-                                
-                                break  # Only process first difference
-                        
-                        # Strategy 3: If no differences found, maybe it's a simple character addition
-                        # Try to understand what was added/removed
-                        if len(search_lines) == len(replace_lines):
-                            log('Fallback: Trying character-level diff')
-                            for i, (s_line, r_line) in enumerate(zip(search_lines, replace_lines)):
-                                if s_line != r_line:
-                                    # Find what was added
-                                    if r_line.startswith(s_line):
-                                        added = r_line[len(s_line):]
-                                        log(f'Fallback: Detected addition: "{added}"')
-                                    elif s_line in r_line:
-                                        log(f'Fallback: Detected character insertion')
-                                    
-                                    # Apply to error line
-                                    if error_line <= len(file_lines):
-                                        actual_line = file_lines[error_line - 1]
-                                        # Try simple replacement
-                                        if s_line.strip() in actual_line:
-                                            fixed_line = actual_line.replace(s_line.strip(), r_line.strip())
-                                            file_lines[error_line - 1] = fixed_line
-                                            file_path.write_text('\n'.join(file_lines), encoding='utf-8')
-                                            log(f'✅ Fallback fix applied via replacement to line {error_line}')
-                                            return {'fixed': True, 'file': error_file}
-                        
-                        log('⚠️ Fallback: Could not identify the specific line to fix')
-                except Exception as e:
-                    log(f'⚠️ Fallback fix failed: {e}')
-                
-                return {'fixed': False, 'error': 'Patch did not match file content and fallback failed'}
-        
-        log('⚠️ AI did not return valid patch markers')
-        log(f'Response was: {response[:500]}')
-        return {'fixed': False, 'error': 'No valid patch returned'}
-        
+                log('⚠️ Patches found but none applied successfully - trying fallback to full rewrite')
+                # If patch failed, fall back to a full rewrite!
+                attempt = 2
+                return _auto_fix_syntax_error(error_output, workspace_discovery, hint_file, attempt)
+
+        log('⚠️ No patches found in AI response')
+        return {'fixed': False, 'error': 'No patches found in AI response'}
+
     except Exception as e:
-        log(f'Auto-fix syntax error failed: {e}')
-        import traceback
-        log(f'Traceback: {traceback.format_exc()}')
+        log(f'⚠️ Exception in _auto_fix_syntax_error: {e}')
         return {'fixed': False, 'error': str(e)}
-
-
-
 
 # ── Agent orchestrator ─────────────────────────────────────────────────────────
 class Agent:
