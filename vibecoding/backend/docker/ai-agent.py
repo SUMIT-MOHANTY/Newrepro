@@ -1222,7 +1222,7 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
     # EXCEPTION: messages with suggestions are terminal responses ("Great! Your
     # changes are working…") — they must appear as regular chat messages, not be
     # swallowed into the collapsible ThinkingBlock.
-    if not suggestions:
+    if not suggestions and not meta.get('is_final_message'):
         meta['is_background_log'] = True
 
     # Auto-detect message type from emoji if not provided
@@ -1257,8 +1257,8 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
         
         # Get backend URL from environment variable
         # Default to host.docker.internal for Docker-to-host communication
-        # backend_url = os.environ.get('BACKEND_URL', 'http://host.docker.internal:8001')
-        backend_url = os.environ.get('BACKEND_URL', 'https://dsuite-backend.bourntec.com')
+        backend_url = os.environ.get('BACKEND_URL', 'http://host.docker.internal:8001')
+        # backend_url = os.environ.get('BACKEND_URL', 'https://dsuite-backend.bourntec.com')
         api_endpoint = f'{backend_url}/vibecoding/api/agent/message'
         
         payload = {
@@ -2249,7 +2249,7 @@ RULES:
 
     if is_handoff:
         system_prompt += """
-10. **STRICT COMPLIANCE TO ARCHITECTURE BLUEPRINTS:** You MUST strictly follow the provided repository structure, Mermaid flowcharts/diagrams, and planned technical architecture when building or modifying the application. Do not deviate from the defined architecture components, layers, or folder layouts.
+10. **STRICT COMPLIANCE TO ARCHITECTURE BLUEPRINTS:** You MUST strictly follow the provided repository structure, Mermaid flowcharts/diagrams, and planned technical architecture when building or modifying the application. Do not deviate from the defined architecture components, layers, or folder layouts. You MUST output all files at the root of the workspace directory (/project). Do NOT wrap the planned repository structure inside a new nested project directory (e.g. build directly in the current workspace directory, not inside 'referral-agent/').
 11. **EXTERNAL API INTEGRATIONS AND RUNTIME CHECKS:** When integrating external APIs or services (e.g., Azure OpenAI Foundry, external database providers, payment gateways, or third-party OAuth APIs), write the complete integration and communication logic. However, you MUST include robust runtime validation for any required API keys or credentials (e.g., environment variables). If any mandatory configuration is missing or empty, the application must gracefully handle it and return/display the following exact error message: "API required: please configure in the application"."""
     elif not is_edit:
         system_prompt += """
