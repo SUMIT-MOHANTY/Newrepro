@@ -260,6 +260,11 @@ class ProjectManager:
             "INITIAL_VERSION":     "workspace",
         }
 
+        # Inject handoff source environment variable if applicable
+        project_info = self.get_project_info(pid)
+        if project_info and project_info.get("handoff_source") == "dsuite":
+            env_vars["HANDOFF_SOURCE"] = "dsuite"
+
         volumes = {str(project_dir.absolute()): {'bind': '/project', 'mode': 'rw'}}
 
         try:

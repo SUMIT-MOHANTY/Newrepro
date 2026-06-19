@@ -1010,6 +1010,8 @@ async def get_brd_context(project_id: str):
             "custom_rules": project_info.get("custom_rules", ""),
             "governance_context": project_info.get("governance_context", {}),
             "handoff_timestamp": project_info.get("handoff_timestamp", ""),
+            "agent_analysis": project_info.get("brd_context", {}).get("agent_analysis", ""),
+            "handoff_source": project_info.get("handoff_source", ""),
         }
         
     except HTTPException:

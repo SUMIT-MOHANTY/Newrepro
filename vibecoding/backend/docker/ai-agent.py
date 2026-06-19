@@ -2245,7 +2245,13 @@ RULES:
 8. NO setup instructions — the platform deploys automatically
 9. SQLite + Prisma limitations: When creating/modifying a Prisma schema (prisma/schema.prisma) with sqlite provider, SQLite does NOT support `enum` types or the `Json` type. You MUST use `String` (with text defaults for enums, e.g., role String @default("USER")) instead of enums, and use `String` instead of `Json` (e.g., shippingAddress String)."""
 
-    if not is_edit:
+    is_handoff = os.environ.get('HANDOFF_SOURCE') == 'dsuite'
+
+    if is_handoff:
+        system_prompt += """
+10. **STRICT COMPLIANCE TO ARCHITECTURE BLUEPRINTS:** You MUST strictly follow the provided repository structure, Mermaid flowcharts/diagrams, and planned technical architecture when building or modifying the application. Do not deviate from the defined architecture components, layers, or folder layouts.
+11. **EXTERNAL API INTEGRATIONS AND RUNTIME CHECKS:** When integrating external APIs or services (e.g., Azure OpenAI Foundry, external database providers, payment gateways, or third-party OAuth APIs), write the complete integration and communication logic. However, you MUST include robust runtime validation for any required API keys or credentials (e.g., environment variables). If any mandatory configuration is missing or empty, the application must gracefully handle it and return/display the following exact error message: "API required: please configure in the application"."""
+    elif not is_edit:
         system_prompt += """
 10. **STRICT VISUAL PROTOTYPE RULE FOR INITIAL REQUEST:** Since this is the initial project setup, you MUST focus EXCLUSIVELY on building a stunning, highly polished visual frontend prototype using mock data. Do NOT generate any database models, Prisma schemas (prisma/schema.prisma), database migrations, or active backend APIs. Use mock-based state and dummy data in the React/Next.js/HTML frontend so that the application compiles and runs on Port 80 immediately with zero database errors. Any database or backend integrations will be implemented in subsequent turns."""
 
@@ -5889,9 +5895,18 @@ class Agent:
             analysis_data = brd_data.get('analysis_data', {})
             prerequisites = brd_data.get('prerequisites', [])
             custom_rules = brd_data.get('custom_rules', '')
+            agent_analysis = brd_data.get('agent_analysis', '')
+            handoff_source = brd_data.get('handoff_source', '')
+
+            if handoff_source == 'dsuite':
+                os.environ['HANDOFF_SOURCE'] = 'dsuite'
             
             # Construct comprehensive prompt
             full_prompt = f"""# Project: {project_name}
+
+## Technical Architecture & Repo Structure (DSuite Analysis)
+
+{agent_analysis if agent_analysis else 'No agent analysis / architecture diagrams specified.'}
 
 ## Business Requirements Document (BRD)
 
