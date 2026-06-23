@@ -760,3 +760,23 @@ class NXDuneSyncLog(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
+
+class AgentNote(Base):
+    """Local storage of agent notes for local-first coordination"""
+    __tablename__ = "agent_notes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_token = Column(String, index=True, nullable=False)
+    title = Column(String, index=True, nullable=False)  # e.g. "STATUS::..." or "MASTER::..."
+    content_payload = Column(JSON, nullable=False)
+    content_text = Column(Text, nullable=True)
+    user = Column(String, nullable=True)
+    
+    # Sync tracking
+    synced_to_nxdune = Column(Boolean, default=False)
+    nxdune_note_id = Column(Integer, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+

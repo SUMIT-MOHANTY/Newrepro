@@ -162,8 +162,19 @@ async def lifespan(app: FastAPI):
     _startup_init()
     # Initialize job manager
     await analysis_job_manager.initialize_job_manager()
+    
+    # Import and start background sync engine
+    from local_sync_service import run_nxdune_sync_worker
+    sync_task = asyncio.create_task(run_nxdune_sync_worker())
+    
     yield
-    # Cleanup job manager
+    
+    # Cancel sync engine and shutdown job manager
+    sync_task.cancel()
+    try:
+        await sync_task
+    except asyncio.CancelledError:
+        pass
     await analysis_job_manager.shutdown_job_manager()
 
 
@@ -5018,8 +5029,7 @@ async def create_vibecoding_handoff_token(
             else:
                 agent_analysis_text = str(agent_analysis_raw)
 
-            max_chars = int(os.getenv("AGENT_ANALYSIS_MAX_CHARS", "32000"))
-            project_context["agent_analysis"] = agent_analysis_text[:max_chars]
+            project_context["agent_analysis"] = agent_analysis_text
 
     payload = {
         "email": current_user.email,
@@ -7362,6 +7372,45 @@ def _normalize_project_token(project_token: Optional[str]) -> Optional[str]:
         return None
     token = project_token.strip()
     return token or None
+
+
+def _resolve_project_token(db: Session, x_task_token: Optional[str], x_project_token: Optional[str] = None) -> Optional[str]:
+    if x_project_token:
+        token = x_project_token.strip()
+        if token:
+            return token
+            
+    if not x_task_token:
+        return None
+    token = x_task_token.strip()
+    if not token:
+        return None
+        
+    # Check if x_task_token itself is actually a project UUID (doesn't look like JWT)
+    parts = token.split('.')
+    if len(parts) != 3:
+        return token
+        
+    # Check if it looks like a JWT
+    try:
+        import base64
+        import json
+        payload_b64 = parts[1]
+        payload_b64 += '=' * (-len(payload_b64) % 4)
+        payload_json = base64.urlsafe_b64decode(payload_b64).decode('utf-8')
+        payload_data = json.loads(payload_json)
+        client_id = payload_data.get("client_id")
+        if client_id:
+            # Find project by client_id in GovernanceResponse
+            proj = db.query(models.GovernanceResponse).filter(
+                models.GovernanceResponse.client_id == client_id
+            ).first()
+            if proj:
+                return proj.project_token
+    except Exception as e:
+        logger.error(f"Error decoding JWT in _resolve_project_token: {e}")
+            
+    return token
 
 
 def _normalize_agent_kind(
@@ -10301,21 +10350,81 @@ class TaskAssignRequest(BaseModel):
 async def assign_task_to_agent(
     payload: TaskAssignRequest,
     current_user: models.User = Depends(auth.get_current_user),
-    x_task_token: Optional[str] = Header(None)
+    x_task_token: Optional[str] = Header(None),
+    x_project_token: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
 ):
-    """Assign a task to an agent via the external task management API."""
+    """Assign a task to an agent via local DB first, then sync to the external task management API."""
+    resolved_token = None
+    db_task = None
+    if x_task_token or x_project_token:
+        try:
+            resolved_token = _resolve_project_token(db, x_task_token, x_project_token)
+            db_task = _find_local_task(db, resolved_token, payload.task_id)
+        except Exception as resolve_err:
+            logger.warning(f"Failed to resolve project token in assign_task_to_agent: {resolve_err}")
+
+    # 1. Update local database if task exists
+    local_success = False
+    if db_task and resolved_token:
+        try:
+            # Update t.assigned_to list
+            db_task.assigned_to = json.dumps([payload.username])
+            db.commit()
+            
+            # Claim task locally
+            import local_state_manager
+            task_data = {
+                "id": db_task.nxdune_task_id or db_task.id,
+                "title": db_task.task_name,
+                "taskName": db_task.task_name,
+                "description": db_task.description or "",
+                "priority": db_task.priority,
+                "task_type": db_task.task_type,
+                "task_wallet": db_task.task_wallet,
+                "sprint": db_task.sprint,
+                "milestone": db_task.milestone,
+                "checklist": db_task.checklist
+            }
+            
+            task_lane = (db_task.task_type or "TASK").lower()
+            if "front" in (db_task.task_name or "").lower() or "ui" in (db_task.task_name or "").lower():
+                task_lane = "frontend"
+            elif "back" in (db_task.task_name or "").lower() or "api" in (db_task.task_name or "").lower():
+                task_lane = "backend"
+                
+            local_state_manager.claim_task_local(
+                project_token=resolved_token,
+                agent_id=payload.username,
+                task_id=db_task.task_id,
+                task_data=task_data,
+                task_lane=task_lane
+            )
+            local_success = True
+        except Exception as local_err:
+            logger.error(f"Failed to assign task locally: {local_err}")
+
+    # 2. Try syncing with NXDune
     try:
-        # Use the task_service assign_task method
         result = await task_service.assign_task(
             task_id=payload.task_id,
             assignees=[payload.username],
             task_token=x_task_token
         )
         return {"success": True, "message": f"Task {payload.task_id} assigned to {payload.username}", "result": result}
-    except TaskServiceError as e:
-        _raise_task_service_http_exception(e, "Failed to assign task")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to assign task: {e}")
+        logger.warning(f"Failed to sync task assignment with NXDune: {e}")
+        if local_success:
+            return {
+                "success": True,
+                "message": f"Task {payload.task_id} assigned locally to {payload.username} (NXDune sync failed)",
+                "result": {"detail": str(e)}
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to assign task: {e}"
+            )
 
 
 @app.get("/api/agent/sprints/")
@@ -10446,24 +10555,26 @@ async def post_agent_task_progress(
     payload: TaskProgressRequest,
     current_user: models.User = Depends(auth.get_current_user),
     x_task_token: Optional[str] = Header(None),
+    x_project_token: Optional[str] = Header(None),
     db: Session = Depends(get_db),
 ):
     """Update task progress in the local DB first, then sync to external API."""
-    if not x_task_token:
-        raise HTTPException(status_code=400, detail="x-task-token header is required")
+    if not x_task_token and not x_project_token:
+        raise HTTPException(status_code=400, detail="x-task-token or x-project-token header is required")
         
     try:
-        task = _find_local_task(db, x_task_token, payload.task_id)
+        resolved_token = _resolve_project_token(db, x_task_token, x_project_token)
+        task = _find_local_task(db, resolved_token, payload.task_id)
         if task:
             clean_id = task.task_id
             ow = db.query(models.AgentTaskOwnership).filter(
-                models.AgentTaskOwnership.project_token == x_task_token,
+                models.AgentTaskOwnership.project_token == resolved_token,
                 models.AgentTaskOwnership.task_id == clean_id
             ).first()
             
             if not ow:
                 ow = models.AgentTaskOwnership(
-                    project_token=x_task_token,
+                    project_token=resolved_token,
                     task_id=clean_id,
                     agent_id="system",
                     status="in_progress",
@@ -10503,24 +10614,26 @@ async def post_agent_task_complete(
     payload: TaskCompleteRequest,
     current_user: models.User = Depends(auth.get_current_user),
     x_task_token: Optional[str] = Header(None),
+    x_project_token: Optional[str] = Header(None),
     db: Session = Depends(get_db),
 ):
     """Mark a task as complete in the local DB first, then sync to external API."""
-    if not x_task_token:
-        raise HTTPException(status_code=400, detail="x-task-token header is required")
+    if not x_task_token and not x_project_token:
+        raise HTTPException(status_code=400, detail="x-task-token or x-project-token header is required")
         
     try:
-        task = _find_local_task(db, x_task_token, payload.task_id)
+        resolved_token = _resolve_project_token(db, x_task_token, x_project_token)
+        task = _find_local_task(db, resolved_token, payload.task_id)
         if task:
             clean_id = task.task_id
             ow = db.query(models.AgentTaskOwnership).filter(
-                models.AgentTaskOwnership.project_token == x_task_token,
+                models.AgentTaskOwnership.project_token == resolved_token,
                 models.AgentTaskOwnership.task_id == clean_id
             ).first()
             
             if not ow:
                 ow = models.AgentTaskOwnership(
-                    project_token=x_task_token,
+                    project_token=resolved_token,
                     task_id=clean_id,
                     agent_id="system",
                     status="done",
@@ -10571,14 +10684,16 @@ async def post_agent_task_opt_in(
     payload: TaskOptInRequest,
     current_user: models.User = Depends(auth.get_current_user),
     x_task_token: Optional[str] = Header(None),
+    x_project_token: Optional[str] = Header(None),
     db: Session = Depends(get_db),
 ):
     """Opt in to a task in the local DB first, then sync to external API."""
-    if not x_task_token:
-        raise HTTPException(status_code=400, detail="x-task-token header is required")
+    if not x_task_token and not x_project_token:
+        raise HTTPException(status_code=400, detail="x-task-token or x-project-token header is required")
         
     try:
-        task = _find_local_task(db, x_task_token, payload.task_id)
+        resolved_token = _resolve_project_token(db, x_task_token, x_project_token)
+        task = _find_local_task(db, resolved_token, payload.task_id)
         if task:
             assigned = list(task.assigned_to) if task.assigned_to else []
             if payload.username not in assigned:
@@ -10602,11 +10717,12 @@ def _find_local_task(db: Session, project_token: str, task_id_ident: Any) -> Opt
     Finds a local task by its identifier (id, nxdune_task_id, or task_id string)
     within the given project.
     """
+    resolved_token = _resolve_project_token(db, project_token)
     # 1. Try matching by nxdune_task_id if task_id_ident can be parsed as int
     try:
         int_val = int(task_id_ident)
         task = db.query(models.Task).filter(
-            models.Task.project_token == project_token,
+            models.Task.project_token == resolved_token,
             models.Task.nxdune_task_id == int_val
         ).first()
         if task:
@@ -10618,7 +10734,7 @@ def _find_local_task(db: Session, project_token: str, task_id_ident: Any) -> Opt
     try:
         int_val = int(task_id_ident)
         task = db.query(models.Task).filter(
-            models.Task.project_token == project_token,
+            models.Task.project_token == resolved_token,
             models.Task.id == int_val
         ).first()
         if task:
@@ -10633,7 +10749,7 @@ def _find_local_task(db: Session, project_token: str, task_id_ident: Any) -> Opt
         clean_id = task_id_str.split("_")[-1]
         
     task = db.query(models.Task).filter(
-        models.Task.project_token == project_token,
+        models.Task.project_token == resolved_token,
         models.Task.task_id == clean_id
     ).first()
     if task:
@@ -10641,7 +10757,7 @@ def _find_local_task(db: Session, project_token: str, task_id_ident: Any) -> Opt
         
     # Also try matching by raw string directly
     task = db.query(models.Task).filter(
-        models.Task.project_token == project_token,
+        models.Task.project_token == resolved_token,
         models.Task.task_id == task_id_str
     ).first()
     return task
@@ -10792,6 +10908,20 @@ def _format_local_tasks_as_nxdune(db: Session, db_tasks: List[models.Task], proj
             except Exception:
                 pass
                 
+        # Parse assignees
+        assignees_list = []
+        if t.assigned_to:
+            try:
+                if isinstance(t.assigned_to, list):
+                    assignees_list = t.assigned_to
+                elif isinstance(t.assigned_to, str):
+                    import json as json_mod
+                    parsed = json_mod.loads(t.assigned_to)
+                    if isinstance(parsed, list):
+                        assignees_list = parsed
+            except Exception:
+                pass
+                
         results.append({
             "id": t.nxdune_task_id or t.id,
             "task_id": f"{project_token[:6]}_{clean_id}" if len(project_token) > 6 else f"nxdune_{clean_id}",
@@ -10802,7 +10932,7 @@ def _format_local_tasks_as_nxdune(db: Session, db_tasks: List[models.Task], proj
             "taskStatus": status,
             "task_progress": progress,
             "is_completed": status == "Completed",
-            "assignedTo": t.assigned_to or [],
+            "assignedTo": assignees_list,
             "task_wallet": t.task_wallet or 0,
             "deadline": t.deadline,
             "days_left": days_left,
@@ -10810,14 +10940,19 @@ def _format_local_tasks_as_nxdune(db: Session, db_tasks: List[models.Task], proj
             "milestone_name": t.milestone or "Milestone 1",
             "checklist": checklist_items,
             "is_flaged": False,
+            "selected": t.selected,
+            "synced_to_nxdune": t.synced_to_nxdune,
         })
     return results
 
 def _populate_local_dashboard_tasks(db: Session, project_token: str, dashboard_data: dict) -> dict:
     from datetime import timedelta
     
-    # Query all local tasks for this project
-    local_tasks = db.query(models.Task).filter(models.Task.project_token == project_token).all()
+    # Query only selected/synced local tasks for this project
+    local_tasks = db.query(models.Task).filter(
+        models.Task.project_token == project_token,
+        (models.Task.selected == True) | (models.Task.synced_to_nxdune == True)
+    ).all()
     formatted = _format_local_tasks_as_nxdune(db, local_tasks, project_token)
     
     due_this_week = []
@@ -10904,27 +11039,122 @@ def _populate_local_dashboard_tasks(db: Session, project_token: str, dashboard_d
         
     return dashboard_data
 
+
+def _get_orphan_ownership_tasks(db: Session, project_token: str) -> list:
+    """
+    Return tasks that have AgentTaskOwnership records but no corresponding
+    local Task entry (e.g., TASK-00 'Project Bootstrap' which is an external
+    NXDune task never inserted into the local Task table).
+    These are formatted as pseudo-task dicts so they appear in the task list UI.
+    """
+    try:
+        # Get all local task_ids for this project
+        local_task_ids = {
+            t.task_id for t in db.query(models.Task.task_id).filter(
+                models.Task.project_token == project_token
+            ).all()
+        }
+
+        # Find ownership records whose task_id is not in the local Task table
+        all_ownerships = db.query(models.AgentTaskOwnership).filter(
+            models.AgentTaskOwnership.project_token == project_token
+        ).all()
+
+        orphan_tasks = []
+        seen_task_ids = set()
+        for ow in all_ownerships:
+            tid = ow.task_id or ""
+            # Skip if there is a corresponding local Task record
+            if tid in local_task_ids or tid in seen_task_ids:
+                continue
+            # Also skip suffix-matched records (e.g. project_TASK-00 vs TASK-00)
+            suffix = tid.split("_", 1)[-1] if "_" in tid else tid
+            if any(suffix in lt for lt in local_task_ids):
+                continue
+            seen_task_ids.add(tid)
+
+            # Determine progress and status from ownership record
+            ow_status = ow.status or "claimed"
+            if ow_status == "done":
+                display_status = "Completed"
+                progress = 100
+            elif ow_status == "in_progress":
+                display_status = "On Going"
+                stored = (ow.task_data or {}).get("task_progress", 50)
+                try:
+                    progress = int(stored)
+                except (ValueError, TypeError):
+                    progress = 50
+            else:
+                display_status = "To Do"
+                progress = 0
+
+            task_data = ow.task_data or {}
+            orphan_tasks.append({
+                "id": tid,
+                "task_id": tid,
+                "taskName": ow.task_title or task_data.get("title") or task_data.get("taskName") or tid,
+                "description": task_data.get("description") or "",
+                "task_type": task_data.get("task_type") or "TASK",
+                "priority": (task_data.get("priority") or "medium").lower(),
+                "taskStatus": display_status,
+                "task_progress": progress,
+                "is_completed": display_status == "Completed",
+                "assignedTo": [],
+                "task_wallet": 0,
+                "deadline": task_data.get("deadline"),
+                "days_left": None,
+                "sprint_name": task_data.get("sprint") or "Sprint 1",
+                "milestone_name": task_data.get("milestone") or "Milestone 1",
+                "checklist": [],
+                "is_flaged": False,
+                "selected": True,
+                "synced_to_nxdune": False,
+                "_is_orphan_ownership": True,
+            })
+
+        return orphan_tasks
+    except Exception as e:
+        logger.warning(f"_get_orphan_ownership_tasks failed (non-fatal): {e}")
+        return []
+
+
 @app.get("/api/agent/tasks-list/")
 async def get_external_agent_tasks(
     current_user: models.User = Depends(auth.get_current_user),
     page: int = None,
     x_task_token: Optional[str] = Header(None),
+    x_project_token: Optional[str] = Header(None),
     db: Session = Depends(get_db),
 ):
     """
     Fetch the list of active tasks from the local DB first, falling back to external API if none found.
+    Also includes orphan ownership tasks (e.g. TASK-00 bootstrap) that have no local Task record.
     """
-    if not x_task_token:
-        raise HTTPException(status_code=400, detail="x-task-token header is required")
+    if not x_task_token and not x_project_token:
+        raise HTTPException(status_code=400, detail="x-task-token or x-project-token header is required")
         
     try:
-        query = db.query(models.Task).filter(models.Task.project_token == x_task_token)
+        # Fetch only selected/synced tasks locally
+        resolved_token = _resolve_project_token(db, x_task_token, x_project_token)
+        query = db.query(models.Task).filter(
+            models.Task.project_token == resolved_token,
+            (models.Task.selected == True) | (models.Task.synced_to_nxdune == True)
+        )
         local_tasks = query.all()
         
+        # Check if we have ANY tasks generated locally for this project
+        has_any_local = db.query(models.Task).filter(models.Task.project_token == resolved_token).first() is not None
+        
+        # Always include orphan ownership tasks (e.g. bootstrap TASK-00) in the result
+        orphan_tasks = _get_orphan_ownership_tasks(db, resolved_token)
+        
         if local_tasks:
-            formatted = _format_local_tasks_as_nxdune(db, local_tasks, x_task_token)
+            formatted = _format_local_tasks_as_nxdune(db, local_tasks, resolved_token)
+            # Merge orphan tasks (like TASK-00) so they appear in the task list
+            merged = list(orphan_tasks) + formatted
             # Filter out Completed tasks
-            active_tasks = [t for t in formatted if t.get("taskStatus") != "Completed"]
+            active_tasks = [t for t in merged if t.get("taskStatus") != "Completed"]
             total_count = len(active_tasks)
             
             if page:
@@ -10941,36 +11171,64 @@ async def get_external_agent_tasks(
                 }
             else:
                 return active_tasks
+        elif has_any_local:
+            # If we have local tasks generated but none selected/synced,
+            # still return orphan ownership tasks (bootstrap progress)
+            active_orphans = [t for t in orphan_tasks if t.get("taskStatus") != "Completed"]
+            if active_orphans:
+                if page:
+                    return {"count": len(active_orphans), "results": active_orphans, "next": None, "previous": None}
+                else:
+                    return active_orphans
+            if page:
+                return {"count": 0, "results": [], "next": None, "previous": None}
+            else:
+                return []
         else:
-            tasks = await task_service.get_tasks(page=page, task_token=x_task_token)
-            return tasks
+            try:
+                tasks = await task_service.get_tasks(page=page, task_token=x_task_token)
+                return tasks
+            except Exception as exc:
+                logger.warning(f"Failed to fetch tasks from NXDune: {exc}")
+                if page:
+                    return {"count": 0, "results": [], "next": None, "previous": None}
+                else:
+                    return []
     except Exception as e:
-        logger.error(f"Error fetching active tasks locally: {e}")
-        try:
-            tasks = await task_service.get_tasks(page=page, task_token=x_task_token)
-            return tasks
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Failed to fetch tasks: {exc}")
+        logger.error(f"Error fetching active tasks: {e}")
+        if page:
+            return {"count": 0, "results": [], "next": None, "previous": None}
+        else:
+            return []
+
 
 @app.get("/api/agent/tasks-total-list/")
 async def get_external_agent_total_tasks(
     current_user: models.User = Depends(auth.get_current_user),
     page: int = None,
     x_task_token: Optional[str] = Header(None),
+    x_project_token: Optional[str] = Header(None),
     db: Session = Depends(get_db),
 ):
     """
     Fetch the list of all tasks from the local DB first, falling back to external API if none found.
     """
-    if not x_task_token:
-        raise HTTPException(status_code=400, detail="x-task-token header is required")
+    if not x_task_token and not x_project_token:
+        raise HTTPException(status_code=400, detail="x-task-token or x-project-token header is required")
         
     try:
-        query = db.query(models.Task).filter(models.Task.project_token == x_task_token)
+        # Fetch only selected/synced tasks locally
+        resolved_token = _resolve_project_token(db, x_task_token, x_project_token)
+        query = db.query(models.Task).filter(
+            models.Task.project_token == resolved_token,
+            (models.Task.selected == True) | (models.Task.synced_to_nxdune == True)
+        )
         local_tasks = query.all()
         
+        has_any_local = db.query(models.Task).filter(models.Task.project_token == resolved_token).first() is not None
+        
         if local_tasks:
-            formatted = _format_local_tasks_as_nxdune(db, local_tasks, x_task_token)
+            formatted = _format_local_tasks_as_nxdune(db, local_tasks, resolved_token)
             total_count = len(formatted)
             
             if page:
@@ -10987,21 +11245,34 @@ async def get_external_agent_total_tasks(
                 }
             else:
                 return formatted
+        elif has_any_local:
+            if page:
+                return {"count": 0, "results": [], "next": None, "previous": None}
+            else:
+                return []
         else:
-            tasks = await task_service.get_total_tasks(page=page, task_token=x_task_token)
-            return tasks
+            try:
+                tasks = await task_service.get_total_tasks(page=page, task_token=x_task_token)
+                return tasks
+            except Exception as exc:
+                logger.warning(f"Failed to fetch total tasks from NXDune: {exc}")
+                if page:
+                    return {"count": 0, "results": [], "next": None, "previous": None}
+                else:
+                    return []
     except Exception as e:
-        logger.error(f"Error fetching total tasks locally: {e}")
-        try:
-            tasks = await task_service.get_total_tasks(page=page, task_token=x_task_token)
-            return tasks
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Failed to fetch total tasks: {exc}")
+        logger.error(f"Error fetching total tasks: {e}")
+        if page:
+            return {"count": 0, "results": [], "next": None, "previous": None}
+        else:
+            return []
 
 @app.get("/api/agent/project-info/")
 async def get_agent_project_info(
     current_user: models.User = Depends(auth.get_current_user),
-    x_task_token: Optional[str] = Header(None)
+    x_task_token: Optional[str] = Header(None),
+    x_project_token: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
 ):
     """Fetch project info (deadline, wallet, team) from the external task management API.
 
@@ -11012,17 +11283,28 @@ async def get_agent_project_info(
     try:
         info = await task_service.get_project_info(task_token=x_task_token)
         return info
-    except TaskServiceHTTPError as e:
-        # Upstream 404 -> "No project associated with this application"
-        # is a valid state before bootstrap. Surface an empty response
-        # so the frontend can treat it as "no project yet" instead of error.
-        if e.status_code == 404:
-            return {}
-        raise HTTPException(status_code=e.status_code, detail=str(e))
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to fetch project info: {repr(e)}")
+        logger.warning(f"Failed to fetch project info from NXDune, using local fallback: {e}")
+        # Try to get project name from local ShareProject table
+        project_name = "Local Project"
+        if x_task_token or x_project_token:
+            try:
+                resolved_token = _resolve_project_token(db, x_task_token, x_project_token)
+                proj = db.query(models.ShareProject).filter(models.ShareProject.project_token == resolved_token).first()
+                if proj:
+                    project_name = proj.project_name
+            except Exception as db_err:
+                logger.warning(f"Failed to query ShareProject name: {db_err}")
+                
+        return {
+            "project": {
+                "name": project_name,
+                "status": "On Going",
+                "deadline": "",
+                "project_wallet": 100,
+            },
+            "team_members": []
+        }
 
 @app.put("/api/agent/project/update/")
 async def update_agent_project_status(
@@ -11042,6 +11324,7 @@ async def update_agent_project_status(
 async def get_agent_dashboard(
     current_user: models.User = Depends(auth.get_current_user),
     x_task_token: Optional[str] = Header(None),
+    x_project_token: Optional[str] = Header(None),
     db: Session = Depends(get_db),
 ):
     """Fetch dashboard info from local DB first, falling back to local generation if NXDune is offline."""
@@ -11058,9 +11341,10 @@ async def get_agent_dashboard(
             "sprint_status": []
         }
     
-    if x_task_token:
+    if x_task_token or x_project_token:
         try:
-            data = _populate_local_dashboard_tasks(db, x_task_token, data)
+            resolved_token = _resolve_project_token(db, x_task_token, x_project_token)
+            data = _populate_local_dashboard_tasks(db, resolved_token, data)
         except Exception as populate_err:
             logger.error(f"Error populating local dashboard tasks: {populate_err}")
             
@@ -11070,12 +11354,38 @@ async def get_agent_dashboard(
 @app.get("/api/agent/billing-dashboard/")
 async def get_agent_billing_dashboard(
     current_user: models.User = Depends(auth.get_current_user),
-    x_task_token: Optional[str] = Header(None)
+    x_task_token: Optional[str] = Header(None),
+    x_project_token: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
 ):
     """Fetch billing metrics and agent execution costs."""
     try:
-        # 1. Fetch total tasks
-        tasks_response = await task_service.get_total_tasks(task_token=x_task_token)
+        # Resolve project token
+        resolved_token = _resolve_project_token(db, x_task_token, x_project_token)
+        
+        # 1. Check if we have tasks locally
+        local_tasks = db.query(models.Task).filter(
+            models.Task.project_token == resolved_token,
+            (models.Task.selected == True) | (models.Task.synced_to_nxdune == True)
+        ).all()
+        
+        has_any_local = db.query(models.Task).filter(models.Task.project_token == resolved_token).first() is not None
+        
+        tasks = []
+        if local_tasks:
+            tasks = _format_local_tasks_as_nxdune(db, local_tasks, resolved_token)
+        elif has_any_local:
+            tasks = []
+        else:
+            try:
+                tasks_response = await task_service.get_total_tasks(task_token=x_task_token)
+                if isinstance(tasks_response, list):
+                    tasks = tasks_response
+                elif isinstance(tasks_response, dict):
+                    tasks = tasks_response.get("results", tasks_response.get("tasks", []))
+            except Exception as exc:
+                logger.warning(f"Failed to fetch total tasks from NXDune for billing: {exc}")
+                tasks = []
         
         # 2. Extract tasks array
         tasks = []
@@ -11309,12 +11619,67 @@ async def upsert_agent_note(
     current_user: models.User = Depends(auth.get_current_user),
     x_task_token: Optional[str] = Header(None),
 ):
-    """Create or update an agent note in the external task management API."""
+    """Create or update an agent note locally (local-first) and queue sync to NXDune."""
+    project_token = x_task_token
+    if not project_token:
+        # Try extracting from title if header is missing
+        parts = payload.title.split("::")
+        if len(parts) >= 2:
+            project_token = parts[1]
+            
+    if not project_token:
+        raise HTTPException(status_code=400, detail="project_token could not be resolved from header or title")
+
     try:
-        return await task_service.upsert_note(payload.dict(exclude_none=True), task_token=x_task_token)
-    except TaskServiceError as e:
-        _raise_task_service_http_exception(e, "Failed to save note")
+        from local_state_manager import save_agent_note_local, queue_nxdune_sync
+        
+        # 1. Save locally
+        save_agent_note_local(
+            project_token=project_token,
+            title=payload.title,
+            content_payload={"content": payload.content},
+            content_text=payload.content,
+            user=payload.user or current_user.username,
+        )
+        
+        # Get note ID locally to pass back
+        from database import SessionLocal
+        db = SessionLocal()
+        try:
+            note = db.query(models.AgentNote).filter(
+                models.AgentNote.project_token == project_token,
+                models.AgentNote.title == payload.title
+            ).first()
+            resolved_note_id = note.id if note else payload.note_id
+        finally:
+            db.close()
+            
+        # 2. Queue sync log
+        sync_payload = {
+            "title": payload.title,
+            "content": payload.content,
+        }
+        if payload.note_id is not None:
+            sync_payload["note_id"] = payload.note_id
+        if payload.user:
+            sync_payload["user"] = payload.user
+
+        queue_nxdune_sync(
+            project_token=project_token,
+            operation="note_upsert",
+            agent_id=payload.user or current_user.username,
+            task_id=None,
+            payload=sync_payload
+        )
+        
+        return {
+            "success": True,
+            "id": resolved_note_id,
+            "note_id": resolved_note_id,
+            "message": "Note saved locally and sync queued."
+        }
     except Exception as e:
+        logger.error(f"Failed to save note locally: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to save note: {e}")
 
 
@@ -11323,12 +11688,26 @@ async def list_agent_notes(
     current_user: models.User = Depends(auth.get_current_user),
     x_task_token: Optional[str] = Header(None),
 ):
-    """List agent notes from the external task management API."""
+    """List agent notes from the local database first."""
+    if not x_task_token:
+        raise HTTPException(status_code=400, detail="X-Task-Token header (project token) is required")
+        
     try:
-        return await task_service.list_notes(task_token=x_task_token)
-    except TaskServiceError as e:
-        _raise_task_service_http_exception(e, "Failed to fetch notes")
+        from local_state_manager import list_agent_notes_local
+        local_notes = list_agent_notes_local(x_task_token)
+        
+        # Format notes to match the NXDune API return structure (list of dicts)
+        formatted = []
+        for ln in local_notes:
+            formatted.append({
+                "id": ln["nxdune_note_id"] or ln["id"],
+                "title": ln["title"],
+                "content": ln["content_text"] or json.dumps(ln["content_payload"]),
+                "user": ln["user"],
+            })
+        return formatted
     except Exception as e:
+        logger.error(f"Failed to list notes locally: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch notes: {e}")
 
 
@@ -11338,13 +11717,30 @@ async def get_agent_note_detail(
     current_user: models.User = Depends(auth.get_current_user),
     x_task_token: Optional[str] = Header(None),
 ):
-    """Fetch one agent note from the external task management API."""
+    """Fetch one agent note from the local database by local ID or synced NXDune ID."""
+    from database import SessionLocal
+    db = SessionLocal()
     try:
-        return await task_service.get_note_detail(note_id, task_token=x_task_token)
-    except TaskServiceError as e:
-        _raise_task_service_http_exception(e, "Failed to fetch note detail")
+        note = db.query(models.AgentNote).filter(
+            (models.AgentNote.id == note_id) | (models.AgentNote.nxdune_note_id == note_id)
+        ).first()
+        
+        if not note:
+            raise HTTPException(status_code=404, detail="Note not found locally")
+            
+        return {
+            "id": note.nxdune_note_id or note.id,
+            "title": note.title,
+            "content": note.content_text or json.dumps(note.content_payload),
+            "user": note.user,
+        }
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"Failed to get note detail locally: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch note detail: {e}")
+    finally:
+        db.close()
 
 class AutoGenerateRequest(BaseModel):
     project_token: str
@@ -12343,6 +12739,114 @@ async def get_local_tasks(
         "current_page": page,
         "total_pages": max(1, (total + page_size - 1) // page_size),
     }
+
+
+class SaveLocalTasksRequest(BaseModel):
+    project_token: str
+    tasks: List[Dict[str, Any]]
+
+
+@app.post("/api/agent/tasks/save-local/")
+async def save_tasks_locally(
+    request: SaveLocalTasksRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Save or update tasks locally in the database.
+    This ensures local database consistency even if it was cleared/reset.
+    """
+    try:
+        stored_tasks = []
+        for task_data in request.tasks:
+            clean_task_id = task_data.get("task_id")
+            if not clean_task_id:
+                continue
+                
+            # If the task_id contains project_token prefix, clean it
+            prefix = f"{request.project_token}_"
+            if str(clean_task_id).startswith(prefix):
+                clean_task_id = str(clean_task_id)[len(prefix):]
+                
+            db_unique_id = f"{request.project_token}_{clean_task_id}"
+            
+            # Check if task already exists
+            existing_task = db.query(models.Task).filter(
+                models.Task.task_id == db_unique_id,
+                models.Task.project_token == request.project_token
+            ).first()
+            
+            assigned_to = task_data.get("assignedTo", [])
+            if isinstance(assigned_to, list):
+                assigned_to = json.dumps(assigned_to)
+                
+            linked_tasks = task_data.get("linked_tasks", [])
+            if isinstance(linked_tasks, list):
+                linked_tasks = json.dumps(linked_tasks)
+                
+            checklist = task_data.get("checklist", [])
+            if isinstance(checklist, list) or isinstance(checklist, dict):
+                checklist = json.dumps(checklist)
+            elif not isinstance(checklist, str):
+                checklist = json.dumps([])
+                
+            # Parse dates
+            deadline = task_data.get("deadline") or task_data.get("planned_end")
+            
+            if existing_task:
+                # Update existing task
+                existing_task.task_name = task_data.get("taskName") or task_data.get("title") or existing_task.task_name
+                existing_task.task_type = task_data.get("task_type") or task_data.get("type") or existing_task.task_type
+                existing_task.description = task_data.get("description", existing_task.description)
+                existing_task.priority = task_data.get("priority", existing_task.priority)
+                existing_task.task_wallet = task_data.get("task_wallet", existing_task.task_wallet)
+                existing_task.startdate = task_data.get("startdate", existing_task.startdate)
+                existing_task.planned_start = task_data.get("planned_start", existing_task.planned_start)
+                existing_task.deadline = deadline or existing_task.deadline
+                existing_task.assigned_to = assigned_to
+                existing_task.sprint = task_data.get("sprint", existing_task.sprint)
+                existing_task.milestone = task_data.get("milestone", existing_task.milestone)
+                existing_task.linked_tasks = linked_tasks
+                existing_task.checklist = checklist
+                existing_task.selected = bool(task_data.get("selected", False))
+                existing_task.synced_to_nxdune = bool(task_data.get("synced_to_nxdune", False))
+                stored_tasks.append(existing_task)
+            else:
+                # Create new task
+                task = models.Task(
+                    task_id=db_unique_id,
+                    project_token=request.project_token,
+                    owner_id=current_user.id,
+                    task_name=task_data.get("taskName") or task_data.get("title") or "Untitled Task",
+                    task_type=task_data.get("task_type") or task_data.get("type") or "task",
+                    description=task_data.get("description", ""),
+                    priority=task_data.get("priority", "medium"),
+                    task_wallet=task_data.get("task_wallet", 1),
+                    startdate=task_data.get("startdate"),
+                    planned_start=task_data.get("planned_start"),
+                    deadline=deadline,
+                    assigned_to=assigned_to,
+                    reported_by=task_data.get("reported_by", "system"),
+                    sprint=task_data.get("sprint", "new"),
+                    milestone=task_data.get("milestone", "main"),
+                    linked_tasks=linked_tasks,
+                    checklist=checklist,
+                    selected=bool(task_data.get("selected", False)),
+                    synced_to_nxdune=bool(task_data.get("synced_to_nxdune", False))
+                )
+                db.add(task)
+                stored_tasks.append(task)
+                
+        db.commit()
+        logger.info(f"Saved {len(stored_tasks)} tasks locally in SQLite for project {request.project_token}")
+        return {
+            "status": "success",
+            "message": f"Saved {len(stored_tasks)} tasks locally in the database.",
+            "count": len(stored_tasks)
+        }
+    except Exception as e:
+        logger.error(f"Failed to save tasks locally: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save tasks locally: {str(e)}")
 
 
 class TaskSelectionRequest(BaseModel):

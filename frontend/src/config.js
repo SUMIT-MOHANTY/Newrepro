@@ -125,6 +125,7 @@ export const API_ENDPOINTS = {
     AGENT_AUTO_GENERATE: `${API_BASE_URL}/api/agent/auto-generate/`,
     AGENT_TASKS_GENERATE_LOCAL: `${API_BASE_URL}/api/agent/tasks/generate-local/`,
     AGENT_TASKS_LOCAL: `${API_BASE_URL}/api/agent/tasks/local/`,
+    AGENT_TASKS_SAVE_LOCAL: `${API_BASE_URL}/api/agent/tasks/save-local/`,
     AGENT_TASKS_SYNC: `${API_BASE_URL}/api/agent/tasks/sync/`,
     AGENT_TASKS_SELECTION: `${API_BASE_URL}/api/agent/tasks/selection/`,
     AGENT_PROJECT_CONFIG: `${API_BASE_URL}/api/agent/project-config/`,

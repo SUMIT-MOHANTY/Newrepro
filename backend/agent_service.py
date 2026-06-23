@@ -117,26 +117,42 @@ def _clean_ai_code_response(content: str) -> tuple[str, str]:
             filepath = filepath.replace('`', '').replace('"', '').replace("'", '').strip()
             file_content = file_content.strip()
             
+            # ── FILEPATH VALIDATION ───────────────────────────────────────────
             # Skip if filepath looks like a heading, not a file
             # Valid files must have either a / (path) or . (extension)
             if not filepath or ('/' not in filepath and '.' not in filepath):
-                logger.debug(f"Skipping invalid filepath: {filepath}")
+                logger.debug(f"Skipping invalid filepath (no ext/path): {filepath}")
                 continue
             
             # Skip if filepath contains spaces (likely a heading)
             if ' ' in filepath:
                 logger.debug(f"Skipping filepath with spaces: {filepath}")
                 continue
+
+            # Skip if filepath is suspiciously long (prose heading, not a path)
+            if len(filepath) > 200:
+                logger.debug(f"Skipping oversized filepath ({len(filepath)} chars): {filepath[:60]}...")
+                continue
+
+            # Skip if an absolute path that tries to escape /workspace
+            if filepath.startswith('/') and not filepath.startswith('/workspace'):
+                logger.debug(f"Skipping out-of-workspace absolute path: {filepath}")
+                continue
+            # ─────────────────────────────────────────────────────────────────
             
-            # BUG FIX 1: Strip leading project-name segment from ALL paths, not just standard roots
-            # This prevents files from landing in /workspace/my-project/backend/ instead of /workspace/backend/
-            # Pattern: Remove first segment if it's followed by a standard root directory
+            # BUG FIX 1: Strip leading project-name segment from paths ONLY when
+            # the first segment is clearly a project-name wrapper (contains hyphen,
+            # underscore, or is followed by a standard architecture root).
+            # DO NOT strip valid domain-specific roots like app/, api/, libs/, etc.
+            # Pattern: Remove first segment ONLY if it is followed by a standard root
             filepath = _re.sub(r'^[^/]+/(backend/|frontend/|shared/|orchestrator/|src/|app/)', r'\1', filepath)
-            # Also handle case where project name wraps the entire path (e.g., "my-project/utils/helper.py")
-            # If path starts with a segment that doesn't look like a standard root, strip it
+            # Secondary check: if the first segment contains hyphens/digits (classic
+            # project-name format like "my-project-v2") AND the second segment is a
+            # known architecture root, strip it.
             parts = filepath.split('/')
-            if len(parts) > 1 and parts[0] not in ['backend', 'frontend', 'shared', 'orchestrator', 'src', 'app', 'tests', 'docs', 'config']:
-                # First segment is likely a project name wrapper - remove it
+            if (len(parts) > 1
+                    and ('-' in parts[0] or parts[0].replace('_', '').isdigit())
+                    and parts[1] in {'backend', 'frontend', 'shared', 'orchestrator', 'src', 'tests', 'docs', 'config'}):
                 filepath = '/'.join(parts[1:])
             
             # Determine directory from filepath
@@ -144,9 +160,17 @@ def _clean_ai_code_response(content: str) -> tuple[str, str]:
                 directory = '/'.join(filepath.split('/')[:-1])
                 script_lines.append(f"mkdir -p {directory}")
             
-            # Write file using heredoc
+            # ── EOF-SAFE HEREDOC ──────────────────────────────────────────────
+            # If file content contains a bare "EOF" line, the heredoc would
+            # terminate prematurely. Escape it by splitting the string literal.
+            safe_content = file_content.replace("\nEOF\n", "\nEO''F\n")
+            if safe_content.startswith("EOF\n"):
+                safe_content = "EO''F\n" + safe_content[4:]
+            if safe_content.endswith("\nEOF"):
+                safe_content = safe_content[:-4] + "\nEO''F"
+            # ─────────────────────────────────────────────────────────────────
             script_lines.append(f"cat <<'EOF' > {filepath}")
-            script_lines.append(file_content)
+            script_lines.append(safe_content)
             script_lines.append("EOF")
             script_lines.append(f"echo '[CREATED] {filepath}'")
             script_lines.append("")
@@ -211,6 +235,19 @@ def _clean_ai_code_response(content: str) -> tuple[str, str]:
     content = content.replace('\u2013', '-').replace('\u2014', '--')
     content = content.replace('\u2026', '...')
     content = content.replace('\u2192', '->').replace('\u2190', '<-')
+
+    # Comment out any raw [RISK], [CHECK], [CREATED] bracket lines that aren't commented/echoed
+    cleaned_lines_bracket = []
+    for line in content.split('\n'):
+        stripped = line.strip()
+        if (
+            (stripped.startswith('[RISK') or stripped.startswith('[CHECK') or stripped.startswith('[CREATED')) 
+            and not (stripped.startswith('#') or stripped.startswith('echo'))
+        ):
+            cleaned_lines_bracket.append("# " + line)
+        else:
+            cleaned_lines_bracket.append(line)
+    content = '\n'.join(cleaned_lines_bracket)
 
     final_thought = thought_text
     if narrative and not final_thought:
@@ -837,6 +874,9 @@ async def _build_peer_context_block(
     container to extract exported symbols, class names, and function
     signatures — so the current agent can import rather than re-implement.
 
+    Also injects the current git repository state (recent commits + file tree)
+    so the agent knows exactly what has been built before generating new code.
+
     Returns a plain-text block like:
         COMPLETED WORK BY OTHER AGENTS (do not re-implement):
           [agent_01] Task 'TASK-01 User Auth' → branch: agent/task-01-user-auth
@@ -848,12 +888,52 @@ async def _build_peer_context_block(
     state = _ensure_project_state(project_token)
     ledger: Dict[str, TaskLedgerEntry] = state.get("task_ledger", {})
 
+    # ── Inject current repository state from container ────────────────────────
+    repo_state_lines: list = []
+    if container_name:
+        try:
+            # Recent git commits (what's already in the repo)
+            git_log = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "log", "--oneline", "-10"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if git_log.returncode == 0 and git_log.stdout.strip():
+                repo_state_lines.append("\n📜 CURRENT REPOSITORY — RECENT COMMITS (do NOT re-implement these):")
+                for line in git_log.stdout.strip().splitlines():
+                    repo_state_lines.append(f"  {line}")
+
+            # Current file tree (what files already exist)
+            git_ls = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "ls-files"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if git_ls.returncode == 0 and git_ls.stdout.strip():
+                existing_files = [f.strip() for f in git_ls.stdout.strip().splitlines() if f.strip()]
+                # Cap at 100 files to avoid prompt bloat
+                display_files = existing_files[:100]
+                repo_state_lines.append(f"\n📁 EXISTING FILES IN REPOSITORY ({len(existing_files)} total):")
+                for f in display_files:
+                    repo_state_lines.append(f"  {f}")
+                if len(existing_files) > 100:
+                    repo_state_lines.append(f"  ... and {len(existing_files) - 100} more files")
+                repo_state_lines.append(
+                    "\n⚠️ CRITICAL: These files ALREADY EXIST. Do not recreate them from scratch. "
+                    "If your task requires modifying them, read their current content first and PATCH "
+                    "only the required changes."
+                )
+
+        except Exception as _repo_err:
+            logger.debug(f"[{agent_id}] Repo state inspection failed (non-fatal): {_repo_err}")
+    # ─────────────────────────────────────────────────────────────────────────
+
     completed_by_peers = [
         entry for entry in ledger.values()
         if entry.status == "done" and entry.agent_id != agent_id
     ]
 
-    if not completed_by_peers:
+    if not completed_by_peers and not repo_state_lines:
         return ""
 
     # Keywords that indicate a public interface line worth extracting
@@ -869,6 +949,28 @@ async def _build_peer_context_block(
         "COMPLETED WORK BY OTHER AGENTS — DO NOT RE-IMPLEMENT",
         "=" * 60,
     ]
+
+    # Include repo state at the top
+    if repo_state_lines:
+        lines.extend(repo_state_lines)
+        lines.append("")
+
+    # Inject files created/modified by this workstream domain (for cross-restart continuity)
+    try:
+        import context_manager as ctx_mgr
+        live_mem = ctx_mgr.get_live_memory(project_token or "")
+        domain = _classify_task_assignment_lane(task)
+        if live_mem and domain:
+            workstream_files = live_mem.get_workstream_files(domain)
+            if workstream_files:
+                lines.append(f"\n🛠️ FILES CREATED/MODIFIED BY YOUR WORKSTREAM ({domain}):")
+                for wf in workstream_files[:40]:
+                    lines.append(f"  - {wf}")
+                if len(workstream_files) > 40:
+                    lines.append(f"  ... and {len(workstream_files) - 40} more files")
+                lines.append("")
+    except Exception as _ws_err:
+        logger.debug(f"Failed to inject workstream files into context block: {_ws_err}")
 
     for entry in completed_by_peers[-8:]:
         lines.append(f"\n[{entry.agent_id}] Task: '{entry.task_title}'")
@@ -902,15 +1004,16 @@ async def _build_peer_context_block(
                 except Exception:
                     pass
 
-    lines += [
-        "\n" + "=" * 60,
-        "RULES:",
-        "- IMPORT from these files — do not rewrite them.",
-        "- Use the EXACT function/class names shown above.",
-        "- Reference the correct import path when using these symbols.",
-        "- DO NOT create a second implementation of anything listed here.",
-        "=" * 60,
-    ]
+    if completed_by_peers:
+        lines += [
+            "\n" + "=" * 60,
+            "RULES:",
+            "- IMPORT from these files — do not rewrite them.",
+            "- Use the EXACT function/class names shown above.",
+            "- Reference the correct import path when using these symbols.",
+            "- DO NOT create a second implementation of anything listed here.",
+            "=" * 60,
+        ]
 
     return "\n".join(lines)
 
@@ -1259,27 +1362,37 @@ BULLETPROOF SUCCESS RULES - 100% EXECUTION GUARANTEE:
 - Follow language-specific best practices for the detected/specified tech stack
 - Include setup instructions and dependency installation
 
+CRITICAL CASE-SENSITIVITY IMPORT RULES (MANDATORY):
+- Docker containers run on Linux, which uses a CASE-SENSITIVE filesystem.
+- Your import statements (e.g. React/JS/TS imports, Python imports) MUST match the physical filename casing on disk exactly.
+- For example: if the file on disk is `useAuth.js` in directory `./hooks`, importing it as `useauth` or `UseAuth` will fail compilation. You MUST import it exactly as `./hooks/useAuth`.
+- Inspect the physical directories first (e.g., using `ls` or `find`) to verify the exact casing of any files you reference or import.
+
+CRITICAL RULE AGAINST PLACEHOLDERS & HALF-BAKED GENERATION (MANDATORY):
+- NEVER EVER output partial/incomplete code or placeholders like:
+  - "// TODO: implement rest"
+  - "// ... same as before ..."
+  - "# TODO: add fields here"
+  - "/* rest of the code remains unchanged */"
+- You MUST write every function, import, class, and comment completely. If you modify a file, write the FULL working content of the file.
+- Any heredoc blocks (`cat <<'EOF' > filename`) MUST contain the complete, syntactically correct, and fully functional content of the file from top to bottom. Failure to write complete code will break compilation checks and fail the task.
+
 CRITICAL: WORKING IN EXISTING PROJECT STRUCTURE (POST-BOOTSTRAP):
-- The project structure has ALREADY been created by the bootstrap agent
-- Files and directories ALREADY EXIST as empty placeholders - you are adding IMPLEMENTATION ONLY
-- DO NOT create ANY new files - all files already exist from bootstrap
-- DO NOT create ANY new directories - all directories already exist from bootstrap
-- DO NOT use 'touch' command - files already exist
-- DO NOT use 'mkdir' command - directories already exist
-- ONLY add content to EXISTING empty files using 'cat <<'EOF' > path'
-- Focus ONLY on the specific files mentioned in your task description
-- If a file you need doesn't exist, it means it's not part of the project structure - DO NOT create it
-- Your job is to IMPLEMENT features in existing files, NOT to create new files
+- The project structure was BOOTSTRAPPED — the key directories and placeholder files already exist as EMPTY files.
+- Your job is to WRITE IMPLEMENTATION CODE into those existing placeholder files.
+- Use `cat <<'EOF' > path` to write full content into an existing file (this overwrites the empty placeholder — that is correct and expected).
+- If a file already has content and you want to add more, use `cat <<'EOF' >> path` to append.
+- If a file or directory DOES NOT exist on disk (e.g. a helper you need that wasn't bootstrapped), you MAY use `mkdir -p` to create the directory and `cat <<'EOF' > path` to create the file — do not skip creating files you need.
+- DO NOT use bare `touch` to create files that need code content — use cat heredocs instead so they get real content.
+- Focus ONLY on the specific files mentioned in your task description and the CANONICAL FILE TARGETS list.
 
 CRITICAL SCRIPT SIZE RULES:
 - Return a Bash shell script UNDER 1000 lines total. This is very important.
 - Use shell commands to inspect files: ls, find, grep -q, cat
-- Write content to EXISTING files with heredocs: cat <<'EOF' > path or cat <<'EOF' >> path
+- Write FULL content into files with heredocs: cat <<'EOF' > path (overwrite placeholder) or cat <<'EOF' >> path (append)
 - DO NOT use Python code to write files
-- DO NOT use 'touch' to create new files (all files already exist from bootstrap)
-- DO NOT use 'mkdir' to create new directories (all directories already exist from bootstrap)
 - Focus on the 10-15 most essential files that need implementation
-- Keep all work rooted in /workspace and ONLY edit existing files
+- Keep all work rooted in /workspace
 
 CRITICAL SHELL COMPATIBILITY RULES (MANDATORY - FAILURE TO FOLLOW CAUSES CRASHES):
 - NEVER EVER use 'set -o pipefail' or 'set -euo pipefail' - these cause fatal errors in Docker environments
@@ -1325,11 +1438,6 @@ FORBIDDEN PATTERNS (these will cause immediate script failure):
 ❌ Incomplete code without error handling
 ❌ Missing imports or dependencies
 ❌ Hardcoded values without configuration
-❌ Recreating the entire project structure (it already exists!)
-❌ Creating ANY new directories (all directories exist from bootstrap)
-❌ Creating ANY new files (all files exist from bootstrap)
-❌ Using 'touch' command (files already exist)
-❌ Using 'mkdir' or 'mkdir -p' command (directories already exist)
 ❌ Assuming a specific tech stack (FastAPI, React, etc.) when not specified
 
 ALLOWED PATTERNS:
@@ -1339,10 +1447,19 @@ ALLOWED PATTERNS:
 ✅ Detecting tech stack from project structure and technical spec
 ✅ Adapting code patterns to the detected/specified tech stack
 ✅ Writing clean, working code appropriate to the technology being used
+✅ mkdir -p for directories that don't exist yet
+✅ cat <<'EOF' > path to write full file content (overwrites empty bootstrap placeholder)
 """
 
 # Bootstrap-specific rules (NO file content generation) — TECH-STACK AGNOSTIC
 _BOOTSTRAP_CODE_RULES = """
+
+⚠️ CRITICAL MANDATE — STRUCTURE ONLY:
+- THIS IS A STRUCTURE-ONLY BOOTSTRAP PHASE. YOU MUST NOT GENERATE ANY CODE CONTENT FOR ANY FILES.
+- DO NOT WRITE HEREDOCS (cat <<EOF ... EOF). ALL FILES CREATED MUST REMAIN 100% EMPTY.
+- USE ONLY 'touch' to create empty placeholder files.
+- USE ONLY 'mkdir -p' to create directories.
+- Writing full page contents, imports, HTML tags, or TSX/JS code is STRICTLY PROHIBITED and will cause validation errors.
 
 BOOTSTRAP TASK RULES - STRUCTURE ONLY (ANY TECH STACK):
 - Bootstrap tasks create EMPTY placeholder files and directories ONLY
@@ -2062,11 +2179,39 @@ def _build_file_ownership_block(
     ledger: Dict[str, TaskLedgerEntry] = state.get("task_ledger", {})
 
     owned: Dict[str, str] = {}  # file_path → owner_agent_id
+    
+    # 1. Read from in-memory ledger
     for entry in ledger.values():
         if entry.agent_id == agent_id or entry.status != "done":
             continue
         for fpath in entry.files_written:
-            owned[fpath] = entry.agent_id
+            if fpath:
+                owned[fpath] = entry.agent_id
+
+    # 2. Read from DB for cross-restart resilience
+    if project_token:
+        try:
+            from database import SessionLocal
+            import models as _models
+            db = SessionLocal()
+            try:
+                records = (
+                    db.query(_models.AgentTaskOwnership)
+                    .filter(
+                        _models.AgentTaskOwnership.project_token == project_token,
+                        _models.AgentTaskOwnership.status == "done",
+                        _models.AgentTaskOwnership.agent_id != agent_id,
+                    )
+                    .all()
+                )
+                for r in records:
+                    for fpath in (r.files_written or []):
+                        if fpath:
+                            owned[fpath] = r.agent_id
+            finally:
+                db.close()
+        except Exception as _db_err:
+            logger.debug(f"[_build_file_ownership_block] DB fetch failed: {_db_err}")
 
     if not owned:
         return ""
@@ -2360,15 +2505,46 @@ def _detect_stack_build_commands(container_name: str, project_root: str = "/work
     Detect the tech stack inside the container and return the appropriate install, build, and dev commands.
     """
     import subprocess
+    import json
     # 1. Node.js (React, Angular, Vue, Next.js)
     chk = subprocess.run(["docker", "exec", container_name, "test", "-f", f"{project_root}/package.json"], capture_output=True, check=False)
     if chk.returncode == 0:
-        return {
-            "type": "nodejs",
-            "install": "npm install --silent",
-            "build": "npm run build",
-            "dev": "npm run dev"
-        }
+        # Check package.json scripts to verify if build command exists
+        has_build_script = True
+        try:
+            cat_json = subprocess.run(["docker", "exec", container_name, "cat", f"{project_root}/package.json"], capture_output=True, text=True, check=False)
+            if cat_json.returncode == 0:
+                pjson = json.loads(cat_json.stdout)
+                scripts = pjson.get("scripts", {})
+                has_build_script = "build" in scripts
+        except Exception:
+            pass
+
+        # Check package managers
+        has_pnpm = subprocess.run(["docker", "exec", container_name, "test", "-f", f"{project_root}/pnpm-lock.yaml"], capture_output=True, check=False).returncode == 0
+        has_yarn = subprocess.run(["docker", "exec", container_name, "test", "-f", f"{project_root}/yarn.lock"], capture_output=True, check=False).returncode == 0
+
+        if has_pnpm:
+            return {
+                "type": "nodejs",
+                "install": "pnpm install",
+                "build": "pnpm build" if has_build_script else "echo 'No build script defined in package.json. Skipping.'",
+                "dev": "pnpm dev"
+            }
+        elif has_yarn:
+            return {
+                "type": "nodejs",
+                "install": "yarn install",
+                "build": "yarn build" if has_build_script else "echo 'No build script defined in package.json. Skipping.'",
+                "dev": "yarn dev"
+            }
+        else:
+            return {
+                "type": "nodejs",
+                "install": "npm install --silent",
+                "build": "npm run build" if has_build_script else "echo 'No build script defined in package.json. Skipping.'",
+                "dev": "npm run dev"
+            }
         
     # 2. Python
     chk = subprocess.run(["docker", "exec", container_name, "test", "-f", f"{project_root}/requirements.txt"], capture_output=True, check=False)
@@ -2399,8 +2575,46 @@ def _detect_stack_build_commands(container_name: str, project_root: str = "/work
             "build": "go build ./...",
             "dev": "go run ."
         }
+    # Go fallback if no go.mod but .go files exist
+    chk = subprocess.run(["docker", "exec", container_name, "sh", "-c", f"find {project_root} -name '*.go' | grep ."], capture_output=True, check=False)
+    if chk.returncode == 0:
+        return {
+            "type": "go",
+            "install": "echo 'No go.mod found. Skipping download.'",
+            "build": "go build ./...",
+            "dev": "go run ."
+        }
+
+    # 5. Rust
+    chk = subprocess.run(["docker", "exec", container_name, "test", "-f", f"{project_root}/Cargo.toml"], capture_output=True, check=False)
+    if chk.returncode == 0:
+        return {
+            "type": "rust",
+            "install": "cargo fetch",
+            "build": "cargo check",
+            "dev": "cargo run -- --help"
+        }
+
+    # 6. PHP
+    chk = subprocess.run(["docker", "exec", container_name, "test", "-f", f"{project_root}/composer.json"], capture_output=True, check=False)
+    if chk.returncode == 0:
+        return {
+            "type": "php",
+            "install": "composer install --no-interaction --quiet || true",
+            "build": "find . -name '*.php' -type f -not -path '*/vendor/*' | xargs -n 1 php -l",
+            "dev": "php -S localhost:8000"
+        }
+    # PHP fallback if no composer.json but .php files exist
+    chk = subprocess.run(["docker", "exec", container_name, "sh", "-c", f"find {project_root} -name '*.php' | grep ."], capture_output=True, check=False)
+    if chk.returncode == 0:
+        return {
+            "type": "php",
+            "install": "echo 'No composer.json found. Skipping install.'",
+            "build": "find . -name '*.php' -type f -not -path '*/vendor/*' | xargs -n 1 php -l",
+            "dev": "php -S localhost:8000"
+        }
         
-    # 5. Java (Maven)
+    # 7. Java (Maven)
     chk = subprocess.run(["docker", "exec", container_name, "test", "-f", f"{project_root}/pom.xml"], capture_output=True, check=False)
     if chk.returncode == 0:
         return {
@@ -2410,7 +2624,7 @@ def _detect_stack_build_commands(container_name: str, project_root: str = "/work
             "dev": "mvn spring-boot:run"
         }
         
-    # 6. Java (Gradle)
+    # 8. Java (Gradle)
     chk = subprocess.run(["docker", "exec", container_name, "test", "-f", f"{project_root}/build.gradle"], capture_output=True, check=False)
     if chk.returncode == 0:
         return {
@@ -2689,6 +2903,7 @@ def _run_build_validation_in_container(container_name: str, project_root: str = 
     DYNAMIC TECH-STACK AGNOSTIC validation inside the container to verify if code compiles and runs.
     """
     import subprocess
+    import shlex
     
     # Run TSConfig / Package.json integrity checks and import casing check
     integrity_error = _run_integrity_and_casing_checks(container_name, project_root)
@@ -2701,51 +2916,181 @@ def _run_build_validation_in_container(container_name: str, project_root: str = 
             "stderr": f"Integrity and Import Casing Check Failed:\n{integrity_error}"
         }
         
+    # Collect changed files via git status
+    changed_files = []
+    try:
+        status_run = subprocess.run(
+            ["docker", "exec", "-w", project_root, container_name, "git", "status", "--porcelain"],
+            capture_output=True, text=True, timeout=15
+        )
+        if status_run.returncode == 0:
+            for line in (status_run.stdout or "").splitlines():
+                line = line.strip()
+                if line:
+                    parts = line.split(None, 1)
+                    if len(parts) == 2:
+                        changed_files.append(parts[1])
+    except Exception as e:
+        logger.warning(f"Failed to collect changed files via git status: {e}")
+
     commands = _detect_stack_build_commands(container_name, project_root)
-    if not commands:
-        logger.info("No supported tech stack manifest found. Skipping build validation.")
-        return {
-            "success": True,
-            "exit_code": 0,
-            "stdout": "No manifest file found (package.json, requirements.txt,csproj, go.mod, pom.xml). Skip.",
-            "stderr": ""
-        }
+    build_passed = True
+    build_output = ""
+    build_stderr = ""
+    build_exit_code = 0
 
-    logger.info(f"Detected stack '{commands['type']}'. Running build verification...")
-    
-    # 1. Run Manifest Installation if needed
-    install_run = subprocess.run(
-        ["docker", "exec", "-w", project_root, container_name, "sh", "-c", commands["install"]],
-        capture_output=True, text=True, timeout=120
-    )
-    if install_run.returncode != 0:
-        logger.warning(f"Install validation failed in container: {install_run.stderr}")
+    if commands:
+        logger.info(f"Detected stack '{commands['type']}'. Running build verification...")
+        
+        # 1. Run Manifest Installation if needed
+        install_run = subprocess.run(
+            ["docker", "exec", "-w", project_root, container_name, "sh", "-c", commands["install"]],
+            capture_output=True, text=True, timeout=120
+        )
+        if install_run.returncode != 0:
+            logger.warning(f"Install validation failed in container: {install_run.stderr}")
+            return {
+                "success": False,
+                "exit_code": install_run.returncode,
+                "stdout": install_run.stdout,
+                "stderr": f"Manifest installation failed:\n{install_run.stderr}"
+            }
+
+        # 2. Run Build/Compile validation
+        build_run = subprocess.run(
+            ["docker", "exec", "-w", project_root, container_name, "sh", "-c", commands["build"]],
+            capture_output=True, text=True, timeout=180
+        )
+        build_output = build_run.stdout or ""
+        build_stderr = build_run.stderr or ""
+        build_exit_code = build_run.returncode
+        if build_run.returncode != 0:
+            logger.warning(f"Build validation failed in container: {build_run.stderr}")
+            build_passed = False
+
+    # 3. Run individual file syntax check if build passed or no build command was run
+    if build_passed:
+        syntax_errors = []
+        if changed_files:
+            tools = _probe_container_toolchain(container_name)
+            
+            def _run_syntax_check(cmd_str: str) -> tuple[bool, str]:
+                r = subprocess.run(
+                    ["docker", "exec", "-w", project_root, container_name, "sh", "-c", cmd_str],
+                    capture_output=True, text=True, timeout=15
+                )
+                return r.returncode == 0, (r.stdout or "") + (r.stderr or "")
+
+            for fpath in changed_files:
+                lower = fpath.lower()
+                # Python
+                if lower.endswith(".py") and tools.get("has_python3"):
+                    ok, out = _run_syntax_check(f"python3 -m py_compile {shlex.quote(fpath)}")
+                    if not ok:
+                        syntax_errors.append(f"Python syntax error in {fpath}:\n{out}")
+                
+                # JSON
+                elif lower.endswith(".json") and tools.get("has_python3"):
+                    if not any(x in lower for x in ["package-lock.json", "yarn.lock"]):
+                        ok, out = _run_syntax_check(f"python3 -c 'import json; json.load(open(\"{fpath}\"))'")
+                        if not ok:
+                            syntax_errors.append(f"JSON format error in {fpath}:\n{out}")
+                            
+                # JavaScript (.js, .mjs, .cjs)
+                elif any(lower.endswith(ext) for ext in [".js", ".mjs", ".cjs"]) and tools.get("has_node"):
+                    has_jsx = False
+                    try:
+                        cat_run = subprocess.run(
+                            ["docker", "exec", container_name, "cat", f"{project_root}/{fpath}"],
+                            capture_output=True, text=True, check=False, timeout=10
+                        )
+                        if cat_run.returncode == 0:
+                            content = cat_run.stdout
+                            if "</" in content or "className=" in content or "import React" in content:
+                                has_jsx = True
+                    except Exception:
+                        pass
+                    if not has_jsx:
+                        ok, out = _run_syntax_check(f"node --check {shlex.quote(fpath)}")
+                        if not ok:
+                            syntax_errors.append(f"JavaScript syntax error in {fpath}:\n{out}")
+                            
+                # TypeScript (.ts, .tsx)
+                elif any(lower.endswith(ext) for ext in [".ts", ".tsx"]):
+                    if tools.get("has_tsc"):
+                        has_tsconfig = subprocess.run(
+                            ["docker", "exec", container_name, "test", "-f", f"{project_root}/tsconfig.json"],
+                            capture_output=True, check=False
+                        ).returncode == 0
+                        if has_tsconfig:
+                            ok, out = _run_syntax_check("tsc --noEmit --skipLibCheck")
+                            if not ok:
+                                real_errors = [
+                                    ln for ln in out.splitlines()
+                                    if ln.strip()
+                                    and "Cannot find module" not in ln
+                                    and "Could not find a declaration file" not in ln
+                                    and "error TS2307" not in ln
+                                    and "error TS2792" not in ln
+                                ]
+                                if real_errors:
+                                    syntax_errors.append("TypeScript build compilation errors:\n" + "\n".join(real_errors[:10]))
+                        else:
+                            if lower.endswith(".ts"):
+                                ok, out = _run_syntax_check(
+                                    f"sed 's/:\\s*[A-Za-z<>\\[\\]|&?]*//g; s/<[^>]*>//g' "
+                                    f"{shlex.quote(fpath)} | node --input-type=module --check"
+                                )
+                                if "SyntaxError" in out:
+                                    syntax_errors.append(f"TypeScript syntax error in {fpath}:\n{out}")
+                                    
+                # Go (.go)
+                elif lower.endswith(".go") and tools.get("has_go"):
+                    ok, out = _run_syntax_check(f"go vet {shlex.quote(fpath)}")
+                    if not ok:
+                        syntax_errors.append(f"Go syntax/vet errors in {fpath}:\n{out}")
+                        
+                # Rust (.rs)
+                elif lower.endswith(".rs") and tools.get("has_rustc"):
+                    ok, out = _run_syntax_check(f"rustc --emit=metadata {shlex.quote(fpath)}")
+                    if not ok:
+                        syntax_errors.append(f"Rust compiler error in {fpath}:\n{out}")
+                        
+                # PHP (.php)
+                elif lower.endswith(".php") and tools.get("has_php"):
+                    ok, out = _run_syntax_check(f"php -l {shlex.quote(fpath)}")
+                    if not ok:
+                        syntax_errors.append(f"PHP syntax lint error in {fpath}:\n{out}")
+                        
+                # Shell Script (.sh, .bash)
+                elif lower.endswith(".sh") or lower.endswith(".bash"):
+                    ok, out = _run_syntax_check(f"sh -n {shlex.quote(fpath)}")
+                    if not ok:
+                        syntax_errors.append(f"Shell script syntax error in {fpath}:\n{out}")
+
+        if syntax_errors:
+            logger.warning(f"Syntax validation failed: {len(syntax_errors)} files had syntax errors.")
+            return {
+                "success": False,
+                "exit_code": 1,
+                "stdout": "",
+                "stderr": "Syntax validation errors detected in changed files:\n\n" + "\n\n".join(syntax_errors)
+            }
+
+    if not build_passed:
         return {
             "success": False,
-            "exit_code": install_run.returncode,
-            "stdout": install_run.stdout,
-            "stderr": f"Manifest installation failed:\n{install_run.stderr}"
+            "exit_code": build_exit_code,
+            "stdout": build_output,
+            "stderr": f"Code compilation/build failed:\n{build_stderr}"
         }
 
-    # 2. Run Build/Compile validation
-    build_run = subprocess.run(
-        ["docker", "exec", "-w", project_root, container_name, "sh", "-c", commands["build"]],
-        capture_output=True, text=True, timeout=180
-    )
-    if build_run.returncode != 0:
-        logger.warning(f"Build validation failed in container: {build_run.stderr}")
-        return {
-            "success": False,
-            "exit_code": build_run.returncode,
-            "stdout": build_run.stdout,
-            "stderr": f"Code compilation/build failed:\n{build_run.stderr}"
-        }
-
-    logger.info("Build verification PASSED.")
+    logger.info("Build & Syntax verification PASSED.")
+    stack_type = commands.get("type", "unknown") if commands else "no manifest"
     return {
         "success": True,
         "exit_code": 0,
-        "stdout": f"Build success (stack: {commands['type']}).\n{build_run.stdout}",
+        "stdout": f"Build & Syntax check success (stack: {stack_type}).\n{build_output}",
         "stderr": ""
     }
 
@@ -3864,7 +4209,16 @@ async def _call_ai_for_code(
         checklist: Checklist items for chunked generation
         task: Dict representing the current task
     """
-    if checklist and len(checklist) > 0:
+    is_bootstrap = False
+    if "bootstrap" in task_description.lower() or "task-00" in task_description.upper() or "task_00" in task_description.upper():
+        is_bootstrap = True
+    if task:
+        task_id_str = str(task.get("id") or task.get("task_id") or "").upper()
+        task_title_str = str(task.get("title") or task.get("taskName") or "").lower()
+        if "bootstrap" in task_title_str or "task-00" in task_id_str or "task_00" in task_id_str:
+            is_bootstrap = True
+
+    if checklist and len(checklist) > 0 and not is_bootstrap:
         try:
             return await _call_ai_for_code_chunked(
                 task_description=task_description,
@@ -6030,6 +6384,90 @@ async def _mark_repo_bootstrap_result(
         set_bootstrap_success(project_token)  # Persistent bootstrap state
     logger.info(f"[{source_agent}] Bootstrap flag set for project {project_token} (branch: {source_branch})")
 
+    # ── CRITICAL FIX: Wake DAG watcher and idle worker agents ──────────────
+    # Publish task_completed event for TASK-00 so the DAG watcher fires and
+    # recomputes ready tasks. Then proactively trigger all idle worker agents.
+    if success:
+        try:
+            await _publish_agent_event(
+                "task_completed",
+                source_agent,
+                project_token=project_token,
+                task_id="TASK-00",
+                task_title="Project Bootstrap",
+            )
+            logger.info(
+                f"[{source_agent}] ✅ Published task_completed(TASK-00) to event bus — "
+                "DAG watcher will unblock idle agents."
+            )
+        except Exception as _evt_err:
+            logger.warning(f"[{source_agent}] Failed to publish bootstrap event (non-fatal): {_evt_err}")
+
+        # Asynchronously trigger idle worker agents to pick up post-bootstrap tasks
+        asyncio.ensure_future(_trigger_idle_worker_agents(project_token, source_agent))
+
+
+async def _trigger_idle_worker_agents(
+    project_token: Optional[str],
+    trigger_source: str = "bootstrap",
+) -> None:
+    """
+    After bootstrap completes, find all idle dev agents and trigger them
+    to pick up their next task in continuous mode.
+    Guards against double-triggering with a per-project flag in state.
+    """
+    if not project_token:
+        return
+    state = _ensure_project_state(project_token)
+
+    # Guard: only trigger once per bootstrap completion to avoid storms
+    if state.get("_idle_workers_triggered"):
+        logger.debug(f"[{trigger_source}] Idle worker trigger already fired for {project_token} — skipping.")
+        return
+    state["_idle_workers_triggered"] = True
+
+    # Brief pause to allow bootstrap event to propagate to DAG watcher first
+    await asyncio.sleep(3)
+
+    project_agents = state["agent_states"]
+    idle_dev_agents = [
+        (aid, agt)
+        for aid, agt in project_agents.items()
+        if not _is_system_agent_id(aid)
+        and agt.get("status") in ("idle", "waiting")
+        and not agt.get("blocked")
+    ]
+
+    if not idle_dev_agents:
+        logger.info(f"[{trigger_source}] No idle dev agents found to trigger post-bootstrap.")
+        return
+
+    logger.info(
+        f"[{trigger_source}] 🚀 Triggering {len(idle_dev_agents)} idle worker agent(s) "
+        "to pick post-bootstrap tasks."
+    )
+
+    task_token = get_project_task_token(project_token)
+
+    for aid, agt in idle_dev_agents:
+        try:
+            git_repo_url = agt.get("git_repo_url") or state.get("git_repo_url")
+            git_token_val = agt.get("git_token") or state.get("git_token")
+            logger.info(f"[{trigger_source}] ▶ Triggering agent {aid} (continuous=True)")
+            asyncio.ensure_future(
+                run_agent(
+                    agent_id=aid,
+                    git_repo_url=git_repo_url,
+                    git_token=git_token_val,
+                    continuous=True,
+                    ignore_running_check=False,
+                    project_token=project_token,
+                    task_token=task_token,
+                )
+            )
+        except Exception as _trig_err:
+            logger.warning(f"[{trigger_source}] Failed to trigger agent {aid}: {_trig_err}")
+
 
 async def _coordinate_repo_bootstrap(
     *,
@@ -7267,8 +7705,20 @@ async def _run_git_manager_tests_with_ai(
         js_files = _ext(changed_files, ".js", ".cjs", ".mjs")
         js_errors: List[str] = []
         for fpath in js_files[:40]:
+            # Skip node --check for files containing JSX syntax (which vanilla node doesn't support)
+            try:
+                with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                if "</" in content or "className=" in content or "import React" in content:
+                    continue
+            except Exception:
+                pass
+
             ok, out = _check(f"node --check {shlex.quote(fpath)} 2>&1", timeout=12)
             if not ok:
+                # If it fails due to JSX unexpected token '<', skip the error
+                if "Unexpected token '<'" in out or "unexpected token '<'" in out:
+                    continue
                 js_errors.append(f"{fpath}: {out[:200]}")
         _record_errors("js-syntax", "node --check", js_errors)
 
@@ -7309,6 +7759,17 @@ async def _run_git_manager_tests_with_ai(
             # No tsconfig — fall back to individual file parse via node
             ts_errors: List[str] = []
             for fpath in ts_files[:30]:
+                # Skip .tsx or files containing JSX
+                if fpath.endswith(".tsx"):
+                    continue
+                try:
+                    with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                    if "</" in content or "className=" in content or "import React" in content:
+                        continue
+                except Exception:
+                    pass
+
                 # node can't check .ts natively, but we can catch obvious
                 # syntax errors by stripping types with a trivial sed and
                 # running node --check on the result
@@ -7320,6 +7781,9 @@ async def _run_git_manager_tests_with_ai(
                 # node --check on stripped TS is best-effort; only fail on
                 # unmistakable parse errors (SyntaxError)
                 if "SyntaxError" in out:
+                    # If it fails due to JSX syntax, skip the error
+                    if "Unexpected token '<'" in out or "unexpected token '<'" in out:
+                        continue
                     ts_errors.append(f"{fpath}: {out[:200]}")
             _record_errors("typescript-syntax", "node(stripped-ts)", ts_errors)
 
@@ -10236,7 +10700,7 @@ def _exec_script_in_container(container_name: str, code: str, script_label: str 
     src_prefix = "frontend/src/" if has_frontend_src else "src/"
     
     # Match standalone folder names that are not preceded by src/ or frontend/src/ or backend/ or app/
-    folder_pattern = r'\b(?:(src|frontend/src|frontend|backend|app)/)?\b(components|hooks|pages|styles|services|utils|ui|layout|common)\b'
+    folder_pattern = r'(?<![\w\.\-/])\b(?:(src|frontend/src|frontend|backend|app)/)?(components|hooks|pages|styles|services|utils|ui|layout|common)\b'
     
     def path_replacer(m):
         prefix = m.group(1)
@@ -10263,8 +10727,14 @@ def _exec_script_in_container(container_name: str, code: str, script_label: str 
             processed_lines.append(line)
             continue
             
-        # Check for EOF block start
-        marker_match = re.search(r'<<\s*[\'"]?([a-zA-Z0-9_\-]+)[\'"]?', line_stripped)
+        # Prevent executing unmatched EOF delimiters as commands
+        if not in_eof and line_stripped == "EOF":
+            logger.info("Found unmatched EOF delimiter line outside of active heredoc - commenting out")
+            processed_lines.append("# EOF (removed unmatched delimiter)")
+            continue
+
+        # Check for EOF block start (handling <<EOF, <<'EOF', and <<\EOF)
+        marker_match = re.search(r'<<\s*\\?[\'"]?([a-zA-Z0-9_\-]+)[\'"]?', line_stripped)
         if marker_match:
             eof_marker = marker_match.group(1)
             in_eof = True
@@ -10687,242 +11157,180 @@ async def _fetch_external_tasks(
     project_token: Optional[str] = None,
     task_token: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Fetch ALL pages of tasks from the external task management API."""
-    from task_service import task_service
+    """Fetch tasks from the local SQLite database (local-first approach)."""
+    if not project_token:
+        return []
 
-    def _extract_entity_info(raw_value: Any, key: str):
-        entity_id = None
-        entity_name = None
-        if isinstance(raw_value, dict):
-            entity_id = raw_value.get("id") or raw_value.get(f"{key}_id")
-            entity_name = raw_value.get("name") or raw_value.get("title")
-        elif raw_value not in (None, ""):
-            entity_id = raw_value
-        return entity_id, entity_name
+    from database import SessionLocal
+    import models
 
-    def _to_int(value: Any) -> Optional[int]:
-        try:
-            if value in (None, ""):
-                return None
-            return int(str(value).strip())
-        except Exception:
-            return None
-
-    def _safe_date_key(value: Any) -> str:
-        if value in (None, ""):
-            return "9999-12-31"
-        text = str(value).strip()
-        if len(text) >= 10:
-            candidate = text[:10]
-            try:
-                datetime.strptime(candidate, "%Y-%m-%d")
-                return candidate
-            except Exception:
-                pass
-        return "9999-12-31"
-
-    def _normalize_relation_ids(raw_value: Any) -> List[str]:
-        values: List[str] = []
-
-        def _append(value: Any) -> None:
-            if isinstance(value, dict):
-                nested = (
-                    value.get("id")
-                    or value.get("task_id")
-                    or value.get("external_id")
-                    or value.get("value")
-                    or value.get("pk")
-                )
-                if nested not in (None, ""):
-                    _append(nested)
-                return
-            if isinstance(value, (list, tuple, set)):
-                for item in value:
-                    _append(item)
-                return
-            if value in (None, ""):
-                return
-            text = str(value).strip()
-            if text:
-                values.append(text)
-
-        if isinstance(raw_value, str):
-            raw_text = raw_value.strip()
-            if raw_text.startswith("[") and raw_text.endswith("]"):
-                try:
-                    _append(json.loads(raw_text))
-                except Exception:
-                    _append(raw_text)
-            elif "," in raw_text:
-                for part in raw_text.split(","):
-                    _append(part)
-            else:
-                _append(raw_text)
-        else:
-            _append(raw_value)
-
-        deduped: List[str] = []
-        seen = set()
-        for value in values:
-            if value in seen:
-                continue
-            seen.add(value)
-            deduped.append(value)
-        return deduped
-
-    def _extract_primary_assignee(task_payload: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
-        direct_id = (
-            task_payload.get("assigned_agent")
-            or task_payload.get("assignee")
-            or task_payload.get("assigned_to")
-        )
-        direct_name = (
-            task_payload.get("assigned_agent_name")
-            or task_payload.get("assignee_name")
-            or task_payload.get("assigned_to_name")
-        )
-        if direct_id or direct_name:
-            return (
-                str(direct_id).strip() if direct_id not in (None, "") else None,
-                str(direct_name).strip() if direct_name not in (None, "") else None,
-            )
-
-        # Check NXDUNE's camelCase assignedTo field (list of usernames like ["agent1"])
-        assigned_to_list = task_payload.get("assignedTo")
-        if isinstance(assigned_to_list, list) and assigned_to_list:
-            first = assigned_to_list[0]
-            if first not in (None, ""):
-                return str(first).strip(), None
-
-        raw_assignees = task_payload.get("assignees")
-        assignees = raw_assignees if isinstance(raw_assignees, list) else [raw_assignees]
-        for assignee in assignees:
-            if isinstance(assignee, dict):
-                assignee_id = assignee.get("user_id") or assignee.get("id") or assignee.get("agent_id")
-                assignee_name = (
-                    assignee.get("name")
-                    or assignee.get("username")
-                    or assignee.get("full_name")
-                    or assignee.get("email")
-                )
-                return (
-                    str(assignee_id).strip() if assignee_id not in (None, "") else None,
-                    str(assignee_name).strip() if assignee_name not in (None, "") else None,
-                )
-            if assignee not in (None, ""):
-                return str(assignee).strip(), None
-        return None, None
-
+    db = SessionLocal()
     try:
-        if not task_token:
-            task_token = get_project_task_token(project_token)
-        all_tasks = []
-        page = 1
-        while True:
-            data = await task_service.get_tasks(page=page, task_token=task_token)
-            if isinstance(data, list):
-                all_tasks.extend(data)
-                break
-            elif isinstance(data, dict) and "results" in data:
-                all_tasks.extend(data["results"])
-                if not data.get("next"):
-                    break
-                page += 1
-            else:
-                break
+        # Resolve project token if it's a JWT
+        resolved_project = project_token
+        if project_token and '.' in project_token:
+            try:
+                import base64
+                import json
+                parts = project_token.split('.')
+                if len(parts) == 3:
+                    payload_b64 = parts[1]
+                    payload_b64 += '=' * (-len(payload_b64) % 4)
+                    payload_json = base64.urlsafe_b64decode(payload_b64).decode('utf-8')
+                    payload_data = json.loads(payload_json)
+                    client_id = payload_data.get("client_id")
+                    if client_id:
+                        proj = db.query(models.GovernanceResponse).filter(
+                            models.GovernanceResponse.client_id == client_id
+                        ).first()
+                        if proj:
+                            resolved_project = proj.project_token
+            except Exception as jwt_err:
+                print(f"Error resolving project_token JWT in _fetch_external_tasks: {jwt_err}")
 
+        db_tasks = db.query(models.Task).filter(
+            models.Task.project_token == resolved_project,
+            (models.Task.selected == True) | (models.Task.synced_to_nxdune == True)
+        ).all()
+        
+        # Get ownerships to determine status and progress
+        ownerships = db.query(models.AgentTaskOwnership).filter(
+            models.AgentTaskOwnership.project_token == resolved_project
+        ).all()
+        ownership_map = {ow.task_id: ow for ow in ownerships}
+        
         normalized = []
-        for t in all_tasks:
-            # Parse checklist JSON
-            checklist_raw = t.get("checklist")
-            if checklist_raw in (None, ""):
-                checklist_raw = t.get("checklistItems")
+        for t in db_tasks:
+            clean_id = t.task_id.split("_")[-1] if "_" in t.task_id else t.task_id
+            
+            # Map database status to expected values
+            ow_record = ownership_map.get(t.task_id)
+            if ow_record is None:
+                ow_record = ownership_map.get(clean_id)
+                
+            ow_status = ow_record.status if ow_record else None
+            
+            # Form taskStatus
+            if ow_status == "done":
+                status = "Completed"
+                progress = 100
+            elif ow_status == "failed":
+                status = "Failed"
+                progress = ow_record.task_data.get("task_progress", 0) if (ow_record and ow_record.task_data) else 0
+            elif ow_status == "in_progress":
+                status = "On Going"
+                progress = ow_record.task_data.get("task_progress", 10) if (ow_record and ow_record.task_data) else 10
+            elif ow_status == "claimed":
+                status = "On Going"
+                progress = 10
+            else:
+                status = "To Do"
+                progress = 0
+
+            # Override progress if explicitly set in task_data
+            if ow_record and ow_record.task_data and isinstance(ow_record.task_data, dict):
+                stored_progress = ow_record.task_data.get("task_progress")
+                if stored_progress is not None:
+                    try:
+                        progress = int(stored_progress)
+                    except (ValueError, TypeError):
+                        pass
+
+            # Checklist parsing
             checklist_items = []
-            if isinstance(checklist_raw, list):
-                checklist_items = checklist_raw
-            elif isinstance(checklist_raw, str) and checklist_raw.strip():
+            if t.checklist:
                 try:
-                    parsed = json.loads(checklist_raw)
+                    parsed = json.loads(t.checklist)
                     if isinstance(parsed, list):
                         checklist_items = parsed
                     elif isinstance(parsed, dict):
                         checklist_items = parsed.get("checklistItems", []) or parsed.get("items", [])
                 except Exception:
                     pass
-            elif isinstance(checklist_raw, dict):
-                checklist_items = checklist_raw.get("checklistItems", []) or checklist_raw.get("items", [])
 
-            task_id = t.get("id", uuid.uuid4().hex[:8])
-            external_id = t.get("external_id")
-            sprint_id, sprint_name = _extract_entity_info(t.get("sprint"), "sprint")
-            milestone_id, milestone_name = _extract_entity_info(t.get("milestone"), "milestone")
-            assigned_agent, assigned_agent_name = _extract_primary_assignee(t)
-            linked_task_ids = _normalize_relation_ids(t.get("linked_tasks"))
-            dependency_ids = _normalize_relation_ids(
-                t.get("dependencies") if t.get("dependencies") not in (None, "") else t.get("dependency_ids")
-            )
-            if sprint_id in (None, ""):
-                sprint_id = t.get("sprint_id")
-            if milestone_id in (None, ""):
-                milestone_id = t.get("milestone_id")
-            task_start_date = t.get("startdate") or t.get("start_date")
-            task_deadline = t.get("deadline") or t.get("end_date")
-            task_title = t.get("taskName") or t.get("title") or "Untitled Task"
-            task_description = t.get("description") or t.get("details") or task_title or ""
-            task_phase = str(
-                t.get("phase")
-                or t.get("task_phase")
-                or t.get("taskPhase")
-                or ""
-            ).strip()
-            task_domain = str(
-                t.get("domain")
-                or t.get("task_domain")
-                or t.get("taskDomain")
-                or ""
-            ).strip()
-            wallet_value = _to_int(t.get("task_wallet", t.get("wallet")))
+            # Assignees list parsing
+            assignees_list = []
+            if t.assigned_to:
+                try:
+                    if isinstance(t.assigned_to, list):
+                        assignees_list = t.assigned_to
+                    elif isinstance(t.assigned_to, str):
+                        parsed = json.loads(t.assigned_to)
+                        if isinstance(parsed, list):
+                            assignees_list = parsed
+                except Exception:
+                    pass
+
+            # Extract agent id and name
+            assigned_agent = None
+            assigned_agent_name = None
+            if assignees_list:
+                assigned_agent = assignees_list[0]
+                assigned_agent_name = assignees_list[0]
+
+            # Parse linked tasks and dependencies
+            linked_task_ids = []
+            if t.linked_tasks:
+                try:
+                    if isinstance(t.linked_tasks, list):
+                        linked_task_ids = t.linked_tasks
+                    elif isinstance(t.linked_tasks, str):
+                        parsed = json.loads(t.linked_tasks)
+                        if isinstance(parsed, list):
+                            linked_task_ids = parsed
+                except Exception:
+                    pass
+
+            # Format deadlines
+            days_left = None
+            if t.deadline:
+                try:
+                    deadline_dt = datetime.strptime(t.deadline, "%Y-%m-%d")
+                    days_left = max(0, (deadline_dt.date() - datetime.utcnow().date()).days)
+                except Exception:
+                    pass
+
             normalized.append({
-                "id": str(task_id),
-                "external_id": external_id if external_id is not None else task_id,
-                "title": task_title,
-                "taskName": task_title,
-                "description": task_description,
-                "priority": (t.get("priority") or "medium").lower(),
-                "status": t.get("taskStatus") or t.get("status") or "pending",
-                "task_type": t.get("task_type", "TASK"),
-                "created_at": t.get("created_at") or datetime.utcnow().isoformat(),
+                "id": str(t.nxdune_task_id or t.id),
+                "external_id": t.nxdune_task_id or t.id,
+                "title": t.task_name,
+                "taskName": t.task_name,
+                "description": t.description or "",
+                "priority": (t.priority or "medium").lower(),
+                "status": status.lower(),  # expected lowercase status by agent loop matching
+                "taskStatus": status,
+                "task_progress": progress,
+                "is_completed": status == "Completed",
+                "task_type": t.task_type or "TASK",
+                "created_at": t.created_at.isoformat() if t.created_at else datetime.utcnow().isoformat(),
                 "assigned_agent": assigned_agent,
                 "assigned_agent_name": assigned_agent_name,
-                "started_at": None,
+                "started_at": ow_record.started_at.isoformat() if (ow_record and ow_record.started_at) else None,
                 "linked_tasks": linked_task_ids,
-                "dependencies": dependency_ids,
-                "phase": task_phase,
-                "task_phase": task_phase,
-                "domain": task_domain,
-                "task_domain": task_domain,
-                "wallet": wallet_value if wallet_value is not None else 0,
+                "dependencies": linked_task_ids,  # use linked_tasks for dependencies mapping
+                "phase": t.sprint,
+                "task_phase": t.sprint,
+                "domain": t.milestone,
+                "task_domain": t.milestone,
+                "wallet": t.task_wallet or 0,
                 "checklist": checklist_items,
-                "sprint_id": sprint_id,
-                "sprint_name": sprint_name,
-                "milestone_id": milestone_id,
-                "milestone_name": milestone_name,
-                "startdate": task_start_date,
-                "deadline": task_deadline,
-                "assignees": t.get("assignees") or [],
+                "sprint_id": t.sprint,
+                "sprint_name": t.sprint,
+                "milestone_id": t.milestone,
+                "milestone_name": t.milestone,
+                "startdate": t.startdate,
+                "deadline": t.deadline,
+                "assignees": assignees_list,
                 "_project_token": project_token,
+                "selected": t.selected,
+                "synced_to_nxdune": t.synced_to_nxdune,
             })
-
-        # NOTE: Do NOT sort here — _sort_tasks_for_execution (wave-based) is the single
-        # canonical sort. Pre-sorting by sprint/milestone overwrites the wave order and
-        # causes bootstrap (Wave 0) to land after sprint-1 tasks if its sprint_id is higher.
-        # Tasks are sorted once by the caller via _sort_tasks_for_execution().
         return normalized
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f"[agent_service] Failed to fetch external tasks: {error_msg}")
-        # Re-raise so caller can handle and log to agent output_log
-        raise Exception(f"Failed to fetch tasks from NXDUNE: {error_msg}")
+        logger.error(f"[agent_service] Failed to fetch local tasks: {e}")
+        return []
+    finally:
+        db.close()
 
 
 async def _mark_checklist_item(task_id, checklist_items: list, item_index: int, project_token: Optional[str] = None, task_token: Optional[str] = None):
@@ -13835,7 +14243,9 @@ def _extract_paths_from_workspace_tree(workspace_tree: str) -> List[str]:
                 children_list = children if isinstance(children, list) else []
                 name_is_file = _looks_like_repo_file_name(name)
                 current_prefix = prefix
-                if name and not is_root:
+                # Only strip root if it is a generic placeholder (like 'project_root', 'workspace', 'project')
+                skip_prefix = is_root and name.lower() in ("project_root", "root", "workspace", "project")
+                if name and not skip_prefix:
                     current_prefix = f"{prefix}/{name}" if prefix else name
                     if name_is_file:
                         add_path(current_prefix)
@@ -15520,42 +15930,17 @@ async def _get_existing_note_payload(
     project_token: Optional[str] = None,
     task_token: Optional[str] = None,
 ) -> Dict[str, Any]:
-    effective_token = task_token or get_project_task_token(project_token)
-    if not effective_token:
-        return {}
-
-    state = _ensure_project_state(project_token)
-    payload_cache = state.setdefault("note_payload_cache", {})
-    cached_entry = payload_cache.get(title)
-    now = time.time()
-    if isinstance(cached_entry, dict):
-        cached_token = str(cached_entry.get("task_token") or "").strip()
-        cached_age = now - float(cached_entry.get("loaded_at") or 0.0)
-        if cached_token == str(effective_token).strip() and cached_age <= NOTE_PAYLOAD_CACHE_TTL_SECONDS:
-            cached_payload = cached_entry.get("payload")
-            if isinstance(cached_payload, dict):
-                return dict(cached_payload)
-
-    note_id = await _find_note_id_by_title(
-        title,
-        project_token=project_token,
-        task_token=effective_token,
-    )
-    if note_id is None:
+    if not project_token:
         return {}
 
     try:
-        from task_service import task_service
-
-        detail = await task_service.get_note_detail(note_id, task_token=effective_token)
-        payload = _parse_agent_note_content((detail or {}).get("content"))
-        payload_cache[title] = {
-            "payload": dict(payload) if isinstance(payload, dict) else {},
-            "loaded_at": now,
-            "task_token": effective_token,
-        }
-        return payload
-    except Exception:
+        from local_state_manager import get_agent_note_local
+        note = get_agent_note_local(project_token, title)
+        if note and isinstance(note.get("content_payload"), dict):
+            return note["content_payload"]
+        return {}
+    except Exception as e:
+        logger.error(f"[agent_service] Failed to get existing note payload locally: {e}")
         return {}
 
 
@@ -15710,35 +16095,16 @@ async def _find_note_id_by_title(
     project_token: Optional[str] = None,
     task_token: Optional[str] = None,
 ) -> Optional[int]:
-    effective_token = task_token or get_project_task_token(project_token)
-    if not effective_token:
+    if not project_token:
         return None
-
-    state = _ensure_project_state(project_token)
-    cache = state.setdefault("note_title_cache", {})
-    cached = cache.get(title)
-    if cached:
-        return cached
-
     try:
-        from task_service import task_service
-
-        notes = await task_service.list_notes(task_token=effective_token)
+        from local_state_manager import get_agent_note_local
+        note = get_agent_note_local(project_token, title)
+        if note:
+            return note.get("nxdune_note_id")
+        return None
     except Exception:
         return None
-
-    if not isinstance(notes, list):
-        return None
-
-    for note in notes:
-        if str((note or {}).get("title") or "").strip() != title:
-            continue
-        note_id = _extract_note_id_from_response(note)
-        if note_id is not None:
-            cache[title] = note_id
-            return note_id
-
-    return None
 
 
 async def _upsert_agent_note(
@@ -15750,58 +16116,58 @@ async def _upsert_agent_note(
     project_token: Optional[str] = None,
     task_token: Optional[str] = None,
 ) -> Dict[str, Any]:
-    effective_token = task_token or get_project_task_token(project_token)
-    if not effective_token:
-        return {"success": False, "skipped": True, "reason": "missing_task_token"}
+    if not project_token:
+        return {"success": False, "error": "missing_project_token"}
 
+    # 1. Save locally first (primary write)
     try:
-        from task_service import task_service
+        from local_state_manager import save_agent_note_local
+        save_agent_note_local(
+            project_token=project_token,
+            title=title,
+            content_payload=content_payload,
+            content_text=content_text,
+            user=user,
+        )
     except Exception as exc:
-        return {"success": False, "error": str(exc)}
+        logger.error(f"[agent_service] Failed to save note locally: {exc}")
+        return {"success": False, "error": f"Failed to save note locally: {exc}"}
 
-    note_id = await _find_note_id_by_title(
-        title,
-        project_token=project_token,
-        task_token=effective_token,
-    )
-
-    payload = {
-        "title": title,
-        "content": (
-            _embed_note_payload(str(content_text).strip(), content_payload)
-            if content_text not in (None, "")
-            else json.dumps(content_payload, ensure_ascii=True, sort_keys=True, indent=2)
-        ),
-    }
-    if note_id is not None:
-        payload["note_id"] = note_id
-    if user:
-        payload["user"] = user
-
+    # 2. Queue NXDune sync request asynchronously
     try:
-        result = await task_service.upsert_note(payload, task_token=effective_token)
-        resolved_note_id = _extract_note_id_from_response(result) or note_id
-        if resolved_note_id is None:
-            resolved_note_id = await _find_note_id_by_title(
-                title,
-                project_token=project_token,
-                task_token=effective_token,
-            )
-        if resolved_note_id is not None:
-            state = _ensure_project_state(project_token)
-            state.setdefault("note_title_cache", {})[title] = resolved_note_id
-            state.setdefault("note_payload_cache", {})[title] = {
-                "payload": dict(content_payload or {}),
-                "loaded_at": time.time(),
-                "task_token": effective_token,
-            }
-        return {
-            "success": True,
-            "note_id": resolved_note_id,
-            "result": result,
+        from local_state_manager import queue_nxdune_sync
+        
+        # Read nxdune_note_id if we have it locally
+        note_id = await _find_note_id_by_title(title, project_token=project_token)
+        
+        payload = {
+            "title": title,
+            "content": (
+                _embed_note_payload(str(content_text).strip(), content_payload)
+                if content_text not in (None, "")
+                else json.dumps(content_payload, ensure_ascii=True, sort_keys=True, indent=2)
+            ),
         }
+        if note_id is not None:
+            payload["note_id"] = note_id
+        if user:
+            payload["user"] = user
+
+        queue_nxdune_sync(
+            project_token=project_token,
+            operation="note_upsert",
+            agent_id=user,
+            task_id=None,
+            payload=payload
+        )
     except Exception as exc:
-        return {"success": False, "error": str(exc)}
+        logger.error(f"[agent_service] Failed to queue note sync: {exc}")
+
+    return {
+        "success": True,
+        "note_id": None,
+        "result": {"message": "Saved locally, sync queued"},
+    }
 
 
 async def ensure_master_workspace_note(
@@ -16963,44 +17329,32 @@ def _check_task_conflicts(
 
 
 async def _post_task_message(task: Dict[str, Any], message: str, project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
-    """Post task message attempting NXDune sync ONCE. Proceeds immediately on success or failure."""
-    from task_service import task_service
+    """Post task message attempting NXDune sync asynchronously (local-first)."""
     task_id = _normalize_task_id(task)
     if not task_id:
         return False
     resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
     
-    try:
-        await task_service.post_task_message({
-            "task_id": task_id,
-            "message": message
-        }, task_token=task_token or get_project_task_token(resolved_project))
-        return True
-    except Exception as e:
-        logger.warning(f"[agent_service] NXDune post_message failed for task {task_id} (proceeding locally): {e}")
-        # Log failed sync
-        _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
-        if resolved_project and _local_agent_id:
-            try:
-                from local_state_manager import log_nxdune_sync
-                log_nxdune_sync(
-                    project_token=resolved_project,
-                    operation="task_message",
-                    success=False,
-                    agent_id=_local_agent_id,
-                    task_id=str(task_id),
-                    error_message=str(e)[:500],
-                    payload={"task_id": task_id, "message": message}
-                )
-            except Exception:
-                pass
-        return True
+    # Queue sync operation asynchronously
+    _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
+    if resolved_project:
+        try:
+            from local_state_manager import queue_nxdune_sync
+            queue_nxdune_sync(
+                project_token=resolved_project,
+                operation="task_message",
+                agent_id=_local_agent_id,
+                task_id=str(task_id),
+                payload={"task_id": task_id, "message": message}
+            )
+        except Exception as e:
+            logger.error(f"[agent_service] Failed to queue task message sync: {e}")
+    return True
 
 
 async def _post_task_progress(task: Dict[str, Any], progress: int, additional_info: str = None,
                               project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
-    """Post task progress attempting NXDune sync ONCE. Updates local state and proceeds immediately on success or failure."""
-    from task_service import task_service
+    """Post task progress attempting NXDune sync asynchronously (local-first)."""
     task_id = _normalize_task_id(task)
     if not task_id:
         return False
@@ -17016,61 +17370,70 @@ async def _post_task_progress(task: Dict[str, Any], progress: int, additional_in
         return False
     timer_active = state["timer_log_state"].get(task_key, False)
     terminal_progress = progress in (0, 100)
+    # ── CRITICAL FIX: Never silently drop progress writes ──────────────────
+    # The previous guard returned False when timer_active was False and
+    # progress was not 0 or 100, causing all intermediate progress to be lost.
+    # Progress MUST always be persisted locally. If clock_in was missed,
+    # synthesize one now and queue it for NXDune sync.
     if not timer_active and not terminal_progress:
         logger.info(
-            f"[agent_service] Skipping progress for task {task_id}: "
-            "no successful clock_in recorded"
+            f"[agent_service] No clock_in for task {task_id}; synthesizing timer start "
+            "and proceeding with progress write."
         )
-        return False
-        
-    try:
-        payload = {
-            "task_id": task_id,
-            "task_progress": progress,
-        }
-        if additional_info:
-            payload["additional_info"] = additional_info
-        effective_token = task_token or get_project_task_token(resolved_project)
-        await task_service.update_task_progress(payload, task_token=effective_token)
-        
-        # Log successful sync
-        _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
-        if resolved_project and _local_agent_id:
+        # Mark timer as active in memory so future progress writes pass normally
+        state["timer_log_state"][task_key] = True
+        # Queue a synthetic clock_in for NXDune sync
+        if resolved_project:
             try:
-                from local_state_manager import log_nxdune_sync
-                log_nxdune_sync(
+                from local_state_manager import queue_nxdune_sync
+                queue_nxdune_sync(
                     project_token=resolved_project,
-                    operation="task_progress",
-                    success=True,
-                    agent_id=_local_agent_id,
+                    operation="timer_log",
+                    agent_id=task.get("assigned_agent") or task.get("_local_agent_id") or "system",
                     task_id=str(task_id),
-                    payload=payload
+                    payload={"task_id": task_id, "log_type": "clock_in"},
                 )
-            except Exception:
-                pass
-        logger.info(f"[agent_service] Progress {progress}% sync'd to NXDune successfully for task {task_id}")
-    except Exception as e:
-        error_str = _normalize_error_text(e)
-        logger.warning(f"[agent_service] NXDune progress sync failed for task {task_id} (will proceed locally): {e}")
-        
-        # Log failed sync
-        _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
-        if resolved_project and _local_agent_id:
-            try:
-                from local_state_manager import log_nxdune_sync
-                log_nxdune_sync(
-                    project_token=resolved_project,
-                    operation="task_progress",
-                    success=False,
-                    agent_id=_local_agent_id,
-                    task_id=str(task_id),
-                    error_message=error_str[:500],
-                    payload=payload
-                )
-            except Exception:
-                pass
+            except Exception as _ti_err:
+                logger.debug(f"[agent_service] Could not queue synthetic clock_in: {_ti_err}")
+    # ───────────────────────────────────────────────────────────────────────
+
+    _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
+    
+    # 1. Update local database progress
+    if resolved_project and _local_agent_id:
+        try:
+            from local_state_manager import update_task_progress_local
+            update_task_progress_local(
+                project_token=resolved_project,
+                agent_id=_local_agent_id,
+                task_id=str(task_id),
+                progress=progress,
+            )
+        except Exception as e:
+            logger.warning(f"[agent_service] Local DB progress update failed: {e}")
+
+    # 2. Queue NXDune sync operation asynchronously
+    if resolved_project:
+        try:
+            payload = {
+                "task_id": task_id,
+                "task_progress": progress,
+            }
+            if additional_info:
+                payload["additional_info"] = additional_info
                 
-    # Update local state and trigger completion if progress reaches 100%
+            from local_state_manager import queue_nxdune_sync
+            queue_nxdune_sync(
+                project_token=resolved_project,
+                operation="task_progress",
+                agent_id=_local_agent_id,
+                task_id=str(task_id),
+                payload=payload
+            )
+        except Exception as e:
+            logger.error(f"[agent_service] Failed to queue task progress sync: {e}")
+            
+    # Update local memory state and trigger completion if progress reaches 100%
     state["task_progress_state"][task_key] = progress
     if progress == 100:
         logger.info(f"[agent_service] Progress reached 100% locally for task {task_id}, triggering task completion...")
@@ -17080,8 +17443,7 @@ async def _post_task_progress(task: Dict[str, Any], progress: int, additional_in
 
 
 async def _post_task_complete(task: Dict[str, Any], project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
-    """Complete task using local-first approach. Attempts NXDune sync ONCE, and proceeds immediately on success or failure."""
-    from task_service import task_service
+    """Complete task using local-first approach. Queues NXDune sync asynchronously."""
     task_id = _normalize_task_id(task)
     if not task_id:
         logger.warning("[agent_service] Cannot complete task: no task_id found")
@@ -17135,146 +17497,75 @@ async def _post_task_complete(task: Dict[str, Any], project_token: Optional[str]
     if task_id in ledger:
         ledger[task_id].status = "done"
 
-    # 3. Attempt NXDune API completion ONCE (non-blocking, no retries on failure)
-    try:
-        logger.info(f"[agent_service] Attempting NXDune sync for completing task {task_id}...")
-        await task_service.complete_task({
-            "task_id": task_id
-        }, task_token=task_token or get_project_task_token(resolved_project))
-        
-        # Log successful sync
-        if resolved_project and _local_agent_id:
-            try:
-                from local_state_manager import log_nxdune_sync
-                log_nxdune_sync(
-                    project_token=resolved_project,
-                    operation="task_complete",
-                    success=True,
-                    agent_id=_local_agent_id,
-                    task_id=str(task_id),
-                )
-            except Exception:
-                pass
-        logger.info(f"[agent_service] Task {task_id} completed and sync'd to NXDune successfully")
-    except Exception as e:
-        error_str = _normalize_error_text(e)
-        logger.warning(f"[agent_service] NXDune complete sync failed for task {task_id} (will proceed locally): {e}")
-        
-        # Log failed sync with payload for later retry
-        if resolved_project and _local_agent_id:
-            try:
-                from local_state_manager import log_nxdune_sync
-                log_nxdune_sync(
-                    project_token=resolved_project,
-                    operation="task_complete",
-                    success=False,
-                    agent_id=_local_agent_id,
-                    task_id=str(task_id),
-                    error_message=error_str[:500],
-                    payload={"task_id": task_id}
-                )
-            except Exception:
-                pass
+    # 3. Queue sync complete to NXDune asynchronously
+    if resolved_project:
+        try:
+            from local_state_manager import queue_nxdune_sync
+            queue_nxdune_sync(
+                project_token=resolved_project,
+                operation="task_complete",
+                agent_id=_local_agent_id,
+                task_id=str(task_id),
+                payload={"task_id": task_id}
+            )
+        except Exception as e:
+            logger.error(f"[agent_service] Failed to queue task complete sync: {e}")
 
     return True
 
 
 async def _opt_in_task(task: Dict[str, Any], username: str,
                        project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
-    """Opt in to task attempting NXDune sync ONCE. Proceeds immediately on success or failure."""
-    from task_service import task_service
+    """Opt in to task attempting NXDune sync asynchronously (local-first)."""
     task_id = _normalize_task_id(task)
     if not task_id:
         return False
     resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
+    _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
     
-    try:
-        await task_service.opt_in_task({
-            "task_id": task_id,
-            "username": username
-        }, task_token=task_token or get_project_task_token(resolved_project))
-        logger.info(f"[agent_service] Successfully opted in to task {task_id} upstream")
-        
-        # Post check-in message
-        await _post_task_message(task, f"{username} checked in and reviewing task.", project_token=resolved_project, task_token=task_token)
-        return True
-    except Exception as e:
-        error_str = _normalize_error_text(e)
-        logger.warning(f"[agent_service] NXDune opt_in failed for task {task_id} (will proceed locally): {e}")
-        
-        # Log failed sync
-        _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
-        if resolved_project and _local_agent_id:
-            try:
-                from local_state_manager import log_nxdune_sync
-                log_nxdune_sync(
-                    project_token=resolved_project,
-                    operation="task_opt_in",
-                    success=False,
-                    agent_id=_local_agent_id,
-                    task_id=str(task_id),
-                    error_message=error_str[:500],
-                    payload={"task_id": task_id, "username": username}
-                )
-            except Exception:
-                pass
-        return True
+    # 1. Queue sync opt-in to NXDune asynchronously
+    if resolved_project:
+        try:
+            from local_state_manager import queue_nxdune_sync
+            queue_nxdune_sync(
+                project_token=resolved_project,
+                operation="opt_in_task",
+                agent_id=_local_agent_id,
+                task_id=str(task_id),
+                payload={"task_id": task_id, "username": username}
+            )
+        except Exception as e:
+            logger.error(f"[agent_service] Failed to queue task opt-in sync: {e}")
+            
+    # Post check-in message (which will also be queued locally)
+    await _post_task_message(task, f"{username} checked in and reviewing task.", project_token=resolved_project, task_token=task_token)
+    return True
 
 
 async def _post_timer_log(task: Dict[str, Any], action: str, project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
-    """Post timer log attempting NXDune sync ONCE. Updates local state and proceeds immediately on success or failure."""
-    from task_service import task_service
+    """Post timer log attempting NXDune sync asynchronously (local-first)."""
     task_id = _normalize_task_id(task)
     if not task_id:
         return False
     resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
     task_key = str(task_id)
     state = _ensure_project_state(resolved_project)
+    _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
     
-    try:
-        await task_service.post_timer_log({
-            "task_id": task_id,
-            "action": action
-        }, task_token=task_token or get_project_task_token(resolved_project))
-        
-        # Log successful sync
-        _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
-        if resolved_project and _local_agent_id:
-            try:
-                from local_state_manager import log_nxdune_sync
-                log_nxdune_sync(
-                    project_token=resolved_project,
-                    operation=f"timer_{action}",
-                    success=True,
-                    agent_id=_local_agent_id,
-                    task_id=str(task_id),
-                )
-            except Exception:
-                pass
-        logger.info(f"[agent_service] Timer log {action} sync'd to NXDune successfully for task {task_id}")
-    except Exception as e:
-        normalized_error = _normalize_error_text(e)
-        if action == "clock_out" and _is_clock_out_idempotent_success(normalized_error):
-            logger.info(f"[agent_service] Timer log clock_out for task {task_id} already in desired state: {e}")
-        else:
-            logger.warning(f"[agent_service] NXDune timer_{action} sync failed for task {task_id} (will proceed locally): {e}")
-            # Log failed sync
-            _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
-            if resolved_project and _local_agent_id:
-                try:
-                    from local_state_manager import log_nxdune_sync
-                    log_nxdune_sync(
-                        project_token=resolved_project,
-                        operation=f"timer_{action}",
-                        success=False,
-                        agent_id=_local_agent_id,
-                        task_id=str(task_id),
-                        error_message=normalized_error[:500],
-                        payload={"task_id": task_id, "action": action}
-                    )
-                except Exception:
-                    pass
-                    
+    # 1. Queue sync timer log to NXDune asynchronously
+    if resolved_project:
+        try:
+            from local_state_manager import queue_nxdune_sync
+            queue_nxdune_sync(
+                project_token=resolved_project,
+                operation="timer_log",
+                agent_id=_local_agent_id,
+                task_id=str(task_id),
+                payload={"task_id": task_id, "action": action}
+            )
+        except Exception as e:
+            logger.error(f"[agent_service] Failed to queue timer log sync: {e}")
+            
     # Update local state and return True to proceed
     if action == "clock_in":
         state["timer_log_state"][task_key] = True
@@ -17461,25 +17752,63 @@ async def _claim_initial_task_assignments(
 
         tid = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
 
-        # Opt-in serially via task_service
+        # Opt-in serially — local-first, NXDune async fallback
+        agent_username = build_external_agent_username(agent["id"], agent.get("name"))
+        from local_state_manager import claim_task_local, queue_nxdune_sync
+        task_lane_for_claim = _classify_task_assignment_lane(task)
+
+        nxdune_opt_in_ok = False
         try:
             from task_service import task_service
-            agent_username = build_external_agent_username(agent["id"], agent.get("name"))
             await task_service.opt_in_task(
                 {"task_id": int(tid), "username": agent_username},
                 task_token=effective_token,
             )
-            claimed_task_ids.add(tid)
-            task = _apply_master_task_metadata(dict(task), project_token=project_token)
-            if project_token:
-                task.setdefault("_project_token", project_token)
-            agent["current_task"] = task
-            agent["resume_pending_task"] = True
-            assignments.append((agent["id"], task))
-            logger.info(f"[Skill Assignment] Opt-in succeeded: Task {tid} → {agent['id']} ({agent.get('name', 'unnamed')})")
+            nxdune_opt_in_ok = True
+            logger.info(f"[Skill Assignment] NXDune opt-in succeeded: Task {tid} → {agent['id']}")
         except Exception as opt_err:
-            logger.warning(f"[Skill Assignment] Opt-in failed for task {tid} → {agent['id']}: {opt_err}")
+            err_text = str(opt_err).lower()
+            if "task already has assigned users" in err_text:
+                logger.info(f"[Skill Assignment] Task {tid} already claimed upstream; skipping for {agent['id']}.")
+                assignments.append((agent["id"], None))
+                continue
+            # NXDune unreachable — fall back to local claim + queue sync
+            logger.warning(
+                f"[Skill Assignment] NXDune opt-in failed for task {tid} → {agent['id']}: {opt_err}. "
+                "Falling back to local claim."
+            )
+            try:
+                queue_nxdune_sync(
+                    project_token=project_token or "",
+                    operation="opt_in_task",
+                    agent_id=agent["id"],
+                    task_id=str(tid),
+                    payload={"task_id": tid, "username": agent_username},
+                )
+            except Exception as _q_err:
+                logger.debug(f"[Skill Assignment] Could not queue opt-in sync for {tid}: {_q_err}")
+
+        # LOCAL CLAIM — authoritative record regardless of NXDune outcome
+        local_claimed = claim_task_local(
+            project_token=project_token or "",
+            agent_id=agent["id"],
+            task_id=str(tid),
+            task_data=dict(task),
+            task_lane=task_lane_for_claim,
+        )
+        if not local_claimed and not nxdune_opt_in_ok:
+            logger.info(f"[Skill Assignment] Task {tid} already claimed locally; skipping for {agent['id']}.")
             assignments.append((agent["id"], None))
+            continue
+
+        claimed_task_ids.add(tid)
+        task = _apply_master_task_metadata(dict(task), project_token=project_token)
+        if project_token:
+            task.setdefault("_project_token", project_token)
+        agent["current_task"] = task
+        agent["resume_pending_task"] = True
+        assignments.append((agent["id"], task))
+        logger.info(f"[Skill Assignment] Claimed: Task {tid} → {agent['id']} ({agent.get('name', 'unnamed')})")
 
 
     if not assignments:
@@ -17543,82 +17872,8 @@ def _is_clock_out_idempotent_success(error_text: str) -> bool:
 
 
 
-async def _opt_in_task(task: Dict[str, Any], username: str,
-                       project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
-    """Opt in to task with retry logic - will retry up to 5 times with exponential backoff."""
-    from task_service import task_service
-    task_id = _normalize_task_id(task)
-    if not task_id:
-        return False
-    resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
-    
-    max_retries = 5
-    base_delay = 1.0
-    
-    for attempt in range(max_retries):
-        try:
-            await task_service.opt_in_task({
-                "task_id": task_id,
-                "username": username
-            }, task_token=task_token or get_project_task_token(resolved_project))
-            print(f"[agent_service] Successfully opted in to task {task_id}, posting check-in message...")
-            await _post_task_message(task, f"{username} checked in and reviewing task.", project_token=resolved_project, task_token=task_token)
-            return True
-        except Exception as e:
-            if attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
-                print(f"[agent_service] Failed to opt in to task {task_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
-                await asyncio.sleep(delay)
-            else:
-                print(f"[agent_service] Failed to opt in to task {task_id} after {max_retries} attempts: {e}")
-                return False
-    return False
+# Duplicate functions _opt_in_task and _post_timer_log removed to prevent overriding local-first definitions.
 
-
-async def _post_timer_log(task: Dict[str, Any], action: str, project_token: Optional[str] = None, task_token: Optional[str] = None) -> bool:
-    """Post timer log with retry logic - will retry up to 5 times with exponential backoff."""
-    from task_service import task_service
-    task_id = _normalize_task_id(task)
-    if not task_id:
-        return False
-    resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
-    
-    max_retries = 5
-    base_delay = 1.0
-    
-    for attempt in range(max_retries):
-        try:
-            await task_service.post_timer_log({
-                "task_id": task_id,
-                "action": action
-            }, task_token=task_token or get_project_task_token(resolved_project))
-            task_key = str(task_id)
-            state = _ensure_project_state(resolved_project)
-            if action == "clock_in":
-                state["timer_log_state"][task_key] = True
-            elif action == "clock_out":
-                state["timer_log_state"][task_key] = False
-            return True
-        except Exception as e:
-            normalized_error = _normalize_error_text(e)
-            if action == "clock_out" and _is_clock_out_idempotent_success(normalized_error):
-                # Upstream says there is nothing to clock out; treat as success so completion can proceed.
-                _ensure_project_state(resolved_project)["timer_log_state"][str(task_id)] = False
-                print(
-                    f"[agent_service] Timer log clock_out for task {task_id} already in desired state "
-                    f"(treating as success): {e}"
-                )
-                return True
-            if attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
-                print(f"[agent_service] Failed to post timer log for task {task_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
-                await asyncio.sleep(delay)
-            else:
-                print(f"[agent_service] Failed to post timer log for task {task_id} after {max_retries} attempts: {e}")
-                if action == "clock_in":
-                    _ensure_project_state(resolved_project)["timer_log_state"][str(task_id)] = False
-                return False
-    return False
 
 
 # ── Main Agent Execution ────────────────────────────────────────────────────
@@ -18345,6 +18600,40 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                             skip_reasons["conflict_blocked"] += 1
                             continue
 
+            # ── Step 2b: Workstream Sequential Gate ──────────────────────────────
+            # Enforce sequential execution within the same domain (frontend/backend/qa).
+            # If another agent is actively running a task in this domain right now,
+            # skip so the current task waits until that work is committed.
+            # This prevents duplicate implementations and merge conflicts.
+            if not is_bootstrap_task and live_mem:
+                _task_domain_lane = _classify_task_assignment_lane(t)
+                if _task_domain_lane in ("frontend", "backend", "qa", "devops"):
+                    with live_mem._lock:
+                        active_same_domain = [
+                            record for record in live_mem.active_tasks.values()
+                            if record.task_domain == _task_domain_lane
+                            and record.agent_id != agent_id
+                            and record.status == "in_progress"
+                        ]
+                    if active_same_domain:
+                        active_agent_names = [r.agent_id for r in active_same_domain[:3]]
+                        msg = (
+                            f"⏸️ Task {tid} queued — {_task_domain_lane} domain "
+                            f"already has active work by: {active_agent_names}. "
+                            "Waiting for sequential completion."
+                        )
+                        logger.info(f"[{agent_id}] {msg}")
+                        if agent:
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": msg,
+                            })
+                        skip_reasons.setdefault("workstream_sequential_gate", 0)
+                        skip_reasons["workstream_sequential_gate"] += 1
+                        continue
+            # ─────────────────────────────────────────────────────────────────────
+
             # ── Step 3: Skill-based gate — only opt-in if this agent is the best fit ──
             # Ask MasterTaskManager to score ALL idle agents for this task.
             # If a better-suited agent exists, skip so that agent can claim instead.
@@ -18385,8 +18674,15 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 # Scoring failure is non-fatal — fall back to first-come-first-served
                 logger.debug(f"[{agent_id}] Skill-gate scoring failed for task {tid}: {_skill_err}")
 
-            # ── Step 4: Serial opt-in — atomically claim via external API ──
+            # ── Step 4: Serial opt-in — local-first, NXDune async fallback ──
+            # PRIMARY: Always claim locally first for resilience.
+            # SECONDARY: Attempt NXDune opt-in; if it fails, queue for retry.
 
+            from local_state_manager import claim_task_local, queue_nxdune_sync
+            task_lane_for_claim = _classify_task_assignment_lane(t) if not is_bootstrap_task else "bootstrap"
+
+            # Attempt NXDune opt-in first (provides upstream coordination)
+            nxdune_opt_in_ok = False
             try:
                 from task_service import task_service
                 effective_token = task_token or get_project_task_token(project_token)
@@ -18394,29 +18690,57 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                     {"task_id": int(tid), "username": agent_username},
                     task_token=effective_token,
                 )
+                nxdune_opt_in_ok = True
                 logger.info(f"[{agent_id}] ✅ Serial opt-in succeeded for task {tid}")
-                
+
                 # Do NOT auto-assign linked tasks — they are parent containers (EPIC/FEATURE/STORY)
                 # or sibling tasks that other agents should be free to pick up independently.
-                        
+
             except Exception as opt_err:
-                # If upstream reports that the task already has assigned users,
-                # treat it as claimed elsewhere so no other local agents will
-                # attempt to opt in again.
                 err_text = str(opt_err).lower()
                 if "task already has assigned users" in err_text:
+                    # Another agent owns this task upstream — mark claimed and skip
                     claimed_task_ids.add(tid)
                     logger.info(
                         f"[{agent_id}] Task {tid} already has assigned users upstream; "
                         f"marking as claimed and skipping."
                     )
+                    skip_reasons["opt_in_failed"] += 1
+                    continue
                 else:
-                    logger.info(
-                        f"[{agent_id}] Opt-in failed for task {tid} (another agent may have claimed it): {opt_err}"
+                    # NXDune unreachable or other transient error — fall back to local claim
+                    logger.warning(
+                        f"[{agent_id}] NXDune opt-in failed for task {tid} "
+                        f"({opt_err}). Falling back to local claim and queuing sync."
                     )
+                    # Queue the opt-in for async retry via NXDune sync worker
+                    try:
+                        queue_nxdune_sync(
+                            project_token=project_token or "",
+                            operation="opt_in_task",
+                            agent_id=agent_id,
+                            task_id=str(tid),
+                            payload={"task_id": tid, "username": agent_username},
+                        )
+                    except Exception as _q_err:
+                        logger.debug(f"[{agent_id}] Could not queue opt-in sync: {_q_err}")
+
+            # LOCAL CLAIM: Atomically claim in local DB regardless of NXDune outcome.
+            # This is the authoritative record. NXDune is eventually consistent.
+            local_claimed = claim_task_local(
+                project_token=project_token or "",
+                agent_id=agent_id,
+                task_id=str(tid),
+                task_data=dict(t),
+                task_lane=task_lane_for_claim,
+            )
+            if not local_claimed and not nxdune_opt_in_ok:
+                # Both NXDune and local claim failed — another agent owns this task
+                logger.info(f"[{agent_id}] Task {tid} already locally claimed by another agent; skipping.")
                 skip_reasons["opt_in_failed"] += 1
                 continue
 
+            # Claim succeeded (locally or via NXDune)
             # Opt-in succeeded — claim locally (only THIS task, not linked tasks)
             # Do NOT pre-claim linked tasks — other agents should be free to pick them up
             claimed_task_ids.add(tid)
@@ -20291,10 +20615,13 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
 
             # ── Fix 4: Resolve canonical file targets from master tree ─
             # SKIP for bootstrap tasks - they create the entire structure, not specific files
-            task_id_str = (task.get("task_id") or task.get("external_task_id") or "").strip().upper()
+            task_id_str = (
+                task.get("task_id") or task.get("external_task_id") or task.get("id") or ""
+            ).strip().upper()
             task_title_str = (task.get("title") or task.get("taskName") or "").strip().lower()
             is_bootstrap_task = (
                 task_id_str == "TASK-00"
+                or task_id_str.replace("_", "-") == "TASK-00"
                 or "project bootstrap" in task_title_str
                 or "bootstrap" in task_title_str
             )
@@ -20354,7 +20681,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             
             # CRITICAL: For bootstrap tasks, skip dynamic prompt and use ONLY static system prompt
             # Dynamic prompt contains contradictory instructions about file content generation
-            is_bootstrap_task = "bootstrap" in task.get("title", "").lower() or "TASK-00" in str(task.get("id", ""))
+            # NOTE: is_bootstrap_task was already computed above — do NOT redefine here.
             
             if is_bootstrap_task:
                 # Use static system prompt for bootstrap - but replace bulletproof rules with bootstrap rules
@@ -20656,8 +20983,63 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 # Log the insufficient response for debugging
                 logger.warning(f"[{agent_id}] Insufficient AI response ({generated_lines} lines): {generated_code[:200]}")
                 
-                # Retry with more explicit prompt
-                retry_prompt = f"""CRITICAL: You MUST generate a COMPLETE shell script that creates ALL files.
+                # ── BOOTSTRAP vs NORMAL retry prompt ──────────────────────────────
+                # Bootstrap tasks must only create EMPTY placeholder files/dirs.
+                # Non-bootstrap tasks should produce real implementation code.
+                if is_bootstrap_task:
+                    retry_prompt = f"""CRITICAL: You MUST generate a COMPLETE shell script that creates the project structure.
+
+Previous attempt only generated {generated_lines} lines which is INSUFFICIENT.
+
+Task: {task["description"]}
+
+⚠️ THIS IS A BOOTSTRAP / STRUCTURE-ONLY TASK.
+YOU MUST:
+1. Create ALL directories using mkdir -p
+2. Create ALL files as EMPTY placeholders using touch (NOT cat <<EOF or heredocs)
+3. DO NOT write any code/content inside any file
+4. DO NOT use cat <<'EOF' or heredocs
+5. Include proper error checking (set -e)
+6. Print [CREATED] for each file/dir
+7. Add .gitkeep to any empty leaf directories
+8. Print === SUMMARY === at the end
+
+Example structure:
+```bash
+#!/usr/bin/env bash
+set -e
+cd /workspace
+
+echo "Creating project structure..."
+
+# Create directories
+mkdir -p backend/app/auth
+mkdir -p backend/app/users
+mkdir -p frontend/src/components
+mkdir -p frontend/src/pages
+
+# Create empty placeholder files (DO NOT add content)
+touch backend/app/__init__.py
+touch backend/app/auth/__init__.py
+touch backend/app/auth/routes.py
+touch backend/app/users/__init__.py
+touch backend/app/users/models.py
+touch frontend/src/components/App.jsx
+touch frontend/src/pages/Home.jsx
+touch README.md
+
+# Add .gitkeep to empty directories
+touch frontend/public/.gitkeep
+
+echo "[CREATED] All directories and files"
+echo "=== SUMMARY ==="
+echo "Project structure created successfully."
+ls -R
+```
+
+NOW GENERATE THE COMPLETE STRUCTURE-ONLY SCRIPT (touch and mkdir only, no file content):"""
+                else:
+                    retry_prompt = f"""CRITICAL: You MUST generate a COMPLETE shell script that creates ALL files.
 
 Previous attempt only generated {generated_lines} lines which is INSUFFICIENT.
 
@@ -20676,8 +21058,9 @@ DO NOT just write comments or placeholders - write ACTUAL WORKING CODE.
 
 Example structure:
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
+cd /workspace
 
 # Create directories
 mkdir -p backend/app
@@ -20747,7 +21130,8 @@ NOW GENERATE THE COMPLETE SCRIPT:"""
             )
             
             # ── Run Build Validation (Change #1 & Change #4) ─────────
-            if result.get("exit_code") == 0:
+            # SKIP for bootstrap tasks — empty placeholder files always fail compilation
+            if result.get("exit_code") == 0 and not is_bootstrap_task:
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
@@ -26046,6 +26430,7 @@ async def _bulletproof_call_ai_for_fix(
     confidence_score: float = 0.9,
     project_root: str = "/workspace",  # NEW: Bootstrap-defined project root
     canonical_files: Optional[List[str]] = None,
+    is_bootstrap: bool = False,         # NEW: Pass bootstrap state
 ) -> tuple[str, str]:
     """
     BULLETPROOF AI fix generation with 90%+ success guarantee.
@@ -26178,6 +26563,16 @@ Generate a BULLETPROOF script that fixes ALL detected issues:
             + "=====================================\n\n"
         )
         
+    rules_block = _BOOTSTRAP_CODE_RULES if is_bootstrap else _BULLETPROOF_CODE_RULES
+    if is_bootstrap:
+        fix_prompt = (
+            "⚠️ CRITICAL MANDATE — BOOTSTRAP TASK WORK: THIS IS A BOOTSTRAP TASK WORKSHOP. "
+            "YOU MUST NOT WRITE HEREDOCS (cat <<EOF ... EOF) OR CODE/CSS/JS/HTML CONTENTS. "
+            "CREATE ONLY EMPTY PLACEHOLDER FILES USING 'touch' AND DIRECTORIES USING 'mkdir -p'. "
+            "ANY CODE/HEREDOC CONTENT GENERATION IS STRICTLY PROHIBITED.\n\n"
+            + fix_prompt
+        )
+
     full_prompt = f"""
 {canonical_files_prefix}{fix_prompt}
 
@@ -26201,7 +26596,7 @@ MANDATORY SUCCESS REQUIREMENTS:
 4. Script MUST include error handling for every operation
 5. Script MUST be testable and verifiable
 
-{_BULLETPROOF_CODE_RULES}
+{rules_block}
 
 Generate the fix script now:
 """
@@ -26247,15 +26642,34 @@ Generate the fix script now:
     except Exception as e:
         logger.error(f"Bulletproof fix generation failed: {e}")
         
-        # Generate emergency fallback fix
-        fallback_fix = f"""#!/usr/bin/env bash
+        # Generate emergency fallback fix — bootstrap-aware
+        if is_bootstrap:
+            fallback_fix = f"""#!/usr/bin/env bash
+set -e
+cd /workspace
+
+echo "Emergency bootstrap fallback: ensuring basic structure exists"
+
+# Ensure at minimum these standard structure markers exist
+mkdir -p backend frontend tests docs orchestrator
+touch README.md
+touch .gitignore
+
+# Add .gitkeep to empty leaf dirs so Git preserves them
+for d in backend frontend tests docs orchestrator; do
+    if [ -d "$d" ] && [ -z "$(ls -A $d 2>/dev/null)" ]; then
+        touch "$d/.gitkeep"
+    fi
+done
+
+echo "Emergency bootstrap fix completed"
+"""
+        else:
+            fallback_fix = f"""#!/usr/bin/env bash
 set -e
 cd /workspace
 
 echo "Emergency fallback fix for: {', '.join(issues[:2])}"
-
-# Create basic project structure if missing
-mkdir -p src tests docs
 
 # Fix common dependency issues
 if [ -f package.json ]; then
@@ -26272,10 +26686,7 @@ if [ ! -f README.md ]; then
 fi
 
 if [ ! -f .gitignore ]; then
-    echo "node_modules/
-__pycache__/
-*.pyc
-.env" > .gitignore
+    printf 'node_modules/\\n__pycache__/\\n*.pyc\\n.env\\n' > .gitignore
 fi
 
 echo "Emergency fix completed"
@@ -26472,6 +26883,11 @@ async def _bulletproof_self_healing_loop(
         logger.info(f"Issues detected: {issue_report['issue_count']} (priority: {issue_report['priority']})")
         logger.info(f"Fix confidence: {issue_report['confidence_score']:.0%}")
         
+        # Detect if it is a bootstrap task
+        task_id_str = str(task.get("id") or task.get("task_id") or task.get("external_task_id") or "").upper()
+        task_title_str = str(task.get("title") or task.get("taskName") or "").lower()
+        is_bootstrap = "bootstrap" in task_title_str or "task-00" in task_id_str or "task_00" in task_id_str or "task-00" in task_id_str.replace("_", "-")
+
         # Generate bulletproof fix
         try:
             fix_code, thought = await _bulletproof_call_ai_for_fix(
@@ -26488,6 +26904,7 @@ async def _bulletproof_self_healing_loop(
                 confidence_score=issue_report["confidence_score"],
                 project_root=project_root,  # Pass bootstrap project root
                 canonical_files=canonical_files,
+                is_bootstrap=is_bootstrap,  # Pass bootstrap state
             )
             
             logger.info(f"Generated bulletproof fix: {len(fix_code)} chars")
@@ -26502,7 +26919,8 @@ async def _bulletproof_self_healing_loop(
             )
             
             # Run build validation check (Change #1 & Change #4)
-            if result.get("exit_code") == 0:
+            # SKIP for bootstrap tasks — empty files always fail compilation checks
+            if result.get("exit_code") == 0 and not is_bootstrap:
                 val_res = _run_build_validation_in_container(container_name, project_root)
                 if not val_res["success"]:
                     result["exit_code"] = val_res["exit_code"]

@@ -884,38 +884,16 @@ export default function TaskCreation({
         setSuccess('');
         try {
             // First, save all selected tasks to the backend
-            const selectedTaskIds = tasks.filter(t => t.selected && !t.synced_to_nxdune).map(t => t.id);
+            const selectedTasksToSync = tasks.filter(t => t.selected && !t.synced_to_nxdune);
             
-            if (selectedTaskIds.length === 0) {
+            if (selectedTasksToSync.length === 0) {
                 setError('No tasks selected for sync. Please select at least one task.');
                 setIsSyncing(false);
                 return;
             }
             
-            // Save selections to backend
-            const selectionRes = await fetch(API_ENDPOINTS.AGENT_TASKS_SELECTION, {
-                method: 'PATCH',
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    task_ids: selectedTaskIds,
-                    selected: true,
-                    project_token: selectedProjectKey,
-                }),
-            });
-            
-            if (!selectionRes.ok) {
-                const data = await selectionRes.json().catch(() => ({}));
-                const errorMsg = typeof data.detail === 'string' 
-                    ? data.detail 
-                    : (typeof data.message === 'string' ? data.message : 'Failed to save task selection');
-                console.error('Selection API error:', data);
-                setError(errorMsg);
-                setIsSyncing(false);
-                return;
-            }
+            // Save selections/tasks to backend first
+            await saveSelectionsToDb();
             
             // Now sync to NxDune
             const url = new URL(API_ENDPOINTS.AGENT_TASKS_SYNC);
@@ -939,6 +917,51 @@ export default function TaskCreation({
             setIsSyncing(false);
         }
     }, [selectedProjectKey, taskToken, token, loadData, tasks]);
+
+    const saveSelectionsToDb = useCallback(async () => {
+        if (!selectedProjectKey) return;
+        if (!Array.isArray(tasks) || tasks.length === 0) return;
+
+        const res = await fetch(API_ENDPOINTS.AGENT_TASKS_SAVE_LOCAL, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                project_token: selectedProjectKey,
+                tasks: tasks,
+            }),
+        });
+
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            const errorMsg = typeof data.detail === 'string'
+                ? data.detail
+                : (typeof data.message === 'string' ? data.message : 'Failed to save tasks locally');
+            throw new Error(errorMsg);
+        }
+        
+        await loadData(1);
+    }, [selectedProjectKey, tasks, token, loadData]);
+
+    const handleSaveSelection = useCallback(async () => {
+        if (!selectedProjectKey) {
+            setError('Select a project before saving.');
+            return;
+        }
+        setIsLoading(true);
+        setError('');
+        setSuccess('');
+        try {
+            await saveSelectionsToDb();
+            setSuccess('Task selection saved successfully locally. Click "Start the Process" at the top right to proceed.');
+        } catch (e) {
+            setError(e?.message || 'Failed to save task selection.');
+        } finally {
+            setIsLoading(false);
+        }
+    }, [selectedProjectKey, saveSelectionsToDb]);
 
     const handleTaskSelection = useCallback((taskId, selected) => {
         // Update local state only - no API call yet
@@ -1024,13 +1047,26 @@ export default function TaskCreation({
         handleMasterCreate,
     ]);
 
-    const handleStartProcess = () => {
-        if (processMode === 'ai_assist') {
-            window.location.href = 'vscode:extension/bourntec-Solutions.n-mod-vscode-assistant';
-        } else {
-            navigate('/resource-onboarding', { state: { processMode } });
+    const handleStartProcess = useCallback(async () => {
+        if (!selectedProjectKey) return;
+        setIsLoading(true);
+        setError('');
+        setSuccess('');
+        try {
+            if (tasks.length > 0) {
+                await saveSelectionsToDb();
+            }
+            if (processMode === 'ai_assist') {
+                window.location.href = 'vscode:extension/bourntec-Solutions.n-mod-vscode-assistant';
+            } else {
+                navigate('/resource-onboarding', { state: { processMode } });
+            }
+        } catch (e) {
+            setError(e?.message || 'Failed to save task selection.');
+        } finally {
+            setIsLoading(false);
         }
-    };
+    }, [selectedProjectKey, tasks, saveSelectionsToDb, processMode, navigate]);
 
     const showInitialProjectLoader = Boolean(selectedProjectKey) && (
         !hasCompletedInitialBootstrap ||
@@ -1157,15 +1193,27 @@ export default function TaskCreation({
                                 <span>Tasks have been created for this project. You can regenerate them or view existing tasks below.</span>
                             </p>
                         )}
-                        {tasks.some(t => !t.synced_to_nxdune && t.selected) && taskToken && !isLoadingProjectInfo && !isResolvingTaskToken && (
-                            <button
-                                onClick={handleSync}
-                                disabled={isSyncing}
-                                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-bold text-sm transition-colors bg-gradient-to-r from-emerald-600 to-emerald-700 text-white hover:from-emerald-700 hover:to-emerald-800 disabled:opacity-60 disabled:cursor-not-allowed"
-                            >
-                                {isSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-                                {isSyncing ? 'Syncing...' : `Sync ${tasks.filter(t => !t.synced_to_nxdune && t.selected).length} selected task(s) to NXDUNE`}
-                            </button>
+                        {selectedProjectKey && tasks.length > 0 && !isLoadingProjectInfo && !isResolvingTaskToken && (
+                            <div className="flex flex-col sm:flex-row gap-3 w-full">
+                                {tasks.some(t => !t.synced_to_nxdune && t.selected) && taskToken && (
+                                    <button
+                                        onClick={handleSync}
+                                        disabled={isSyncing || isLoading}
+                                        className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-bold text-sm transition-colors bg-gradient-to-r from-emerald-600 to-emerald-700 text-white hover:from-emerald-700 hover:to-emerald-800 disabled:opacity-60 disabled:cursor-not-allowed"
+                                    >
+                                        {isSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                                        {isSyncing ? 'Syncing...' : `Sync ${tasks.filter(t => !t.synced_to_nxdune && t.selected).length} task(s) to NXDUNE`}
+                                    </button>
+                                )}
+                                <button
+                                    onClick={handleSaveSelection}
+                                    disabled={isLoading || isSyncing}
+                                    className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-bold text-sm transition-colors bg-gradient-to-r from-blue-600 to-indigo-700 text-white hover:from-blue-700 hover:to-indigo-800 disabled:opacity-60 disabled:cursor-not-allowed"
+                                >
+                                    {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                                    {isLoading ? 'Saving...' : tasks.some(t => t.selected) ? `Save Selection (${tasks.filter(t => t.selected).length} Selected)` : 'Save Selection'}
+                                </button>
+                            </div>
                         )}
                         {/* {selectedProjectKey && (
                             <p className="text-xs text-app-primary-hover bg-app-primary-light border border-app-primary-ring rounded-lg px-3 py-2">
@@ -1291,12 +1339,20 @@ export default function TaskCreation({
                                                                 <div className="flex-1">
                                                                     <div className="flex items-start justify-between gap-2">
                                                                         <p className="text-sm font-semibold text-app-text-main">{task.title || task.taskName || 'Untitled Task'}</p>
-                                                                        {task.synced_to_nxdune && (
-                                                                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-wide">
-                                                                                <CheckCircle2 className="w-3 h-3" />
-                                                                                Synced
-                                                                            </span>
-                                                                        )}
+                                                                        <div className="flex items-center gap-1.5 shrink-0">
+                                                                             {task.synced_to_nxdune && (
+                                                                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-wide">
+                                                                                     <CheckCircle2 className="w-3 h-3" />
+                                                                                     Synced
+                                                                                 </span>
+                                                                             )}
+                                                                             {task.selected && (
+                                                                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 text-[10px] font-bold uppercase tracking-wide">
+                                                                                     <CheckCircle2 className="w-3 h-3" />
+                                                                                     Saved Locally
+                                                                                 </span>
+                                                                             )}
+                                                                        </div>
                                                                     </div>
                                                                     <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-app-text-muted">
                                                                         <span className="inline-flex items-center gap-1">
