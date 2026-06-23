@@ -39,6 +39,24 @@ async def sync_single_log(db_session, log: models.NXDuneSyncLog) -> bool:
     payload = log.payload
     
     logger.info(f"[SyncWorker] Processing log {log.id}: {op} for project {project_token} (has_token={task_token is not None})")
+
+    # Try to resolve task_id in payload to NXDune task ID, and skip if it is a local-only task
+    if isinstance(payload, dict) and "task_id" in payload:
+        raw_tid = payload["task_id"]
+        try:
+            task = db_session.query(models.Task).filter(
+                models.Task.project_token == project_token,
+                ((models.Task.id == raw_tid) | (models.Task.task_id == raw_tid) | (models.Task.task_id.like(f"%_{raw_tid}")))
+            ).first()
+            if task:
+                if task.nxdune_task_id:
+                    payload["task_id"] = task.nxdune_task_id
+                else:
+                    logger.info(f"[SyncWorker] Task '{raw_tid}' has not been synced to NXDune yet. Skipping operation '{op}' sync (local-only task).")
+                    return True
+        except Exception as res_err:
+            logger.warning(f"[SyncWorker] Error resolving task ID for NXDune sync: {res_err}")
+
     
     try:
         if op == "task_message":

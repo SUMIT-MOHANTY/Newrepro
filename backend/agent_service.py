@@ -117,16 +117,28 @@ def _clean_ai_code_response(content: str) -> tuple[str, str]:
             filepath = filepath.replace('`', '').replace('"', '').replace("'", '').strip()
             file_content = file_content.strip()
             
+            # ── FILEPATH VALIDATION ───────────────────────────────────────────
             # Skip if filepath looks like a heading, not a file
             # Valid files must have either a / (path) or . (extension)
             if not filepath or ('/' not in filepath and '.' not in filepath):
-                logger.debug(f"Skipping invalid filepath: {filepath}")
+                logger.debug(f"Skipping invalid filepath (no ext/path): {filepath}")
                 continue
             
             # Skip if filepath contains spaces (likely a heading)
             if ' ' in filepath:
                 logger.debug(f"Skipping filepath with spaces: {filepath}")
                 continue
+
+            # Skip if filepath is suspiciously long (prose heading, not a path)
+            if len(filepath) > 200:
+                logger.debug(f"Skipping oversized filepath ({len(filepath)} chars): {filepath[:60]}...")
+                continue
+
+            # Skip if an absolute path that tries to escape /workspace
+            if filepath.startswith('/') and not filepath.startswith('/workspace'):
+                logger.debug(f"Skipping out-of-workspace absolute path: {filepath}")
+                continue
+            # ─────────────────────────────────────────────────────────────────
             
             # BUG FIX 1: Strip leading project-name segment from paths ONLY when
             # the first segment is clearly a project-name wrapper (contains hyphen,
@@ -148,9 +160,17 @@ def _clean_ai_code_response(content: str) -> tuple[str, str]:
                 directory = '/'.join(filepath.split('/')[:-1])
                 script_lines.append(f"mkdir -p {directory}")
             
-            # Write file using heredoc
+            # ── EOF-SAFE HEREDOC ──────────────────────────────────────────────
+            # If file content contains a bare "EOF" line, the heredoc would
+            # terminate prematurely. Escape it by splitting the string literal.
+            safe_content = file_content.replace("\nEOF\n", "\nEO''F\n")
+            if safe_content.startswith("EOF\n"):
+                safe_content = "EO''F\n" + safe_content[4:]
+            if safe_content.endswith("\nEOF"):
+                safe_content = safe_content[:-4] + "\nEO''F"
+            # ─────────────────────────────────────────────────────────────────
             script_lines.append(f"cat <<'EOF' > {filepath}")
-            script_lines.append(file_content)
+            script_lines.append(safe_content)
             script_lines.append("EOF")
             script_lines.append(f"echo '[CREATED] {filepath}'")
             script_lines.append("")
@@ -854,6 +874,9 @@ async def _build_peer_context_block(
     container to extract exported symbols, class names, and function
     signatures — so the current agent can import rather than re-implement.
 
+    Also injects the current git repository state (recent commits + file tree)
+    so the agent knows exactly what has been built before generating new code.
+
     Returns a plain-text block like:
         COMPLETED WORK BY OTHER AGENTS (do not re-implement):
           [agent_01] Task 'TASK-01 User Auth' → branch: agent/task-01-user-auth
@@ -865,12 +888,52 @@ async def _build_peer_context_block(
     state = _ensure_project_state(project_token)
     ledger: Dict[str, TaskLedgerEntry] = state.get("task_ledger", {})
 
+    # ── Inject current repository state from container ────────────────────────
+    repo_state_lines: list = []
+    if container_name:
+        try:
+            # Recent git commits (what's already in the repo)
+            git_log = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "log", "--oneline", "-10"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if git_log.returncode == 0 and git_log.stdout.strip():
+                repo_state_lines.append("\n📜 CURRENT REPOSITORY — RECENT COMMITS (do NOT re-implement these):")
+                for line in git_log.stdout.strip().splitlines():
+                    repo_state_lines.append(f"  {line}")
+
+            # Current file tree (what files already exist)
+            git_ls = subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "ls-files"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if git_ls.returncode == 0 and git_ls.stdout.strip():
+                existing_files = [f.strip() for f in git_ls.stdout.strip().splitlines() if f.strip()]
+                # Cap at 100 files to avoid prompt bloat
+                display_files = existing_files[:100]
+                repo_state_lines.append(f"\n📁 EXISTING FILES IN REPOSITORY ({len(existing_files)} total):")
+                for f in display_files:
+                    repo_state_lines.append(f"  {f}")
+                if len(existing_files) > 100:
+                    repo_state_lines.append(f"  ... and {len(existing_files) - 100} more files")
+                repo_state_lines.append(
+                    "\n⚠️ CRITICAL: These files ALREADY EXIST. Do not recreate them from scratch. "
+                    "If your task requires modifying them, read their current content first and PATCH "
+                    "only the required changes."
+                )
+
+        except Exception as _repo_err:
+            logger.debug(f"[{agent_id}] Repo state inspection failed (non-fatal): {_repo_err}")
+    # ─────────────────────────────────────────────────────────────────────────
+
     completed_by_peers = [
         entry for entry in ledger.values()
         if entry.status == "done" and entry.agent_id != agent_id
     ]
 
-    if not completed_by_peers:
+    if not completed_by_peers and not repo_state_lines:
         return ""
 
     # Keywords that indicate a public interface line worth extracting
@@ -886,6 +949,28 @@ async def _build_peer_context_block(
         "COMPLETED WORK BY OTHER AGENTS — DO NOT RE-IMPLEMENT",
         "=" * 60,
     ]
+
+    # Include repo state at the top
+    if repo_state_lines:
+        lines.extend(repo_state_lines)
+        lines.append("")
+
+    # Inject files created/modified by this workstream domain (for cross-restart continuity)
+    try:
+        import context_manager as ctx_mgr
+        live_mem = ctx_mgr.get_live_memory(project_token or "")
+        domain = _classify_task_assignment_lane(task)
+        if live_mem and domain:
+            workstream_files = live_mem.get_workstream_files(domain)
+            if workstream_files:
+                lines.append(f"\n🛠️ FILES CREATED/MODIFIED BY YOUR WORKSTREAM ({domain}):")
+                for wf in workstream_files[:40]:
+                    lines.append(f"  - {wf}")
+                if len(workstream_files) > 40:
+                    lines.append(f"  ... and {len(workstream_files) - 40} more files")
+                lines.append("")
+    except Exception as _ws_err:
+        logger.debug(f"Failed to inject workstream files into context block: {_ws_err}")
 
     for entry in completed_by_peers[-8:]:
         lines.append(f"\n[{entry.agent_id}] Task: '{entry.task_title}'")
@@ -919,15 +1004,16 @@ async def _build_peer_context_block(
                 except Exception:
                     pass
 
-    lines += [
-        "\n" + "=" * 60,
-        "RULES:",
-        "- IMPORT from these files — do not rewrite them.",
-        "- Use the EXACT function/class names shown above.",
-        "- Reference the correct import path when using these symbols.",
-        "- DO NOT create a second implementation of anything listed here.",
-        "=" * 60,
-    ]
+    if completed_by_peers:
+        lines += [
+            "\n" + "=" * 60,
+            "RULES:",
+            "- IMPORT from these files — do not rewrite them.",
+            "- Use the EXACT function/class names shown above.",
+            "- Reference the correct import path when using these symbols.",
+            "- DO NOT create a second implementation of anything listed here.",
+            "=" * 60,
+        ]
 
     return "\n".join(lines)
 
@@ -1275,6 +1361,12 @@ BULLETPROOF SUCCESS RULES - 100% EXECUTION GUARANTEE:
 - Add detailed comments explaining each step
 - Follow language-specific best practices for the detected/specified tech stack
 - Include setup instructions and dependency installation
+
+CRITICAL CASE-SENSITIVITY IMPORT RULES (MANDATORY):
+- Docker containers run on Linux, which uses a CASE-SENSITIVE filesystem.
+- Your import statements (e.g. React/JS/TS imports, Python imports) MUST match the physical filename casing on disk exactly.
+- For example: if the file on disk is `useAuth.js` in directory `./hooks`, importing it as `useauth` or `UseAuth` will fail compilation. You MUST import it exactly as `./hooks/useAuth`.
+- Inspect the physical directories first (e.g., using `ls` or `find`) to verify the exact casing of any files you reference or import.
 
 CRITICAL RULE AGAINST PLACEHOLDERS & HALF-BAKED GENERATION (MANDATORY):
 - NEVER EVER output partial/incomplete code or placeholders like:
@@ -2087,11 +2179,39 @@ def _build_file_ownership_block(
     ledger: Dict[str, TaskLedgerEntry] = state.get("task_ledger", {})
 
     owned: Dict[str, str] = {}  # file_path → owner_agent_id
+    
+    # 1. Read from in-memory ledger
     for entry in ledger.values():
         if entry.agent_id == agent_id or entry.status != "done":
             continue
         for fpath in entry.files_written:
-            owned[fpath] = entry.agent_id
+            if fpath:
+                owned[fpath] = entry.agent_id
+
+    # 2. Read from DB for cross-restart resilience
+    if project_token:
+        try:
+            from database import SessionLocal
+            import models as _models
+            db = SessionLocal()
+            try:
+                records = (
+                    db.query(_models.AgentTaskOwnership)
+                    .filter(
+                        _models.AgentTaskOwnership.project_token == project_token,
+                        _models.AgentTaskOwnership.status == "done",
+                        _models.AgentTaskOwnership.agent_id != agent_id,
+                    )
+                    .all()
+                )
+                for r in records:
+                    for fpath in (r.files_written or []):
+                        if fpath:
+                            owned[fpath] = r.agent_id
+            finally:
+                db.close()
+        except Exception as _db_err:
+            logger.debug(f"[_build_file_ownership_block] DB fetch failed: {_db_err}")
 
     if not owned:
         return ""
@@ -6263,6 +6383,90 @@ async def _mark_repo_bootstrap_result(
     else:
         set_bootstrap_success(project_token)  # Persistent bootstrap state
     logger.info(f"[{source_agent}] Bootstrap flag set for project {project_token} (branch: {source_branch})")
+
+    # ── CRITICAL FIX: Wake DAG watcher and idle worker agents ──────────────
+    # Publish task_completed event for TASK-00 so the DAG watcher fires and
+    # recomputes ready tasks. Then proactively trigger all idle worker agents.
+    if success:
+        try:
+            await _publish_agent_event(
+                "task_completed",
+                source_agent,
+                project_token=project_token,
+                task_id="TASK-00",
+                task_title="Project Bootstrap",
+            )
+            logger.info(
+                f"[{source_agent}] ✅ Published task_completed(TASK-00) to event bus — "
+                "DAG watcher will unblock idle agents."
+            )
+        except Exception as _evt_err:
+            logger.warning(f"[{source_agent}] Failed to publish bootstrap event (non-fatal): {_evt_err}")
+
+        # Asynchronously trigger idle worker agents to pick up post-bootstrap tasks
+        asyncio.ensure_future(_trigger_idle_worker_agents(project_token, source_agent))
+
+
+async def _trigger_idle_worker_agents(
+    project_token: Optional[str],
+    trigger_source: str = "bootstrap",
+) -> None:
+    """
+    After bootstrap completes, find all idle dev agents and trigger them
+    to pick up their next task in continuous mode.
+    Guards against double-triggering with a per-project flag in state.
+    """
+    if not project_token:
+        return
+    state = _ensure_project_state(project_token)
+
+    # Guard: only trigger once per bootstrap completion to avoid storms
+    if state.get("_idle_workers_triggered"):
+        logger.debug(f"[{trigger_source}] Idle worker trigger already fired for {project_token} — skipping.")
+        return
+    state["_idle_workers_triggered"] = True
+
+    # Brief pause to allow bootstrap event to propagate to DAG watcher first
+    await asyncio.sleep(3)
+
+    project_agents = state["agent_states"]
+    idle_dev_agents = [
+        (aid, agt)
+        for aid, agt in project_agents.items()
+        if not _is_system_agent_id(aid)
+        and agt.get("status") in ("idle", "waiting")
+        and not agt.get("blocked")
+    ]
+
+    if not idle_dev_agents:
+        logger.info(f"[{trigger_source}] No idle dev agents found to trigger post-bootstrap.")
+        return
+
+    logger.info(
+        f"[{trigger_source}] 🚀 Triggering {len(idle_dev_agents)} idle worker agent(s) "
+        "to pick post-bootstrap tasks."
+    )
+
+    task_token = get_project_task_token(project_token)
+
+    for aid, agt in idle_dev_agents:
+        try:
+            git_repo_url = agt.get("git_repo_url") or state.get("git_repo_url")
+            git_token_val = agt.get("git_token") or state.get("git_token")
+            logger.info(f"[{trigger_source}] ▶ Triggering agent {aid} (continuous=True)")
+            asyncio.ensure_future(
+                run_agent(
+                    agent_id=aid,
+                    git_repo_url=git_repo_url,
+                    git_token=git_token_val,
+                    continuous=True,
+                    ignore_running_check=False,
+                    project_token=project_token,
+                    task_token=task_token,
+                )
+            )
+        except Exception as _trig_err:
+            logger.warning(f"[{trigger_source}] Failed to trigger agent {aid}: {_trig_err}")
 
 
 async def _coordinate_repo_bootstrap(
@@ -17166,13 +17370,33 @@ async def _post_task_progress(task: Dict[str, Any], progress: int, additional_in
         return False
     timer_active = state["timer_log_state"].get(task_key, False)
     terminal_progress = progress in (0, 100)
+    # ── CRITICAL FIX: Never silently drop progress writes ──────────────────
+    # The previous guard returned False when timer_active was False and
+    # progress was not 0 or 100, causing all intermediate progress to be lost.
+    # Progress MUST always be persisted locally. If clock_in was missed,
+    # synthesize one now and queue it for NXDune sync.
     if not timer_active and not terminal_progress:
         logger.info(
-            f"[agent_service] Skipping progress for task {task_id}: "
-            "no successful clock_in recorded"
+            f"[agent_service] No clock_in for task {task_id}; synthesizing timer start "
+            "and proceeding with progress write."
         )
-        return False
-        
+        # Mark timer as active in memory so future progress writes pass normally
+        state["timer_log_state"][task_key] = True
+        # Queue a synthetic clock_in for NXDune sync
+        if resolved_project:
+            try:
+                from local_state_manager import queue_nxdune_sync
+                queue_nxdune_sync(
+                    project_token=resolved_project,
+                    operation="timer_log",
+                    agent_id=task.get("assigned_agent") or task.get("_local_agent_id") or "system",
+                    task_id=str(task_id),
+                    payload={"task_id": task_id, "log_type": "clock_in"},
+                )
+            except Exception as _ti_err:
+                logger.debug(f"[agent_service] Could not queue synthetic clock_in: {_ti_err}")
+    # ───────────────────────────────────────────────────────────────────────
+
     _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
     
     # 1. Update local database progress
@@ -17528,25 +17752,63 @@ async def _claim_initial_task_assignments(
 
         tid = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
 
-        # Opt-in serially via task_service
+        # Opt-in serially — local-first, NXDune async fallback
+        agent_username = build_external_agent_username(agent["id"], agent.get("name"))
+        from local_state_manager import claim_task_local, queue_nxdune_sync
+        task_lane_for_claim = _classify_task_assignment_lane(task)
+
+        nxdune_opt_in_ok = False
         try:
             from task_service import task_service
-            agent_username = build_external_agent_username(agent["id"], agent.get("name"))
             await task_service.opt_in_task(
                 {"task_id": int(tid), "username": agent_username},
                 task_token=effective_token,
             )
-            claimed_task_ids.add(tid)
-            task = _apply_master_task_metadata(dict(task), project_token=project_token)
-            if project_token:
-                task.setdefault("_project_token", project_token)
-            agent["current_task"] = task
-            agent["resume_pending_task"] = True
-            assignments.append((agent["id"], task))
-            logger.info(f"[Skill Assignment] Opt-in succeeded: Task {tid} → {agent['id']} ({agent.get('name', 'unnamed')})")
+            nxdune_opt_in_ok = True
+            logger.info(f"[Skill Assignment] NXDune opt-in succeeded: Task {tid} → {agent['id']}")
         except Exception as opt_err:
-            logger.warning(f"[Skill Assignment] Opt-in failed for task {tid} → {agent['id']}: {opt_err}")
+            err_text = str(opt_err).lower()
+            if "task already has assigned users" in err_text:
+                logger.info(f"[Skill Assignment] Task {tid} already claimed upstream; skipping for {agent['id']}.")
+                assignments.append((agent["id"], None))
+                continue
+            # NXDune unreachable — fall back to local claim + queue sync
+            logger.warning(
+                f"[Skill Assignment] NXDune opt-in failed for task {tid} → {agent['id']}: {opt_err}. "
+                "Falling back to local claim."
+            )
+            try:
+                queue_nxdune_sync(
+                    project_token=project_token or "",
+                    operation="opt_in_task",
+                    agent_id=agent["id"],
+                    task_id=str(tid),
+                    payload={"task_id": tid, "username": agent_username},
+                )
+            except Exception as _q_err:
+                logger.debug(f"[Skill Assignment] Could not queue opt-in sync for {tid}: {_q_err}")
+
+        # LOCAL CLAIM — authoritative record regardless of NXDune outcome
+        local_claimed = claim_task_local(
+            project_token=project_token or "",
+            agent_id=agent["id"],
+            task_id=str(tid),
+            task_data=dict(task),
+            task_lane=task_lane_for_claim,
+        )
+        if not local_claimed and not nxdune_opt_in_ok:
+            logger.info(f"[Skill Assignment] Task {tid} already claimed locally; skipping for {agent['id']}.")
             assignments.append((agent["id"], None))
+            continue
+
+        claimed_task_ids.add(tid)
+        task = _apply_master_task_metadata(dict(task), project_token=project_token)
+        if project_token:
+            task.setdefault("_project_token", project_token)
+        agent["current_task"] = task
+        agent["resume_pending_task"] = True
+        assignments.append((agent["id"], task))
+        logger.info(f"[Skill Assignment] Claimed: Task {tid} → {agent['id']} ({agent.get('name', 'unnamed')})")
 
 
     if not assignments:
@@ -18338,6 +18600,40 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                             skip_reasons["conflict_blocked"] += 1
                             continue
 
+            # ── Step 2b: Workstream Sequential Gate ──────────────────────────────
+            # Enforce sequential execution within the same domain (frontend/backend/qa).
+            # If another agent is actively running a task in this domain right now,
+            # skip so the current task waits until that work is committed.
+            # This prevents duplicate implementations and merge conflicts.
+            if not is_bootstrap_task and live_mem:
+                _task_domain_lane = _classify_task_assignment_lane(t)
+                if _task_domain_lane in ("frontend", "backend", "qa", "devops"):
+                    with live_mem._lock:
+                        active_same_domain = [
+                            record for record in live_mem.active_tasks.values()
+                            if record.task_domain == _task_domain_lane
+                            and record.agent_id != agent_id
+                            and record.status == "in_progress"
+                        ]
+                    if active_same_domain:
+                        active_agent_names = [r.agent_id for r in active_same_domain[:3]]
+                        msg = (
+                            f"⏸️ Task {tid} queued — {_task_domain_lane} domain "
+                            f"already has active work by: {active_agent_names}. "
+                            "Waiting for sequential completion."
+                        )
+                        logger.info(f"[{agent_id}] {msg}")
+                        if agent:
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": msg,
+                            })
+                        skip_reasons.setdefault("workstream_sequential_gate", 0)
+                        skip_reasons["workstream_sequential_gate"] += 1
+                        continue
+            # ─────────────────────────────────────────────────────────────────────
+
             # ── Step 3: Skill-based gate — only opt-in if this agent is the best fit ──
             # Ask MasterTaskManager to score ALL idle agents for this task.
             # If a better-suited agent exists, skip so that agent can claim instead.
@@ -18378,8 +18674,15 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 # Scoring failure is non-fatal — fall back to first-come-first-served
                 logger.debug(f"[{agent_id}] Skill-gate scoring failed for task {tid}: {_skill_err}")
 
-            # ── Step 4: Serial opt-in — atomically claim via external API ──
+            # ── Step 4: Serial opt-in — local-first, NXDune async fallback ──
+            # PRIMARY: Always claim locally first for resilience.
+            # SECONDARY: Attempt NXDune opt-in; if it fails, queue for retry.
 
+            from local_state_manager import claim_task_local, queue_nxdune_sync
+            task_lane_for_claim = _classify_task_assignment_lane(t) if not is_bootstrap_task else "bootstrap"
+
+            # Attempt NXDune opt-in first (provides upstream coordination)
+            nxdune_opt_in_ok = False
             try:
                 from task_service import task_service
                 effective_token = task_token or get_project_task_token(project_token)
@@ -18387,29 +18690,57 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                     {"task_id": int(tid), "username": agent_username},
                     task_token=effective_token,
                 )
+                nxdune_opt_in_ok = True
                 logger.info(f"[{agent_id}] ✅ Serial opt-in succeeded for task {tid}")
-                
+
                 # Do NOT auto-assign linked tasks — they are parent containers (EPIC/FEATURE/STORY)
                 # or sibling tasks that other agents should be free to pick up independently.
-                        
+
             except Exception as opt_err:
-                # If upstream reports that the task already has assigned users,
-                # treat it as claimed elsewhere so no other local agents will
-                # attempt to opt in again.
                 err_text = str(opt_err).lower()
                 if "task already has assigned users" in err_text:
+                    # Another agent owns this task upstream — mark claimed and skip
                     claimed_task_ids.add(tid)
                     logger.info(
                         f"[{agent_id}] Task {tid} already has assigned users upstream; "
                         f"marking as claimed and skipping."
                     )
+                    skip_reasons["opt_in_failed"] += 1
+                    continue
                 else:
-                    logger.info(
-                        f"[{agent_id}] Opt-in failed for task {tid} (another agent may have claimed it): {opt_err}"
+                    # NXDune unreachable or other transient error — fall back to local claim
+                    logger.warning(
+                        f"[{agent_id}] NXDune opt-in failed for task {tid} "
+                        f"({opt_err}). Falling back to local claim and queuing sync."
                     )
+                    # Queue the opt-in for async retry via NXDune sync worker
+                    try:
+                        queue_nxdune_sync(
+                            project_token=project_token or "",
+                            operation="opt_in_task",
+                            agent_id=agent_id,
+                            task_id=str(tid),
+                            payload={"task_id": tid, "username": agent_username},
+                        )
+                    except Exception as _q_err:
+                        logger.debug(f"[{agent_id}] Could not queue opt-in sync: {_q_err}")
+
+            # LOCAL CLAIM: Atomically claim in local DB regardless of NXDune outcome.
+            # This is the authoritative record. NXDune is eventually consistent.
+            local_claimed = claim_task_local(
+                project_token=project_token or "",
+                agent_id=agent_id,
+                task_id=str(tid),
+                task_data=dict(t),
+                task_lane=task_lane_for_claim,
+            )
+            if not local_claimed and not nxdune_opt_in_ok:
+                # Both NXDune and local claim failed — another agent owns this task
+                logger.info(f"[{agent_id}] Task {tid} already locally claimed by another agent; skipping.")
                 skip_reasons["opt_in_failed"] += 1
                 continue
 
+            # Claim succeeded (locally or via NXDune)
             # Opt-in succeeded — claim locally (only THIS task, not linked tasks)
             # Do NOT pre-claim linked tasks — other agents should be free to pick them up
             claimed_task_ids.add(tid)

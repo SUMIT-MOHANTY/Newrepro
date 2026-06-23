@@ -11039,6 +11039,86 @@ def _populate_local_dashboard_tasks(db: Session, project_token: str, dashboard_d
         
     return dashboard_data
 
+
+def _get_orphan_ownership_tasks(db: Session, project_token: str) -> list:
+    """
+    Return tasks that have AgentTaskOwnership records but no corresponding
+    local Task entry (e.g., TASK-00 'Project Bootstrap' which is an external
+    NXDune task never inserted into the local Task table).
+    These are formatted as pseudo-task dicts so they appear in the task list UI.
+    """
+    try:
+        # Get all local task_ids for this project
+        local_task_ids = {
+            t.task_id for t in db.query(models.Task.task_id).filter(
+                models.Task.project_token == project_token
+            ).all()
+        }
+
+        # Find ownership records whose task_id is not in the local Task table
+        all_ownerships = db.query(models.AgentTaskOwnership).filter(
+            models.AgentTaskOwnership.project_token == project_token
+        ).all()
+
+        orphan_tasks = []
+        seen_task_ids = set()
+        for ow in all_ownerships:
+            tid = ow.task_id or ""
+            # Skip if there is a corresponding local Task record
+            if tid in local_task_ids or tid in seen_task_ids:
+                continue
+            # Also skip suffix-matched records (e.g. project_TASK-00 vs TASK-00)
+            suffix = tid.split("_", 1)[-1] if "_" in tid else tid
+            if any(suffix in lt for lt in local_task_ids):
+                continue
+            seen_task_ids.add(tid)
+
+            # Determine progress and status from ownership record
+            ow_status = ow.status or "claimed"
+            if ow_status == "done":
+                display_status = "Completed"
+                progress = 100
+            elif ow_status == "in_progress":
+                display_status = "On Going"
+                stored = (ow.task_data or {}).get("task_progress", 50)
+                try:
+                    progress = int(stored)
+                except (ValueError, TypeError):
+                    progress = 50
+            else:
+                display_status = "To Do"
+                progress = 0
+
+            task_data = ow.task_data or {}
+            orphan_tasks.append({
+                "id": tid,
+                "task_id": tid,
+                "taskName": ow.task_title or task_data.get("title") or task_data.get("taskName") or tid,
+                "description": task_data.get("description") or "",
+                "task_type": task_data.get("task_type") or "TASK",
+                "priority": (task_data.get("priority") or "medium").lower(),
+                "taskStatus": display_status,
+                "task_progress": progress,
+                "is_completed": display_status == "Completed",
+                "assignedTo": [],
+                "task_wallet": 0,
+                "deadline": task_data.get("deadline"),
+                "days_left": None,
+                "sprint_name": task_data.get("sprint") or "Sprint 1",
+                "milestone_name": task_data.get("milestone") or "Milestone 1",
+                "checklist": [],
+                "is_flaged": False,
+                "selected": True,
+                "synced_to_nxdune": False,
+                "_is_orphan_ownership": True,
+            })
+
+        return orphan_tasks
+    except Exception as e:
+        logger.warning(f"_get_orphan_ownership_tasks failed (non-fatal): {e}")
+        return []
+
+
 @app.get("/api/agent/tasks-list/")
 async def get_external_agent_tasks(
     current_user: models.User = Depends(auth.get_current_user),
@@ -11049,6 +11129,7 @@ async def get_external_agent_tasks(
 ):
     """
     Fetch the list of active tasks from the local DB first, falling back to external API if none found.
+    Also includes orphan ownership tasks (e.g. TASK-00 bootstrap) that have no local Task record.
     """
     if not x_task_token and not x_project_token:
         raise HTTPException(status_code=400, detail="x-task-token or x-project-token header is required")
@@ -11065,10 +11146,15 @@ async def get_external_agent_tasks(
         # Check if we have ANY tasks generated locally for this project
         has_any_local = db.query(models.Task).filter(models.Task.project_token == resolved_token).first() is not None
         
+        # Always include orphan ownership tasks (e.g. bootstrap TASK-00) in the result
+        orphan_tasks = _get_orphan_ownership_tasks(db, resolved_token)
+        
         if local_tasks:
             formatted = _format_local_tasks_as_nxdune(db, local_tasks, resolved_token)
+            # Merge orphan tasks (like TASK-00) so they appear in the task list
+            merged = list(orphan_tasks) + formatted
             # Filter out Completed tasks
-            active_tasks = [t for t in formatted if t.get("taskStatus") != "Completed"]
+            active_tasks = [t for t in merged if t.get("taskStatus") != "Completed"]
             total_count = len(active_tasks)
             
             if page:
@@ -11086,7 +11172,14 @@ async def get_external_agent_tasks(
             else:
                 return active_tasks
         elif has_any_local:
-            # If we have local tasks generated but none selected/synced, return empty response
+            # If we have local tasks generated but none selected/synced,
+            # still return orphan ownership tasks (bootstrap progress)
+            active_orphans = [t for t in orphan_tasks if t.get("taskStatus") != "Completed"]
+            if active_orphans:
+                if page:
+                    return {"count": len(active_orphans), "results": active_orphans, "next": None, "previous": None}
+                else:
+                    return active_orphans
             if page:
                 return {"count": 0, "results": [], "next": None, "previous": None}
             else:
@@ -11107,6 +11200,7 @@ async def get_external_agent_tasks(
             return {"count": 0, "results": [], "next": None, "previous": None}
         else:
             return []
+
 
 @app.get("/api/agent/tasks-total-list/")
 async def get_external_agent_total_tasks(

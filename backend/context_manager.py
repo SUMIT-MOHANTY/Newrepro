@@ -1299,6 +1299,95 @@ class ProjectLiveMemory:
                 self.completed_history = self.completed_history[:self._max_history]
             del self.active_tasks[agent_id]
 
+    def _persist_file_intent_to_db(
+        self,
+        agent_id: str,
+        file_paths: List[str],
+    ) -> None:
+        """
+        Persist file ownership intent to AgentTaskOwnership.files_written in the DB.
+        This is the crash-recovery hook — if the server restarts, these paths
+        will be read back by restore_file_locks_from_db() and repopulated
+        into self.file_locks without needing NXDune.
+        Non-blocking: any DB error is logged but never raised.
+        """
+        if not file_paths or not self._project_token:
+            return
+        try:
+            from database import SessionLocal
+            import models as _models
+            db = SessionLocal()
+            try:
+                # Find the active ownership record for this agent in this project
+                ownership = (
+                    db.query(_models.AgentTaskOwnership)
+                    .filter(
+                        _models.AgentTaskOwnership.project_token == self._project_token,
+                        _models.AgentTaskOwnership.agent_id == agent_id,
+                        _models.AgentTaskOwnership.status.in_(["claimed", "in_progress"]),
+                    )
+                    .order_by(_models.AgentTaskOwnership.claimed_at.desc())
+                    .first()
+                )
+                if not ownership:
+                    return  # No active task — nothing to persist against
+                existing = list(ownership.files_written or [])
+                updated = list(existing)
+                for fp in file_paths:
+                    if fp not in updated:
+                        updated.append(fp)
+                if updated != existing:
+                    ownership.files_written = updated
+                    ownership.updated_at = datetime.utcnow()
+                    db.commit()
+            finally:
+                db.close()
+        except Exception as _db_err:
+            logger.debug(f"[{agent_id}] _persist_file_intent_to_db failed (non-fatal): {_db_err}")
+
+    def restore_file_locks_from_db(self) -> None:
+        """
+        Called on server startup / first use to restore file_locks from DB.
+        Reads all in_progress AgentTaskOwnership records for this project and
+        re-populates file_locks so the conflict detector works correctly after restart.
+        """
+        if not self._project_token:
+            return
+        try:
+            from database import SessionLocal
+            import models as _models
+            db = SessionLocal()
+            try:
+                active_ownerships = (
+                    db.query(_models.AgentTaskOwnership)
+                    .filter(
+                        _models.AgentTaskOwnership.project_token == self._project_token,
+                        _models.AgentTaskOwnership.status.in_(["claimed", "in_progress"]),
+                    )
+                    .all()
+                )
+                restored_count = 0
+                with self._lock:
+                    for ow in active_ownerships:
+                        agent = ow.agent_id
+                        for fp in (ow.files_written or []):
+                            normalized = _normalize_contract_path(fp)
+                            if not normalized:
+                                continue
+                            if normalized not in self.file_locks:
+                                self.file_locks[normalized] = set()
+                            self.file_locks[normalized].add(agent)
+                            restored_count += 1
+                if restored_count:
+                    logger.info(
+                        f"[ProjectLiveMemory:{self._project_token}] "
+                        f"Restored {restored_count} file lock(s) from DB after restart."
+                    )
+            finally:
+                db.close()
+        except Exception as _db_err:
+            logger.debug(f"restore_file_locks_from_db failed (non-fatal): {_db_err}")
+
     def register_file_intent(self, agent_id: str, file_paths: List[str]):
         """Register that an agent intends to touch certain files."""
         normalized_paths = []
@@ -1326,6 +1415,9 @@ class ProjectLiveMemory:
                     if fp not in current:
                         current.append(fp)
                 record.files_touched = current[:50]
+
+        # Persist to DB for crash recovery (non-blocking)
+        self._persist_file_intent_to_db(agent_id, normalized_paths)
 
     def release_file_intent(self, agent_id: str, file_paths: Optional[List[str]] = None):
         """Release file intent locks for a specific agent."""
@@ -1372,6 +1464,49 @@ class ProjectLiveMemory:
                     return record.task_domain
             
             return None
+
+    def get_workstream_files(self, domain: str) -> List[str]:
+        """
+        Get all files written by this workstream domain (task lane) in this project.
+        Reads from both the active in-memory completed_history and the local DB
+        AgentTaskOwnership table for full cross-restart reliability.
+        """
+        files = set()
+        
+        # 1. Read from in-memory history
+        with self._lock:
+            for record in self.completed_history:
+                if record.task_domain == domain:
+                    for fp in record.files_touched:
+                        if fp:
+                            files.add(fp)
+        
+        # 2. Read from local DB
+        if self._project_token:
+            try:
+                from database import SessionLocal
+                import models as _models
+                db = SessionLocal()
+                try:
+                    records = (
+                        db.query(_models.AgentTaskOwnership)
+                        .filter(
+                            _models.AgentTaskOwnership.project_token == self._project_token,
+                            _models.AgentTaskOwnership.task_lane == domain,
+                            _models.AgentTaskOwnership.status == "done",
+                        )
+                        .all()
+                    )
+                    for r in records:
+                        for fp in (r.files_written or []):
+                            if fp:
+                                files.add(fp)
+                finally:
+                    db.close()
+            except Exception as _db_err:
+                logger.debug(f"get_workstream_files DB fetch failed (non-fatal): {_db_err}")
+                
+        return sorted(list(files))
 
     def validate_file_access(self, agent_id: str, file_paths: List[str]) -> tuple[bool, List[str]]:
         """
@@ -1526,9 +1661,15 @@ _project_live_memories: Dict[str, ProjectLiveMemory] = {}
 
 
 def get_live_memory(project_token: str) -> ProjectLiveMemory:
-    """Get or create the shared live memory for a project."""
+    """Get or create the shared live memory for a project.
+    On first creation, restores file lock state from the DB so the
+    conflict detector has correct state after server restarts.
+    """
     if project_token not in _project_live_memories:
-        _project_live_memories[project_token] = ProjectLiveMemory(project_token=project_token)
+        mem = ProjectLiveMemory(project_token=project_token)
+        # Restore file locks persisted before any restart
+        mem.restore_file_locks_from_db()
+        _project_live_memories[project_token] = mem
     return _project_live_memories[project_token]
 
 

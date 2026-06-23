@@ -25,6 +25,30 @@ import models
 
 logger = logging.getLogger(__name__)
 
+def _resolve_canonical_task_id(db, project_token: str, task_id_ident: Any) -> str:
+    if not task_id_ident:
+        return ""
+    task_id_str = str(task_id_ident).strip()
+    if "_" in task_id_str:
+        return task_id_str
+    try:
+        int_val = int(task_id_ident)
+        task = db.query(models.Task).filter(models.Task.project_token == project_token, models.Task.id == int_val).first()
+        if task:
+            return task.task_id
+        task = db.query(models.Task).filter(models.Task.project_token == project_token, models.Task.nxdune_task_id == int_val).first()
+        if task:
+            return task.task_id
+    except (ValueError, TypeError):
+        pass
+    task = db.query(models.Task).filter(models.Task.project_token == project_token, models.Task.task_id.like(f"%_{task_id_str}")).first()
+    if task:
+        return task.task_id
+    if task_id_str.startswith("TASK-") or task_id_str.startswith("EPIC-") or task_id_str.startswith("FEATURE-"):
+        return f"{project_token}_{task_id_str}"
+    return task_id_str
+
+
 # ---------------------------------------------------------------------------
 # Task Ownership — claim / complete / restore
 # ---------------------------------------------------------------------------
@@ -45,6 +69,7 @@ def claim_task_local(
     """
     db = SessionLocal()
     try:
+        task_id = _resolve_canonical_task_id(db, project_token, task_id)
         # Check if already claimed by someone else
         existing = db.query(models.AgentTaskOwnership).filter(
             models.AgentTaskOwnership.project_token == project_token,
@@ -125,6 +150,7 @@ def start_task_local(
     """Mark a claimed task as in_progress and record the branch."""
     db = SessionLocal()
     try:
+        task_id = _resolve_canonical_task_id(db, project_token, task_id)
         record = db.query(models.AgentTaskOwnership).filter(
             models.AgentTaskOwnership.project_token == project_token,
             models.AgentTaskOwnership.task_id == task_id,
@@ -162,6 +188,7 @@ def complete_task_local(
     """
     db = SessionLocal()
     try:
+        task_id = _resolve_canonical_task_id(db, project_token, task_id)
         record = db.query(models.AgentTaskOwnership).filter(
             models.AgentTaskOwnership.project_token == project_token,
             models.AgentTaskOwnership.task_id == task_id,
@@ -209,6 +236,7 @@ def update_task_progress_local(
     """Record task progress locally in database."""
     db = SessionLocal()
     try:
+        task_id = _resolve_canonical_task_id(db, project_token, task_id)
         record = db.query(models.AgentTaskOwnership).filter(
             models.AgentTaskOwnership.project_token == project_token,
             models.AgentTaskOwnership.task_id == task_id,
@@ -238,6 +266,7 @@ def fail_task_local(
     """Mark task as failed in local DB."""
     db = SessionLocal()
     try:
+        task_id = _resolve_canonical_task_id(db, project_token, task_id)
         record = db.query(models.AgentTaskOwnership).filter(
             models.AgentTaskOwnership.project_token == project_token,
             models.AgentTaskOwnership.task_id == task_id,
