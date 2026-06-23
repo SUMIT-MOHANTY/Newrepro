@@ -128,15 +128,19 @@ def _clean_ai_code_response(content: str) -> tuple[str, str]:
                 logger.debug(f"Skipping filepath with spaces: {filepath}")
                 continue
             
-            # BUG FIX 1: Strip leading project-name segment from ALL paths, not just standard roots
-            # This prevents files from landing in /workspace/my-project/backend/ instead of /workspace/backend/
-            # Pattern: Remove first segment if it's followed by a standard root directory
+            # BUG FIX 1: Strip leading project-name segment from paths ONLY when
+            # the first segment is clearly a project-name wrapper (contains hyphen,
+            # underscore, or is followed by a standard architecture root).
+            # DO NOT strip valid domain-specific roots like app/, api/, libs/, etc.
+            # Pattern: Remove first segment ONLY if it is followed by a standard root
             filepath = _re.sub(r'^[^/]+/(backend/|frontend/|shared/|orchestrator/|src/|app/)', r'\1', filepath)
-            # Also handle case where project name wraps the entire path (e.g., "my-project/utils/helper.py")
-            # If path starts with a segment that doesn't look like a standard root, strip it
+            # Secondary check: if the first segment contains hyphens/digits (classic
+            # project-name format like "my-project-v2") AND the second segment is a
+            # known architecture root, strip it.
             parts = filepath.split('/')
-            if len(parts) > 1 and parts[0] not in ['backend', 'frontend', 'shared', 'orchestrator', 'src', 'app', 'tests', 'docs', 'config']:
-                # First segment is likely a project name wrapper - remove it
+            if (len(parts) > 1
+                    and ('-' in parts[0] or parts[0].replace('_', '').isdigit())
+                    and parts[1] in {'backend', 'frontend', 'shared', 'orchestrator', 'src', 'tests', 'docs', 'config'}):
                 filepath = '/'.join(parts[1:])
             
             # Determine directory from filepath
@@ -211,6 +215,19 @@ def _clean_ai_code_response(content: str) -> tuple[str, str]:
     content = content.replace('\u2013', '-').replace('\u2014', '--')
     content = content.replace('\u2026', '...')
     content = content.replace('\u2192', '->').replace('\u2190', '<-')
+
+    # Comment out any raw [RISK], [CHECK], [CREATED] bracket lines that aren't commented/echoed
+    cleaned_lines_bracket = []
+    for line in content.split('\n'):
+        stripped = line.strip()
+        if (
+            (stripped.startswith('[RISK') or stripped.startswith('[CHECK') or stripped.startswith('[CREATED')) 
+            and not (stripped.startswith('#') or stripped.startswith('echo'))
+        ):
+            cleaned_lines_bracket.append("# " + line)
+        else:
+            cleaned_lines_bracket.append(line)
+    content = '\n'.join(cleaned_lines_bracket)
 
     final_thought = thought_text
     if narrative and not final_thought:
@@ -1269,26 +1286,21 @@ CRITICAL RULE AGAINST PLACEHOLDERS & HALF-BAKED GENERATION (MANDATORY):
 - Any heredoc blocks (`cat <<'EOF' > filename`) MUST contain the complete, syntactically correct, and fully functional content of the file from top to bottom. Failure to write complete code will break compilation checks and fail the task.
 
 CRITICAL: WORKING IN EXISTING PROJECT STRUCTURE (POST-BOOTSTRAP):
-- The project structure has ALREADY been created by the bootstrap agent
-- Files and directories ALREADY EXIST as empty placeholders - you are adding IMPLEMENTATION ONLY
-- DO NOT create ANY new files - all files already exist from bootstrap
-- DO NOT create ANY new directories - all directories already exist from bootstrap
-- DO NOT use 'touch' command - files already exist
-- DO NOT use 'mkdir' command - directories already exist
-- ONLY add content to EXISTING empty files using 'cat <<'EOF' > path'
-- Focus ONLY on the specific files mentioned in your task description
-- If a file you need doesn't exist, it means it's not part of the project structure - DO NOT create it
-- Your job is to IMPLEMENT features in existing files, NOT to create new files
+- The project structure was BOOTSTRAPPED — the key directories and placeholder files already exist as EMPTY files.
+- Your job is to WRITE IMPLEMENTATION CODE into those existing placeholder files.
+- Use `cat <<'EOF' > path` to write full content into an existing file (this overwrites the empty placeholder — that is correct and expected).
+- If a file already has content and you want to add more, use `cat <<'EOF' >> path` to append.
+- If a file or directory DOES NOT exist on disk (e.g. a helper you need that wasn't bootstrapped), you MAY use `mkdir -p` to create the directory and `cat <<'EOF' > path` to create the file — do not skip creating files you need.
+- DO NOT use bare `touch` to create files that need code content — use cat heredocs instead so they get real content.
+- Focus ONLY on the specific files mentioned in your task description and the CANONICAL FILE TARGETS list.
 
 CRITICAL SCRIPT SIZE RULES:
 - Return a Bash shell script UNDER 1000 lines total. This is very important.
 - Use shell commands to inspect files: ls, find, grep -q, cat
-- Write content to EXISTING files with heredocs: cat <<'EOF' > path or cat <<'EOF' >> path
+- Write FULL content into files with heredocs: cat <<'EOF' > path (overwrite placeholder) or cat <<'EOF' >> path (append)
 - DO NOT use Python code to write files
-- DO NOT use 'touch' to create new files (all files already exist from bootstrap)
-- DO NOT use 'mkdir' to create new directories (all directories already exist from bootstrap)
 - Focus on the 10-15 most essential files that need implementation
-- Keep all work rooted in /workspace and ONLY edit existing files
+- Keep all work rooted in /workspace
 
 CRITICAL SHELL COMPATIBILITY RULES (MANDATORY - FAILURE TO FOLLOW CAUSES CRASHES):
 - NEVER EVER use 'set -o pipefail' or 'set -euo pipefail' - these cause fatal errors in Docker environments
@@ -1334,11 +1346,6 @@ FORBIDDEN PATTERNS (these will cause immediate script failure):
 ❌ Incomplete code without error handling
 ❌ Missing imports or dependencies
 ❌ Hardcoded values without configuration
-❌ Recreating the entire project structure (it already exists!)
-❌ Creating ANY new directories (all directories exist from bootstrap)
-❌ Creating ANY new files (all files exist from bootstrap)
-❌ Using 'touch' command (files already exist)
-❌ Using 'mkdir' or 'mkdir -p' command (directories already exist)
 ❌ Assuming a specific tech stack (FastAPI, React, etc.) when not specified
 
 ALLOWED PATTERNS:
@@ -1348,10 +1355,19 @@ ALLOWED PATTERNS:
 ✅ Detecting tech stack from project structure and technical spec
 ✅ Adapting code patterns to the detected/specified tech stack
 ✅ Writing clean, working code appropriate to the technology being used
+✅ mkdir -p for directories that don't exist yet
+✅ cat <<'EOF' > path to write full file content (overwrites empty bootstrap placeholder)
 """
 
 # Bootstrap-specific rules (NO file content generation) — TECH-STACK AGNOSTIC
 _BOOTSTRAP_CODE_RULES = """
+
+⚠️ CRITICAL MANDATE — STRUCTURE ONLY:
+- THIS IS A STRUCTURE-ONLY BOOTSTRAP PHASE. YOU MUST NOT GENERATE ANY CODE CONTENT FOR ANY FILES.
+- DO NOT WRITE HEREDOCS (cat <<EOF ... EOF). ALL FILES CREATED MUST REMAIN 100% EMPTY.
+- USE ONLY 'touch' to create empty placeholder files.
+- USE ONLY 'mkdir -p' to create directories.
+- Writing full page contents, imports, HTML tags, or TSX/JS code is STRICTLY PROHIBITED and will cause validation errors.
 
 BOOTSTRAP TASK RULES - STRUCTURE ONLY (ANY TECH STACK):
 - Bootstrap tasks create EMPTY placeholder files and directories ONLY
@@ -4073,7 +4089,16 @@ async def _call_ai_for_code(
         checklist: Checklist items for chunked generation
         task: Dict representing the current task
     """
-    if checklist and len(checklist) > 0:
+    is_bootstrap = False
+    if "bootstrap" in task_description.lower() or "task-00" in task_description.upper() or "task_00" in task_description.upper():
+        is_bootstrap = True
+    if task:
+        task_id_str = str(task.get("id") or task.get("task_id") or "").upper()
+        task_title_str = str(task.get("title") or task.get("taskName") or "").lower()
+        if "bootstrap" in task_title_str or "task-00" in task_id_str or "task_00" in task_id_str:
+            is_bootstrap = True
+
+    if checklist and len(checklist) > 0 and not is_bootstrap:
         try:
             return await _call_ai_for_code_chunked(
                 task_description=task_description,
@@ -10471,7 +10496,7 @@ def _exec_script_in_container(container_name: str, code: str, script_label: str 
     src_prefix = "frontend/src/" if has_frontend_src else "src/"
     
     # Match standalone folder names that are not preceded by src/ or frontend/src/ or backend/ or app/
-    folder_pattern = r'\b(?:(src|frontend/src|frontend|backend|app)/)?\b(components|hooks|pages|styles|services|utils|ui|layout|common)\b'
+    folder_pattern = r'(?<![\w\.\-/])\b(?:(src|frontend/src|frontend|backend|app)/)?(components|hooks|pages|styles|services|utils|ui|layout|common)\b'
     
     def path_replacer(m):
         prefix = m.group(1)
@@ -10498,8 +10523,14 @@ def _exec_script_in_container(container_name: str, code: str, script_label: str 
             processed_lines.append(line)
             continue
             
-        # Check for EOF block start
-        marker_match = re.search(r'<<\s*[\'"]?([a-zA-Z0-9_\-]+)[\'"]?', line_stripped)
+        # Prevent executing unmatched EOF delimiters as commands
+        if not in_eof and line_stripped == "EOF":
+            logger.info("Found unmatched EOF delimiter line outside of active heredoc - commenting out")
+            processed_lines.append("# EOF (removed unmatched delimiter)")
+            continue
+
+        # Check for EOF block start (handling <<EOF, <<'EOF', and <<\EOF)
+        marker_match = re.search(r'<<\s*\\?[\'"]?([a-zA-Z0-9_\-]+)[\'"]?', line_stripped)
         if marker_match:
             eof_marker = marker_match.group(1)
             in_eof = True
@@ -10931,13 +10962,36 @@ async def _fetch_external_tasks(
 
     db = SessionLocal()
     try:
+        # Resolve project token if it's a JWT
+        resolved_project = project_token
+        if project_token and '.' in project_token:
+            try:
+                import base64
+                import json
+                parts = project_token.split('.')
+                if len(parts) == 3:
+                    payload_b64 = parts[1]
+                    payload_b64 += '=' * (-len(payload_b64) % 4)
+                    payload_json = base64.urlsafe_b64decode(payload_b64).decode('utf-8')
+                    payload_data = json.loads(payload_json)
+                    client_id = payload_data.get("client_id")
+                    if client_id:
+                        proj = db.query(models.GovernanceResponse).filter(
+                            models.GovernanceResponse.client_id == client_id
+                        ).first()
+                        if proj:
+                            resolved_project = proj.project_token
+            except Exception as jwt_err:
+                print(f"Error resolving project_token JWT in _fetch_external_tasks: {jwt_err}")
+
         db_tasks = db.query(models.Task).filter(
-            models.Task.project_token == project_token
+            models.Task.project_token == resolved_project,
+            (models.Task.selected == True) | (models.Task.synced_to_nxdune == True)
         ).all()
         
         # Get ownerships to determine status and progress
         ownerships = db.query(models.AgentTaskOwnership).filter(
-            models.AgentTaskOwnership.project_token == project_token
+            models.AgentTaskOwnership.project_token == resolved_project
         ).all()
         ownership_map = {ow.task_id: ow for ow in ownerships}
         
@@ -11064,6 +11118,8 @@ async def _fetch_external_tasks(
                 "deadline": t.deadline,
                 "assignees": assignees_list,
                 "_project_token": project_token,
+                "selected": t.selected,
+                "synced_to_nxdune": t.synced_to_nxdune,
             })
         return normalized
     except Exception as e:
@@ -20228,10 +20284,13 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
 
             # ── Fix 4: Resolve canonical file targets from master tree ─
             # SKIP for bootstrap tasks - they create the entire structure, not specific files
-            task_id_str = (task.get("task_id") or task.get("external_task_id") or "").strip().upper()
+            task_id_str = (
+                task.get("task_id") or task.get("external_task_id") or task.get("id") or ""
+            ).strip().upper()
             task_title_str = (task.get("title") or task.get("taskName") or "").strip().lower()
             is_bootstrap_task = (
                 task_id_str == "TASK-00"
+                or task_id_str.replace("_", "-") == "TASK-00"
                 or "project bootstrap" in task_title_str
                 or "bootstrap" in task_title_str
             )
@@ -20291,7 +20350,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             
             # CRITICAL: For bootstrap tasks, skip dynamic prompt and use ONLY static system prompt
             # Dynamic prompt contains contradictory instructions about file content generation
-            is_bootstrap_task = "bootstrap" in task.get("title", "").lower() or "TASK-00" in str(task.get("id", ""))
+            # NOTE: is_bootstrap_task was already computed above — do NOT redefine here.
             
             if is_bootstrap_task:
                 # Use static system prompt for bootstrap - but replace bulletproof rules with bootstrap rules
@@ -20593,8 +20652,63 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 # Log the insufficient response for debugging
                 logger.warning(f"[{agent_id}] Insufficient AI response ({generated_lines} lines): {generated_code[:200]}")
                 
-                # Retry with more explicit prompt
-                retry_prompt = f"""CRITICAL: You MUST generate a COMPLETE shell script that creates ALL files.
+                # ── BOOTSTRAP vs NORMAL retry prompt ──────────────────────────────
+                # Bootstrap tasks must only create EMPTY placeholder files/dirs.
+                # Non-bootstrap tasks should produce real implementation code.
+                if is_bootstrap_task:
+                    retry_prompt = f"""CRITICAL: You MUST generate a COMPLETE shell script that creates the project structure.
+
+Previous attempt only generated {generated_lines} lines which is INSUFFICIENT.
+
+Task: {task["description"]}
+
+⚠️ THIS IS A BOOTSTRAP / STRUCTURE-ONLY TASK.
+YOU MUST:
+1. Create ALL directories using mkdir -p
+2. Create ALL files as EMPTY placeholders using touch (NOT cat <<EOF or heredocs)
+3. DO NOT write any code/content inside any file
+4. DO NOT use cat <<'EOF' or heredocs
+5. Include proper error checking (set -e)
+6. Print [CREATED] for each file/dir
+7. Add .gitkeep to any empty leaf directories
+8. Print === SUMMARY === at the end
+
+Example structure:
+```bash
+#!/usr/bin/env bash
+set -e
+cd /workspace
+
+echo "Creating project structure..."
+
+# Create directories
+mkdir -p backend/app/auth
+mkdir -p backend/app/users
+mkdir -p frontend/src/components
+mkdir -p frontend/src/pages
+
+# Create empty placeholder files (DO NOT add content)
+touch backend/app/__init__.py
+touch backend/app/auth/__init__.py
+touch backend/app/auth/routes.py
+touch backend/app/users/__init__.py
+touch backend/app/users/models.py
+touch frontend/src/components/App.jsx
+touch frontend/src/pages/Home.jsx
+touch README.md
+
+# Add .gitkeep to empty directories
+touch frontend/public/.gitkeep
+
+echo "[CREATED] All directories and files"
+echo "=== SUMMARY ==="
+echo "Project structure created successfully."
+ls -R
+```
+
+NOW GENERATE THE COMPLETE STRUCTURE-ONLY SCRIPT (touch and mkdir only, no file content):"""
+                else:
+                    retry_prompt = f"""CRITICAL: You MUST generate a COMPLETE shell script that creates ALL files.
 
 Previous attempt only generated {generated_lines} lines which is INSUFFICIENT.
 
@@ -20613,8 +20727,9 @@ DO NOT just write comments or placeholders - write ACTUAL WORKING CODE.
 
 Example structure:
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
+cd /workspace
 
 # Create directories
 mkdir -p backend/app
@@ -20684,7 +20799,8 @@ NOW GENERATE THE COMPLETE SCRIPT:"""
             )
             
             # ── Run Build Validation (Change #1 & Change #4) ─────────
-            if result.get("exit_code") == 0:
+            # SKIP for bootstrap tasks — empty placeholder files always fail compilation
+            if result.get("exit_code") == 0 and not is_bootstrap_task:
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
@@ -25983,6 +26099,7 @@ async def _bulletproof_call_ai_for_fix(
     confidence_score: float = 0.9,
     project_root: str = "/workspace",  # NEW: Bootstrap-defined project root
     canonical_files: Optional[List[str]] = None,
+    is_bootstrap: bool = False,         # NEW: Pass bootstrap state
 ) -> tuple[str, str]:
     """
     BULLETPROOF AI fix generation with 90%+ success guarantee.
@@ -26115,6 +26232,16 @@ Generate a BULLETPROOF script that fixes ALL detected issues:
             + "=====================================\n\n"
         )
         
+    rules_block = _BOOTSTRAP_CODE_RULES if is_bootstrap else _BULLETPROOF_CODE_RULES
+    if is_bootstrap:
+        fix_prompt = (
+            "⚠️ CRITICAL MANDATE — BOOTSTRAP TASK WORK: THIS IS A BOOTSTRAP TASK WORKSHOP. "
+            "YOU MUST NOT WRITE HEREDOCS (cat <<EOF ... EOF) OR CODE/CSS/JS/HTML CONTENTS. "
+            "CREATE ONLY EMPTY PLACEHOLDER FILES USING 'touch' AND DIRECTORIES USING 'mkdir -p'. "
+            "ANY CODE/HEREDOC CONTENT GENERATION IS STRICTLY PROHIBITED.\n\n"
+            + fix_prompt
+        )
+
     full_prompt = f"""
 {canonical_files_prefix}{fix_prompt}
 
@@ -26138,7 +26265,7 @@ MANDATORY SUCCESS REQUIREMENTS:
 4. Script MUST include error handling for every operation
 5. Script MUST be testable and verifiable
 
-{_BULLETPROOF_CODE_RULES}
+{rules_block}
 
 Generate the fix script now:
 """
@@ -26184,15 +26311,34 @@ Generate the fix script now:
     except Exception as e:
         logger.error(f"Bulletproof fix generation failed: {e}")
         
-        # Generate emergency fallback fix
-        fallback_fix = f"""#!/usr/bin/env bash
+        # Generate emergency fallback fix — bootstrap-aware
+        if is_bootstrap:
+            fallback_fix = f"""#!/usr/bin/env bash
+set -e
+cd /workspace
+
+echo "Emergency bootstrap fallback: ensuring basic structure exists"
+
+# Ensure at minimum these standard structure markers exist
+mkdir -p backend frontend tests docs orchestrator
+touch README.md
+touch .gitignore
+
+# Add .gitkeep to empty leaf dirs so Git preserves them
+for d in backend frontend tests docs orchestrator; do
+    if [ -d "$d" ] && [ -z "$(ls -A $d 2>/dev/null)" ]; then
+        touch "$d/.gitkeep"
+    fi
+done
+
+echo "Emergency bootstrap fix completed"
+"""
+        else:
+            fallback_fix = f"""#!/usr/bin/env bash
 set -e
 cd /workspace
 
 echo "Emergency fallback fix for: {', '.join(issues[:2])}"
-
-# Create basic project structure if missing
-mkdir -p src tests docs
 
 # Fix common dependency issues
 if [ -f package.json ]; then
@@ -26209,10 +26355,7 @@ if [ ! -f README.md ]; then
 fi
 
 if [ ! -f .gitignore ]; then
-    echo "node_modules/
-__pycache__/
-*.pyc
-.env" > .gitignore
+    printf 'node_modules/\\n__pycache__/\\n*.pyc\\n.env\\n' > .gitignore
 fi
 
 echo "Emergency fix completed"
@@ -26409,6 +26552,11 @@ async def _bulletproof_self_healing_loop(
         logger.info(f"Issues detected: {issue_report['issue_count']} (priority: {issue_report['priority']})")
         logger.info(f"Fix confidence: {issue_report['confidence_score']:.0%}")
         
+        # Detect if it is a bootstrap task
+        task_id_str = str(task.get("id") or task.get("task_id") or task.get("external_task_id") or "").upper()
+        task_title_str = str(task.get("title") or task.get("taskName") or "").lower()
+        is_bootstrap = "bootstrap" in task_title_str or "task-00" in task_id_str or "task_00" in task_id_str or "task-00" in task_id_str.replace("_", "-")
+
         # Generate bulletproof fix
         try:
             fix_code, thought = await _bulletproof_call_ai_for_fix(
@@ -26425,6 +26573,7 @@ async def _bulletproof_self_healing_loop(
                 confidence_score=issue_report["confidence_score"],
                 project_root=project_root,  # Pass bootstrap project root
                 canonical_files=canonical_files,
+                is_bootstrap=is_bootstrap,  # Pass bootstrap state
             )
             
             logger.info(f"Generated bulletproof fix: {len(fix_code)} chars")
@@ -26439,7 +26588,8 @@ async def _bulletproof_self_healing_loop(
             )
             
             # Run build validation check (Change #1 & Change #4)
-            if result.get("exit_code") == 0:
+            # SKIP for bootstrap tasks — empty files always fail compilation checks
+            if result.get("exit_code") == 0 and not is_bootstrap:
                 val_res = _run_build_validation_in_container(container_name, project_root)
                 if not val_res["success"]:
                     result["exit_code"] = val_res["exit_code"]

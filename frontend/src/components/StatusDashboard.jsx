@@ -146,6 +146,29 @@ function getTaskSprintLabel(task) {
     return 'Unassigned';
 }
 
+function safeGetAssignees(assignedTo) {
+    if (!assignedTo) return [];
+    if (Array.isArray(assignedTo)) return assignedTo;
+    if (typeof assignedTo === 'string') {
+        let current = assignedTo.trim();
+        if (current === '[]' || current === '""' || current === '"[]"') return [];
+        try {
+            const parsed = JSON.parse(current);
+            if (Array.isArray(parsed)) return parsed;
+            if (typeof parsed === 'string') {
+                return safeGetAssignees(parsed);
+            }
+            return [parsed];
+        } catch (e) {
+            if (current.includes(',')) {
+                return current.split(',').map(s => s.trim()).filter(Boolean);
+            }
+            return [current];
+        }
+    }
+    return [];
+}
+
 function toNumber(value) {
     const n = Number(value);
     return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
@@ -433,6 +456,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         queryKey: ['projectInfo', selectedProjectKey, taskToken],
         queryFn: async () => {
             const headers = { 'Authorization': `Bearer ${token}` };
+            if (selectedProjectKey) headers['x-project-token'] = selectedProjectKey;
             if (taskToken) headers['x-task-token'] = taskToken;
             const res = await fetch(API_ENDPOINTS.AGENT_PROJECT_INFO, { headers });
             if (!res.ok) throw new Error('Failed to fetch project info');
@@ -445,6 +469,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         queryKey: ['dashboardData', selectedProjectKey, taskToken],
         queryFn: async () => {
             const headers = { 'Authorization': `Bearer ${token}` };
+            if (selectedProjectKey) headers['x-project-token'] = selectedProjectKey;
             if (taskToken) headers['x-task-token'] = taskToken;
             const res = await fetch(API_ENDPOINTS.AGENT_DASHBOARD, { headers });
             if (!res.ok) throw new Error('Failed to fetch dashboard data');
@@ -483,8 +508,14 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             return;
         }
         const cached = getCachedTaskToken(selectedProjectKey, TOKEN_CACHE_MIN_TTL_SECONDS);
-        setTaskToken(cached?.token || null);
-        setTaskTokenProjectKey(cached?.token ? selectedProjectKey : null);
+        
+        if (cached?.token) {
+            setTaskToken(cached.token);
+            setTaskTokenProjectKey(selectedProjectKey);
+        } else {
+            setTaskToken(selectedProjectKey);
+            setTaskTokenProjectKey(selectedProjectKey);
+        }
     }, [selectedProjectKey]);
 
     // Role logic is handled centrally by AppLayout
@@ -512,9 +543,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             const clientSecret = proj?.client_secret;
 
             if (!clientId || !clientSecret) {
-                if (!hasCachedToken && isMounted) {
-                    setTaskToken(null);
-                    setTaskTokenProjectKey(null);
+                if (isMounted) {
+                    setTaskToken(selectedProjectKey);
+                    setTaskTokenProjectKey(selectedProjectKey);
                 }
                 return;
             }
@@ -539,15 +570,15 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                     cacheTaskToken(selectedProjectKey, data.access);
                 } else if (isMounted) {
                     if (!hasCachedToken) {
-                        setTaskToken(null);
-                        setTaskTokenProjectKey(null);
+                        setTaskToken(selectedProjectKey);
+                        setTaskTokenProjectKey(selectedProjectKey);
                     }
                 }
             } catch (e) {
                 console.error("Error fetching task token", e);
                 if (!hasCachedToken && isMounted) {
-                    setTaskToken(null);
-                    setTaskTokenProjectKey(null);
+                    setTaskToken(selectedProjectKey);
+                    setTaskTokenProjectKey(selectedProjectKey);
                 }
             }
         };
@@ -598,6 +629,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         try {
             const url = page > 1 ? `${API_ENDPOINTS.AGENT_TASKS_TOTAL}?page=${page}` : API_ENDPOINTS.AGENT_TASKS_TOTAL;
             const headers = { 'Authorization': `Bearer ${token}` };
+            if (selectedProjectKey) headers['x-project-token'] = selectedProjectKey;
             if (hasValidTaskToken) headers['x-task-token'] = taskToken;
 
             const res = await fetch(url, { headers });
@@ -683,6 +715,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 'Authorization': `Bearer ${token}`,
                 'Content-Type': 'application/json'
             };
+            if (selectedProjectKey) headers['x-project-token'] = selectedProjectKey;
             if (hasValidTaskToken) headers['x-task-token'] = taskToken;
             await fetch(withProjectToken(API_ENDPOINTS.AGENT_RUN(agentId)), {
                 method: 'POST',
@@ -792,6 +825,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
         try {
             const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+            if (selectedProjectKey) headers['x-project-token'] = selectedProjectKey;
             if (hasValidTaskToken) headers['x-task-token'] = taskToken;
             await fetch(withProjectToken(API_ENDPOINTS.AGENT_RUN_ALL), {
                 method: 'POST',
@@ -834,6 +868,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             : a));
         try {
             const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+            if (selectedProjectKey) headers['x-project-token'] = selectedProjectKey;
             if (hasValidTaskToken) headers['x-task-token'] = taskToken;
             await fetch(withProjectToken(API_ENDPOINTS.AGENT_RUN_ALL), {
                 method: 'POST',
@@ -942,6 +977,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 'Authorization': `Bearer ${token}`,
                 'Content-Type': 'application/json'
             };
+            if (selectedProjectKey) headers['x-project-token'] = selectedProjectKey;
             if (hasValidTaskToken) headers['x-task-token'] = taskToken;
 
             const createOne = async (kind, subType) => {
@@ -1439,6 +1475,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${token}`
             };
+            if (selectedProjectKey) headers['x-project-token'] = selectedProjectKey;
             if (hasValidTaskToken) headers['x-task-token'] = taskToken;
 
             // Include prerequisites data if available
@@ -2835,7 +2872,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         <div>
                                             <h3 className="text-sm font-bold text-app-text-main">Generated Tasks</h3>
                                             <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">
-                                                {taskList.length} of {totalTaskCount} task{totalTaskCount !== 1 ? 's' : ''} • synced with NXDune{taskList.length > 0 ? ` • ${sprintCount} sprint${sprintCount !== 1 ? 's' : ''}` : ''}
+                                                {taskList.length} of {totalTaskCount} task{totalTaskCount !== 1 ? 's' : ''} • {taskList.some(t => t.synced_to_nxdune) ? 'synced with NXDune' : 'active locally'}{taskList.length > 0 ? ` • ${sprintCount} sprint${sprintCount !== 1 ? 's' : ''}` : ''}
                                             </p>
                                         </div>
                                     </div>
@@ -2908,6 +2945,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                 const progress = task.task_progress || 0;
                                                 const progressColor = progress >= 80 ? 'bg-app-status-success' : progress >= 40 ? 'bg-app-primary' : 'bg-app-status-warning';
                                                 const sprintLabel = getTaskSprintLabel(task);
+                                                const assignees = safeGetAssignees(task.assignedTo);
 
                                                 return (
                                                     <div key={task.id || index} className="px-6 py-3 hover:bg-app-bg-page/70 transition-colors group">
@@ -2923,6 +2961,18 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                                 <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                                                                     <h4 className="text-sm font-bold text-app-text-main truncate" title={task.taskName}>{task.taskName || 'Untitled Task'}</h4>
                                                                     <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${typeStyles[taskType] || typeStyles.TASK}`}>{taskType}</span>
+                                                                    {task.synced_to_nxdune && (
+                                                                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400 border border-emerald-200/50 uppercase tracking-wide">
+                                                                            <CheckCircle2 className="w-2.5 h-2.5" />
+                                                                            Synced
+                                                                        </span>
+                                                                    )}
+                                                                    {task.selected && (
+                                                                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold bg-blue-100 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400 border border-blue-200/50 uppercase tracking-wide">
+                                                                            <CheckCircle2 className="w-2.5 h-2.5" />
+                                                                            Saved Locally
+                                                                        </span>
+                                                                    )}
                                                                     {getClockedHours(task) && (
                                                                         <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-bold bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-400 border border-green-200/50">
                                                                             {getClockedHours(task)} hrs clocked
@@ -2967,10 +3017,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                             <div className="flex items-center gap-1 overflow-hidden">
                                                                 <Users className="w-3 h-3 text-app-border flex-shrink-0" />
                                                                 <div className="flex flex-wrap gap-0.5 max-h-8 overflow-hidden">
-                                                                    {(task.assignedTo || []).slice(0, 2).map((name, i) => (
+                                                                    {assignees.slice(0, 2).map((name, i) => (
                                                                         <span key={i} className="inline-flex items-center px-1.5 py-0.5 bg-app-primary-light text-app-primary-hover rounded text-[9px] font-bold truncate max-w-[45px]">{name}</span>
                                                                     ))}
-                                                                    {(task.assignedTo || []).length > 2 && <span className="text-[9px] font-bold text-app-text-light">+{(task.assignedTo || []).length - 2}</span>}
+                                                                    {assignees.length > 2 && <span className="text-[9px] font-bold text-app-text-light">+{assignees.length - 2}</span>}
                                                                 </div>
                                                             </div>
 
@@ -2997,6 +3047,18 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                             <div className="flex justify-between items-start">
                                                                 <h4 className="text-sm font-bold text-app-text-main line-clamp-1">{task.taskName}</h4>
                                                                 <span className={`px-1.5 py-0.5 rounded text-[8px] font-black ${typeStyles[taskType]}`}>{taskType}</span>
+                                                            </div>
+                                                            <div className="flex flex-wrap gap-1.5">
+                                                                {task.synced_to_nxdune && (
+                                                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400 border border-emerald-200/50 uppercase tracking-wide">
+                                                                        Synced
+                                                                    </span>
+                                                                )}
+                                                                {task.selected && (
+                                                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold bg-blue-100 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400 border border-blue-200/50 uppercase tracking-wide">
+                                                                        Saved Locally
+                                                                    </span>
+                                                                )}
                                                             </div>
                                                             <div className="flex justify-between items-center text-[10px]">
                                                                 <div className="flex items-center gap-2">
