@@ -271,7 +271,8 @@ class SyntaxValidator:
 
     def _validate_html(self, content: str) -> Optional[Dict]:
         """Basic HTML validation."""
-        if content.strip() and not content.strip().startswith(("<", "<!DOCTYPE")):
+        stripped = content.strip()
+        if stripped and not stripped.startswith(("<", "<!DOCTYPE", "{%", "{#", "{{", "<!--")):
             return {
                 "error": "File doesn't appear to be valid HTML",
                 "line": 1,

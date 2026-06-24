@@ -1752,7 +1752,20 @@ def nginx_reload() -> bool:
     
     # Check if Nginx is running
     pgrep = subprocess.run(['pgrep', '-o', 'nginx'], capture_output=True, text=True)
-    is_running = (pgrep.returncode == 0)
+    is_running = False
+    if pgrep.returncode == 0:
+        pid = pgrep.stdout.strip()
+        # Verify it's not a zombie process
+        try:
+            status_path = f'/proc/{pid}/status'
+            if os.path.exists(status_path):
+                status_content = Path(status_path).read_text(encoding='utf-8')
+                if 'State:\tZ (zombie)' not in status_content and 'Z (zombie)' not in status_content:
+                    is_running = True
+            else:
+                is_running = True
+        except Exception:
+            is_running = True
     
     if is_running:
         pid = pgrep.stdout.strip()
@@ -5770,6 +5783,8 @@ class Agent:
                     self._busy = False
                     self._last_busy_time = time.time()  # ✅ Track when we finished
                 self._queue.task_done()
+                if self._queue.empty():
+                    report('💤 VibeCoding Agent is now idle. Send me another request when you are ready!', message_type='status')
 
     def _handle(self, prompt: str):
         """
