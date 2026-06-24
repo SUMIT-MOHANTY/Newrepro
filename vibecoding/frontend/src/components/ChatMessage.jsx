@@ -192,7 +192,8 @@ const ChatMessage = ({
   executingTaskId,
   isLatest
 }) => {
-  // Debug: Log message to see what we're receiving
+  // Debug: Log message to see what we're receiving - disabled to prevent console flooding
+  /*
   if (!message.role || message.role === 'assistant') {
     console.log('ChatMessage rendering:', {
       role: message.role,
@@ -202,6 +203,7 @@ const ChatMessage = ({
       content: message.content?.substring(0, 100)
     });
   }
+  */
   // Dynamic time formatter (e.g., "just now", "5 mins ago")
   const getRelativeTime = (timestamp) => {
     if (!timestamp) return '';
@@ -434,7 +436,7 @@ const ChatMessage = ({
                       "text-[0.95rem] leading-relaxed font-medium italic",
                       darkMode ? "text-blue-100/90" : "text-blue-900/90"
                     )}>
-                      {aiSummary}
+                      {aiSummary?.trim()}
                     </p>
                     <button
                       onClick={() => setShowOriginal(true)}
@@ -448,7 +450,7 @@ const ChatMessage = ({
                     </button>
                   </div>
                 ) : (
-                  <div className="text-sm leading-relaxed whitespace-pre-wrap break-words markdown-body overflow-x-hidden">
+                  <div className="text-sm leading-relaxed whitespace-normal break-words markdown-body overflow-x-hidden">
                     {!isUser && aiSummary && showOriginal && hasCodeOrVersion && (
                       <button
                         onClick={() => setShowOriginal(false)}
@@ -464,11 +466,11 @@ const ChatMessage = ({
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
                       components={{
-                        p: ({ node, ...props }) => <div className="mb-3 last:mb-0 break-words" {...props} />,
+                        p: ({ node, ...props }) => <div className="mb-3 last:mb-0 break-words whitespace-pre-line" {...props} />,
                         a: ({ node, ...props }) => <a className="text-blue-500 hover:text-blue-400 hover:underline transition-colors break-words [word-break:break-word]" target="_blank" rel="noreferrer" {...props} />,
                         ul: ({ node, ...props }) => <ul className="list-disc list-outside ml-4 mb-3 space-y-1 break-words" {...props} />,
                         ol: ({ node, ...props }) => <ol className="list-decimal list-outside ml-4 mb-3 space-y-1 break-words" {...props} />,
-                        li: ({ node, ...props }) => <li className="pl-1 break-words" {...props} />,
+                        li: ({ node, ...props }) => <li className="pl-1 break-words whitespace-pre-line" {...props} />,
                         h1: ({ node, ...props }) => <h1 className="text-xl font-bold mb-3 mt-5 break-words" {...props} />,
                         h2: ({ node, ...props }) => <h2 className="text-lg font-bold mb-3 mt-4 break-words" {...props} />,
                         h3: ({ node, ...props }) => <h3 className="text-md font-semibold mb-2 mt-3 break-words" {...props} />,
@@ -507,12 +509,12 @@ const ChatMessage = ({
                           );
                         },
                         blockquote: ({ node, ...props }) => (
-                          <blockquote className="border-l-4 border-blue-500/50 pl-4 py-2 mb-3 text-gray-700 dark:text-gray-300 italic bg-blue-500/5 dark:bg-blue-500/10 rounded-r-lg break-words [word-break:break-word]" {...props} />
+                          <blockquote className="border-l-4 border-blue-500/50 pl-4 py-2 mb-3 text-gray-700 dark:text-gray-300 italic bg-blue-500/5 dark:bg-blue-500/10 rounded-r-lg break-words [word-break:break-word] whitespace-pre-line" {...props} />
                         ),
                         hr: ({ node, ...props }) => <hr className="my-4 border-white/10 dark:border-white/10 border-black/10" {...props} />
                       }}
                     >
-                      {showOriginal ? message.content : finalContent}
+                      {(showOriginal ? message.content : finalContent)?.trim()}
                     </ReactMarkdown>
                   </div>
                 )}

@@ -185,6 +185,7 @@ class ProjectManager:
         api_key: str,
         project_path: str,
         project_id: str = None,
+        username: str = "anonymous",
     ) -> Optional[str]:
         """
         Start or reuse the unified container for a specific project.
@@ -258,6 +259,12 @@ class ProjectManager:
             "PORT":                "80",
             "PYTHONUNBUFFERED":    "1",
             "INITIAL_VERSION":     "workspace",
+            
+            # Username context
+            "USER_NAME":           username,
+            
+            # Timezone offset
+            "TZ_OFFSET_SECONDS":   str(-time.timezone if time.daylight == 0 else -time.altzone),
         }
 
         # Inject handoff source environment variable if applicable

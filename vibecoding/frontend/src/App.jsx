@@ -476,10 +476,11 @@ function Workspace({ user, logout, isAuthenticated }) {
             // ── Check terminal signals ───────────────────────────────────────
             const lastDb = dbMessages[dbMessages.length - 1];
 
-            const isDbTerminal = (
+            const isDbTerminal = dbMessages.length > 0 && (
               lastDb?.metadata?.type === 'task_breakdown' ||
               lastDb?.metadata?.task_plan ||
               lastDb?.content?.includes('[AGENT] VERIFICATION') ||
+              lastDb?.content?.includes('VibeCoding Agent is now idle') ||
               lastDb?.suggestions?.length > 0 ||
               lastDb?.code ||
               // DYNAMIC CHECKS:
@@ -560,7 +561,7 @@ function Workspace({ user, logout, isAuthenticated }) {
               await fetchProjectFiles();
             }
 
-            console.log(`🔄 Poll #${pollCount}: ${dbMessages.length} DB msgs, ${tasksResponse.data.total_tasks} tasks`);
+            // console.log(`🔄 Poll #${pollCount}: ${dbMessages.length} DB msgs, ${tasksResponse.data.total_tasks} tasks`);
           }
         } catch (e) {
           console.error('Polling error:', e);
@@ -1581,7 +1582,8 @@ function Workspace({ user, logout, isAuthenticated }) {
   };
 
   const handleSend = async (imageDataUrls = []) => {
-    if ((!input.trim() && imageDataUrls.length === 0) || loading) return;
+    const trimmedInput = input.trim();
+    if ((!trimmedInput && imageDataUrls.length === 0) || loading) return;
 
     // Check if a project is selected
     if (!currentProjectId) {
@@ -1598,14 +1600,14 @@ function Workspace({ user, logout, isAuthenticated }) {
 
     const userMessage = {
       role: 'user',
-      content: input,
+      content: trimmedInput,
       images: imageDataUrls.length > 0 ? imageDataUrls : undefined,
       timestamp: new Date().toISOString()
     };
 
     // Add user message to state immediately for UX
     setMessages(prev => [...prev, userMessage]);
-    const currentInput = input;
+    const currentInput = trimmedInput;
     setInput('');
 
     try {

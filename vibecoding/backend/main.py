@@ -1336,6 +1336,10 @@ async def save_agent_message(request: AgentMessageRequest):
 
 @app.post("/vibecoding/api/generate", response_model=GenerateResponse)
 async def generate_code(request: GenerateRequest, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
+    # Strip whitespace from the user prompt immediately
+    if request.prompt:
+        request.prompt = request.prompt.strip()
+
     # Get or create project ID at the start
     project_id = request.project_id or project_manager.generate_project_id()
     
@@ -1358,6 +1362,8 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
     import time
     from datetime import datetime
     
+    username = user["username"] if user else "anonymous"
+
     # Guaranteed User Message Persistence (Atomic)
     user_msg_id = f"msg_{int(time.time())}_{uuid.uuid4().hex[:4]}"
     user_timestamp = datetime.now().astimezone().isoformat()
@@ -1388,14 +1394,16 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
             
             now = datetime.now()
             date_label = f"CURRENT DATE & TIME: {now.strftime('%A, %B %d, %Y %H:%M:%S')}\n\n"
+            user_context = f"CURRENT USER: {username}\n\n"
             
-            messages = [{"role": "system", "content": date_label + CHAT_SYSTEM_PROMPT}]
+            messages = [{"role": "system", "content": date_label + user_context + CHAT_SYSTEM_PROMPT}]
             for msg in request.history:
-                messages.append({"role": msg.role, "content": msg.content})
+                messages.append({"role": msg.role, "content": msg.content.strip() if msg.content else ""})
             messages.append(build_vision_message(request.prompt, request.images))
 
             response = await ai_config.make_async_request(messages)
             ai_response = response["choices"][0]["message"].get("content", "") if "choices" in response else ""
+            ai_response = ai_response.strip()
             
             # Log the discuss mode interaction
             log_ai_interaction(request.prompt, ai_response, "discuss_mode")
@@ -1418,7 +1426,7 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
                 comp_tok = usage.get("completion_tokens") or usage.get("output_tokens") or comp_tok
             log_user_feasibility(
                 project_id=project_id,
-                username=user["username"] if user else "anonymous",
+                username=username,
                 prompt=request.prompt,
                 response=ai_response,
                 prompt_tokens=prompt_tok,
@@ -1428,7 +1436,7 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
             )
             # Log action
             log_enduser_action(
-                username=user["username"] if user else "anonymous",
+                username=username,
                 project_id=project_id,
                 action="chat_discuss",
                 details=f"Prompt: {request.prompt[:100]}"
@@ -1461,7 +1469,7 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
 
         # Log action for autonomous flow
         log_enduser_action(
-            username=user["username"] if user else "anonymous",
+            username=username,
             project_id=project_id,
             action="chat_generate",
             details=f"Prompt: {request.prompt[:100]}"
@@ -1485,7 +1493,8 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
         agent_url = project_manager.start_agent_container(
             api_key=ai_config.api_key,
             project_path=str(workspace_dir),
-            project_id=project_id
+            project_id=project_id,
+            username=username
         )
 
         if not agent_url:
@@ -1504,12 +1513,15 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
 
         # 4. Hand off task to the agent mailbox
         # Only include actual user messages as context (skip the agent's own acknowledgements)
-        handoff_prompt = request.prompt
+        now = datetime.now()
+        date_label = f"CURRENT DATE & TIME: {now.strftime('%A, %B %d, %Y %H:%M:%S')}\n\n"
+        user_context_str = f"USER: {username}\n{date_label}"
+        handoff_prompt = f"{user_context_str}CURRENT REQUEST: {request.prompt}"
         if request.history:
             user_turns = [m for m in request.history if m.role == "user"]
             if user_turns:
-                history_summary = "\n".join([f"User: {m.content[:200]}" for m in user_turns[-3:]])
-                handoff_prompt = f"CONTEXT (previous turns):\n{history_summary}\n\nCURRENT REQUEST: {request.prompt}"
+                history_summary = "\n".join([f"User: {m.content.strip()[:200]}" for m in user_turns[-3:]])
+                handoff_prompt = f"{user_context_str}CONTEXT (previous turns):\n{history_summary}\n\nCURRENT REQUEST: {request.prompt}"
 
         logger.info(f"📤 Sending prompt to container for project {project_id}: {handoff_prompt[:100]}...")
         result = project_manager.send_request(handoff_prompt, project_id=project_id)

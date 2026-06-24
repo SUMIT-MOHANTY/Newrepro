@@ -2221,7 +2221,17 @@ def generate_code(user_prompt: str, existing_files: dict = None) -> bool:
             lines.append(f'// FILE: {path}\n{content[:3000]}')
         existing_context = '\n\n'.join(lines)
 
-    system_prompt = """You are an elite full-stack engineer. Generate complete, production-ready application code.
+    username = os.environ.get('USER_NAME', 'anonymous')
+    from datetime import datetime, timedelta, timezone
+    try:
+        tz_offset = int(os.environ.get('TZ_OFFSET_SECONDS', '0'))
+        tz = timezone(timedelta(seconds=tz_offset))
+        now = datetime.now(tz)
+    except Exception:
+        now = datetime.now(timezone.utc)
+    date_label = f"CURRENT DATE & TIME: {now.strftime('%A, %B %d, %Y %H:%M:%S')}\n\n"
+
+    system_prompt = f"CURRENT USER: {username}\n{date_label}" + """You are an elite full-stack engineer. Generate complete, production-ready application code.
 
 DEPLOYMENT ENVIRONMENT (Docker Ubuntu 22.04):
 - Pre-installed: Python3, pip3, Node.js 18, npm, Nginx, serve, git, curl
@@ -2256,17 +2266,19 @@ RULES:
 6. For static HTML: just index.html (+ style.css, script.js) — no build tools needed
 7. Keep conversational text to 1-2 sentences max before file markers
 8. NO setup instructions — the platform deploys automatically
-9. SQLite + Prisma limitations: When creating/modifying a Prisma schema (prisma/schema.prisma) with sqlite provider, SQLite does NOT support `enum` types or the `Json` type. You MUST use `String` (with text defaults for enums, e.g., role String @default("USER")) instead of enums, and use `String` instead of `Json` (e.g., shippingAddress String)."""
+9. SQLite + Prisma limitations: When creating/modifying a Prisma schema (prisma/schema.prisma) with sqlite provider, SQLite does NOT support `enum` types or the `Json` type. You MUST use `String` (with text defaults for enums, e.g., role String @default("USER")) instead of enums, and use `String` instead of `Json` (e.g., shippingAddress String).
+10. NEVER repeat or echo the user's statements, prompt, or questions. Start directly with your response or answer.
+11. The user may choose to ignore the previous suggestions you generated. Do NOT assume the user's input is a reference to the suggestions unless they specifically mention or repeat them."""
 
     is_handoff = os.environ.get('HANDOFF_SOURCE') == 'dsuite'
 
     if is_handoff:
         system_prompt += """
-10. **STRICT COMPLIANCE TO ARCHITECTURE BLUEPRINTS:** You MUST strictly follow the provided repository structure, Mermaid flowcharts/diagrams, and planned technical architecture when building or modifying the application. Do not deviate from the defined architecture components, layers, or folder layouts. You MUST output all files at the root of the workspace directory (/project). Do NOT wrap the planned repository structure inside a new nested project directory (e.g. build directly in the current workspace directory, not inside 'referral-agent/').
-11. **EXTERNAL API INTEGRATIONS AND RUNTIME CHECKS:** When integrating external APIs or services (e.g., Azure OpenAI Foundry, external database providers, payment gateways, or third-party OAuth APIs), write the complete integration and communication logic. However, you MUST include robust runtime validation for any required API keys or credentials (e.g., environment variables). If any mandatory configuration is missing or empty, the application must gracefully handle it and return/display the following exact error message: "API required: please configure in the application"."""
+12. **STRICT COMPLIANCE TO ARCHITECTURE BLUEPRINTS:** You MUST strictly follow the provided repository structure, Mermaid flowcharts/diagrams, and planned technical architecture when building or modifying the application. Do not deviate from the defined architecture components, layers, or folder layouts. You MUST output all files at the root of the workspace directory (/project). Do NOT wrap the planned repository structure inside a new nested project directory (e.g. build directly in the current workspace directory, not inside 'referral-agent/').
+13. **EXTERNAL API INTEGRATIONS AND RUNTIME CHECKS:** When integrating external APIs or services (e.g., Azure OpenAI Foundry, external database providers, payment gateways, or third-party OAuth APIs), write the complete integration and communication logic. However, you MUST include robust runtime validation for any required API keys or credentials (e.g., environment variables). If any mandatory configuration is missing or empty, the application must gracefully handle it and return/display the following exact error message: "API required: please configure in the application"."""
     elif not is_edit:
         system_prompt += """
-10. **STRICT VISUAL PROTOTYPE RULE FOR INITIAL REQUEST:** Since this is the initial project setup, you MUST focus EXCLUSIVELY on building a stunning, highly polished visual frontend prototype using mock data. Do NOT generate any database models, Prisma schemas (prisma/schema.prisma), database migrations, or active backend APIs. Use mock-based state and dummy data in the React/Next.js/HTML frontend so that the application compiles and runs on Port 80 immediately with zero database errors. Any database or backend integrations will be implemented in subsequent turns."""
+12. **STRICT VISUAL PROTOTYPE RULE FOR INITIAL REQUEST:** Since this is the initial project setup, you MUST focus EXCLUSIVELY on building a stunning, highly polished visual frontend prototype using mock data. Do NOT generate any database models, Prisma schemas (prisma/schema.prisma), database migrations, or active backend APIs. Use mock-based state and dummy data in the React/Next.js/HTML frontend so that the application compiles and runs on Port 80 immediately with zero database errors. Any database or backend integrations will be implemented in subsequent turns."""
 
     system_prompt += """\n\nFOR EDITS: Start your response with a brief explanation of what you're changing (1-2 sentences), then output the file markers."""
 
@@ -5784,7 +5796,7 @@ class Agent:
                     self._last_busy_time = time.time()  # ✅ Track when we finished
                 self._queue.task_done()
                 if self._queue.empty():
-                    report('💤 VibeCoding Agent is now idle. Send me another request when you are ready!', message_type='status')
+                    report('💤 VibeCoding Agent is now idle. Send me another request when you are ready!', message_type='status', metadata={'is_final_message': True})
 
     def _handle(self, prompt: str):
         """
