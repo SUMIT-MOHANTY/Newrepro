@@ -208,8 +208,8 @@ _TEXT_EXTS  = {
     ".sql", ".graphql", ".prisma",
     ".xml", ".config", ".dockerfile",
 }
-_FILE_CHAR_CAP   = 14_000   # chars per file before truncation
-_CONTEXT_CHAR_CAP = 60_000  # total context budget
+_FILE_CHAR_CAP   = 40_000   # chars per file — raised so large files aren't silently half-read
+_CONTEXT_CHAR_CAP = 200_000  # total context budget — raised to fit real codebases
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -417,7 +417,7 @@ class EditEngine:
         snap = {
             "has_code":      True,
             "file_count":    len(tree),
-            "files_json":    json.dumps(tree[:40]),
+            "files_json":    json.dumps(tree),        # full tree — no slice
             "file_snippets": snippets,
             "prompt":        prompt.strip(),
         }
@@ -487,14 +487,14 @@ class EditEngine:
 
         parts: List[str] = []
         total = 0
-        for rel in candidates[:8]:
+        for rel in candidates:                  # no [:8] cap — read all files
             d = self._read_file(rel)
             if not d:
                 continue
-            snippet = d["raw"][:300].replace("\n", "↵")
+            snippet = d["raw"][:500].replace("\n", "↵")   # 500 chars instead of 300
             parts.append(f"[{rel}]: {snippet}")
             total += len(snippet)
-            if total >= 3000:
+            if total >= 10_000:                 # raised from 3000
                 break
 
         return "\n".join(parts) if parts else "(no readable files)"
@@ -510,99 +510,121 @@ class EditEngine:
 
     def _build_context(self, prompt: str, intent: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Read the right files from the workspace and return them as a dict.
-        We only load what's relevant to keep the planning prompt focused.
+        Two-phase context builder.
+
+        Phase 1 — Discovery:
+            Send the COMPLETE file tree (all file names) to the AI and ask it
+            to return the exact list of files it needs to read in order to plan
+            the change accurately.  No guessing, no heuristics deciding for it.
+
+        Phase 2 — Read:
+            Read only the files the AI requested, fully (up to _FILE_CHAR_CAP
+            each), and pack them into the planning context.
         """
         tree  = self._list_files()
         scope = intent.get("scope", "moderate")
 
-        # Determine which files to read
-        candidates: List[str] = []
-
-        # 1. Files explicitly named in intent
+        # ── Phase 1: AI inspects the full file tree and picks what it needs ──
+        # Files explicitly named in the user intent are always included.
+        must_include: List[str] = []
         for hint in (intent.get("target_files") or []):
             matched = self._fuzzy_match(hint, tree)
-            if matched:
-                candidates.append(matched)
+            if matched and matched not in must_include:
+                must_include.append(matched)
 
-        # 2. Surgical scope — hints are enough
-        if scope == "surgical" and candidates:
-            pass  # only load what was explicitly named
+        # For surgical edits where the target is explicit, skip AI discovery.
+        if scope == "surgical" and must_include:
+            ai_selected = list(must_include)
+            log(f"📂 Surgical scope with explicit targets — skipping file discovery")
         else:
-            # Check if prompt is purely backend or frontend oriented
-            is_backend_only = False
-            is_frontend_only = False
-            prompt_lower = prompt.lower()
-            backend_keywords = ["backend", "api", "database", "sqlite", "server", "endpoint", "prisma", "models", "route", "query", "controller"]
-            frontend_keywords = ["frontend", "ui", "button", "style", "page", "component", "css", "color", "layout", "nav", "render", "design", "assets"]
-            
-            if any(kw in prompt_lower for kw in backend_keywords) and not any(kw in prompt_lower for kw in frontend_keywords):
-                is_backend_only = True
-            elif any(kw in prompt_lower for kw in frontend_keywords) and not any(kw in prompt_lower for kw in backend_keywords):
-                is_frontend_only = True
+            # Send the FULL tree to the AI; it decides which files to read.
+            ai_selected = self._ai_pick_files(prompt, tree, intent)
+            # Always include explicitly named files too
+            for f in must_include:
+                if f not in ai_selected:
+                    ai_selected.insert(0, f)
 
-            # 3. Heuristic entry-points always useful for broader changes
-            eps = self._heuristic_entrypoints(tree)
-            if is_backend_only:
-                frontend_extensions = (".jsx", ".tsx", ".html", ".css")
-                frontend_names = ("App.js", "main.js", "index.js", "App.jsx", "App.tsx")
-                eps = [ep for ep in eps if not (ep.endswith(frontend_extensions) or any(name in ep for name in frontend_names))]
-            elif is_frontend_only:
-                backend_extensions = (".py", ".db", ".sqlite")
-                backend_names = ("server", "models", "database")
-                eps = [ep for ep in eps if not (ep.endswith(backend_extensions) or any(name in ep for name in backend_names))]
+        # Safety net: add heuristic entry-points if AI missed them entirely
+        eps = self._heuristic_entrypoints(tree)
+        for ep in eps:
+            if ep not in ai_selected:
+                ai_selected.append(ep)
 
-            for ep in eps:
-                if ep not in candidates:
-                    candidates.append(ep)
-
-            # 4. For moderate/broad: AI picks additional relevant files
-            if scope in ("moderate", "broad"):
-                ai_files = self._ai_pick_files(prompt, tree)
-                for f in ai_files:
-                    if f not in candidates:
-                        candidates.append(f)
-
-        # De-dup, limit
+        # De-dup, preserve AI ordering (most relevant first)
         seen: set = set()
         final: List[str] = []
-        for f in candidates:
+        for f in ai_selected:
             if f not in seen and f in tree:
-                seen.add(f); final.append(f)
-            if len(final) >= 12:
-                break
+                seen.add(f)
+                final.append(f)
 
-        # Read files
+        # ── Phase 2: Read selected files fully ───────────────────────────────
         file_data: Dict[str, Any] = {}
         total_chars = 0
         for rel in final:
             if total_chars >= _CONTEXT_CHAR_CAP:
+                log(f"⚠️  Context budget reached at {total_chars:,} chars — {len(final) - len(file_data)} file(s) not loaded")
                 break
             d = self._read_file(rel)
             if d:
                 file_data[rel] = d
                 total_chars   += d["char_count"]
 
-        log(f"📂 Context: loaded {len(file_data)} file(s) ({total_chars:,} chars)")
+        log(f"📂 Context: {len(file_data)}/{len(tree)} file(s) loaded ({total_chars:,} chars)")
         return {"tree": tree, "files": file_data}
 
-    def _ai_pick_files(self, prompt: str, tree: List[str]) -> List[str]:
-        """Ask AI to choose up to 8 relevant files from the tree."""
-        pick_prompt = (
-            f"USER REQUEST: {prompt}\n\n"
-            f"WORKSPACE FILES:\n" + "\n".join(f"- {f}" for f in tree[:80]) +
-            '\n\nReturn ONLY JSON: {"relevant_files": ["path1", "path2"]} '
-            "(at most 8 files, the most likely to need reading for this request)"
-        )
+    def _ai_pick_files(self, prompt: str, tree: List[str],
+                       intent: Dict[str, Any] = None) -> List[str]:
+        """
+        Send the COMPLETE file tree to the AI and ask which files it needs
+        to read to plan the change accurately.  No tree slicing, no cap.
+        """
+        scope = (intent or {}).get("scope", "moderate")
+        tree_listing = "\n".join(f"  {f}" for f in tree)
+
+        pick_prompt = f"""You are a code-change planner. A user has requested a change to this project.
+
+USER REQUEST:
+"{prompt}"
+
+INTENT CLASSIFICATION:
+- Mode: {(intent or {}).get('mode', 'EDIT_FILE')}
+- Scope: {scope}
+- Explicitly mentioned files: {json.dumps((intent or {}).get('target_files', []))}
+
+COMPLETE FILE TREE ({len(tree)} files):
+{tree_listing}
+
+Your task: decide which files you need to READ IN FULL before you can write a precise change plan.
+
+Rules:
+- Include every file you will need to understand or modify to fulfil the request.
+- Include files that import/export from files you plan to change (to avoid breaking imports).
+- If the change is purely visual, still include the component file being styled.
+- Do NOT include files unrelated to this request (e.g. unrelated tests, lock files).
+- There is no maximum limit — request as many files as you genuinely need.
+
+Return ONLY valid JSON:
+{{"files_to_read": ["path/to/file1", "path/to/file2"], "reasoning": "one sentence"}}"""
+
         try:
             raw = self._call_ai(
-                [{"role": "user", "content": pick_prompt}],
-                temperature=0.0, show_thinking=False
+                [
+                    {"role": "system", "content": "You are a code-change planner. Output only JSON."},
+                    {"role": "user",   "content": pick_prompt},
+                ],
+                temperature=0.0, show_thinking=False,
             )
-            data = self._parse_json(raw, default={"relevant_files": []})
-            return [f for f in data.get("relevant_files", []) if f in tree]
-        except Exception:
-            return []
+            data = self._parse_json(raw, default={"files_to_read": [], "reasoning": ""})
+            reasoning = data.get("reasoning", "")
+            if reasoning:
+                log(f"📋 File selection reasoning: {reasoning}")
+            selected = [f for f in data.get("files_to_read", []) if f in tree]
+            log(f"📋 AI selected {len(selected)} file(s) from {len(tree)} total")
+            return selected
+        except Exception as exc:
+            log(f"⚠️  _ai_pick_files failed ({exc}) — falling back to heuristic entrypoints")
+            return self._heuristic_entrypoints(tree)
 
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 3 — PLAN CHANGES
@@ -1257,8 +1279,8 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
         
         # Get backend URL from environment variable
         # Default to host.docker.internal for Docker-to-host communication
-        # backend_url = os.environ.get('BACKEND_URL', 'http://host.docker.internal:8001')
-        backend_url = os.environ.get('BACKEND_URL', 'https://dsuite-backend.bourntec.com')
+        backend_url = os.environ.get('BACKEND_URL', 'http://host.docker.internal:8001')
+        # backend_url = os.environ.get('BACKEND_URL', 'https://dsuite-backend.bourntec.com')
         api_endpoint = f'{backend_url}/vibecoding/api/agent/message'
         
         payload = {
@@ -2268,17 +2290,34 @@ RULES:
 8. NO setup instructions — the platform deploys automatically
 9. SQLite + Prisma limitations: When creating/modifying a Prisma schema (prisma/schema.prisma) with sqlite provider, SQLite does NOT support `enum` types or the `Json` type. You MUST use `String` (with text defaults for enums, e.g., role String @default("USER")) instead of enums, and use `String` instead of `Json` (e.g., shippingAddress String).
 10. NEVER repeat or echo the user's statements, prompt, or questions. Start directly with your response or answer.
-11. The user may choose to ignore the previous suggestions you generated. Do NOT assume the user's input is a reference to the suggestions unless they specifically mention or repeat them."""
+11. The user may choose to ignore the previous suggestions you generated. Do NOT assume the user's input is a reference to the suggestions unless they specifically mention or repeat them.
+TAILWIND CSS — CRITICAL IMPORT RULES (violations cause broken builds):
+12. **TAILWIND IMPORT METHOD — PICK ONE AND BE CONSISTENT:**
+    - **CDN (HTML projects / no build tool):** Use ONLY the official Play CDN script tag:
+      `<script src="https://cdn.tailwindcss.com"></script>`
+      Place it in <head>. Do NOT also add tailwind to package.json. Do NOT use @tailwind directives in CSS files.
+    - **NPM + Vite/Next.js (React projects with build tool):** Install via package.json (`"tailwindcss": "^3.x"`, `"autoprefixer"`, `"postcss"`). Create `tailwind.config.js` with correct `content` globs AND `postcss.config.js`. In your main CSS file use ONLY the three directives:
+      ```
+      @tailwind base;
+      @tailwind components;
+      @tailwind utilities;
+      ```
+      Do NOT use the CDN script tag when using npm/Vite.
+    - **NEVER mix both methods** — CDN + npm together breaks the build every time.
+    - **NEVER write** `@import 'tailwindcss'` or `import 'tailwindcss/tailwind.css'` — these do not exist in Tailwind v3.
+13. **DEFAULT TECH STACK:** By default, always use React with JSX for the frontend and SQLite for the backend database, unless the user has explicitly mentioned a different tech stack or requested not to use SQLite.
+"""
 
     is_handoff = os.environ.get('HANDOFF_SOURCE') == 'dsuite'
 
     if is_handoff:
         system_prompt += """
-12. **STRICT COMPLIANCE TO ARCHITECTURE BLUEPRINTS:** You MUST strictly follow the provided repository structure, Mermaid flowcharts/diagrams, and planned technical architecture when building or modifying the application. Do not deviate from the defined architecture components, layers, or folder layouts. You MUST output all files at the root of the workspace directory (/project). Do NOT wrap the planned repository structure inside a new nested project directory (e.g. build directly in the current workspace directory, not inside 'referral-agent/').
-13. **EXTERNAL API INTEGRATIONS AND RUNTIME CHECKS:** When integrating external APIs or services (e.g., Azure OpenAI Foundry, external database providers, payment gateways, or third-party OAuth APIs), write the complete integration and communication logic. However, you MUST include robust runtime validation for any required API keys or credentials (e.g., environment variables). If any mandatory configuration is missing or empty, the application must gracefully handle it and return/display the following exact error message: "API required: please configure in the application"."""
+14. **STRICT REPO STRUCTURE COMPLIANCE (D-Suite handoff):** You MUST place every file at the exact path defined in the "D-Suite Repository & Frontend Structure" section of the user prompt. Do not invent alternative folder names or nest files inside a new project subdirectory. Build directly inside the workspace root.
+15. **JSX IN .JS FILES (Vite configuration):** If the D-Suite repository structure uses the `.js` extension for React entry points or component files containing JSX (e.g., `src/index.js`, `src/App.js`), do not blindly rename them to `.jsx`. Instead, preserve the requested `.js` structure and configure `vite.config.js` to support JSX in `.js` files by adding `esbuild: { loader: 'jsx', include: /src\/.*\.js$/ }`. If you choose to use `.jsx` extensions or if the files are mixed, you must ensure that all entry points (like `index.html`), imports, and exports are completely and consistently aligned across the codebase to avoid broken references.
+16. **FRONTEND PROTOTYPE ONLY (D-Suite handoff):** Even though the full architecture is provided, build ONLY the frontend UI screens at this stage. Use realistic mock/hardcoded data. Do NOT create backend files (server, routes, controllers), database files (Prisma schema, migrations, .db), or backend dependencies. Every screen from the BRD must be present and navigable with mock state."""
     elif not is_edit:
         system_prompt += """
-12. **STRICT VISUAL PROTOTYPE RULE FOR INITIAL REQUEST:** Since this is the initial project setup, you MUST focus EXCLUSIVELY on building a stunning, highly polished visual frontend prototype using mock data. Do NOT generate any database models, Prisma schemas (prisma/schema.prisma), database migrations, or active backend APIs. Use mock-based state and dummy data in the React/Next.js/HTML frontend so that the application compiles and runs on Port 80 immediately with zero database errors. Any database or backend integrations will be implemented in subsequent turns."""
+14. **STRICT VISUAL PROTOTYPE RULE FOR INITIAL REQUEST:** Since this is the initial project setup, you MUST focus EXCLUSIVELY on building a stunning, highly polished visual frontend prototype using mock data. Do NOT generate any database models, Prisma schemas (prisma/schema.prisma), database migrations, or active backend APIs. Use mock-based state and dummy data in the React/Next.js/HTML frontend so that the application compiles and runs on Port 80 immediately with zero database errors. Any database or backend integrations will be implemented in subsequent turns."""
 
     system_prompt += """\n\nFOR EDITS: Start your response with a brief explanation of what you're changing (1-2 sentences), then output the file markers."""
 
@@ -2546,7 +2585,20 @@ def _write_file(path: Path, content: str):
     content = re.sub(r'\n?```\s*$', '', content, flags=re.MULTILINE)
     # Additional cleanup: remove any stray backticks at start/end
     content = content.strip('`').strip()
-    
+
+    # ── PATCH MARKER CONTAMINATION GUARD ────────────────────────────────────
+    # If the AI accidentally included raw PATCH/SEARCH/REPLACE markers inside
+    # a FILE: block (a known LLM hallucination), writing it would corrupt the
+    # file.  Detect this early and refuse the write so the caller's self-heal
+    # loop gets a chance to regenerate a clean version.
+    PATCH_MARKERS = ('<<<SEARCH', '<<<REPLACE', '>>>', '// PATCH:', '# PATCH:')
+    if any(m in content for m in PATCH_MARKERS):
+        log(f'  ⚠️ PATCH MARKER CONTAMINATION detected in content destined for {path.name} — aborting write to prevent corruption')
+        # Do NOT write the file.  The syntax-validation / self-healing loop
+        # above will notice the file is missing/unchanged and trigger a fix.
+        return
+    # ── END GUARD ────────────────────────────────────────────────────────────
+
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding='utf-8')
     log(f'  📄 {path.relative_to(PROJECT_DIR)}')
@@ -2675,8 +2727,17 @@ def _apply_patches(text: str, patch_matches: list) -> int:
 
         # Check for raw marker leakage in the final result before writing
         if all_matched and ('<<<SEARCH' in temp_content or '<<<REPLACE' in temp_content):
-            log(f'  ⚠️ Rejecting hunk application for {filename} (contains raw markers)')
+            log(f'  ⚠️ Rejecting hunk application for {filename} (contains raw PATCH markers — possible AI marker leakage)')
             all_matched = False
+
+        # Extra guard: also scan the *segment itself* for a common failure mode
+        # where the AI emits the PATCH format correctly but accidentally prefixes
+        # the search/replace content with another <<<SEARCH block (duplicate markers).
+        # In that case hunks==0 and we should NOT fall through to a full rewrite
+        # with corrupted content from the segment.
+        if not hunks:
+            log(f'  ⚠️ No hunks parsed from patch segment for {filename} — skipping fallback rewrite to prevent corruption')
+            continue  # Skip to the next patch match; sanitize_workspace handles residual issues
 
         if all_matched:
             # If the original file had CRLF, preserve it
@@ -2719,7 +2780,8 @@ Return ONLY the clean, full file content. No markdown fences, no formatting othe
                 clean_content = re.sub(r'\n?```\s*$', '', clean_content.strip(), flags=re.MULTILINE)
                 clean_content = clean_content.strip('`').strip()
                 
-                if clean_content and len(clean_content) > 10 and '<<<SEARCH' not in clean_content and '<<<REPLACE' not in clean_content:
+                _PATCH_MARKER_SET = ('<<<SEARCH', '<<<REPLACE', '// PATCH:', '# PATCH:')
+                if clean_content and len(clean_content) > 10 and not any(m in clean_content for m in _PATCH_MARKER_SET):
                     # If the original file had CRLF, preserve it
                     if '\r\n' in file_content:
                         clean_content = clean_content.replace('\r\n', '\n').replace('\n', '\r\n')
@@ -2727,7 +2789,10 @@ Return ONLY the clean, full file content. No markdown fences, no formatting othe
                     applied += 1
                     log(f'  ✅ Successfully recovered and wrote FULL rewrite for {filename}')
                 else:
-                    log(f'  ⚠️ AI returned invalid/empty content or leaked patch markers for rewrite of {filename}')
+                    if any(m in clean_content for m in _PATCH_MARKER_SET):
+                        log(f'  ⚠️ AI rewrite for {filename} still contains PATCH markers — refusing to write (will be caught by sanitize_workspace)')
+                    else:
+                        log(f'  ⚠️ AI returned invalid/empty content or leaked patch markers for rewrite of {filename}')
             except Exception as e:
                 log(f'  ⚠️ Exception during full rewrite fallback for {filename}: {e}')
 
@@ -2786,9 +2851,14 @@ def read_workspace_files() -> dict:
 
 def sanitize_workspace():
     """
-    Scan all text files in the workspace for git diff corruption
-    (lines starting with @@, +, - that indicate a raw diff was written as file content).
-    For corrupted files, ask the AI to regenerate them cleanly.
+    Scan all text files in the workspace for two classes of corruption:
+
+    1. Git diff markers  (lines starting with @@, +, -)
+    2. PATCH marker leakage  (<<<SEARCH, <<<REPLACE, >>> written as file content)
+
+    Both are known AI hallucination patterns where the model accidentally embeds
+    its own edit-format markers inside what should be clean source code.
+    Corrupted files are regenerated via AI.
     """
     skip_dirs  = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next'}
     corrupted  = []
@@ -2796,22 +2866,35 @@ def sanitize_workspace():
     if not WORKSPACE_DIR.exists():
         return
 
+    PATCH_MARKERS = ('<<<SEARCH', '<<<REPLACE', '// PATCH:', '# PATCH:')
+
     for fp in sorted(WORKSPACE_DIR.rglob('*')):
         if any(p in skip_dirs for p in fp.parts):
             continue
         if not fp.is_file():
             continue
         # Only check text-based source files
-        if fp.suffix not in ('.css', '.js', '.jsx', '.ts', '.tsx', '.html', '.py', '.json', '.md'):
+        if fp.suffix not in ('.css', '.js', '.jsx', '.ts', '.tsx', '.html', '.py', '.json', '.md', '.config', '.cjs', '.mjs'):
             continue
         try:
             content = fp.read_text(encoding='utf-8')
-            # Detect git diff markers: lines starting with @@ or a block of +/- lines
             lines = content.splitlines()
+
+            # ── Check 1: git diff markers ─────────────────────────────────
             diff_lines = sum(1 for l in lines if l.startswith('@@') or (len(l) > 1 and l[0] in ('+', '-') and not l.startswith('---') and not l.startswith('+++')))
-            if diff_lines > 3 or any(l.startswith('@@') for l in lines):
-                corrupted.append(fp)
-                log(f'  🔴 Corrupted file detected: {fp.relative_to(PROJECT_DIR)}')
+            has_git_diff = diff_lines > 3 or any(l.startswith('@@') for l in lines)
+
+            # ── Check 2: PATCH marker leakage ────────────────────────────
+            has_patch_markers = any(marker in content for marker in PATCH_MARKERS)
+
+            if has_git_diff or has_patch_markers:
+                reason = []
+                if has_git_diff:
+                    reason.append('git diff markers')
+                if has_patch_markers:
+                    reason.append('PATCH marker leakage')
+                log(f'  🔴 Corrupted file detected ({", ".join(reason)}): {fp.relative_to(PROJECT_DIR)}')
+                corrupted.append((fp, ', '.join(reason)))
         except Exception:
             pass
 
@@ -2820,29 +2903,34 @@ def sanitize_workspace():
 
     report(f'Found {len(corrupted)} file(s) with formatting issues — fixing them automatically...')
 
-    for fp in corrupted:
+    for fp, reason in corrupted:
         try:
             rel = str(fp.relative_to(WORKSPACE_DIR))
             content = fp.read_text(encoding='utf-8')
 
-            # Ask AI to regenerate the clean version of this file
-            fix_prompt = f"""The following file has been corrupted with git diff markers (lines starting with @@, +, -).
-Please rewrite it as a clean, complete, valid file with no diff markers.
+            fix_prompt = f"""The following source file has been corrupted with editor/diff markers that were accidentally embedded in the file content ({reason}).
 
 File: {rel}
 Corrupted content:
 {content[:4000]}
 
+Please rewrite it as a clean, complete, valid source file with absolutely no diff markers, no <<<SEARCH / <<<REPLACE / >>> blocks, and no // PATCH: lines.
 Return ONLY the clean file content with no explanation, no markers, no fences."""
 
             clean = call_ai([
-                {'role': 'system', 'content': 'You are a code repair tool. Return only clean file content.'},
+                {'role': 'system', 'content': 'You are a code repair tool. Return only clean, valid file content — no markdown fences, no diff markers, no PATCH/SEARCH/REPLACE blocks.'},
                 {'role': 'user', 'content': fix_prompt},
-            ], temperature=0.1, show_thinking=False)  # Don't show thinking for file repair
+            ], temperature=0.1, show_thinking=False)
 
             # Strip any accidental code fences
             clean = re.sub(r'^```[a-z]*\n?', '', clean.strip(), flags=re.MULTILINE)
             clean = re.sub(r'\n?```$', '', clean.strip(), flags=re.MULTILINE)
+
+            # Final safety check: refuse to write if still contaminated
+            PATCH_MARKERS = ('<<<SEARCH', '<<<REPLACE', '// PATCH:', '# PATCH:')
+            if any(m in clean for m in PATCH_MARKERS):
+                log(f'  ⚠️ AI returned still-contaminated content for {rel} — skipping')
+                continue
 
             if clean and len(clean) > 10:
                 fp.write_text(clean, encoding='utf-8')
@@ -2883,6 +2971,13 @@ def deploy(error_context: dict = None, max_retries: int = 3, test_changes: bool 
                 )
                 if fix_result.get('fixed'):
                     log(f'✅ Pre-deploy fix applied to {err["file"]}')
+                    new_file = fix_result.get('file')
+                    if new_file and new_file != err['file']:
+                        log(f'🔄 Swapping {err["file"]} with {new_file} in validation queue')
+                        if err['file'] in changed_files:
+                            changed_files.remove(err['file'])
+                        if new_file not in changed_files:
+                            changed_files.append(new_file)
                 else:
                     log(f'⚠️ Could not pre-fix {err["file"]}: {err["error"][:100]}')
 
@@ -3561,14 +3656,205 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
                     log(f'Checking for syntax errors...')
                     
                     # ═══════════════════════════════════════════════════════════════
-                    # AUTO-FIX: Detect and fix syntax errors automatically
+                    # AUTO-FIX: Classify the build error and route to the right fix.
+                    #
+                    # Three distinct classes handled here:
+                    #
+                    # CLASS A — "Could not resolve './X'" → file doesn't exist at all.
+                    #   Fix: ask the AI to create the missing file using full workspace
+                    #   context (not a stub — a real component based on App.jsx imports).
+                    #
+                    # CLASS B — "X not exported by Y.jsx" → wrong export/import style,
+                    #   or a file that lost its export default.
+                    #   Fix: ask the AI to fix BOTH the importer and the exporter,
+                    #   sending full content of both files.
+                    #
+                    # CLASS C — genuine syntax errors (SyntaxError, TabError, etc.)
+                    #   Fix: existing _auto_fix_syntax_error path.
                     # ═══════════════════════════════════════════════════════════════
+
+                    def _read_ws_file(rel_path: str, max_chars: int = 20000) -> str:
+                        """Read a workspace file fully, up to max_chars."""
+                        try:
+                            p = WORKSPACE_DIR / rel_path.lstrip('./')
+                            if p.exists():
+                                return p.read_text(encoding='utf-8')[:max_chars]
+                        except Exception:
+                            pass
+                        return ''
+
+                    def _all_workspace_source_files(max_files: int = 30) -> dict:
+                        """Return {rel_path: content} for all source files, full content."""
+                        result = {}
+                        skip = {'node_modules', '.git', 'dist', 'build', '__pycache__', '.venv'}
+                        exts = {'.js', '.jsx', '.ts', '.tsx', '.css', '.json', '.html', '.mjs', '.cjs'}
+                        try:
+                            for fp in sorted(WORKSPACE_DIR.rglob('*')):
+                                if any(p in skip for p in fp.parts):
+                                    continue
+                                if not fp.is_file() or fp.suffix not in exts:
+                                    continue
+                                if fp.name in ('package-lock.json',):
+                                    continue
+                                rel = str(fp.relative_to(WORKSPACE_DIR))
+                                result[rel] = fp.read_text(encoding='utf-8')
+                                if len(result) >= max_files:
+                                    break
+                        except Exception:
+                            pass
+                        return result
+
+                    # ── CLASS A: File does not exist at all ──────────────────────
+                    missing_import_match = re.search(
+                        r'Could not resolve ["\'](\./[^"\']+)["\'] from ["\']([^"\']+)["\']',
+                        full_error
+                    )
+                    if missing_import_match:
+                        missing_rel = missing_import_match.group(1)   # e.g. "./pages/BankDashboard"
+                        importer    = missing_import_match.group(2)   # e.g. "src/App.jsx"
+
+                        log(f'🔧 CLASS A build error: missing file "{missing_rel}" imported from "{importer}"')
+                        report(f'Missing component detected — asking AI to create it from context...')
+
+                        ws_files = _all_workspace_source_files()
+                        file_context = '\n\n'.join(
+                            f'// FILE: {p}\n{c}'
+                            for p, c in ws_files.items()
+                        )
+
+                        create_prompt = f"""A Vite React build failed because this import cannot be resolved:
+
+IMPORT: {missing_rel}
+IN FILE: {importer}
+
+The file does not exist in the workspace. You must CREATE it now.
+
+FULL WORKSPACE SOURCE FILES (so you can match the style and content of the rest of the app):
+{file_context}
+
+INSTRUCTIONS:
+1. Examine the existing pages (Dashboard.jsx, Banking.jsx, Insurance.jsx, etc.) to understand the design system, props, and patterns used.
+2. Create a COMPLETE, REAL implementation of the missing component — NOT a stub or placeholder.
+3. The component must match the dark glassmorphism style and Tailwind classes used in the existing pages.
+4. It must use the same Layout, navigation, and mock data patterns as the other pages.
+5. Output ONLY the // FILE: marker and complete content. No explanations.
+
+// FILE: {importer.replace(Path(importer).name, missing_rel.lstrip('./') + '.jsx')}
+[complete component here]"""
+
+                        try:
+                            fix_response = call_ai([
+                                {'role': 'system', 'content': 'You are a React developer. Create complete, production-quality components that match the existing codebase style. Never create stubs or placeholders.'},
+                                {'role': 'user', 'content': create_prompt},
+                            ], temperature=0.2, show_thinking=True)
+
+                            # Parse FILE markers and write
+                            fm_re = re.compile(r'(?://\s*FILE:\s*)([^\n]+)\n', re.IGNORECASE)
+                            fm_matches = list(fm_re.finditer(fix_response))
+                            created_any = False
+                            for idx, fm in enumerate(fm_matches):
+                                fname = _clean_filename(fm.group(1))
+                                start = fm.end()
+                                end = fm_matches[idx+1].start() if idx+1 < len(fm_matches) else len(fix_response)
+                                content = fix_response[start:end].strip()
+                                content = re.sub(r'^```[a-z]*\n?', '', content, flags=re.MULTILINE)
+                                content = re.sub(r'\n?```\s*$', '', content, flags=re.MULTILINE)
+                                if content and len(content) > 50:
+                                    _write_file(WORKSPACE_DIR / fname, content)
+                                    log(f'🔧 CLASS A fix: created {fname} ({len(content)} chars)')
+                                    created_any = True
+                            if created_any:
+                                report(f'Created missing component. Rebuilding...')
+                                time.sleep(1)
+                                continue
+                            else:
+                                log('⚠️ CLASS A fix: AI response contained no valid FILE markers')
+                        except Exception as ex:
+                            log(f'⚠️ CLASS A fix failed: {ex}')
+
+                    # ── CLASS B: Export/import mismatch ─────────────────────────
+                    not_exported_match = re.search(
+                        r'"([^"]+)" is not exported by "([^"]+)", imported by "([^"]+)"',
+                        full_error
+                    )
+                    if not_exported_match and not missing_import_match:
+                        exported_name = not_exported_match.group(1)   # e.g. "default" or "Layout"
+                        exporter_path = not_exported_match.group(2)   # e.g. "src/components/Layout.jsx"
+                        importer_path = not_exported_match.group(3)   # e.g. "src/App.jsx"
+
+                        # Normalise paths (remove /project/workspace/ prefix)
+                        exporter_rel = re.sub(r'^/project/workspace/', '', exporter_path)
+                        importer_rel = re.sub(r'^/project/workspace/', '', importer_path)
+
+                        log(f'🔧 CLASS B build error: "{exported_name}" not exported by {exporter_rel}')
+                        report(f'Export mismatch in {Path(exporter_rel).name} — asking AI to fix...')
+
+                        exporter_content = _read_ws_file(exporter_rel)
+                        importer_content = _read_ws_file(importer_rel)
+
+                        fix_prompt_b = f"""A Vite React build failed with this error:
+
+ERROR: "{exported_name}" is not exported by "{exporter_rel}", imported by "{importer_rel}"
+
+This means either:
+- The exporting file is missing `export default` or the named export
+- The importing file uses the wrong import style (default vs named)
+
+EXPORTING FILE ({exporter_rel}):
+{exporter_content}
+
+IMPORTING FILE ({importer_rel}):
+{importer_content}
+
+INSTRUCTIONS:
+1. Diagnose the real problem: look at what the exporter actually exports vs what the importer expects.
+2. Fix BOTH files if needed to make the import/export consistent.
+3. The exporter should have `export default ComponentName` at the bottom.
+4. The importer should use the correct import style (default import if the component uses export default).
+5. Output COMPLETE file rewrites using // FILE: markers. Do NOT use PATCH markers.
+6. Do NOT truncate or stub the files — output the full content of each fixed file.
+
+Output ONLY the // FILE: markers and complete content, no explanations."""
+
+                        try:
+                            fix_response_b = call_ai([
+                                {'role': 'system', 'content': 'You are a React debugging expert. Fix export/import mismatches by rewriting complete files. Never create stubs or truncate files.'},
+                                {'role': 'user', 'content': fix_prompt_b},
+                            ], temperature=0.1, show_thinking=True)
+
+                            fm_re = re.compile(r'(?://\s*FILE:\s*)([^\n]+)\n', re.IGNORECASE)
+                            fm_matches = list(fm_re.finditer(fix_response_b))
+                            fixed_any = False
+                            for idx, fm in enumerate(fm_matches):
+                                fname = _clean_filename(fm.group(1))
+                                start = fm.end()
+                                end = fm_matches[idx+1].start() if idx+1 < len(fm_matches) else len(fix_response_b)
+                                content = fix_response_b[start:end].strip()
+                                content = re.sub(r'^```[a-z]*\n?', '', content, flags=re.MULTILINE)
+                                content = re.sub(r'\n?```\s*$', '', content, flags=re.MULTILINE)
+                                if content and len(content) > 50:
+                                    _write_file(WORKSPACE_DIR / fname, content)
+                                    log(f'🔧 CLASS B fix: rewrote {fname} ({len(content)} chars)')
+                                    fixed_any = True
+                            if fixed_any:
+                                report(f'Fixed export/import mismatch. Rebuilding...')
+                                time.sleep(1)
+                                continue
+                            else:
+                                log('⚠️ CLASS B fix: AI response contained no valid FILE markers')
+                        except Exception as ex:
+                            log(f'⚠️ CLASS B fix failed: {ex}')
+
+                    # ── CLASS C: Genuine syntax / compiler errors ────────────────
                     has_syntax_error = any(kw.lower() in full_error.lower() for kw in [
-                        'SyntaxError', 'IndentationError', 'TabError', 
-                        'RollupError', 'CssSyntaxError', 'Could not resolve',
+                        'SyntaxError', 'IndentationError', 'TabError',
+                        'CssSyntaxError',
                         'error during build', 'Cannot find module', 'Module not found',
                         'ReferenceError', 'TypeError', 'CompileError', 'failed to compile'
                     ])
+                    # RollupError is CLASS B (already handled) unless not caught above
+                    if 'RollupError' in full_error and (missing_import_match or not_exported_match):
+                        has_syntax_error = False  # Already handled as CLASS A or B
                     log(f'Syntax error detected: {has_syntax_error}')
                     
                     if has_syntax_error:
@@ -3977,13 +4263,15 @@ def _targeted_code_fix(error_history: list, workspace_files: dict) -> bool:
 
     report(f'Spotted a repeating issue — fixing the source code directly...')
 
-    # Build context
+    # Build context with FULL file content (not truncated at 2000 chars).
+    # Cap per-file at 20 000 chars to stay inside context limits while still
+    # giving the AI the complete picture.
     file_context = '\n\n'.join(
-        f'// FILE: {path}\n{content[:2000]}'
-        for path, content in list(workspace_files.items())[:15]
+        f'// FILE: {path}\n{content[:20000]}'
+        for path, content in list(workspace_files.items())[:20]
     )
     error_summary = '\n'.join(
-        f'Attempt {i+1}: {e.get("reason", "")} | Build: {e.get("build_output", "")[-200:]}'
+        f'Attempt {i+1}: {e.get("reason", "")} | Build: {e.get("build_output", "")[-500:]}'
         for i, e in enumerate(error_history[-3:])
     )
 
@@ -5465,8 +5753,10 @@ def _auto_fix_syntax_error(error_output: str, workspace_discovery: dict, hint_fi
             log(f'Error line {error_line} exceeds file length {len(lines)}')
             error_line = len(lines)
         
-        start_line = max(0, error_line - 30)
-        end_line = min(len(lines), error_line + 30)
+        # Always send ±50 lines around the error for attempt 1;
+        # for attempt ≥2 we send the full file anyway.
+        start_line = max(0, error_line - 50)
+        end_line = min(len(lines), error_line + 50)
         context = '\n'.join(lines[start_line:end_line])
         
         error_type = 'SyntaxError'
@@ -5485,7 +5775,7 @@ def _auto_fix_syntax_error(error_output: str, workspace_discovery: dict, hint_fi
 The file has been corrupted or has persistent syntax errors. Please rewrite the ENTIRE file cleanly.
 
 ERROR OUTPUT:
-{cleaned_error[:1500]}
+{cleaned_error[:2000]}
 
 FILE: {error_file}
 ERROR LINE: {error_line}
@@ -5501,6 +5791,7 @@ CRITICAL INSTRUCTIONS:
 2. Rewrite the COMPLETE, valid file `{error_file}`.
 3. Do NOT truncate the file or use '// ... rest of code'.
 4. Do NOT use SEARCH/REPLACE patches.
+5. Preserve all existing functionality — only fix the error.
 
 OUTPUT FORMAT:
 // FILE: {error_file}
@@ -5532,6 +5823,32 @@ Output ONLY the file marker and complete content, no explanations."""
                     if content and '<<<SEARCH' not in content and '<<<REPLACE' not in content:
                         _write_file(WORKSPACE_DIR / filename, content)
                         log(f'✅ Successfully rewrote {filename} (FULL_REWRITE) on attempt {attempt}')
+                        if filename != error_file:
+                            old_full_path = WORKSPACE_DIR / error_file
+                            if old_full_path.exists():
+                                try:
+                                    old_full_path.unlink()
+                                    log(f"🗑️ Deleted original corrupted file {error_file} to avoid build collision")
+                                except Exception as e:
+                                    log(f"⚠️ Failed to delete {error_file}: {e}")
+                            
+                            old_base = os.path.basename(error_file)
+                            new_base = os.path.basename(filename)
+                            
+                            skip_dirs = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next'}
+                            for root, dirs, files in os.walk(str(WORKSPACE_DIR)):
+                                dirs[:] = [d for d in dirs if d not in skip_dirs]
+                                for f in files:
+                                    if f.endswith(('.html', '.js', '.jsx', '.ts', '.tsx', '.json', '.config.js', '.css')):
+                                        fpath = Path(root) / f
+                                        try:
+                                            fcontent = fpath.read_text(encoding='utf-8', errors='replace')
+                                            if old_base in fcontent or error_file in fcontent:
+                                                new_content = fcontent.replace(error_file, filename).replace(old_base, new_base)
+                                                fpath.write_text(new_content, encoding='utf-8')
+                                                log(f"✏️ Updated reference in {fpath.relative_to(WORKSPACE_DIR)}")
+                                        except Exception as e:
+                                            log(f"⚠️ Failed to update reference in {f}: {e}")
                         return {'fixed': True, 'file': filename}
                     else:
                         log(f'⚠️ AI response contained raw patch markers or was empty in full rewrite')
@@ -5543,19 +5860,37 @@ Output ONLY the file marker and complete content, no explanations."""
             return {'fixed': False, 'error': 'FULL_REWRITE attempt failed'}
 
         # ── attempt 1: use PATCH-based workflow ──
+        # For import-related errors, also read the other side of the import
+        related_file_context = ''
+        import_ref_match = re.search(
+            r'(?:imported by|from)\s+"([^"]+)"',
+            cleaned_error
+        )
+        if import_ref_match:
+            other_rel = re.sub(r'^/project/workspace/', '', import_ref_match.group(1))
+            if other_rel != error_file:
+                try:
+                    other_path = WORKSPACE_DIR / other_rel
+                    if other_path.exists():
+                        other_content = other_path.read_text(encoding='utf-8')
+                        related_file_context = f'\n\nRELATED FILE ({other_rel}) — the other side of the import:\n```\n{other_content}\n```'
+                        log(f'Including related file for context: {other_rel}')
+                except Exception:
+                    pass
+
         fix_prompt = f"""You are a code repair expert. Fix the {error_type} in this code.
 
 ERROR OUTPUT:
-{cleaned_error[:1500]}
+{cleaned_error[:2000]}
 
 FILE: {error_file}
 ERROR LINE: {error_line}
 ERROR TYPE: {error_type}
 
-CODE CONTEXT (lines {start_line+1} to {end_line}):
+FULL FILE CONTENT (fix the error here):
 ```
-{context}
-```
+{file_content}
+```{related_file_context}
 
 CRITICAL INSTRUCTIONS:
 1. Identify the exact syntax error at or near line {error_line}
@@ -5808,10 +6143,49 @@ class Agent:
         3. If task execution: execute selected task with full context
         4. If simple request: use legacy direct generation
         """
-        # Check if this is a D-Suite handoff trigger
+        # Check if this is a D-Suite handoff trigger or continuation
+        is_continuation = prompt.strip().lower() in ("continue", "retry", "continue...")
+        handoff_cache = WORKSPACE_DIR / ".vibecoding" / "handoff_context.json"
+        
         if prompt.strip().lower() == "start building based on the brd requirements":
             self._handle_dsuite_handoff()
             return
+        elif is_continuation and handoff_cache.exists():
+            log("🔄 Continuation requested. Reloading cached D-Suite handoff context...")
+            try:
+                cache_data = json.loads(handoff_cache.read_text(encoding='utf-8'))
+                if cache_data.get('is_handoff'):
+                    project_name = cache_data.get('project_name', 'Unnamed Project')
+                    full_prompt = cache_data.get('full_prompt', '')
+                    
+                    report(
+                        f'**Resuming Handoff Build!**\n\n**Project**: {project_name}\n\n'
+                        f'Re-building frontend screens following the cached D-Suite repo structure...',
+                        message_type='success'
+                    )
+                    
+                    os.environ['HANDOFF_SOURCE'] = 'dsuite'
+                    
+                    existing_files = read_workspace_files()
+                    is_empty = len(existing_files) == 0
+                    deploy_ok = self._handle_direct_generation(full_prompt, existing_files, is_empty)
+                    
+                    if deploy_ok:
+                        report(
+                            f'✅ **Frontend prototype is live!**\n\n'
+                            f'All screens are running with mock data, following the D-Suite folder structure for **{project_name}**.\n\n'
+                            f'**Next step — build the backend:**\n'
+                            f'When you\'re happy with the screens, reply:\n'
+                            f'> `Now build the backend for this project based on the BRD`\n\n'
+                            f'The agent will read your frontend code and create aligned API routes, '
+                            f'server logic, and database models without touching the UI.',
+                            message_type='info'
+                        )
+                    else:
+                        log('D-Suite handoff: deploy failed — suppressing false-success banner')
+                    return
+            except Exception as cache_err:
+                log(f"⚠️ Failed to reload handoff cache: {cache_err}")
             
         # Check if this is a system command to restore a git snapshot
         if prompt.startswith("__SYS_CMD_RESTORE__:"):
@@ -5917,50 +6291,209 @@ class Agent:
                 return
             
             # Extract BRD information
-            project_name = brd_data.get('project_name', 'Unnamed Project')
-            brd_text = brd_data.get('brd_text', '')
-            analysis_data = brd_data.get('analysis_data', {})
-            prerequisites = brd_data.get('prerequisites', [])
-            custom_rules = brd_data.get('custom_rules', '')
+            project_name   = brd_data.get('project_name', 'Unnamed Project')
+            brd_text       = brd_data.get('brd_text', '')
+            analysis_data  = brd_data.get('analysis_data', {})
+            prerequisites  = brd_data.get('prerequisites', [])
+            custom_rules   = brd_data.get('custom_rules', '')
             agent_analysis = brd_data.get('agent_analysis', '')
             handoff_source = brd_data.get('handoff_source', '')
 
+            # Set env var so generate_code applies D-Suite-specific system prompt rules
+            # (structure compliance + frontend-only enforcement via rules 12 & 13)
             if handoff_source == 'dsuite':
                 os.environ['HANDOFF_SOURCE'] = 'dsuite'
-            
-            # Construct comprehensive prompt
+
+            # ── Extract the frontend folder structure from agent_analysis ──────
+            # agent_analysis contains the full D-Suite architecture analysis:
+            # repo structure, Mermaid diagrams, folder layouts, tech stack decisions.
+            # We pass it directly to the AI so it places files in the correct locations.
+            # We explicitly forbid backend / DB file creation in the prompt itself.
+            frontend_structure_hint = agent_analysis if agent_analysis else ''
+
+            # Build a prompt that:
+            #   1. Gives the AI the BRD so it knows what screens/features to build
+            #   2. Gives it the D-Suite repo structure so it uses the right folder layout
+            #   3. Locks it to frontend + mock data only — no backend, no DB, no Prisma
             full_prompt = f"""# Project: {project_name}
 
-## Technical Architecture & Repo Structure (DSuite Analysis)
-
-{agent_analysis if agent_analysis else 'No agent analysis / architecture diagrams specified.'}
+## D-Suite Repository & Frontend Structure
+{frontend_structure_hint if frontend_structure_hint else 'No architecture diagrams provided — infer a sensible React/Vite structure.'}
 
 ## Business Requirements Document (BRD)
-
 {brd_text}
 
 ## AI Analysis Summary
-
 {json.dumps(analysis_data, indent=2) if analysis_data else 'No analysis data available'}
 
 ## Prerequisites
-
 {json.dumps(prerequisites, indent=2) if prerequisites else 'No prerequisites specified'}
 
 ## Custom Development Rules
-
 {custom_rules if custom_rules else 'No custom rules specified'}
 
----
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK — FRONTEND PROTOTYPE ONLY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Please analyze the BRD above and create a complete, production-ready application that fulfills all the requirements."""
+Build ONLY the frontend UI for this project. Follow these rules strictly:
 
-            report(f'**BRD Loaded Successfully!**\n\n**Project**: {project_name}\n\nAnalyzing requirements and building your application...', message_type='success')
-            
-            # Route directly to direct visual-first generation loop
+STRUCTURE RULE (highest priority):
+- Study the "D-Suite Repository & Frontend Structure" section above.
+- Use EXACTLY the folder structure and file paths defined there for all frontend files
+  (e.g. if it says src/pages/Dashboard.tsx, create that exact path).
+- Do NOT invent a different folder layout. Do NOT nest everything inside a new project folder.
+- If the structure section is empty, use a standard React/Vite layout:
+  src/pages/, src/components/, src/layouts/, src/assets/
+
+MOCK DATA RULE:
+- Use realistic hardcoded mock data for every screen — no real API calls, no fetch(), no axios.
+- All UI state must work with useState/local mock arrays so every screen is fully interactive.
+- Every page defined in the BRD must exist and be navigable.
+
+FRONTEND-ONLY RULE (strictly enforced):
+- Do NOT create any backend files: no server.py, no app.py, no Express server, no routes/, no controllers/.
+- Do NOT create any database files: no schema.prisma, no migrations/, no .db files, no seed files.
+- Do NOT add any backend dependencies to package.json.
+- The app must compile and run immediately on port 3000/5000 with zero backend dependencies.
+
+VISUAL QUALITY:
+- Dark-mode first: rich dark backgrounds, glassmorphism cards, smooth transitions.
+- Every screen from the BRD must be present with polished, realistic-looking UI.
+- Use the tech stack indicated in the D-Suite structure (React, Next.js, Vue, etc.).
+  If not specified, default to React + Vite.
+
+Backend wiring, API routes, and database integration will be built in a separate step
+after the frontend has been reviewed."""
+
+            # Check length of full_prompt and run chunked extraction if exceeds 30,000 chars
+            if len(full_prompt) >= 30000:
+                report("D-Suite context is extremely large. Running chunked analysis...", message_type="thinking")
+                log(f"Triggered chunking pipeline. Full prompt size: {len(full_prompt)} chars")
+                
+                # Split full_prompt into chunks of 25,000 characters with 3,000 characters overlap
+                chunk_size = 25000
+                overlap = 3000
+                chunks = []
+                start = 0
+                while start < len(full_prompt):
+                    end = min(start + chunk_size, len(full_prompt))
+                    chunks.append(full_prompt[start:end])
+                    if end == len(full_prompt):
+                        break
+                    start += chunk_size - overlap
+                
+                log(f"Split prompt into {len(chunks)} overlapping chunks.")
+                
+                extracted_parts = []
+                for idx, chunk in enumerate(chunks):
+                    report(f"Analyzing and cherry-picking details from chunk {idx+1}/{len(chunks)}...", message_type="thinking")
+                    
+                    extract_prompt = f"""You are a senior systems architect. Analyze this chunk of project requirements and extract ONLY the technical details relevant for creating the frontend screens:
+1. Frontend file paths/names (repository structure).
+2. Screen layouts, forms, and navigation flows.
+3. Component details and realistic mock data required.
+4. Styling choices (colors, theme, visual styling).
+
+Do NOT extract backend configurations, database tables, or business rules not visible on the UI.
+
+CHUNK CONTENT:
+{chunk}
+
+EXTRACTED DETAILS:"""
+                    
+                    try:
+                        response = call_ai([
+                            {'role': 'system', 'content': 'You are an elite systems architect. Extract only frontend UI structure and requirements.'},
+                            {'role': 'user', 'content': extract_prompt}
+                        ], temperature=0.2, show_thinking=False)
+                        extracted_parts.append(response.strip())
+                    except Exception as e:
+                        log(f"⚠️ Error processing chunk {idx+1}: {e}")
+                        extracted_parts.append(chunk[:1000] + "\n... (processing failed)")
+                
+                combined_details = "\n\n".join(extracted_parts)
+                
+                full_prompt = f"""# Project: {project_name}
+
+## D-Suite Condensed Requirements & UI Specifications
+{combined_details}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TASK — FRONTEND PROTOTYPE ONLY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Build ONLY the frontend UI for this project. Follow these rules strictly:
+
+STRUCTURE RULE (highest priority):
+- Use the repository structure and folder layout extracted above.
+- Do NOT invent a different folder layout. Do NOT nest everything inside a new project folder.
+
+MOCK DATA RULE:
+- Use realistic hardcoded mock data for every screen — no real API calls, no fetch(), no axios.
+- All UI state must work with useState/local mock arrays so every screen is fully interactive.
+- Every page defined in the BRD must exist and be navigable.
+
+FRONTEND-ONLY RULE (strictly enforced):
+- Do NOT create any backend files: no server.py, no app.py, no Express server, no routes/, no controllers/.
+- Do NOT create any database files: no schema.prisma, no migrations/, no .db files, no seed files.
+- Do NOT add any backend dependencies to package.json.
+- The app must compile and run immediately on port 3000/5000 with zero backend dependencies.
+
+VISUAL QUALITY:
+- Dark-mode first: rich dark backgrounds, glassmorphism cards, smooth transitions.
+- Every screen from the BRD must be present with polished, realistic-looking UI.
+- Use the tech stack indicated in the D-Suite structure (React, Next.js, Vue, etc.).
+  If not specified, default to React + Vite.
+
+Backend wiring, API routes, and database integration will be built in a separate step
+after the frontend has been reviewed."""
+                
+                log(f"Condensed prompt size: {len(full_prompt)} chars")
+                report("D-Suite context condensation complete.", message_type="thinking")
+
+            # Save the handoff context to the workspace for continuation retries
+            try:
+                handoff_dir = WORKSPACE_DIR / ".vibecoding"
+                handoff_dir.mkdir(parents=True, exist_ok=True)
+                handoff_cache = handoff_dir / "handoff_context.json"
+                handoff_cache.write_text(json.dumps({
+                    'project_name': project_name,
+                    'full_prompt': full_prompt,
+                    'is_handoff': True
+                }), encoding='utf-8')
+                log(f"💾 Saved handoff context to {handoff_cache.relative_to(WORKSPACE_DIR)}")
+            except Exception as cache_err:
+                log(f"⚠️ Failed to cache handoff context: {cache_err}")
+
+            report(
+                f'**BRD Loaded!**\n\n**Project**: {project_name}\n\n'
+                f'Building frontend screens following the D-Suite repo structure...',
+                message_type='success'
+            )
+
+            # Route to direct generation (generate_code will enforce frontend-only
+            # via the STRICT VISUAL PROTOTYPE RULE since existing_files is empty)
             existing_files = read_workspace_files()
             is_empty = len(existing_files) == 0
-            self._handle_direct_generation(full_prompt, existing_files, is_empty)
+            deploy_ok = self._handle_direct_generation(full_prompt, existing_files, is_empty)
+
+            # Only celebrate if the deploy actually succeeded.
+            # deploy() returns True on success, False/None on failure.
+            # The failure case already reported its own error message inside deploy().
+            if deploy_ok:
+                report(
+                    f'✅ **Frontend prototype is live!**\n\n'
+                    f'All screens are running with mock data, following the D-Suite folder structure for **{project_name}**.\n\n'
+                    f'**Next step — build the backend:**\n'
+                    f'When you\'re happy with the screens, reply:\n'
+                    f'> `Now build the backend for this project based on the BRD`\n\n'
+                    f'The agent will read your frontend code and create aligned API routes, '
+                    f'server logic, and database models without touching the UI.',
+                    message_type='info'
+                )
+            else:
+                log('D-Suite handoff: deploy failed — suppressing false-success banner')
             
         except requests.exceptions.RequestException as e:
             log(f'Failed to fetch BRD context: {e}')
@@ -6400,6 +6933,14 @@ Use `TASK:START` to continue execution.
                             if not fix_result.get('fixed'):
                                 all_fixed = False
                                 log(f'⚠️ Could not fix {err["file"]}: {err["error"][:80]}')
+                            else:
+                                new_file = fix_result.get('file')
+                                if new_file and new_file != err['file']:
+                                    log(f'🔄 Swapping {err["file"]} with {new_file} in validation queue')
+                                    if err['file'] in changed_files:
+                                        changed_files.remove(err['file'])
+                                    if new_file not in changed_files:
+                                        changed_files.append(new_file)
                         
                         if not all_fixed and snapshot_id:
                             # Rollback to pre-edit state
@@ -6466,6 +7007,7 @@ Use `TASK:START` to continue execution.
             user_prompt=user_prompt,
             snapshot_id=snapshot_id
         )
+        return deploy_result  # propagate True/False to callers
 
 
 
