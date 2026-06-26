@@ -300,44 +300,44 @@ class ProjectManager:
             logger.error(f"❌ No port binding for {cname}")
             return None
 
-        # Start log streaming in a separate thread
+        # Start log streaming in a single thread (file + console) to avoid duplicates
         log_dir = Path("ai_logs")
         log_dir.mkdir(exist_ok=True)
         log_file_path = log_dir / f"{pid}.txt"
-        
+ 
         def stream_logs():
             try:
                 with open(log_file_path, "a") as log_file:
                     log_file.write(f"\n--- SESSION START: {datetime.now().isoformat()} ---\n")
                     for line in container.logs(stream=True, follow=True):
-                        log_file.write(line.decode('utf-8'))
-                        log_file.flush()
+                        try:
+                            decoded_line = line.decode('utf-8').strip()
+                            if decoded_line:
+                                log_file.write(decoded_line + '\n')
+                                log_file.flush()
+                                logger.info(f"[{cname}] {decoded_line}")
+                        except Exception as e:
+                            logger.debug(f"Error decoding log line: {e}")
             except Exception as e:
                 logger.error(f"Error streaming logs for {pid}: {e}")
-        threading.Thread(target=stream_logs, daemon=True).start()
-
+ 
+        log_thread = threading.Thread(target=stream_logs, daemon=True)
+        log_thread.start()
+        self.log_threads[cname] = log_thread
+ 
         url = f"http://localhost:{host_port}"
         proj["container"] = container
         proj["url"]       = url
         self.agent_container = container   # backward compat
         self.agent_url       = url
         self.running_containers[cname] = container
-
+ 
         # ── 4. Wait for Nginx baseline gateway ───────────────────────────────
         if self._wait_for_nginx(url, timeout=30):
             logger.info(f"✅ {cname} ONLINE at {url}")
         else:
             logger.warning(f"⚠️ {cname} not yet responding — returning URL anyway")
-
-        # Start log streaming in a separate thread
-        log_thread = threading.Thread(
-            target=self._stream_container_logs,
-            args=(container, cname),
-            daemon=True
-        )
-        log_thread.start()
-        self.log_threads[cname] = log_thread
-
+ 
         return url
     
     def send_request(self, message: str, project_id: str = None) -> dict:
