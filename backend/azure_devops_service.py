@@ -348,7 +348,10 @@ def _should_include_file(path: str, size: int) -> bool:
     if any(p.startswith(".") and p not in {".env.example", ".azure-pipelines"} for p in parts):
         return False
 
-    skip_dirs = {"node_modules", "vendor", "dist", "build", "__pycache__", ".git", "venv", ".venv"}
+    skip_dirs = {
+        "node_modules", "vendor", "dist", "build", "__pycache__", 
+        ".git", "venv", ".venv", "target", "bin", "obj", "out"
+    }
     if any(p in skip_dirs for p in parts):
         return False
 
@@ -367,22 +370,26 @@ async def _get_file_content(
     path: str,
     pat: Optional[str],
 ) -> Optional[str]:
-    base = _repo_api_base(organization, project, repo)
-    url = f"{base}/items"
-    params = {
-        "path": f"/{path.lstrip('/')}",
-        "versionDescriptor.versionType": "branch",
-        "versionDescriptor.version": branch,
-        "download": "true",
-        "api-version": "7.1",
-    }
+    try:
+        base = _repo_api_base(organization, project, repo)
+        url = f"{base}/items"
+        params = {
+            "path": f"/{path.lstrip('/')}",
+            "versionDescriptor.versionType": "branch",
+            "versionDescriptor.version": branch,
+            "download": "true",
+            "api-version": "7.1",
+        }
 
-    async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
-        resp = await client.get(url, params=params, headers=_auth_headers(pat))
-        if resp.status_code != 200:
-            return None
-        text = resp.content.decode("utf-8", errors="ignore")
-        return text if text.strip() else None
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(url, params=params, headers=_auth_headers(pat))
+            if resp.status_code != 200:
+                return None
+            text = resp.content.decode("utf-8", errors="ignore")
+            return text if text.strip() else None
+    except Exception as e:
+        logger.error(f"Error fetching Azure DevOps file content for {path}: {e}", exc_info=True)
+        return None
 
 
 async def build_repo_context_from_url(

@@ -333,6 +333,10 @@ class GovernanceResponse(Base):
     # Store skills.md files (selectively loaded based on task relevance)
     skills_md_files = Column(JSON, nullable=True)  # Array of {name, content, uploadedAt}
 
+    # AI-classified project type: greenfield | brownfield | modernization
+    # Populated automatically after analysis completes from metrics.project_type
+    project_type = Column(String, nullable=True, default="greenfield")
+
     owner = relationship("User", back_populates="governance_responses")
 
 class GovernanceQuestion(Base):

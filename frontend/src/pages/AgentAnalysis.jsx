@@ -457,6 +457,23 @@ const parseAIResponse = (text) => {
         }
     }
 
+    const isRepoOrBrownfieldSignal = 
+        source.includes("--- REPOSITORY CONTEXT ---") || 
+        source.includes("REPOSITORY CONTEXT") ||
+        source.toLowerCase().includes("brownfield") ||
+        source.toLowerCase().includes("brown field") ||
+        source.toLowerCase().includes("change request");
+
+    const forceMetricsType = (metricsObj) => {
+        if (!metricsObj) {
+            return isRepoOrBrownfieldSignal ? { project_type: 'brownfield' } : null;
+        }
+        if (isRepoOrBrownfieldSignal) {
+            metricsObj.project_type = 'brownfield';
+        }
+        return metricsObj;
+    };
+
     if (lastValidFenced) {
         const before = source.slice(0, lastValidFenced.index);
         const after = source.slice(lastValidFenced.index + lastValidFenced.fullMatch.length);
@@ -464,7 +481,7 @@ const parseAIResponse = (text) => {
         return {
             report,
             questions: lastValidFenced.parsed.questions || [],
-            metrics: lastValidFenced.parsed.metrics || null,
+            metrics: forceMetricsType(lastValidFenced.parsed.metrics),
             title: lastValidFenced.parsed.title || null,
             prerequisites: lastValidFenced.parsed.prerequisites || [],
             architecture: lastValidFenced.parsed.architecture || null
@@ -477,7 +494,7 @@ const parseAIResponse = (text) => {
         return {
             report: `${before}${after}`.trim(),
             questions: [],
-            metrics: null,
+            metrics: forceMetricsType(null),
             title: null,
             prerequisites: [],
             architecture: null
@@ -493,7 +510,7 @@ const parseAIResponse = (text) => {
             return {
                 report,
                 questions: parsed.questions || [],
-                metrics: parsed.metrics || null,
+                metrics: forceMetricsType(parsed.metrics),
                 title: parsed.title || null,
                 prerequisites: parsed.prerequisites || [],
                 architecture: parsed.architecture || null
@@ -504,7 +521,7 @@ const parseAIResponse = (text) => {
     return {
         report: source,
         questions: [],
-        metrics: null,
+        metrics: forceMetricsType(null),
         title: null,
         prerequisites: [],
         architecture: null
@@ -2939,7 +2956,7 @@ export default function AgentAnalysis({
                                         </div>
                                         <div className="flex-1 min-w-0">
                                             <h2 className="text-xl font-bold text-gray-900 truncate mb-1">{result.filename}</h2>
-                                            <div className="flex items-center gap-2 text-sm text-gray-600">
+                                            <div className="flex flex-wrap items-center gap-2 text-sm text-gray-600">
                                                 {selectedProject && (
                                                     <>
                                                         <span className="font-medium">{selectedProject.name}</span>
@@ -2957,6 +2974,27 @@ export default function AgentAnalysis({
                                                         <span className="font-medium text-emerald-600">Analysis Complete</span>
                                                     </div>
                                                 )}
+                                                {/* Project-type badge — derived from AI analysis metrics */}
+                                                {(result?.analysis?.metrics?.project_type || result?.metrics?.project_type) && (() => {
+                                                    const pt = String(result?.analysis?.metrics?.project_type || result?.metrics?.project_type || '').toLowerCase();
+                                                    const isBrownfield = pt === 'brownfield';
+                                                    const isMigration = pt === 'modernization' || pt === 'migration';
+                                                    const isGreenfield = pt === 'greenfield';
+                                                    if (!isBrownfield && !isMigration && !isGreenfield) return null;
+                                                    const label = isBrownfield ? 'Brownfield' : isMigration ? 'Migration' : 'Greenfield';
+                                                    const icon = isBrownfield ? '🟠' : isMigration ? '🔵' : '🟢';
+                                                    const badgeCls = isBrownfield
+                                                        ? 'bg-amber-50 border-amber-300 text-amber-700'
+                                                        : isMigration
+                                                            ? 'bg-blue-50 border-blue-300 text-blue-700'
+                                                            : 'bg-emerald-50 border-emerald-300 text-emerald-700';
+                                                    return (
+                                                        <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full border text-xs font-bold tracking-wide ${badgeCls}`} title={`Project type: ${label}`}>
+                                                            <span className="text-sm leading-none">{icon}</span>
+                                                            {label}
+                                                        </span>
+                                                    );
+                                                })()}
                                             </div>
                                         </div>
                                     </div>

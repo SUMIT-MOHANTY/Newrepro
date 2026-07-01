@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Users, Trash2, Edit, Activity, Clock, CheckCircle, AlertCircle, RefreshCw, Filter, Server, Database, GitBranch, Bot, Globe, Plus, Upload } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { Users, Trash2, Edit, Activity, Clock, CheckCircle, AlertCircle, RefreshCw, Filter, Server, Database, GitBranch, Bot, Globe, Plus, Upload, Code, Coffee, Zap, Triangle, Hash } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 
 import { getNeutralAgentName, getNeutralAgentLabel } from '../utils/agentNames';
@@ -38,6 +38,62 @@ const PREDEFINED_TEMPLATES = [
     icon: Activity,
     accentColor: 'from-purple-400 to-pink-500',
     colorClass: 'text-purple-400 bg-purple-500/10 border-purple-500/20 hover:border-purple-500/40 hover:text-purple-300'
+  },
+  // ── Brownfield / Language-Specific Templates ────────────────────────────────
+  {
+    name: 'Java / Spring Boot Developer',
+    tags: 'Java, Spring Boot, Maven, Hibernate, JPA, REST API, Gradle',
+    specialization: 'Development',
+    brownfieldOnly: true,
+    description: 'Brownfield Java agent. Reads existing Spring Boot services, applies targeted modifications, adds endpoints, entities, and service logic without breaking existing code.',
+    skills: `# Java / Spring Boot Developer Agent Skill\n\n## Role\nYou are a specialized Brownfield Java Developer Agent. You work on EXISTING Spring Boot applications — reading current code before making any changes.\n\n## Tech Stack\n- Language: Java 11/17/21\n- Framework: Spring Boot (Spring MVC, Spring Data, Spring Security)\n- Build: Maven / Gradle\n- ORM: Hibernate / JPA / Spring Data JPA\n- Testing: JUnit 5, Mockito\n- DB: PostgreSQL / MySQL / H2\n\n## Brownfield Working Rules\n1. ALWAYS read the existing class before modifying: cat /workspace/src/main/java/.../ClassName.java\n2. Make SURGICAL changes — preserve existing methods, annotations, and imports\n3. Add new endpoints in existing Controllers or create new @RestController classes\n4. New entities go in the existing entities/ or model/ package structure\n5. Register new beans, services, or repositories following the existing patterns\n6. Run: mvn test -pl . --no-transfer-progress (or ./gradlew test) after changes\n\n## Core Responsibilities\n1. Endpoint Development: Add/modify @GetMapping, @PostMapping in @RestController classes\n2. Service Layer: Add business logic in @Service classes, injecting existing repositories\n3. Entity Changes: Modify @Entity JPA classes, add @Column fields with proper constraints\n4. Repository: Add custom @Query methods to existing JpaRepository interfaces\n5. Configuration: Modify application.properties / application.yml for new settings`,
+    icon: Coffee,
+    accentColor: 'from-orange-400 to-red-500',
+    colorClass: 'text-orange-400 bg-orange-500/10 border-orange-500/20 hover:border-orange-500/40 hover:text-orange-300'
+  },
+  {
+    name: '.NET / C# Developer',
+    tags: 'C#, .NET, ASP.NET Core, Entity Framework, NuGet, REST API',
+    specialization: 'Development',
+    brownfieldOnly: true,
+    description: 'Brownfield .NET agent. Reads existing ASP.NET Core controllers, applies targeted modifications, adds endpoints, EF migrations, and service logic.',
+    skills: `# .NET / C# Developer Agent Skill\n\n## Role\nYou are a specialized Brownfield .NET Developer Agent. You work on EXISTING ASP.NET Core applications — reading current code before making any changes.\n\n## Tech Stack\n- Language: C# (.NET 6/7/8)\n- Framework: ASP.NET Core (Web API, Minimal APIs)\n- ORM: Entity Framework Core\n- Package Manager: NuGet\n- Testing: xUnit, Moq\n- DB: SQL Server / PostgreSQL / SQLite\n\n## Brownfield Working Rules\n1. ALWAYS read the existing file: cat /workspace/src/.../ClassName.cs\n2. Preserve existing namespaces, using directives, and dependency injection registrations\n3. Add new action methods to existing Controllers or create new ControllerBase-derived classes\n4. New entities go in the existing Models/ or Entities/ directory\n5. Register new services in Program.cs / Startup.cs following the existing pattern\n6. Run: dotnet test after changes\n\n## Core Responsibilities\n1. API Controllers: Add [HttpGet]/[HttpPost] actions to [ApiController] classes\n2. Service Layer: Add methods to existing interface + implementation pairs\n3. EF Migrations: Modify DbContext and generate new Add-Migration / dotnet ef migration\n4. Models/DTOs: Add new properties to existing record or class definitions\n5. Middleware: Wire new middleware in the existing app.Use() pipeline`,
+    icon: Hash,
+    accentColor: 'from-violet-400 to-purple-500',
+    colorClass: 'text-violet-400 bg-violet-500/10 border-violet-500/20 hover:border-violet-500/40 hover:text-violet-300'
+  },
+  {
+    name: 'Python / Django Developer',
+    tags: 'Python, Django, DRF, Celery, PostgreSQL, REST API, Migrations',
+    specialization: 'Development',
+    brownfieldOnly: true,
+    description: 'Brownfield Django agent. Reads existing views, models, and URLs then applies targeted changes to add features, API endpoints, and celery tasks.',
+    skills: `# Python / Django Developer Agent Skill\n\n## Role\nYou are a specialized Brownfield Python/Django Developer Agent. You work on EXISTING Django applications — reading current code before making any changes.\n\n## Tech Stack\n- Language: Python 3.9+\n- Framework: Django + Django REST Framework (DRF)\n- Task Queue: Celery + Redis\n- ORM: Django ORM\n- Testing: pytest-django, unittest\n- DB: PostgreSQL / SQLite\n\n## Brownfield Working Rules\n1. ALWAYS read the existing file: cat /workspace/app_name/views.py (or models.py, urls.py)\n2. Preserve existing URL patterns — add new patterns without removing existing ones\n3. Add new serializers in the existing serializers.py file\n4. New models go in the existing models.py of the appropriate Django app\n5. Generate and apply migrations: python manage.py makemigrations && python manage.py migrate\n6. Run tests: python manage.py test\n\n## Core Responsibilities\n1. Views/Viewsets: Add new APIView or ModelViewSet classes in existing views.py\n2. Models: Add fields or new Model classes with proper Meta and migrations\n3. Serializers: Add DRF serializers for new or modified models\n4. URL Routing: Register new routes in urls.py with router.register() or urlpatterns\n5. Celery Tasks: Add @shared_task decorated functions to existing tasks.py`,
+    icon: Code,
+    accentColor: 'from-green-400 to-emerald-500',
+    colorClass: 'text-green-400 bg-green-500/10 border-green-500/20 hover:border-green-500/40 hover:text-green-300'
+  },
+  {
+    name: 'Node.js / Express Developer',
+    tags: 'Node.js, Express, TypeScript, Prisma, REST API, npm, MongoDB',
+    specialization: 'Development',
+    brownfieldOnly: true,
+    description: 'Brownfield Node.js agent. Reads existing Express routes and middleware, then adds endpoints, schema changes, and service logic with minimal disruption.',
+    skills: `# Node.js / Express Developer Agent Skill\n\n## Role\nYou are a specialized Brownfield Node.js/Express Developer Agent. You work on EXISTING Node.js applications — reading current code before making any changes.\n\n## Tech Stack\n- Language: TypeScript / JavaScript\n- Framework: Express / NestJS / Fastify\n- ORM: Prisma / TypeORM / Mongoose\n- Package Manager: npm / yarn / pnpm\n- Testing: Jest, Supertest\n- DB: PostgreSQL / MongoDB / MySQL\n\n## Brownfield Working Rules\n1. ALWAYS read the existing file: cat /workspace/src/routes/existingRouter.ts\n2. Add new route handlers to existing Express Router files or create new modular routers\n3. Register new routers in the existing app.use() configuration in app.ts/index.ts\n4. New Prisma models: add to schema.prisma then run npx prisma migrate dev\n5. Keep existing middleware chain intact — add middleware AFTER existing ones\n6. Run: npm test after changes\n\n## Core Responsibilities\n1. Routes: Add new GET/POST/PUT/DELETE handlers in existing router files\n2. Controllers: Add new controller functions following the existing request/response pattern\n3. Services: Add business logic to existing service files\n4. Prisma Schema: Add new models or fields and generate migrations\n5. Middleware: Add authentication guards, validators following existing patterns`,
+    icon: Zap,
+    accentColor: 'from-yellow-400 to-amber-500',
+    colorClass: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/20 hover:border-yellow-500/40 hover:text-yellow-300'
+  },
+  {
+    name: 'Go Developer',
+    tags: 'Go, Gin, GORM, gRPC, REST API, Docker, Microservices',
+    specialization: 'Development',
+    brownfieldOnly: true,
+    description: 'Brownfield Go agent. Reads existing handlers, models, and routes, then makes targeted additions to Go microservices and REST APIs.',
+    skills: `# Go Developer Agent Skill\n\n## Role\nYou are a specialized Brownfield Go Developer Agent. You work on EXISTING Go applications — reading current code before making any changes.\n\n## Tech Stack\n- Language: Go 1.19+\n- Framework: Gin / Echo / Fiber / net/http\n- ORM: GORM / sqlx\n- Package Manager: Go Modules (go.mod)\n- Testing: testing package, testify\n- Protocols: REST / gRPC\n\n## Brownfield Working Rules\n1. ALWAYS read the existing handler/struct: cat /workspace/internal/handlers/existing.go\n2. Follow the existing package structure — do NOT create new top-level packages without reason\n3. Add new route handlers as functions in existing handler files or new files in the same package\n4. Register new routes in the existing router setup (e.g., router.GET("/new", handler))\n5. New structs go in the existing models/ or types/ package\n6. Run: go test ./... after changes\n\n## Core Responsibilities\n1. Handlers: Add new HTTP handler functions following the existing (c *gin.Context) pattern\n2. Routes: Register in the existing router group setup\n3. Models/Structs: Add new GORM model structs with proper tags\n4. Services: Add business logic to existing service structs\n5. Middleware: Add new gin.HandlerFunc middleware in the existing middleware chain`,
+    icon: Triangle,
+    accentColor: 'from-cyan-400 to-blue-500',
+    colorClass: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/20 hover:border-cyan-500/40 hover:text-cyan-300'
   }
 ];
 
@@ -70,7 +126,41 @@ export default function AgentsPage({ projects = [] }) {
   const [isConfiguringTemplate, setIsConfiguringTemplate] = useState(false);
   const [editingAgentId, setEditingAgentId] = useState(null);
 
+  // Skill-gap detection state (brownfield projects)
+  const [skillGapData, setSkillGapData] = useState(null);
+  const [skillGapLoading, setSkillGapLoading] = useState(false);
 
+  // Current active brownfield project (first project in list with type brownfield)
+  const activeBrownfieldProject = useMemo(() => {
+    return (projects || []).find(p =>
+      ['brownfield', 'modernization', 'migration'].includes(
+        (p.project_type || '').toLowerCase()
+      )
+    ) || null;
+  }, [projects]);
+
+  // Fetch skill gaps for the active brownfield project
+  const fetchSkillGaps = useCallback(async (projectToken) => {
+    if (!projectToken) { setSkillGapData(null); return; }
+    setSkillGapLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const base = (API_ENDPOINTS.AGENTS || '').replace(/\/agents\/?$/, '');
+      const res = await fetch(`${base}/projects/${projectToken}/skill-gaps`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSkillGapData(data);
+      } else {
+        setSkillGapData(null);
+      }
+    } catch {
+      setSkillGapData(null);
+    } finally {
+      setSkillGapLoading(false);
+    }
+  }, []);
 
   // Handle markdown file selection and parse content inside the browser
   const handleFileChange = (e) => {
@@ -157,6 +247,9 @@ export default function AgentsPage({ projects = [] }) {
       // Refresh lists
       await fetchAgents();
       await fetchQuota();
+      if (activeBrownfieldProject?.project_token) {
+        await fetchSkillGaps(activeBrownfieldProject.project_token);
+      }
     } catch (err) {
       setAddAgentError(err.message || `Failed to ${isEditing ? 'update' : 'add'} custom agent`);
     } finally {
@@ -189,6 +282,9 @@ export default function AgentsPage({ projects = [] }) {
       }
       await fetchAgents();
       await fetchQuota();
+      if (activeBrownfieldProject?.project_token) {
+        await fetchSkillGaps(activeBrownfieldProject.project_token);
+      }
     } catch (err) {
       setError(err.message || 'Failed to add custom agent');
     } finally {
@@ -259,6 +355,15 @@ export default function AgentsPage({ projects = [] }) {
     fetchQuota();
   }, []);
 
+  // Fetch skill gaps whenever the active brownfield project changes
+  useEffect(() => {
+    if (activeBrownfieldProject?.project_token) {
+      fetchSkillGaps(activeBrownfieldProject.project_token);
+    } else {
+      setSkillGapData(null);
+    }
+  }, [activeBrownfieldProject, fetchSkillGaps]);
+
   const clampPositiveInt = (value, max = 1000) => {
     const n = Number(value);
     if (!Number.isFinite(n)) return 1;
@@ -309,6 +414,9 @@ export default function AgentsPage({ projects = [] }) {
       setDedicatedAgents((prev) => prev.filter((a) => a.id !== agentId));
       await fetchAgents();
       await fetchQuota();
+      if (activeBrownfieldProject?.project_token) {
+        await fetchSkillGaps(activeBrownfieldProject.project_token);
+      }
     } catch (e) {
       setError(e.message);
     } finally {
@@ -707,6 +815,66 @@ export default function AgentsPage({ projects = [] }) {
                 <AlertCircle className="w-5 h-5 mr-2" />
                 {error}
               </p>
+            </div>
+          )}
+
+
+          {/* Skill Gap Warning Banner for Brownfield Projects */}
+          {activeBrownfieldProject && skillGapData?.skill_gaps?.has_gaps && (
+            <div className="mb-6 p-5 bg-amber-500/10 border border-amber-500/20 rounded-xl flex flex-col gap-4 shadow-sm">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+                <div>
+                  <h4 className="text-sm font-bold text-amber-200">
+                    Required Agent Skills Missing
+                  </h4>
+                  <p className="text-xs text-amber-300/80 leading-relaxed mt-1">
+                    Your brownfield project change request requires skills that are not covered by any of your registered agents.
+                    Onboard a matching developer agent below to start task execution.
+                  </p>
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    <span className="text-xs font-semibold text-amber-300/60 self-center">Missing Skills:</span>
+                    {skillGapData.skill_gaps.missing.map((skill, idx) => (
+                      <span key={idx} className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-red-500/10 border border-red-500/20 text-red-400">
+                        {skill}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Suggestions */}
+              {skillGapData.skill_gaps.suggested_templates?.length > 0 && (
+                <div className="pt-3 border-t border-amber-500/10 flex flex-col gap-2">
+                  <span className="text-[11px] font-bold text-amber-200/70 uppercase tracking-wider">Suggested Agent Templates:</span>
+                  <div className="flex flex-wrap gap-3">
+                    {skillGapData.skill_gaps.suggested_templates.map((tmplName) => {
+                      const tmpl = PREDEFINED_TEMPLATES.find(t => t.name === tmplName);
+                      if (!tmpl) return null;
+                      const IconComponent = tmpl.icon || Bot;
+                      return (
+                        <div key={tmplName} className="flex items-center gap-3 bg-app-bg-card/45 border border-app-border-light/30 rounded-lg p-2 pr-3.5 hover:border-app-primary/30 transition-all">
+                          <div className="w-8 h-8 rounded-md bg-app-bg-page border flex items-center justify-center text-app-primary">
+                            <IconComponent className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <div className="text-xs font-bold text-app-text-main">{tmpl.name}</div>
+                            <div className="text-[10px] text-app-text-muted">{tmpl.tags.split(', ').slice(0, 3).join(', ')}</div>
+                          </div>
+                          <button
+                            onClick={() => handleQuickAddAgent(tmpl)}
+                            disabled={loading}
+                            className="ml-2 px-2.5 py-1 text-[10px] font-bold bg-app-primary hover:bg-blue-600 text-white rounded-md transition-colors flex items-center gap-1 cursor-pointer"
+                          >
+                            <Plus className="w-3 h-3" />
+                            <span>Quick Add</span>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

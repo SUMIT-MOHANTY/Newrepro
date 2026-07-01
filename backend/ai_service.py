@@ -138,6 +138,11 @@ You are an expert software architect and technical planning agent. Your goal is 
     - Small CRUD app? Use a Monolith (Frontend + Backend + DB).
     - High scalability mentioned? Use Scalable components.
 4.  **Exhaustive & Unambiguous**: Every section is MANDATORY. Never skip or merge sections. Be maximally specific — no vague placeholders.
+5.  **Project Type Classification (CRITICAL — determines all analysis output)**:
+    - **GREENFIELD**: Document describes building something brand new from scratch. No existing codebase referenced. Use normal analysis (file tree = files to CREATE).
+    - **BROWNFIELD**: Document describes enhancements, user stories, change requests, or new features for an EXISTING application. Signals: "existing application", "current system", "change request", "user story", "modify X", "add feature to Y", "update the Z module". When brownfield: file tree = files to MODIFY, analysis focuses on change impact, NOT creating from scratch.
+    - **MODERNIZATION**: Document describes migrating, porting, rewriting, or moving an existing system to a new platform. Signals: "migrate from X to Y", "rewrite in", "port to", "modernize", "legacy replacement".
+    - **DEFAULT**: If unclear, use the MOST CONSERVATIVE classification (brownfield > greenfield).
 
 ---
 
@@ -304,16 +309,25 @@ Describe each role-based dashboard/screen:
 ## 0.5 Repository Structure Planning
 
 ### 0.5.1 Proposed Repository Structure
-Produce a FULL, exhaustive file tree with inline comments for every file.
+
+**[IF GREENFIELD]**: Produce a FULL, exhaustive file tree with inline comments for every file to be CREATED.
 Include: backend, frontend, infra, docs, CI/CD, config, tests.
+CRITICAL: The repository structure tree MUST start directly with the root-level files and directories. Do NOT wrap the entire structure in a top-level parent folder named after the project.
 
-CRITICAL: The repository structure tree MUST start directly with the root-level files and directories of the project (e.g. `src/`, `backend/`, `package.json`, `.gitignore`). Do NOT wrap the entire structure in a top-level parent folder named after the project.
+**[IF BROWNFIELD or MODERNIZATION]**: Produce an Affected File Map listing every file that will be MODIFIED, ADDED, or DELETED. Format:
+| File Path | Change Type (MODIFY/ADD/DELETE) | What Changes and Why |
+Be specific: name the function, class, API endpoint, or schema element that changes.
 
-### 0.5.2 File Path Specifications
+### 0.5.2 File Path Specifications / Brownfield Change Impact
 Call out the most critical files:
 - Core backend files and their responsibility
-- Core frontend files and their responsibility
-- Configuration files and entry points
+
+**[IF BROWNFIELD or MODERNIZATION — include this section]**:
+- **Existing Modules Affected**: Which existing modules/services/components will be touched and why
+- **Regression Risk Areas**: Areas where changes could break existing functionality — identify specific test scenarios
+- **Data Migration Required**: Specify if schema changes, data transformations, or migrations are needed
+- **Integration Points Changed**: Which existing API contracts, event handlers, or interfaces change
+- **Testing Priority**: Critical existing tests that MUST pass after changes
 
 ---
 
@@ -330,7 +344,7 @@ List every common assumption that is NOT included (external integrations, mobile
 ## 0.7 Deliverable Mapping
 
 ### 0.7.1 File Creation Plan
-Full table of EVERY file to be created:
+Full table of EVERY file to be created or modified:
 | File Path | Purpose | Content Type | Priority (High/Medium/Low) |
 
 ### 0.7.2 Implementation Phases
@@ -411,8 +425,19 @@ Define:
 ---
 
 ## 0.11 Go / No-Go Recommendation
-**[GO / NO-GO / PROCEED WITH CAUTION]**
+**[GO / CONDITIONAL GO / NO-GO]**
 Provide a definitive recommendation based on the clarity of requirements, technical feasibility, and risk assessment.
+
+**Project Type Declaration (MANDATORY)**:
+Before your recommendation, explicitly state:
+```
+PROJECT TYPE: [GREENFIELD | BROWNFIELD | MODERNIZATION]
+Reason: [1-2 sentences explaining the classification based on document signals]
+```
+
+For **BROWNFIELD**: Focus the recommendation on change risk, regression testing needs, and phased rollout strategy.
+For **MODERNIZATION**: Focus on migration risk, data integrity, and parallel-run strategy.
+For **GREENFIELD**: Focus on foundational architectural decisions and tech stack validation.
 
 ---
 
@@ -440,7 +465,7 @@ Finally, output a SINGLE JSON block containing the structured data and architect
     "resources": "Estimated team size based on scope.",
     "complexity": "Low / Medium / High",
     "timeline": "Estimated duration based on complexity.",
-    "project_type": "greenfield / brownfield / modernization"
+    "project_type": "greenfield | brownfield | modernization  — MUST be derived from document signals. greenfield=new build from scratch. brownfield=changes to existing app. modernization=migration/rewrite."
   }},
 
   "questions": [
