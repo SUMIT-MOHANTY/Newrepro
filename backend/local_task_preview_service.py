@@ -22,17 +22,21 @@ TYPE_CONFIG = {
 # index will be placed inside the same sprint.
 PHASE_TO_SPRINT_INDEX = {
     "foundation": 0,
-    "backend-core": 0,
+    "frontend-core": 0,
+    "frontend-features": 0,
+    "backend-core": 1,
     "backend-features": 1,
-    "frontend-core": 1,
-    "frontend-features": 2,
     "integration": 2,
+    "testing-polish": 3,
+    "testing": 3,
+    "polish": 3,
 }
 
 SPRINT_GROUP_LABELS = [
-    ("Foundation & Core Setup", "Project foundation, scaffolding, and core backend setup"),
-    ("Feature Development", "Backend and frontend feature implementation"),
-    ("Integration & Polish", "Frontend features, integration testing, and deployment preparation"),
+    ("Frontend Proto & Bootstrap", "Project bootstrap, setup, and all frontend UI screens/prototypes with dummy data"),
+    ("Backend Services & DB Config", "Database schemas, models, JWT auth, and third-party API configurations/external dependencies"),
+    ("Frontend-Backend Integration", "Connect frontend screens to backend APIs, replace dummy data, and run DB connectivity checks"),
+    ("Testing & Polish", "Comprehensive unit, integration, and E2E testing, and production deployment configuration")
 ]
 
 
@@ -707,17 +711,29 @@ async def _attach_checklists(
                         items.append(step)
 
             item_count = len(items)
-            if item_count < 3 or item_count > 7:
+            # Detect bootstrap/TASK-00 tasks that legitimately require more checklist steps
+            _task_title_lower = str(task.get("title") or "").lower()
+            _task_desc_lower = str(task.get("description") or "").lower()
+            _is_bootstrap = any(
+                kw in _task_title_lower or kw in _task_desc_lower
+                for kw in ["bootstrap", "task-00", "project setup", "scaffold", "gateway task", "project bootstrap"]
+            )
+            _recommended_max = 15 if _is_bootstrap else 7
+            _hard_cap = 15 if _is_bootstrap else 10
+
+            if item_count < 3 or item_count > _recommended_max:
                 logger.warning(
-                    "Checklist item count out of recommended range (3-7). "
-                    "task_id=%s type=%s count=%s",
+                    "Checklist item count out of recommended range (3-%d). "
+                    "task_id=%s type=%s count=%s is_bootstrap=%s",
+                    _recommended_max,
                     task.get("task_id"),
                     task.get("type"),
                     item_count,
+                    _is_bootstrap,
                 )
-                # Hard cap extremely long lists to avoid bloated payloads.
-                if item_count > 10:
-                    items = items[:10]
+                # Hard cap to avoid bloated payloads (bootstrap tasks get higher cap of 15)
+                if item_count > _hard_cap:
+                    items = items[:_hard_cap]
 
             if items:
                 task["checklists"] = [
@@ -776,6 +792,17 @@ async def _attach_checklists(
                             break
                         if step not in items:
                             items.append(step)
+
+                # Apply bootstrap-aware hard cap
+                _t_title = str(task.get("title") or "").lower()
+                _t_desc = str(task.get("description") or "").lower()
+                _t_is_bootstrap = any(
+                    kw in _t_title or kw in _t_desc
+                    for kw in ["bootstrap", "task-00", "project setup", "scaffold", "gateway task", "project bootstrap"]
+                )
+                _t_hard_cap = 15 if _t_is_bootstrap else 10
+                if len(items) > _t_hard_cap:
+                    items = items[:_t_hard_cap]
 
                 task["checklists"] = [
                     {

@@ -18,6 +18,11 @@ const STEP_ICONS = {
     'Resource Onboarding': UserPlus,
     'On Flight': Bot,
     'Complete': Flag,
+    // Share Document workflow icons
+    'Upload Documents': FolderOpen,
+    'Configure Access': ShieldCheck,
+    'Share & Invite': UserPlus,
+    'Track Status': Bot,
 };
 
 /* ── inline styles (keeps this self-contained) ───────────────────── */
@@ -119,20 +124,52 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
         'Project Initiation': '/new-project',
         'Governance': '/new-project/governance',
         'Requirement Screening': '/dashboard',
-        'AI Analysis': '/dashboard',
+        'AI Analysis': '/agent-analysis',
         'Agent Analysis': '/agent-analysis',
         'Prerequisite Classification': '/prerequisites',
         'Task Creation': '/task-creation',
         'Resource Onboarding': '/resource-onboarding',
         'On Flight': '/status-dashboard',
         'Complete': '/status-dashboard',
+        // Share Document workflow routes
+        'Upload Documents': '/share-doc?step=1',
+        'Configure Access': '/share-doc?step=2',
+        'Share & Invite': '/share-doc?step=3',
+        'Track Status': '/share-doc?step=4',
     };
 
     const handleStepClick = (stepLabel) => {
         if (!selectedProjectKey) return;
 
-        const route = STEP_ROUTES[stepLabel];
+        // Restriction: if we're in share mode and it's step 0 (Project Initiation), don't allow going back there if project exists
+        if (selectedProjectKey.startsWith('share_') && stepLabel === 'Project Initiation') {
+            return;
+        }
+
+        let route = STEP_ROUTES[stepLabel];
         if (!route) return;
+
+        // Append project key if it's a share-doc route
+        if (route.includes('/share-doc')) {
+            const separator = route.includes('?') ? '&' : '?';
+            route = `${route}${separator}project=${selectedProjectKey}`;
+        }
+
+        // When navigating to Requirement Screening or earlier steps, clear any stale
+        // analysis trigger flags so Agent Analysis doesn't auto-start unexpectedly.
+        const preAnalysisSteps = ['Project Initiation', 'Governance', 'Requirement Screening'];
+        if (preAnalysisSteps.includes(stepLabel)) {
+            sessionStorage.removeItem('shouldStartAnalysis');
+            // Also clear any analysis_started_ flags to avoid stale state
+            const keysToRemove = [];
+            for (let i = 0; i < sessionStorage.length; i++) {
+                const key = sessionStorage.key(i);
+                if (key && key.startsWith('analysis_started_')) {
+                    keysToRemove.push(key);
+                }
+            }
+            keysToRemove.forEach(key => sessionStorage.removeItem(key));
+        }
 
         // Navigate to the route for the selected project
         // Note: AppLayout will enforce RBAC and display the "No Access" visual directly.

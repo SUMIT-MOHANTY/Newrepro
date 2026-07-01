@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { API_ENDPOINTS } from '../config';
 import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { FileText, Download, Server, Users, Activity, Clock, Loader2, KeyRound, Plus, Circle, CheckCircle2 } from 'lucide-react';
+import { FileText, Download, Server, Users, Activity, Clock, Loader2, KeyRound, Plus, Circle, CheckCircle2, Info } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
 import ReactFlow, { Background, Controls } from 'reactflow';
 import 'reactflow/dist/style.css';
@@ -19,33 +19,138 @@ mermaid.initialize({
     fontFamily: 'inherit',
 });
 
-// Mermaid Diagram Component
-const MermaidDiagram = ({ code }) => {
+// Improved Mermaid Diagram Component with smooth animation and expand functionality
+const MermaidDiagram = ({ code, showDownload = true }) => {
     const containerRef = useRef(null);
     const [svg, setSvg] = useState('');
     const [error, setError] = useState(null);
+    const [downloading, setDownloading] = useState(false);
+    const [isExpanded, setIsExpanded] = useState(false);
+    const [isRendering, setIsRendering] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
         const renderDiagram = async () => {
+            setIsRendering(true);
             try {
                 const id = `mermaid-${Math.random().toString(36).substr(2, 9)}`;
                 const { svg: renderedSvg } = await mermaid.render(id, code);
                 if (!cancelled) {
-                    setSvg(renderedSvg);
-                    setError(null);
+                    // Add a small delay for smooth transition effect
+                    setTimeout(() => {
+                        if (!cancelled) {
+                            setSvg(renderedSvg);
+                            setError(null);
+                            setIsRendering(false);
+                        }
+                    }, 150);
                 }
             } catch (err) {
                 console.warn('Mermaid render error:', err);
                 if (!cancelled) {
                     setError(err.message || 'Failed to render diagram');
                     setSvg('');
+                    setIsRendering(false);
                 }
             }
         };
         renderDiagram();
         return () => { cancelled = true; };
     }, [code]);
+
+    const handleDownloadPNG = async () => {
+        if (!svg || !containerRef.current) return;
+
+        setDownloading(true);
+        try {
+            const svgElement = containerRef.current.querySelector('svg');
+            if (!svgElement) throw new Error('SVG element not found');
+
+            // Clone and force high-resolution dimensions using viewBox
+            const clonedSvg = svgElement.cloneNode(true);
+            const vb = svgElement.getAttribute('viewBox');
+            let targetW = 2400;
+            let targetH = 1200;
+
+            if (vb) {
+                const parts = vb.trim().split(/[\s,]+/);
+                if (parts.length === 4) {
+                    const vbW = parseFloat(parts[2]);
+                    const vbH = parseFloat(parts[3]);
+                    if (vbW > 0 && vbH > 0) {
+                        targetH = Math.round(targetW * (vbH / vbW));
+                    }
+                }
+            } else {
+                const bbox = svgElement.getBBox();
+                const w = bbox.width || svgElement.width.baseVal.value || 800;
+                const h = bbox.height || svgElement.height.baseVal.value || 600;
+                targetH = Math.round(targetW * (h / w));
+            }
+
+            clonedSvg.setAttribute('width', String(targetW));
+            clonedSvg.setAttribute('height', String(targetH));
+            clonedSvg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+
+            const svgString = new XMLSerializer().serializeToString(clonedSvg);
+            const svgDataUrl = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgString)));
+
+            const img = new Image();
+            img.onload = () => {
+                try {
+                    const scale = 2; // 2× on top of the already-large 2400px SVG = 4800px effective
+                    const canvas = document.createElement('canvas');
+                    canvas.width = targetW * scale;
+                    canvas.height = targetH * scale;
+
+                    const ctx = canvas.getContext('2d');
+                    ctx.scale(scale, scale);
+                    ctx.fillStyle = 'white';
+                    ctx.fillRect(0, 0, targetW, targetH);
+                    ctx.imageSmoothingEnabled = true;
+                    ctx.imageSmoothingQuality = 'high';
+                    ctx.drawImage(img, 0, 0, targetW, targetH);
+
+                    canvas.toBlob((blob) => {
+                        if (!blob) throw new Error('Failed to create image blob');
+                        const url = URL.createObjectURL(blob);
+                        const link = document.createElement('a');
+                        link.href = url;
+                        link.download = `diagram-${Date.now()}.png`;
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                        URL.revokeObjectURL(url);
+                        setDownloading(false);
+                    }, 'image/png');
+                } catch (err) {
+                    console.error('Canvas error:', err);
+                    setDownloading(false);
+                    alert('Failed to export diagram. Please try again.');
+                }
+            };
+
+            img.onerror = (err) => {
+                console.error('Image load error:', err);
+                setDownloading(false);
+                alert('Failed to load diagram for export. Please try again.');
+            };
+
+            img.src = svgDataUrl;
+        } catch (err) {
+            console.error('Download error:', err);
+            alert('Failed to download diagram. Please try again.');
+            setDownloading(false);
+        }
+    };
+
+    const handleExpand = () => {
+        setIsExpanded(true);
+    };
+
+    const handleCloseExpanded = () => {
+        setIsExpanded(false);
+    };
 
     if (error) {
         return (
@@ -55,23 +160,116 @@ const MermaidDiagram = ({ code }) => {
         );
     }
 
-    if (!svg) {
+    if (isRendering || !svg) {
         return (
             <div className="flex items-center justify-center py-8 my-4 bg-gray-50 rounded-lg border border-gray-200">
-                <Loader2 className="w-5 h-5 text-gray-400 animate-spin mr-2" />
-                <span className="text-sm text-gray-500">Rendering diagram...</span>
+                <div className="flex items-center gap-3">
+                    <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                    <span className="text-sm text-gray-500">Rendering diagram...</span>
+                </div>
             </div>
         );
     }
 
     return (
-        <div className="my-6 p-4 bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
-            <div
-                ref={containerRef}
-                className="flex justify-center [&>svg]:max-w-full"
-                dangerouslySetInnerHTML={{ __html: svg }}
-            />
-        </div>
+        <>
+            {/* Fullscreen Expanded View Modal */}
+            {isExpanded && (
+                <div
+                    className="fixed inset-0 z-[500] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in"
+                    onClick={handleCloseExpanded}
+                >
+                    <div
+                        className="relative w-full max-w-5xl max-h-[90vh] bg-white rounded-2xl shadow-2xl overflow-hidden animate-scale-in"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        {/* Modal Header */}
+                        <div className="flex items-center justify-between px-6 py-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white">
+                            <div className="flex items-center gap-3">
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" />
+                                </svg>
+                                <span className="font-semibold">Diagram View</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={handleDownloadPNG}
+                                    disabled={downloading}
+                                    className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium bg-white/20 hover:bg-white/30 disabled:bg-white/10 rounded-lg transition-all"
+                                >
+                                    <Download className="w-4 h-4" />
+                                    {downloading ? 'Saving...' : 'Download PNG'}
+                                </button>
+                                <button
+                                    onClick={handleCloseExpanded}
+                                    className="p-2 hover:bg-white/20 rounded-lg transition-all"
+                                >
+                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Expanded Diagram Content */}
+                        <div className="p-6 bg-gray-50 overflow-auto max-h-[calc(90vh-60px)]">
+                            <div
+                                className="flex justify-center"
+                                dangerouslySetInnerHTML={{ __html: svg }}
+                            />
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Normal View */}
+            <div className="my-6 p-4 bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+                {/* Action Buttons */}
+                <div className="flex justify-end gap-2 mb-2">
+                    {/* Expand Button */}
+                    <button
+                        onClick={handleExpand}
+                        className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 disabled:bg-gray-100 disabled:cursor-not-allowed rounded-lg shadow-sm transition-all hover:shadow-md"
+                        title="Expand to fullscreen"
+                    >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+                        </svg>
+                        Expand
+                    </button>
+
+                    {/* Download Button */}
+                    {showDownload && (
+                        <button
+                            onClick={handleDownloadPNG}
+                            disabled={downloading}
+                            className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed rounded-lg shadow-sm transition-all"
+                            title="Download as PNG"
+                        >
+                            {downloading ? (
+                                <>
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    Downloading...
+                                </>
+                            ) : (
+                                <>
+                                    <Download className="w-3.5 h-3.5" />
+                                    Download PNG
+                                </>
+                            )}
+                        </button>
+                    )}
+                </div>
+
+                {/* SVG Diagram with smooth fade-in animation */}
+                <div
+                    ref={containerRef}
+                    className="flex justify-center [&>svg]:max-w-full transition-opacity duration-300 ease-out"
+                    style={{ opacity: svg ? 1 : 0 }}
+                    dangerouslySetInnerHTML={{ __html: svg }}
+                />
+            </div>
+        </>
     );
 };
 
@@ -91,6 +289,43 @@ const hasCompletedStoredAnalysis = (analysis) => {
         return false;
     }
     return String(analysis.analysis || '').trim().length > 0;
+};
+
+// Format error messages to be user-friendly
+const formatAnalysisError = (error) => {
+    const errorMessage = error?.message || String(error);
+
+    // Check for specific error patterns and provide custom messages
+    if (errorMessage.includes('Analysis job not found') || errorMessage.includes('job not found')) {
+        return 'The analysis session has expired or was not found. Please try starting the analysis again.';
+    }
+
+    if (errorMessage.includes('500 INTERNAL SERVER ERROR') || errorMessage.includes('Server error')) {
+        return 'The AI service is currently unavailable. This could be due to high load or maintenance. Please try again in a few moments.';
+    }
+
+    if (errorMessage.includes('brn-llama.bourntec.com') || errorMessage.includes('api/process')) {
+        return 'Unable to connect to the AI analysis service. Please check your network connection and try again.';
+    }
+
+    if (errorMessage.includes('Network') || errorMessage.includes('fetch')) {
+        return 'Network connection error. Please check your internet connection and try again.';
+    }
+
+    if (errorMessage.includes('timeout') || errorMessage.includes('timed out')) {
+        return 'The analysis is taking longer than expected. Please try again or contact support if the issue persists.';
+    }
+
+    if (errorMessage.includes('401') || errorMessage.includes('Unauthorized')) {
+        return 'Your session has expired. Please log in again to continue.';
+    }
+
+    if (errorMessage.includes('403') || errorMessage.includes('Forbidden')) {
+        return 'You do not have permission to perform this analysis. Please contact your administrator.';
+    }
+
+    // Return the original error message if no specific pattern matches
+    return errorMessage;
 };
 
 // Utility: layout architecture graph with dagre so nodes don't overlap
@@ -129,6 +364,66 @@ const layoutArchitectureGraph = (nodes, edges, direction = 'TB') => {
 };
 
 const hasCompletedDocumentAnalysis = (doc) => hasCompletedStoredAnalysis(parseStoredDocumentAnalysis(doc));
+
+// Component to display processed content in tabs
+const ProcessedContentTabs = ({ sections, markdown }) => {
+    const [activeTabIndex, setActiveTabIndex] = useState(0);
+
+    // Parse sections from markdown if not provided as structured data
+    let parsedSections = sections || [];
+
+    if (!parsedSections || parsedSections.length === 0) {
+        // Try to parse sections from markdown using the separator pattern
+        if (markdown) {
+            const sectionRegex = /---\s*([A-Z\s&()]+)\s*---\s*([\s\S]*?)(?=---\s*[A-Z\s&()]+\s*---|$)/g;
+            const tempSections = [];
+            let match;
+
+            while ((match = sectionRegex.exec(markdown)) !== null) {
+                tempSections.push({
+                    title: match[1].trim(),
+                    content: match[2].trim()
+                });
+            }
+
+            if (tempSections.length > 0) {
+                parsedSections = tempSections;
+            }
+        }
+    }
+
+    if (!parsedSections || parsedSections.length === 0) {
+        return <div className="text-xs text-app-text-light">No content available</div>;
+    }
+
+    const activeSection = parsedSections[activeTabIndex] || parsedSections[0];
+
+    return (
+        <div className="space-y-3">
+            {/* Tab Headers */}
+            <div className="flex flex-wrap gap-2 border-b border-app-border-light pb-2">
+                {parsedSections.map((section, index) => (
+                    <button
+                        key={index}
+                        onClick={() => setActiveTabIndex(index)}
+                        className={`px-3 py-1.5 text-xs font-medium rounded-t-lg transition-all ${activeTabIndex === index
+                            ? 'bg-app-primary text-white border-b-2 border-app-primary'
+                            : 'bg-app-bg-page text-app-text-label hover:bg-app-bg-card border border-app-border-light border-b-0'
+                            }`}
+                    >
+                        {section.title || `Section ${index + 1}`}
+                    </button>
+                ))}
+            </div>
+
+            {/* Tab Content */}
+            <div className="bg-app-bg-page rounded-lg p-4 text-xs font-mono text-app-text-label max-h-96 overflow-y-auto whitespace-pre-wrap border border-app-border-light">
+                {activeSection.content || activeSection.markdown || '(No content)'}
+            </div>
+        </div>
+    );
+};
+
 
 const parseAIResponse = (text) => {
     let source = String(text || '').trim();
@@ -303,10 +598,61 @@ export default function AgentAnalysis({
     const [repoContext, setRepoContext] = useState(null);
     const [isArchModalOpen, setIsArchModalOpen] = useState(false);
     const [isSidebarOpen, setIsSidebarOpen] = useState(false); // Start closed by default
+    const [sidebarTab, setSidebarTab] = useState('chat'); // 'chat' | 'clarification'
     const [analysisInProgress, setAnalysisInProgress] = useState(false); // Track if analysis is running
+
+    // Chat-based update history state
+    const [chatMessages, setChatMessages] = useState([]); // [{id, role, content, timestamp, changeSummary, affectedSections}]
+    const [chatInput, setChatInput] = useState('');
+    const [chatSending, setChatSending] = useState(false);
+    const chatEndRef = useRef(null);
+
+    // Dynamic requirements elicitation techniques states
+    const [elicitationTechniques, setElicitationTechniques] = useState([]);
+    const [techniquesLoading, setTechniquesLoading] = useState(false);
+    const [techniquesError, setTechniquesError] = useState('');
+    const [techniquesSource, setTechniquesSource] = useState('ai_generated'); // 'uploaded' | 'ai_generated' | 'static_fallback'
+
+    // Cache results by project key to prevent data loss when switching projects
+    const resultCacheRef = useRef({});
+    const lastLoadedProjectRef = useRef(null);
 
     const selectedProject = projects.find((p) => p.key === selectedProjectKey) || null;
     const hasGovernanceAssessment = Boolean(selectedProject?.governanceResultId || governanceContext?.result_id);
+
+    // CRITICAL FIX: Read project token from URL parameter if present
+    // This ensures the correct project is loaded after navigation from GovernanceResult
+    useEffect(() => {
+        const params = new URLSearchParams(location.search);
+        const projectFromUrl = params.get('project');
+        
+        if (projectFromUrl && projectFromUrl !== selectedProjectKey) {
+            console.log('Project token from URL parameter:', projectFromUrl);
+            // Update localStorage to persist the selection
+            // The parent component (AppLayout) will read this and update selectedProjectKey
+            try {
+                localStorage.setItem('status_dashboard_selected_project_key', projectFromUrl);
+                // Trigger a page reload to let AppLayout pick up the new project
+                window.location.href = '/agent-analysis';
+            } catch (e) {
+                console.warn('Failed to save project key to localStorage:', e);
+            }
+        }
+    }, [location.search, selectedProjectKey]);
+
+    // CRITICAL FIX: Update cache whenever state changes for the current project
+    useEffect(() => {
+        if (selectedProjectKey && result) {
+            resultCacheRef.current[selectedProjectKey] = {
+                result,
+                aiQuestions,
+                userAnswers,
+                userFeedback,
+                completedStages,
+                chatMessages,
+            };
+        }
+    }, [selectedProjectKey, result, aiQuestions, userAnswers, userFeedback, completedStages, chatMessages]);
 
     // Load governance context from storage
     useEffect(() => {
@@ -372,6 +718,7 @@ export default function AgentAnalysis({
                 governanceContext: governanceContext || null,
                 repoContextMeta: repoContextMeta || null,
                 stages: completedStages || {},  // Include completed stages
+                sections: newResult.extraction?.sections || [],  // Preserve all input tab sections
                 projectMeta: {
                     project_name: project?.name || governanceContext?.project_name || 'Project',
                     project_token: project?.projectToken || taskKey || null,
@@ -391,6 +738,16 @@ export default function AgentAnalysis({
 
             if (savedDoc) {
                 setResult(prev => ({ ...prev, id: savedDoc.id, revisionNumber: nextRevisionNumber }));
+
+                // CRITICAL FIX: Update cache when data is saved
+                if (resultCacheRef.current[taskKey]) {
+                    resultCacheRef.current[taskKey].result = {
+                        ...resultCacheRef.current[taskKey].result,
+                        id: savedDoc.id,
+                        revisionNumber: nextRevisionNumber
+                    };
+                }
+
                 if (fetchHistory) fetchHistory();
             }
         } catch (e) {
@@ -407,7 +764,7 @@ export default function AgentAnalysis({
         try {
             // Import polling utilities
             const { startAndPollAnalysis } = await import('../utils/analysisPolling');
-            
+
             // Start analysis with polling
             const data = await startAndPollAnalysis(
                 payload,
@@ -424,8 +781,30 @@ export default function AgentAnalysis({
                 30000, // Poll every 30 seconds
                 120    // Max 60 minutes (120 * 30s = 3600s)
             );
-            
-            const { report, questions, metrics, title, prerequisites, architecture } = parseAIResponse(data.analysis || '');
+
+            // For targeted updates, the backend returns metrics/questions/architecture directly
+            // alongside the patched report. Merge these with existing data.
+            const isTargetedUpdate = Boolean(data.update_type || data.change_summary);
+            const existingAnalysis = (initialContext || result)?.analysis || {};
+
+            const { report: parsedReport, questions: parsedQuestions, metrics: parsedMetrics,
+                title, prerequisites: parsedPrereqs, architecture: parsedArch } = parseAIResponse(data.analysis || '');
+
+            const report = parsedReport;
+            // For targeted updates, prefer backend-returned data (already merged with previous)
+            const questions = isTargetedUpdate
+                ? (data.questions?.length > 0 ? data.questions : (parsedQuestions.length > 0 ? parsedQuestions : existingAnalysis.questions || []))
+                : parsedQuestions;
+            const metrics = isTargetedUpdate
+                ? (Object.keys(data.metrics || {}).length > 0 ? data.metrics : (parsedMetrics || existingAnalysis.metrics))
+                : parsedMetrics;
+            const prerequisites = isTargetedUpdate
+                ? (data.prerequisites?.length > 0 ? data.prerequisites : (parsedPrereqs.length > 0 ? parsedPrereqs : existingAnalysis.prerequisites || []))
+                : parsedPrereqs;
+            const architecture = isTargetedUpdate
+                ? (data.architecture && Object.keys(data.architecture).length > 0 ? data.architecture : (parsedArch || existingAnalysis.architecture))
+                : parsedArch;
+
             if (questions.length > 0) setAiQuestions(questions);
 
             const effectiveGovernanceContext = analysisOptions.governanceContext || governanceContext || null;
@@ -436,6 +815,7 @@ export default function AgentAnalysis({
                 ...(initialContext || result),
                 filename: finalFilename,
                 analysis: {
+                    ...existingAnalysis,  // Preserve all existing analysis fields
                     ...data,
                     analysis: report,
                     questions: questions,
@@ -446,15 +826,24 @@ export default function AgentAnalysis({
                     userFeedback: userFeedback,
                     governanceContext: effectiveGovernanceContext,
                     repoContextMeta: buildRepoContextMeta(effectiveRepoContext),
+                    // Store change metadata for chat display
+                    change_summary: data.change_summary || null,
+                    affected_sections: data.affected_sections || [],
+                    // Merge updated stages (from targeted update) preserving previous
+                    stages: isTargetedUpdate && data.stages
+                        ? { ...(existingAnalysis.stages || {}), ...data.stages }
+                        : (data.stages || existingAnalysis.stages || {}),
                 }
             };
             setResult(finalResult);
             setProgress(100);
             setProgressMessage('Analysis complete!');
             await saveToHistory(finalResult, selectedProjectKey, effectiveRepoContext);
+            return finalResult;
         } catch (err) {
             console.error('Analysis error:', err);
-            setError(`Analysis Error: ${err.message}`);
+            const userFriendlyError = formatAnalysisError(err);
+            setError(`Analysis Error: ${userFriendlyError}`);
             setProgress(0);
             setProgressMessage('');
             setCompletedStages({});  // Clear stages on error
@@ -592,7 +981,8 @@ export default function AgentAnalysis({
             setAiQuestions(questions?.length ? questions : []);
             await saveToHistory(finalResult, selectedProjectKey, effectiveRepoContext);
         } catch (err) {
-            setError(`Stream Error: ${err.message}`);
+            const userFriendlyError = formatAnalysisError(err);
+            setError(`Stream Error: ${userFriendlyError}`);
         }
     }, [governanceContext, repoContext, userAnswers, userFeedback, result, selectedProjectKey, saveToHistory]);
 
@@ -680,7 +1070,8 @@ export default function AgentAnalysis({
                 });
             }
         } catch (err) {
-            setError(err.message || 'Repository analysis failed.');
+            const userFriendlyError = formatAnalysisError(err);
+            setError(userFriendlyError || 'Repository analysis failed.');
         } finally {
             setProcessing(false);
             setAnalysisInProgress(false);
@@ -764,7 +1155,8 @@ export default function AgentAnalysis({
                 });
             }
         } catch (err) {
-            setError(err.message || 'Agent Analysis failed.');
+            const userFriendlyError = formatAnalysisError(err);
+            setError(userFriendlyError || 'Agent Analysis failed.');
         } finally {
             setProcessing(false);
             setAnalysisInProgress(false);
@@ -792,13 +1184,31 @@ export default function AgentAnalysis({
             return;
         }
 
+        // CRITICAL FIX: Check if we're switching to a different project
+        const isSwitchingProjects = lastLoadedProjectRef.current && lastLoadedProjectRef.current !== selectedProjectKey;
+
+        // If switching projects, first check if we have cached data for the new project
+        if (isSwitchingProjects && resultCacheRef.current[selectedProjectKey]) {
+            console.log('Restoring cached analysis for project:', selectedProjectKey);
+            const cached = resultCacheRef.current[selectedProjectKey];
+            setResult(cached.result);
+            setAiQuestions(cached.aiQuestions || []);
+            setUserAnswers(cached.userAnswers || {});
+            setUserFeedback(cached.userFeedback || '');
+            setCompletedStages(cached.completedStages || {});
+            setChatMessages(cached.chatMessages || []);
+            setLoading(false);
+            lastLoadedProjectRef.current = selectedProjectKey;
+            return;
+        }
+
         const loadAnalysis = async () => {
             setLoading(true);
             setError('');
 
             try {
                 const latestDocument = selectedProject.latestDocument;
-                
+
                 console.log('AgentAnalysis useEffect:', {
                     selectedProjectKey,
                     hasLatestDocument: !!latestDocument,
@@ -806,12 +1216,12 @@ export default function AgentAnalysis({
                     repoContextRepo: repoContext?.repo,
                     repoContextContext: repoContext?.context ? 'present' : 'missing'
                 });
-                
+
                 // Check if we have repo context but no document - allow repo-only analysis
                 const hasRepoContextOnly = !latestDocument && repoContext?.context;
-                
+
                 console.log('hasRepoContextOnly:', hasRepoContextOnly);
-                
+
                 if (!latestDocument && !hasRepoContextOnly) {
                     setError('No document found for this project. Please upload a document first.');
                     setLoading(false);
@@ -825,7 +1235,7 @@ export default function AgentAnalysis({
                 }
 
                 const storedAnalysis = parseStoredDocumentAnalysis(latestDocument);
-                
+
                 // Check flags first
                 const shouldStartAnalysis = sessionStorage.getItem('shouldStartAnalysis') === 'true';
                 const analysisStartedKey = `analysis_started_${latestDocument.id}`;
@@ -844,24 +1254,42 @@ export default function AgentAnalysis({
                     setUserFeedback(savedFeedback);
                     setCompletedStages(savedStages);  // Restore completed stages
 
-                    setResult({
+                    const loadedResult = {
                         id: latestDocument.id,
                         filename: latestDocument.filename,
                         extraction: {
                             markdown: latestDocument.full_content || '',
                             html: '',
                             num_pages: null,
+                            sections: storedAnalysis?.sections || [],
                         },
                         analysis: storedAnalysis,
                         revisionNumber: selectedProject.documents?.length || 1,
-                    });
+                    };
+
+                    setResult(loadedResult);
+
+                    // Load chat messages for this document
+                    await loadChatMessages(latestDocument.id);
+
+                    // CRITICAL FIX: Cache the loaded data for this project
+                    resultCacheRef.current[selectedProjectKey] = {
+                        result: loadedResult,
+                        aiQuestions: questions,
+                        userAnswers: savedAnswers,
+                        userFeedback: savedFeedback,
+                        completedStages: savedStages,
+                        chatMessages: chatMessages, // Preserve chat history
+                    };
+                    lastLoadedProjectRef.current = selectedProjectKey;
+
                     setLoading(false);
                     return;
                 }
 
                 // Check if user clicked "Proceed to Agent Analysis" OR if analysis is pending
                 const isPending = isPendingGovernanceAnalysis(storedAnalysis);
-                
+
                 if (shouldStartAnalysis || isPending) {
                     // If user clicked "Proceed to Agent Analysis", start the analysis
                     if (shouldStartAnalysis && hasGovernanceAssessment) {
@@ -884,16 +1312,16 @@ export default function AgentAnalysis({
                             setLoading(false);
                             return;
                         }
-                        
+
                         // Check if there's an active job in the backend
                         try {
                             const jobIdPattern = /analysis_\d+_\d+_[a-f0-9]+/;
                             const potentialJobId = `analysis_${token ? JSON.parse(atob(token.split('.')[1])).user_id : 'unknown'}_`;
-                            
+
                             // Try to find if there's an active analysis job
                             // We'll check if result exists OR if we should just not show error yet
                             const hasResult = result && result.analysis;
-                            
+
                             if (!hasResult) {
                                 // Don't immediately show error - analysis might be starting
                                 // Only show error if we're sure it's not running
@@ -905,7 +1333,7 @@ export default function AgentAnalysis({
                         } catch (err) {
                             console.error('Error checking job status:', err);
                         }
-                        
+
                         return;
                     } else if (isPending) {
                         // Analysis is pending but user hasn't clicked proceed yet
@@ -940,17 +1368,31 @@ export default function AgentAnalysis({
                     setUserFeedback(savedFeedback);
                     setCompletedStages(savedStages);  // Restore completed stages
 
-                    setResult({
+                    const loadedResult = {
                         id: foundDoc.id,
                         filename: foundDoc.filename,
                         extraction: {
                             markdown: foundDoc.full_content || '',
                             html: '',
                             num_pages: null,
+                            sections: foundAnalysis?.sections || [],
                         },
                         analysis: foundAnalysis,
                         revisionNumber: selectedProject.documents?.length || 1,
-                    });
+                    };
+
+                    setResult(loadedResult);
+
+                    // CRITICAL FIX: Cache the loaded data for this project
+                    resultCacheRef.current[selectedProjectKey] = {
+                        result: loadedResult,
+                        aiQuestions: questions,
+                        userAnswers: savedAnswers,
+                        userFeedback: savedFeedback,
+                        completedStages: savedStages,
+                        chatMessages: chatMessages,
+                    };
+                    lastLoadedProjectRef.current = selectedProjectKey;
                 } else {
                     let hasPendingAnalysis = false;
                     for (const doc of allDocuments) {
@@ -974,14 +1416,14 @@ export default function AgentAnalysis({
                             } else if (alreadyStarted) {
                                 // Analysis was started previously
                                 console.log('Analysis was started but checking status for document', doc.id);
-                                
+
                                 // Check if it's currently processing
                                 if (processing || analysisInProgress) {
                                     console.log('Analysis is currently running (processing or analysisInProgress)');
                                     setLoading(false);
                                     return;
                                 }
-                                
+
                                 // Don't immediately show error - analysis might be starting
                                 const hasResult = result && result.analysis;
                                 if (!hasResult) {
@@ -1003,7 +1445,8 @@ export default function AgentAnalysis({
                     }
                 }
             } catch (err) {
-                setError(err.message || 'Failed to load analysis');
+                const userFriendlyError = formatAnalysisError(err);
+                setError(userFriendlyError || 'Failed to load analysis');
             } finally {
                 setLoading(false);
             }
@@ -1013,10 +1456,11 @@ export default function AgentAnalysis({
     }, [selectedProjectKey, selectedProject, projectsLoading, token, hasGovernanceAssessment, location.pathname, analysisInProgress]);
     // Removed: repoContext, triggerPendingAnalysis (to prevent unnecessary re-runs)
 
-    const handleRefineAnalysis = async () => {
-        let feedbackToSend = userFeedback;
+    const handleRefineAnalysis = async (overrideFeedback = null, updateType = null) => {
+        let feedbackToSend = overrideFeedback || userFeedback;
 
-        if (aiQuestions.length > 0) {
+        // Build Q&A feedback string if questions are present and no override given
+        if (!overrideFeedback && aiQuestions.length > 0) {
             feedbackToSend = aiQuestions.map((q, i) => {
                 const ans = userAnswers[i] || 'No answer provided';
                 return `Q: ${q}\nA: ${ans}`;
@@ -1027,32 +1471,38 @@ export default function AgentAnalysis({
             }
         }
 
-        // Attach existing architecture so the model can refine instead of replacing it
-        if (result?.analysis?.architecture) {
-            try {
-                const archJson = JSON.stringify(result.analysis.architecture, null, 2);
-                feedbackToSend += `\n\nCURRENT_ARCHITECTURE_JSON (refine, do not radically change unless business requirements demand it):\n${archJson}`;
-            } catch {
-                // ignore serialization errors
-            }
-        }
         if (!result?.extraction?.markdown || !feedbackToSend.trim()) return;
 
         setProcessing(true);
         setError('');
         setProgress(20);
-        setProgressMessage('Submitting feedback and refinements...');
+        setProgressMessage('Identifying what needs to change...');
 
         const token = localStorage.getItem('token');
-
-        // Get AI config from localStorage
         const aiConfigStr = localStorage.getItem('aiConfig');
         let aiConfig = { apiUrl: '', apiKey: '', model: '', stream: false };
         if (aiConfigStr) {
-            try {
-                aiConfig = JSON.parse(aiConfigStr);
-            } catch { }
+            try { aiConfig = JSON.parse(aiConfigStr); } catch { }
         }
+
+        // Build the previous_analysis payload for targeted update
+        const previousAnalysis = (() => {
+            if (!result?.analysis) return undefined;
+            const a = result.analysis;
+            const stages = a.stages || completedStages || {};
+            if (Object.keys(stages).length === 0) return undefined;
+            return {
+                analysis: a.analysis || '',
+                stages,
+                metrics: a.metrics || {},
+                questions: a.questions || [],
+                prerequisites: a.prerequisites || [],
+                architecture: a.architecture || {},
+            };
+        })();
+
+        const detectedUpdateType = updateType
+            || (aiQuestions.length > 0 && Object.keys(userAnswers).length > 0 ? 'qa' : 'feedback');
 
         const aiPayload = {
             document_content: repoContext
@@ -1061,31 +1511,361 @@ export default function AgentAnalysis({
             api_url: aiConfig?.apiUrl || undefined,
             api_key: aiConfig?.apiKey || undefined,
             model: aiConfig?.model || undefined,
-            stream: aiConfig?.stream || false,
+            stream: false,
             user_feedback: feedbackToSend,
-            governance_context: governanceContext || undefined
+            governance_context: governanceContext || undefined,
+            ...(previousAnalysis ? {
+                previous_analysis: previousAnalysis,
+                update_type: detectedUpdateType,
+            } : {}),
         };
 
         try {
-            if (aiConfig?.stream || false) {
-                await streamAnalysisRef.current(aiPayload, token, result, {
-                    repoContext: repoContext,
-                    governanceContext: governanceContext,
-                });
-            } else {
-                setProgress(70);
-                setProgressMessage('Generating refined Agent Action Plan... This may take up to 10 minutes.');
-                await fetchAnalysisRef.current(aiPayload, token, result, {
-                    repoContext: repoContext,
-                    governanceContext: governanceContext,
-                });
-            }
+            setProgress(30);
+            setProgressMessage('Performing targeted update...');
+            const updatedResult = await fetchAnalysisRef.current(aiPayload, token, result, {
+                repoContext: repoContext,
+                governanceContext: governanceContext,
+            });
+            return updatedResult;
         } catch (err) {
-            setError(err.message || 'Failed to refine analysis');
+            const userFriendlyError = formatAnalysisError(err);
+            setError(userFriendlyError || 'Failed to update analysis');
         } finally {
             setProcessing(false);
         }
     };
+
+    // ── Fetch Elicitation Techniques ──
+    const fetchElicitationTechniques = useCallback(async (projectToken) => {
+        if (!projectToken || !token) return;
+        setTechniquesLoading(true);
+        setTechniquesError('');
+        try {
+            const response = await fetch(API_ENDPOINTS.GOVERNANCE_ELICITATION_TECHNIQUES(projectToken), {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                },
+            });
+            if (response.ok) {
+                const data = await response.json();
+                setElicitationTechniques(data.techniques || []);
+                setTechniquesSource(data.source || 'ai_generated');
+            } else {
+                console.error('Failed to fetch elicitation techniques:', await response.text());
+                setTechniquesError('Failed to load requirement elicitation techniques.');
+            }
+        } catch (err) {
+            console.error('Error fetching elicitation techniques:', err);
+            setTechniquesError('Error connecting to techniques engine.');
+            setElicitationTechniques([]);
+        } finally {
+            setTechniquesLoading(false);
+        }
+    }, [token]);
+
+    // Fetch techniques when project switches
+    useEffect(() => {
+        if (selectedProjectKey) {
+            fetchElicitationTechniques(selectedProjectKey);
+        }
+    }, [selectedProjectKey, fetchElicitationTechniques]);
+
+    // ── Load chat messages from database ──
+    const loadChatMessages = useCallback(async (documentId) => {
+        if (!documentId || !token) return;
+
+        try {
+            const response = await fetch(API_ENDPOINTS.CHAT_MESSAGES_GET(documentId), {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                },
+            });
+
+            if (response.ok) {
+                const messages = await response.json();
+                setChatMessages(messages);
+                console.log(`Loaded ${messages.length} chat messages for document ${documentId}`);
+            }
+        } catch (err) {
+            console.error('Failed to load chat messages:', err);
+        }
+    }, [token]);
+
+    // ── Save chat message to database ──
+    const saveChatMessage = useCallback(async (message) => {
+        if (!result?.id || !token) return;
+
+        try {
+            const response = await fetch(API_ENDPOINTS.CHAT_MESSAGES_SAVE, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                    document_id: result.id,
+                    role: message.role,
+                    content: message.content,
+                    is_error: message.isError || false,
+                    is_qa: message.isQA || false,
+                    affected_sections: message.affectedSections || null,
+                    change_summary: message.changeSummary || null,
+                }),
+            });
+
+            if (!response.ok) {
+                console.error('Failed to save chat message:', await response.text());
+            }
+        } catch (err) {
+            console.error('Error saving chat message:', err);
+        }
+    }, [result, token]);
+
+    // ── Chat-based BRD update handler ──
+    const handleChatSend = async () => {
+        const message = chatInput.trim();
+        if (!message || chatSending || processing) return;
+
+        const msgId = `msg_${Date.now()}`;
+        const userMsg = {
+            id: msgId,
+            role: 'user',
+            content: message,
+            timestamp: new Date().toISOString(),
+        };
+
+        setChatMessages(prev => [...prev, userMsg]);
+        setChatInput('');
+        setChatSending(true);
+
+        // Save user message to database
+        await saveChatMessage(userMsg);
+
+        try {
+            const updatedResult = await handleRefineAnalysis(message, 'feedback');
+
+            // After analysis completes, add an assistant confirmation message
+            const assistantMsg = {
+                id: `resp_${Date.now()}`,
+                role: 'assistant',
+                content: updatedResult?.analysis?.change_summary
+                    || 'Analysis updated successfully based on your input.',
+                affectedSections: updatedResult?.analysis?.affected_sections || [],
+                changeSummary: updatedResult?.analysis?.change_summary,
+                timestamp: new Date().toISOString(),
+            };
+            setChatMessages(prev => [...prev, assistantMsg]);
+
+            // Save assistant message to database
+            await saveChatMessage(assistantMsg);
+        } catch (err) {
+            const errMsg = {
+                id: `err_${Date.now()}`,
+                role: 'assistant',
+                content: `Update failed: ${err.message || 'Unknown error'}`,
+                isError: true,
+                timestamp: new Date().toISOString(),
+            };
+            setChatMessages(prev => [...prev, errMsg]);
+
+            // Save error message to database
+            await saveChatMessage(errMsg);
+        } finally {
+            setChatSending(false);
+            // Scroll to bottom of chat
+            setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+        }
+    };
+
+    // ── Apply elicitation technique ──
+    const handleApplyTechnique = async (tech) => {
+        if (chatSending || processing) return;
+
+        const promptText = `Please apply the "${tech.name}" elicitation technique to surgically enhance and discover edge-case requirements for this BRD.\n\nMethodology Instructions:\n"${tech.description}"`;
+
+        const msgId = `msg_${Date.now()}`;
+        const userMsg = {
+            id: msgId,
+            role: 'user',
+            content: `**Applying requirements elicitation technique: [${tech.name}]**\n\n*Using methodology instructions:* \n> ${tech.description.replace(/\n/g, ' ')}\n\nProcessing BRD enhancement based on this SDLC process.`,
+            timestamp: new Date().toISOString(),
+        };
+
+        setChatMessages(prev => [...prev, userMsg]);
+        setChatSending(true);
+
+        // Save user message to database
+        await saveChatMessage(userMsg);
+
+        try {
+            const updated = await handleRefineAnalysis(promptText, 'feedback');
+
+            // Add the assistant confirmation message with the ACTUAL change_summary!
+            const assistantMsg = {
+                id: `resp_${Date.now()}`,
+                role: 'assistant',
+                content: updated?.analysis?.change_summary
+                    || `BRD successfully enhanced and updated based on the [${tech.name}] elicitation technique.`,
+                affectedSections: updated?.analysis?.affected_sections || [],
+                changeSummary: updated?.analysis?.change_summary,
+                timestamp: new Date().toISOString(),
+            };
+            setChatMessages(prev => [...prev, assistantMsg]);
+            await saveChatMessage(assistantMsg);
+        } catch (err) {
+            const errMsg = {
+                id: `err_${Date.now()}`,
+                role: 'assistant',
+                content: `Technique application failed: ${err.message || 'Unknown error'}`,
+                isError: true,
+                timestamp: new Date().toISOString(),
+            };
+            setChatMessages(prev => [...prev, errMsg]);
+            await saveChatMessage(errMsg);
+        } finally {
+            setChatSending(false);
+            setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+        }
+    };
+
+    // ── Handle Q&A submission as chat ──
+    const handleQASubmit = async () => {
+        const questions = aiQuestions?.length > 0 ? aiQuestions : (result?.analysis?.questions || []);
+        if (questions.length === 0) return;
+
+        const qaPairs = questions.map((q, i) => {
+            const ans = userAnswers[i] || 'No answer provided';
+            return `Q: ${q}\nA: ${ans}`;
+        }).join('\n\n');
+
+        if (!qaPairs.trim()) return;
+
+        const userMsg = {
+            id: `qa_${Date.now()}`,
+            role: 'user',
+            content: `**Answering clarification questions:**\n\n${qaPairs}`,
+            timestamp: new Date().toISOString(),
+            isQA: true,
+        };
+
+        setChatMessages(prev => [...prev, userMsg]);
+        setChatSending(true);
+
+        // Save user message to database
+        await saveChatMessage(userMsg);
+
+        try {
+            await handleRefineAnalysis(qaPairs, 'qa');
+            setUserAnswers({});
+
+            const assistantMsg = {
+                id: `qa_resp_${Date.now()}`,
+                role: 'assistant',
+                content: result?.analysis?.change_summary
+                    || 'Analysis updated based on your answers.',
+                affectedSections: result?.analysis?.affected_sections || [],
+                changeSummary: result?.analysis?.change_summary,
+                timestamp: new Date().toISOString(),
+            };
+            setChatMessages(prev => [...prev, assistantMsg]);
+
+            // Save assistant message to database
+            await saveChatMessage(assistantMsg);
+        } catch (err) {
+            const errMsg = {
+                id: `qa_err_${Date.now()}`,
+                role: 'assistant',
+                content: `Failed to apply answers: ${err.message || 'Unknown error'}`,
+                isError: true,
+                timestamp: new Date().toISOString(),
+            };
+            setChatMessages(prev => [...prev, errMsg]);
+
+            // Save error message to database
+            await saveChatMessage(errMsg);
+        } finally {
+            setChatSending(false);
+            setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+        }
+    };
+
+    // ── Memoized Chat Messages with Prepend Welcome Elicitation Message ──
+    const renderedMessages = useMemo(() => {
+        if (elicitationTechniques.length === 0) return chatMessages;
+
+        // Check if welcome message is already in chatMessages from DB to avoid duplicating it
+        const hasWelcome = chatMessages.some(m => m.id === 'welcome-elicitation');
+        if (hasWelcome) return chatMessages;
+
+        const welcomeMsg = {
+            id: 'welcome-elicitation',
+            role: 'assistant',
+            content: `Hello! I have completed the initial BRD analysis. Below are 5 tailored requirements elicitation techniques synthesized based on the project requirements. Select any technique below to surgically enhance your BRD:`,
+            timestamp: result?.upload_date || new Date().toISOString(),
+            isElicitation: true
+        };
+
+        return [welcomeMsg, ...chatMessages];
+    }, [chatMessages, elicitationTechniques, result]);
+
+    // ── Memoized custom Markdown components to prevent unmounting/remounting on parent state change ──
+    const markdownComponents = useMemo(() => ({
+        h1: ({ node, ...props }) => <h1 className="text-lg font-bold text-gray-900 mt-6 mb-3 pb-2 border-b-2 border-gray-200" {...props} />,
+        h2: ({ node, ...props }) => <h2 className="text-base font-bold text-gray-900 mt-5 mb-2 pb-1 border-b border-gray-200" {...props} />,
+        h3: ({ node, ...props }) => <h3 className="text-sm font-semibold text-gray-800 mt-4 mb-2" {...props} />,
+        h4: ({ node, ...props }) => <h4 className="text-sm font-semibold text-gray-700 mt-3 mb-1" {...props} />,
+        p: ({ node, ...props }) => <p className="text-sm text-gray-700 leading-relaxed mb-3" {...props} />,
+        ul: ({ node, ...props }) => <ul className="list-disc list-outside ml-5 space-y-1 mb-3 text-sm text-gray-700" {...props} />,
+        ol: ({ node, ...props }) => <ol className="list-decimal list-outside ml-5 space-y-1 mb-3 text-sm text-gray-700" {...props} />,
+        li: ({ node, ...props }) => <li className="leading-relaxed text-sm" {...props} />,
+        table: ({ node, ...props }) => (
+            <div className="overflow-x-auto my-6">
+                <table className="min-w-full divide-y divide-gray-200 border border-gray-200 rounded-lg" {...props} />
+            </div>
+        ),
+        thead: ({ node, ...props }) => <thead className="bg-gray-50" {...props} />,
+        th: ({ node, ...props }) => <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider border-b border-gray-200" {...props} />,
+        td: ({ node, ...props }) => <td className="px-4 py-3 text-sm text-gray-700 border-t border-gray-200" {...props} />,
+        code: ({ node, inline, className, children, ...props }) => {
+            if (inline) {
+                return <code className="bg-gray-100 text-red-600 px-1 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>;
+            }
+            const codeContent = String(children || '').trim();
+            const isMermaid = codeContent.startsWith('graph') ||
+                codeContent.includes('flowchart') ||
+                codeContent.includes('sequenceDiagram') ||
+                codeContent.includes('classDiagram') ||
+                codeContent.includes('stateDiagram');
+
+            const isErDiagram = codeContent.startsWith('erDiagram') ||
+                (codeContent.toLowerCase().startsWith('erdiagram'));
+
+            if (isMermaid || isErDiagram) {
+                return <MermaidDiagram code={codeContent} showDownload={true} />;
+            }
+
+            return <code className="block bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-xs font-mono" {...props}>{children}</code>;
+        },
+        pre: ({ node, children, ...props }) => {
+            const preContent = String(children || '');
+            const codeMatch = preContent.match(/<code[^>]*>([\s\S]*?)<\/code>/);
+            const codeContent = codeMatch ? codeMatch[1] : preContent;
+
+            if (codeContent.includes('graph') ||
+                codeContent.includes('flowchart') ||
+                codeContent.includes('sequenceDiagram') ||
+                codeContent.includes('classDiagram') ||
+                codeContent.includes('stateDiagram')) {
+                return <MermaidDiagram code={codeContent} />;
+            }
+
+            return <pre className="bg-gray-900 rounded-lg my-4" {...props}>{children}</pre>;
+        },
+        blockquote: ({ node, ...props }) => <blockquote className="border-l-4 border-blue-500 pl-4 italic text-gray-600 my-4 bg-blue-50 py-2" {...props} />,
+        a: ({ node, ...props }) => <a className="text-blue-600 hover:text-blue-800 underline font-medium" {...props} />,
+        strong: ({ node, ...props }) => <strong className="font-bold text-gray-900" {...props} />,
+    }), []);
 
     // ── Helper: render a mermaid code string to a PNG data-URL ──
     const renderMermaidToPng = async (mermaidCode) => {
@@ -1094,9 +1874,45 @@ export default function AgentAnalysis({
             const { svg } = await mermaid.render(uniqueId, mermaidCode);
 
             return await new Promise((resolve) => {
-                // Convert SVG to base64 data URL using FileReader to avoid cross-origin issues
-                // This ensures the canvas doesn't get tainted
-                const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+                // Parse SVG and force high-resolution dimensions before rasterizing
+                const parser = new DOMParser();
+                const svgDoc = parser.parseFromString(svg, 'image/svg+xml');
+                const svgEl = svgDoc.querySelector('svg');
+
+                let targetW = 2400; // target width for high-res
+                let aspectRatio = 0.5; // default fallback
+
+                if (svgEl) {
+                    // Read viewBox to get intrinsic aspect ratio
+                    const vb = svgEl.getAttribute('viewBox');
+                    if (vb) {
+                        const parts = vb.trim().split(/[\s,]+/);
+                        if (parts.length === 4) {
+                            const vbW = parseFloat(parts[2]);
+                            const vbH = parseFloat(parts[3]);
+                            if (vbW > 0 && vbH > 0) {
+                                aspectRatio = vbH / vbW;
+                                // If the diagram is very wide, keep targetW; if very tall, cap aspect ratio
+                                if (aspectRatio > 3) aspectRatio = 3;
+                            }
+                        }
+                    } else {
+                        // Fallback: read explicit width/height attrs
+                        const attrW = parseFloat(svgEl.getAttribute('width') || '0');
+                        const attrH = parseFloat(svgEl.getAttribute('height') || '0');
+                        if (attrW > 0 && attrH > 0) {
+                            aspectRatio = attrH / attrW;
+                        }
+                    }
+                    // Force explicit pixel dimensions so the browser renders at full resolution
+                    const targetH = Math.round(targetW * aspectRatio);
+                    svgEl.setAttribute('width', String(targetW));
+                    svgEl.setAttribute('height', String(targetH));
+                }
+
+                const targetH = Math.round(targetW * aspectRatio);
+                const modifiedSvg = new XMLSerializer().serializeToString(svgDoc);
+                const svgBlob = new Blob([modifiedSvg], { type: 'image/svg+xml;charset=utf-8' });
                 const reader = new FileReader();
 
                 reader.onload = () => {
@@ -1105,60 +1921,40 @@ export default function AgentAnalysis({
 
                     img.onload = () => {
                         try {
-                            const scale = 3; // High retina quality for crisp diagrams (increased from 2)
-                            const naturalW = img.naturalWidth || 800;
-                            const naturalH = img.naturalHeight || 400;
+                            // Render at 2× of the already-large SVG for maximum sharpness
+                            const scale = 2;
+                            const canvasW = (img.naturalWidth || targetW) * scale;
+                            const canvasH = (img.naturalHeight || targetH) * scale;
 
-                            // Create canvas with exact dimensions
                             const canvas = document.createElement('canvas');
-                            canvas.width = naturalW * scale;
-                            canvas.height = naturalH * scale;
+                            canvas.width = canvasW;
+                            canvas.height = canvasH;
 
                             const ctx = canvas.getContext('2d');
-                            if (!ctx) {
-                                resolve(null);
-                                return;
-                            }
+                            if (!ctx) { resolve(null); return; }
 
-                            // Fill with white background
+                            // White background
                             ctx.fillStyle = '#ffffff';
-                            ctx.fillRect(0, 0, canvas.width, canvas.height);
+                            ctx.fillRect(0, 0, canvasW, canvasH);
 
-                            // Enable image smoothing for better quality
                             ctx.imageSmoothingEnabled = true;
                             ctx.imageSmoothingQuality = 'high';
-
-                            // Scale and draw
                             ctx.scale(scale, scale);
-                            ctx.drawImage(img, 0, 0, naturalW, naturalH);
+                            ctx.drawImage(img, 0, 0, img.naturalWidth || targetW, img.naturalHeight || targetH);
 
-                            // Export as PNG data URL with maximum quality
                             const pngDataUrl = canvas.toDataURL('image/png', 1.0);
-
-                            resolve({
-                                dataUrl: pngDataUrl,
-                                aspectRatio: naturalH / naturalW,
-                            });
+                            resolve({ dataUrl: pngDataUrl, aspectRatio });
                         } catch (drawError) {
                             console.warn('Canvas draw error:', drawError);
                             resolve(null);
                         }
                     };
 
-                    img.onerror = () => {
-                        console.warn('Image load error');
-                        resolve(null);
-                    };
-
-                    // Use base64 data URL directly (no cross-origin issues)
+                    img.onerror = () => { console.warn('Image load error'); resolve(null); };
                     img.src = dataUrl;
                 };
 
-                reader.onerror = () => {
-                    console.warn('FileReader error');
-                    resolve(null);
-                };
-
+                reader.onerror = () => { console.warn('FileReader error'); resolve(null); };
                 reader.readAsDataURL(svgBlob);
             });
         } catch (err) {
@@ -1395,12 +2191,12 @@ export default function AgentAnalysis({
         }
         // Also pre-render erDiagram blocks
         {
-            const erRegex = /```(?:erDiagram|er\s*\n[\s\S]*?)```/gi;
+            const erRegex = /```(?:erDiagram|erdiagram)([\s\S]*?)```/gi;
             let erMatch;
             while ((erMatch = erRegex.exec(rawText)) !== null) {
                 const code = erMatch[1].trim();
                 // eslint-disable-next-line no-await-in-loop
-                const imgData = await renderMermaidToPng(code);
+                const imgData = await renderMermaidToPng('erDiagram\n' + code);
                 erDiagramImages.push(imgData);
             }
         }
@@ -1433,7 +2229,7 @@ export default function AgentAnalysis({
                 } else {
                     // Code block end
                     inCodeBlock = false;
-                    
+
                     // Handle different code block types
                     if (codeBlockType === 'mermaid') {
                         // ── Embed actual rendered PNG image ──
@@ -1548,7 +2344,7 @@ export default function AgentAnalysis({
                         }
                         y = codeY + paddingV;
                     }
-                    
+
                     codeBlockType = '';
                     codeBlockContent = [];
                     continue;
@@ -1782,7 +2578,7 @@ export default function AgentAnalysis({
             </div>
         );
     }
-    
+
     // Show loading state while analysis is being prepared or is in progress
     if (!result && (loading || processing)) {
         return (
@@ -1807,532 +2603,698 @@ export default function AgentAnalysis({
 
     return (
         <div className="h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
-            {/* Fixed Right Sidebar - Outside main container */}
-            <div className={`fixed right-0 bg-white border-l border-gray-200 shadow-2xl transition-transform duration-300 z-40 ${
-                isSidebarOpen ? 'translate-x-0' : 'translate-x-full'
-            } w-[480px] overflow-hidden`} style={{ top: 'var(--sidebar-top, 0px)', height: 'calc(100vh - var(--sidebar-top, 0px))' }} ref={(el) => {
-                if (el) {
-                    // Calculate the top offset based on header + stepper height
-                    const mainContent = el.closest('.flex-1.min-w-0');
-                    if (mainContent) {
-                        const header = mainContent.querySelector('header');
-                        const stepper = header?.nextElementSibling;
-                        let topOffset = 0;
-                        if (header) topOffset += header.offsetHeight;
-                        if (stepper && stepper.querySelector('[class*="RoadmapHeader"]') !== null || (stepper && !stepper.classList.contains('flex-1'))) {
-                            topOffset += stepper.offsetHeight;
-                        }
-                        el.style.setProperty('--sidebar-top', `${topOffset}px`);
-                    }
-                }
-            }}>
+            {/* Fixed Right Sidebar - Tabbed BRD Chat + Clarification Panel */}
+            {(() => {
+                const clarificationQuestions = aiQuestions?.length > 0 ? aiQuestions : (result?.analysis?.questions || []);
+                const clarificationCount = clarificationQuestions.length;
+                return (
+                    <div
+                        className={`fixed right-6 top-6 bottom-6 bg-white border border-gray-200 rounded-2xl shadow-2xl transition-all duration-300 z-[260] w-[440px] flex flex-col overflow-hidden ${isSidebarOpen
+                            ? 'translate-x-0 opacity-100'
+                            : 'translate-x-[120%] opacity-0 pointer-events-none'
+                            }`}
+                    >
 
-                {/* Sidebar Content */}
-                <div className="h-full overflow-y-auto p-6 space-y-6 pt-6">
-                    <div className="flex justify-between items-center pb-2 border-b border-gray-100">
-                        <h2 className="text-base font-bold text-gray-900">Analysis Data</h2>
-                        <button
-                            onClick={() => setIsSidebarOpen(false)}
-                            className="text-xs text-gray-500 hover:text-gray-900 font-semibold flex items-center transition-colors px-2 py-1.5 hover:bg-gray-100 rounded-md"
-                        >
-                            <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
-                            </svg>
-                            Hide Details
-                        </button>
-                    </div>
-                    {result?.analysis?.architecture && (() => {
-                        const arch = result.analysis.architecture || {};
-                        const nodes = Array.isArray(arch.nodes) ? arch.nodes : [];
-                        const edges = Array.isArray(arch.edges) ? arch.edges : [];
-
-                        const rfNodes = layoutArchitectureGraph(nodes, edges, 'TB');
-                        const rfEdges = edges.map((edge, idx) => ({
-                            id: String(edge.id || `e-${idx}`),
-                            source: String(edge.from),
-                            target: String(edge.to),
-                            label: edge.description || undefined,
-                        }));
-
-                        return (
-                            <div className="bg-white rounded-xl border border-gray-200 p-5">
-                                <div className="flex items-center justify-between mb-4">
-                                    <h3 className="text-base font-bold text-gray-900">
-                                        User Flow Diagram
-                                    </h3>
-                                    <button
-                                        type="button"
-                                        onClick={() => setIsArchModalOpen(true)}
-                                        className="text-xs font-semibold text-blue-600 hover:text-blue-800 underline"
-                                    >
-                                        Expand
-                                    </button>
+                        {/* Sidebar Header with tabs */}
+                        <div className="flex-shrink-0 bg-white border-b border-gray-200">
+                            {/* Top bar: title + close */}
+                            <div className="flex items-center justify-between px-5 py-3">
+                                <div className="flex items-center gap-2">
+                                    <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
+                                    <span className="text-sm font-bold text-gray-900">BRD Assistant</span>
                                 </div>
-
-                                {(() => {
-                                    // Extract mermaid diagram from analysis content
-                                    const analysisContent = result.analysis?.analysis || '';
-                                    const mermaidMatch = analysisContent.match(/```mermaid\s*([\s\S]*?)```/);
-                                    const mermaidCode = mermaidMatch ? mermaidMatch[1].trim() : null;
-
-                                    if (mermaidCode) {
-                                        return (
-                                            <div className="rounded-lg border border-gray-200 bg-gray-50 overflow-hidden">
-                                                <MermaidDiagram code={mermaidCode} />
-                                            </div>
-                                        );
-                                    }
-
-                                    // Fallback to ReactFlow if no mermaid found
-                                    if (rfNodes.length > 0) {
-                                        return (
-                                            <div className="h-80 w-full rounded-lg border border-gray-200 bg-gray-50 overflow-hidden">
-                                                <ReactFlow
-                                                    nodes={rfNodes}
-                                                    edges={rfEdges}
-                                                    fitView
-                                                    nodesDraggable={false}
-                                                    nodesConnectable={false}
-                                                    elementsSelectable={false}
-                                                >
-                                                    <Background gap={16} size={1} />
-                                                    <Controls showInteractive={false} />
-                                                </ReactFlow>
-                                            </div>
-                                        );
-                                    }
-
-                                    return (
-                                        <p className="text-sm text-gray-500 italic">
-                                            Architecture details are not available.
-                                        </p>
-                                    );
-                                })()}
-                            </div>
-                        );
-                    })()}
-
-                    {/* Clarification Needed Section */}
-                    <div className="bg-white rounded-xl border border-gray-200 p-5">
-                        <div className="flex items-center mb-4">
-                            <div className="w-2 h-2 rounded-full bg-orange-500 mr-2"></div>
-                            <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide">
-                                Clarification Needed
-                            </h3>
-                        </div>
-
-                        <p className="text-xs text-gray-600 mb-6 leading-relaxed">
-                            The AI identified these ambiguous areas. Providing answers will refine the feasibility score.
-                        </p>
-
-                        {(() => {
-                            const questions = aiQuestions?.length > 0
-                                ? aiQuestions
-                                : (result?.analysis?.questions || []);
-
-                            return questions?.length > 0 ? (
-                                <div className="space-y-4 max-h-96 overflow-y-auto pr-2">
-                                    {questions.map((q, i) => (
-                                        <div key={i} className="bg-gray-50 rounded-lg p-3 border border-gray-200">
-                                            <p className="text-xs font-medium text-gray-700 mb-2">{q}</p>
-                                            <input
-                                                type="text"
-                                                value={userAnswers[i] || ''}
-                                                onChange={e => setUserAnswers(prev => ({ ...prev, [i]: e.target.value }))}
-                                                className="w-full px-3 py-2 text-xs border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
-                                                placeholder="Your answer..."
-                                            />
-                                        </div>
-                                    ))}
-                                </div>
-                            ) : (
-                                <p className="text-xs text-gray-500 italic">No clarification questions at this time.</p>
-                            );
-                        })()}
-
-                        <div className="mt-6 pt-4 border-t border-gray-200">
-                            <label className="block text-xs font-medium text-gray-700 mb-2">Additional Context</label>
-                            <textarea
-                                value={userFeedback}
-                                onChange={(e) => setUserFeedback(e.target.value)}
-                                placeholder="Any other details..."
-                                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 min-h-[80px] text-xs bg-white resize-none"
-                            />
-                            <button
-                                onClick={handleRefineAnalysis}
-                                disabled={processing || (!(aiQuestions?.length) && !(userFeedback || '').trim())}
-                                className={`w-full mt-4 py-2.5 text-xs font-bold text-white rounded-lg shadow-sm transition-all ${
-                                    processing
-                                        ? 'bg-gray-400 cursor-not-allowed'
-                                        : 'bg-gray-900 hover:bg-gray-800 hover:shadow-md'
-                                }`}
-                            >
-                                {processing ? 'Refining...' : 'Update Analysis'}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            {/* Main Content Container */}
-            <div className={`transition-all duration-300 ${isSidebarOpen ? 'lg:mr-[480px]' : 'mr-0'}`}>
-                <div className="max-w-[1100px] mx-auto px-12 py-6 space-y-6">
-                {result && (
-                    <div className="space-y-6 animate-fade-in-up">
-                        {/* Result Header */}
-                        <div className="flex flex-col md:flex-row md:items-center justify-between bg-app-bg-card p-4 rounded-xl shadow-sm border border-app-border-light">
-                            <div className="flex items-center mb-4 md:mb-0">
-                                <div className="p-2 bg-app-status-successBg rounded-lg mr-3">
-                                    <FileText className="w-5 h-5 text-app-status-success" />
-                                </div>
-                                <div>
-                                    <h2 className="text-lg font-bold text-app-text-main break-all sm:break-normal">{result.filename}</h2>
-                                    <p className="text-xs text-app-text-muted">
-                                        {selectedProject ? `${selectedProject.name} • Analysis Completed` : 'Analysis Completed'}
-                                    </p>
-                                </div>
-                            </div>
-                            <div className="flex items-center gap-3 flex-wrap md:flex-nowrap">
                                 <button
-                                    onClick={handleDownloadPDF}
-                                    className="text-sm text-app-text-label hover:text-app-text-main font-medium hover:underline flex items-center transition-colors"
-                                    title="Download PDF Report"
+                                    onClick={() => setIsSidebarOpen(false)}
+                                    className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 hover:text-gray-900 hover:bg-gray-100 px-3 py-1.5 rounded-lg transition-all"
                                 >
-                                    <Download className="w-4 h-4 mr-1" /> Download PDF
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                    Close
                                 </button>
-                                <div className="hidden sm:block h-4 w-px bg-app-border"></div>
+                            </div>
+
+                            {/* Tab switcher */}
+                            <div className="flex border-t border-gray-100">
                                 <button
-                                    onClick={handleNewAnalysis}
-                                    className="text-sm text-app-primary hover:text-app-primary-dark font-medium hover:underline flex items-center"
+                                    onClick={() => setSidebarTab('chat')}
+                                    className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold transition-all ${sidebarTab === 'chat'
+                                        ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50/50'
+                                        : 'text-gray-500 hover:text-gray-800 hover:bg-gray-50 border-b-2 border-transparent'
+                                        }`}
                                 >
-                                    <Plus className="w-4 h-4 mr-1" /> Analyze Another
+                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                    </svg>
+                                    BRD Chat
+                                    {chatMessages.length > 0 && (
+                                        <span className="px-1.5 py-0.5 text-[10px] font-bold bg-blue-600 text-white rounded-full">{chatMessages.length}</span>
+                                    )}
                                 </button>
-                                <div className="hidden sm:block h-4 w-px bg-app-border"></div>
-                                {!isSidebarOpen && (
-                                    <button
-                                        onClick={() => setIsSidebarOpen(true)}
-                                        className="text-sm text-app-text-label hover:text-app-text-main font-medium hover:underline flex items-center transition-colors"
-                                        title="Show Details"
-                                    >
-                                        <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
-                                        </svg>
-                                        Show Details
-                                    </button>
-                                )}
+                                <button
+                                    onClick={() => setSidebarTab('clarification')}
+                                    className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold transition-all ${sidebarTab === 'clarification'
+                                        ? 'text-amber-700 border-b-2 border-amber-600 bg-amber-50/50'
+                                        : 'text-gray-500 hover:text-gray-800 hover:bg-gray-50 border-b-2 border-transparent'
+                                        }`}
+                                >
+                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    Clarification
+                                    {clarificationCount > 0 && (
+                                        <span className={`px-1.5 py-0.5 text-[10px] font-bold rounded-full ${sidebarTab === 'clarification' ? 'bg-amber-600 text-white' : 'bg-amber-100 text-amber-700'}`}>{clarificationCount}</span>
+                                    )}
+                                </button>
                             </div>
                         </div>
 
-                        {hasGovernanceAssessment && !processing && result?.analysis?.analysis && String(result.analysis.analysis).trim().length > 0 && (
-                            <div className="bg-gradient-to-r from-app-status-warningBg to-orange-50 rounded-xl shadow-sm border border-amber-200/60 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
-                                <div className="flex items-center gap-3">
-                                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-400 to-app-status-warning flex items-center justify-center shadow-lg shadow-amber-200">
-                                        <KeyRound className="w-5 h-5 text-white" />
-                                    </div>
-                                    <div>
-                                        <h3 className="text-sm font-bold text-amber-900">Prerequisite Classification</h3>
-                                        <p className="text-xs text-app-status-warning">Review AI-identified prerequisites, credentials, and access requirements before task creation.</p>
-                                    </div>
-                                </div>
-                                <button
-                                    onClick={() => navigate('/prerequisites')}
-                                    className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-app-status-warning to-orange-500 rounded-lg shadow-lg shadow-app-status-warning/30 hover:shadow-app-status-warning/50 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
-                                >
-                                    <KeyRound className="w-4 h-4" />
-                                    Review Prerequisites
-                                </button>
-                            </div>
-                        )}
-
-                        <div id="analysis-content" className="bg-transparent space-y-6">
-                            {/* Stage-Based Progress Loader */}
-                            {processing && (
-                                <div className="bg-app-bg-card rounded-xl border border-app-border p-6 space-y-4">
-                                    <div className="flex items-center justify-between mb-4">
-                                        <h3 className="text-lg font-bold text-app-text-main">Analysis in Progress</h3>
-                                    </div>
-                                    
-                                    
-                                    {/* Overall Progress Bar */}
-                                    <div className="mt-4 space-y-2">
-                                        <div className="flex justify-between items-center text-xs text-app-text-muted">
-                                            <span>{progressMessage}</span>
-                                            <span className="font-semibold">{progress}%</span>
-                                        </div>
-                                        <div className="w-full bg-app-bg-muted rounded-full h-2 overflow-hidden">
-                                            <div
-                                                className="bg-gradient-to-r from-app-primary to-app-primary-hover h-2 rounded-full transition-all duration-500 ease-out shadow-[0_0_10px_rgba(37,99,235,0.5)]"
-                                                style={{ width: `${progress}%` }}
-                                            ></div>
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
-
-                            {error && (
-                                <div className="mt-4 rounded-lg border border-red-200 bg-app-status-errorBg px-4 py-3">
-                                    <p className="text-sm font-medium text-app-status-error">{error}</p>
-                                </div>
-                            )}
-
-                            {/* Key Metrics Row */}
-                            {result.analysis && (
-                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                                    {(() => {
-                                        const metrics = result.analysis.metrics || {};
-                                        const metricItems = [
-                                            { label: 'Deployment', value: metrics?.deployment || 'TBD', icon: Server, color: 'text-app-primary', bg: 'bg-app-primary-light' },
-                                            { label: 'Resources', value: metrics?.resources || 'TBD', icon: Users, color: 'text-purple-600', bg: 'bg-purple-50' },
-                                            { label: 'Complexity', value: metrics?.complexity || 'TBD', icon: Activity, color: 'text-orange-600', bg: 'bg-orange-50' },
-                                            { label: 'Timeline (For Developer Only Mode)', value: metrics?.timeline || 'TBD', icon: Clock, color: 'text-app-status-success', bg: 'bg-app-status-successBg' }
-                                        ];
-
-                                        return metricItems.map((metric, idx) => (
-                                            <div key={idx} className="bg-app-bg-card p-4 rounded-xl border border-app-border-light shadow-sm flex flex-col justify-between hover:shadow-md transition-shadow">
-                                                <div className="flex items-center justify-between mb-2">
-                                                    <div className={`p-2 ${metric.bg} rounded-lg`}>
-                                                        <metric.icon className={`w-4 h-4 ${metric.color}`} />
-                                                    </div>
-                                                </div>
-                                                <div>
-                                                    <p className="text-[10px] uppercase tracking-wider font-semibold text-app-text-light">{metric.label}</p>
-                                                    <p className="text-sm font-bold text-app-text-main line-clamp-2 leading-tight" title={metric.value}>
-                                                        {metric.value}
-                                                    </p>
-                                                </div>
+                        {/* ── BRD Chat Tab ── */}
+                        {sidebarTab === 'chat' && (
+                            <>
+                                {/* Chat Message Thread */}
+                                <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4 bg-gray-50">
+                                    {/* Welcome message */}
+                                    {renderedMessages.length === 0 && (
+                                        <div className="text-center py-8">
+                                            <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center mx-auto mb-3">
+                                                <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                                </svg>
                                             </div>
-                                        ));
-                                    })()}
-                                </div>
-                            )}
+                                            <p className="text-sm font-semibold text-gray-700 mb-1">BRD Update Assistant</p>
+                                            <p className="text-xs text-gray-500 leading-relaxed max-w-[280px] mx-auto">
+                                                Describe what you want to update in the BRD analysis.
+                                            </p>
+                                        </div>
+                                    )}
 
-                            {/* Main Content with Fixed Right Sidebar */}
-                            <div className="relative">
-                                {/* Main Content Area - Add right margin when sidebar is open */}
-                                <div>
-                                    <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6">
-                                        <h3 className="text-lg font-bold text-app-text-main mb-4 pb-2 border-b-2 border-app-border-light">
-                                            Executive Summary & Agent Analysis
-                                        </h3>
-                                        <div className="prose prose-lg prose-slate max-w-none text-app-text-label leading-relaxed">
-                                            {(() => {
-                                                const analysisContent = result.analysis?.analysis || '';
-                                                const explicitHtml = result.analysis?.html;
-                                                const htmlToRender = explicitHtml || (isLikelyHtml(analysisContent) ? analysisContent : null);
-
-                                                // Function to filter content for frontend display (hide ER diagrams and API sections)
-                                                const filterContentForDisplay = (content) => {
-                                                    if (!content) return '';
-
-                                                    const lines = content.split('\n');
-                                                    const result = [];
-                                                    let inCodeBlock = false;
-                                                    let codeBlockType = '';
-                                                    let skipSection = false;
-                                                    let sectionLevel = 0;
-
-                                                    for (let i = 0; i < lines.length; i++) {
-                                                        const line = lines[i];
-                                                        const trimmed = line.trim();
-
-                                                        // Detect section headers to skip
-                                                        const headerMatch = trimmed.match(/^(#{1,6})\s+(.+)/);
-                                                        if (headerMatch) {
-                                                            const level = headerMatch[1].length;
-                                                            const headerText = headerMatch[2].toLowerCase();
-                                                            
-                                                            // Check if this is a section we want to hide
-                                                            const shouldHide = 
-                                                                headerText.includes('data model') ||
-                                                                headerText.includes('database schema') ||
-                                                                headerText.includes('er diagram') ||
-                                                                headerText.includes('api specification') ||
-                                                                headerText.includes('api endpoint') ||
-                                                                headerText.includes('core api') ||
-                                                                headerText.includes('deliverable mapping') ||
-                                                                headerText.includes('files to create') ||
-                                                                headerText.includes('phase 1:') ||
-                                                                headerText.includes('phase 2:') ||
-                                                                headerText.includes('phase 3:') ||
-                                                                headerText.includes('phase 4:') ||
-                                                                headerText.includes('phase 5:') ||
-                                                                (headerText.match(/^\d+\.\d+/) && (
-                                                                    headerText.includes('data model') ||
-                                                                    headerText.includes('schema') ||
-                                                                    headerText.includes('api') ||
-                                                                    headerText.includes('deliverable')
-                                                                ));
-
-                                                            if (shouldHide) {
-                                                                skipSection = true;
-                                                                sectionLevel = level;
-                                                                continue;
-                                                            } else if (skipSection && level <= sectionLevel) {
-                                                                // End of skipped section - new section at same or higher level
-                                                                skipSection = false;
-                                                                sectionLevel = 0;
-                                                            }
-                                                        }
-
-                                                        // Skip lines if we're in a hidden section
-                                                        if (skipSection) {
-                                                            continue;
-                                                        }
-
-                                                        // Handle code blocks
-                                                        if (trimmed.startsWith('```')) {
-                                                            if (!inCodeBlock) {
-                                                                // Start of code block
-                                                                inCodeBlock = true;
-                                                                codeBlockType = trimmed.substring(3).trim().toLowerCase();
-
-                                                                // Hide erDiagram code blocks in frontend
-                                                                if (codeBlockType === 'erdiagram' || codeBlockType.includes('er')) {
-                                                                    // Skip this entire code block
-                                                                    while (i < lines.length - 1) {
-                                                                        i++;
-                                                                        if (lines[i].trim().startsWith('```')) {
-                                                                            break;
-                                                                        }
-                                                                    }
-                                                                    inCodeBlock = false;
-                                                                    codeBlockType = '';
-                                                                    continue;
-                                                                }
-                                                                
-                                                                result.push(line);
-                                                            } else {
-                                                                // End of code block
-                                                                inCodeBlock = false;
-                                                                codeBlockType = '';
-                                                                result.push(line);
-                                                            }
-                                                            continue;
-                                                        }
-
-                                                        // Skip content inside code blocks we're hiding
-                                                        if (inCodeBlock && (codeBlockType === 'erdiagram' || codeBlockType.includes('er'))) {
-                                                            continue;
-                                                        }
-
-                                                        result.push(line);
-                                                    }
-
-                                                    return result.join('\n');
-                                                };
-
-                                                if (processing && !analysisContent.trim()) {
-                                                    return (
-                                                        <div className="text-sm text-app-text-muted italic">
-                                                            Generating analysis...
-                                                        </div>
-                                                    );
-                                                }
-
-                                                // Always use ReactMarkdown for consistent formatting
-                                                return (
-                                                    <ReactMarkdown 
-                                                        remarkPlugins={[remarkGfm]}
-                                                        components={{
-                                                            h1: ({node, ...props}) => <h1 className="text-lg font-bold text-gray-900 mt-6 mb-3 pb-2 border-b-2 border-gray-200" {...props} />,
-                                                            h2: ({node, ...props}) => <h2 className="text-base font-bold text-gray-900 mt-5 mb-2 pb-1 border-b border-gray-200" {...props} />,
-                                                            h3: ({node, ...props}) => <h3 className="text-sm font-semibold text-gray-800 mt-4 mb-2" {...props} />,
-                                                            h4: ({node, ...props}) => <h4 className="text-sm font-semibold text-gray-700 mt-3 mb-1" {...props} />,
-                                                            p: ({node, ...props}) => <p className="text-sm text-gray-700 leading-relaxed mb-3" {...props} />,
-                                                            ul: ({node, ...props}) => <ul className="list-disc list-outside ml-5 space-y-1 mb-3 text-sm text-gray-700" {...props} />,
-                                                            ol: ({node, ...props}) => <ol className="list-decimal list-outside ml-5 space-y-1 mb-3 text-sm text-gray-700" {...props} />,
-                                                            li: ({node, ...props}) => <li className="leading-relaxed text-sm" {...props} />,
-                                                            table: ({node, ...props}) => (
-                                                                <div className="overflow-x-auto my-6">
-                                                                    <table className="min-w-full divide-y divide-gray-200 border border-gray-200 rounded-lg" {...props} />
-                                                                </div>
-                                                            ),
-                                                            thead: ({node, ...props}) => <thead className="bg-gray-50" {...props} />,
-                                                            th: ({node, ...props}) => <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider border-b border-gray-200" {...props} />,
-                                                            td: ({node, ...props}) => <td className="px-4 py-3 text-sm text-gray-700 border-t border-gray-200" {...props} />,
-                                                            code: ({node, inline, className, children, ...props}) => {
-                                                                // Show inline code, show blocks based on config
-                                                                if (inline) {
-                                                                    return <code className="bg-gray-100 text-red-600 px-1 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>;
-                                                                }
-                                                                // Check if this is a mermaid or erDiagram block
-                                                                const codeContent = String(children || '').trim();
-                                                                const isMermaid = codeContent.startsWith('graph') ||
-                                                                    codeContent.includes('flowchart') ||
-                                                                    codeContent.includes('sequenceDiagram') ||
-                                                                    codeContent.includes('classDiagram') ||
-                                                                    codeContent.includes('stateDiagram');
-
-                                                                const isErDiagram = codeContent.includes('[') &&
-                                                                    (codeContent.includes('||') || codeContent.includes('}o') || codeContent.includes('o{'));
-
-                                                                if (isMermaid) {
-                                                                    return <MermaidDiagram code={codeContent} />;
-                                                                }
-
-                                                                return <code className="block bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-xs font-mono" {...props}>{children}</code>;
-                                                            },
-                                                            pre: ({node, children, ...props}) => {
-                                                                // Check if pre block contains mermaid
-                                                                const preContent = String(children || '');
-                                                                const codeMatch = preContent.match(/<code[^>]*>([\s\S]*?)<\/code>/);
-                                                                const codeContent = codeMatch ? codeMatch[1] : preContent;
-
-                                                                if (codeContent.includes('graph') ||
-                                                                    codeContent.includes('flowchart') ||
-                                                                    codeContent.includes('sequenceDiagram') ||
-                                                                    codeContent.includes('classDiagram') ||
-                                                                    codeContent.includes('stateDiagram')) {
-                                                                    return <MermaidDiagram code={codeContent} />;
-                                                                }
-
-                                                                return <pre className="bg-gray-900 rounded-lg my-4" {...props}>{children}</pre>;
-                                                            },
-                                                            blockquote: ({node, ...props}) => <blockquote className="border-l-4 border-blue-500 pl-4 italic text-gray-600 my-4 bg-blue-50 py-2" {...props} />,
-                                                            a: ({node, ...props}) => <a className="text-blue-600 hover:text-blue-800 underline font-medium" {...props} />,
-                                                            strong: ({node, ...props}) => <strong className="font-bold text-gray-900" {...props} />,
-                                                        }}
-                                                    >
-                                                        {filterContentForDisplay(analysisContent)}
+                                    {/* Chat messages */}
+                                    {renderedMessages.map((msg) => (
+                                        <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                                            {/* Label */}
+                                            <span className="text-[10px] text-gray-400 mb-1 px-1">
+                                                {msg.role === 'user' ? 'You' : 'BRD Assistant'} · {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                            </span>
+                                            {/* Bubble */}
+                                            <div className={`max-w-[85%] rounded-2xl px-4 py-3 text-xs leading-relaxed shadow-sm ${msg.role === 'user'
+                                                ? 'bg-blue-600 text-white rounded-tr-sm'
+                                                : msg.isError
+                                                    ? 'bg-red-50 text-red-700 border border-red-200 rounded-tl-sm'
+                                                    : 'bg-white text-gray-800 border border-gray-200 rounded-tl-sm'
+                                                }`}>
+                                                <div className="prose prose-xs max-w-none">
+                                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                                        {msg.content}
                                                     </ReactMarkdown>
-                                                );
-                                            })()}
-                                        </div>
-                                    </div>
+                                                </div>
 
-                                    {/* Raw Source (Collapsed) */}
-                                    <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4">
-                                        <details className="group">
-                                            <summary className="flex justify-between items-center font-medium cursor-pointer list-none text-xs text-app-text-light uppercase tracking-widest hover:text-app-text-label transition-colors">
-                                                <span>View Processed Content</span>
-                                                <span className="transition-transform group-open:rotate-180">
-                                                    <svg fill="none" height="16" shapeRendering="geometricPrecision" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" viewBox="0 0 24 24" width="16"><path d="M6 9l6 6 6-6"></path></svg>
-                                                </span>
-                                            </summary>
-                                            <div className="mt-4 pt-4 border-t border-app-bg-page">
-                                                {result.extraction?.html ? (
-                                                    <div className="bg-app-bg-card rounded-lg border border-app-border overflow-hidden">
-                                                        <iframe
-                                                            srcDoc={result.extraction.html}
-                                                            className="w-full h-[420px] sm:h-[520px] lg:h-[600px] border-0"
-                                                            title="Processed Content"
-                                                            sandbox="allow-same-origin allow-scripts"
-                                                        />
+                                                {/* Techniques Cards Deck inside bubble */}
+                                                {msg.isElicitation && elicitationTechniques.length > 0 && (
+                                                    <div className="mt-4 pt-3 border-t border-gray-100 space-y-3">
+                                                        <div className="flex items-center justify-between gap-1.5 pb-1">
+                                                            <span className="text-[9px] font-bold uppercase tracking-wider text-gray-400">
+                                                                Refinement Techniques
+                                                            </span>
+                                                            <span className={`text-[8px] font-semibold px-2 py-0.5 rounded-full ${
+                                                                techniquesSource === 'uploaded' 
+                                                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' 
+                                                                    : 'bg-blue-50 text-blue-700 border border-blue-100'
+                                                            }`}>
+                                                                {techniquesSource === 'uploaded' ? 'Custom Skill' : 'AI SDLC Process'}
+                                                            </span>
+                                                        </div>
+                                                        <div className="grid grid-cols-1 gap-2.5">
+                                                            {elicitationTechniques.map((tech, idx) => (
+                                                                <div 
+                                                                    key={idx} 
+                                                                    className="bg-gray-50/80 border border-gray-200/60 rounded-xl p-2.5 transition-all duration-300 flex items-center justify-between gap-3 hover:border-blue-300 hover:bg-white hover:shadow-xs group/card"
+                                                                >
+                                                                    {/* Left: Technique Name clickable & highlights on hover */}
+                                                                    <span 
+                                                                        onClick={() => handleApplyTechnique(tech)}
+                                                                        className="font-bold text-gray-700 text-[11px] leading-tight group-hover/card:text-blue-600 transition-colors cursor-pointer flex-1 min-w-0 truncate"
+                                                                        title={`Apply methodology: ${tech.name}`}
+                                                                    >
+                                                                        {tech.name}
+                                                                    </span>
+                                                                    
+                                                                    {/* Right: Actions (Tick + Info) */}
+                                                                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                                                                        {/* Tick / Apply Button */}
+                                                                        <button
+                                                                            onClick={() => handleApplyTechnique(tech)}
+                                                                            disabled={chatSending || processing}
+                                                                            title="Apply this method"
+                                                                            className="text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 bg-white border border-gray-200/80 hover:border-emerald-200 transition-all p-1 rounded-full hover:scale-105 active:scale-95 shadow-xs disabled:opacity-50 disabled:pointer-events-none flex items-center justify-center"
+                                                                        >
+                                                                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                                                                            </svg>
+                                                                        </button>
+
+                                                                        {/* Info / Tooltip Button */}
+                                                                        <div className="relative group/tooltip flex-shrink-0">
+                                                                            <button 
+                                                                                type="button"
+                                                                                className="text-gray-400 hover:text-blue-600 hover:bg-blue-50 bg-white border border-gray-200/80 hover:border-blue-200 transition-all p-1 rounded-full shadow-xs focus:outline-none flex items-center justify-center"
+                                                                            >
+                                                                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                                                                </svg>
+                                                                            </button>
+                                                                            {/* Tooltip Content */}
+                                                                            <div className="absolute right-full -top-12 mr-3 w-64 p-3 bg-slate-900/95 text-white text-[10.5px] leading-relaxed rounded-xl shadow-xl border border-slate-800 backdrop-blur-md opacity-0 pointer-events-none group-hover/tooltip:opacity-100 group-hover/tooltip:translate-x-0 transition-all duration-300 z-50 transform translate-x-1">
+                                                                                <div className="font-bold text-blue-400 mb-1 flex items-center justify-between">
+                                                                                    <span>{tech.name}</span>
+                                                                                    <span className="text-[8px] font-semibold uppercase tracking-wider text-gray-400 bg-slate-800 px-1.5 py-0.5 rounded">
+                                                                                        {techniquesSource === 'uploaded' ? 'Custom Skill' : 'AI SDLC'}
+                                                                                    </span>
+                                                                                </div>
+                                                                                <div className="text-gray-200 mt-1 whitespace-pre-line leading-relaxed font-normal">
+                                                                                    {tech.description}
+                                                                                </div>
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            ))}
+                                                        </div>
                                                     </div>
-                                                ) : (
-                                                    <div className="bg-app-bg-page rounded-lg p-4 text-xs font-mono text-app-text-label max-h-96 overflow-y-auto whitespace-pre-wrap border border-app-border-light">
-                                                        {result.extraction?.markdown || '(No content extracted)'}
+                                                )}
+
+                                                {/* Affected sections badge */}
+                                                {msg.affectedSections && msg.affectedSections.length > 0 && (
+                                                    <div className="mt-2 pt-2 border-t border-gray-100 flex flex-wrap gap-1">
+                                                        <span className="text-[10px] text-gray-400 w-full mb-1">Updated sections:</span>
+                                                        {msg.affectedSections.map((s, i) => (
+                                                            <span key={i} className="inline-block bg-blue-50 text-blue-700 border border-blue-100 rounded-full px-2 py-0.5 text-[10px] font-medium">
+                                                                {s}
+                                                            </span>
+                                                        ))}
                                                     </div>
                                                 )}
                                             </div>
-                                        </details>
+                                        </div>
+                                    ))}
+
+                                    {/* Typing indicator */}
+                                    {(chatSending || processing) && (
+                                        <div className="flex items-start gap-2">
+                                            <div className="bg-white border border-gray-200 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm">
+                                                <div className="flex gap-1 items-center h-4">
+                                                    <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                                                    <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                                                    <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    <div ref={chatEndRef} />
+                                </div>
+
+                                {/* Chat Input */}
+                                <div className="px-4 py-4 border-t border-gray-100 bg-white flex-shrink-0">
+                                    <div className="flex items-end gap-2">
+                                        <div className="flex-1">
+                                            <textarea
+                                                value={chatInput}
+                                                onChange={(e) => {
+                                                    setChatInput(e.target.value);
+
+                                                    // Auto expand upward
+                                                    e.target.style.height = 'auto';
+                                                    e.target.style.height = `${Math.min(e.target.scrollHeight, 140)}px`;
+                                                }}
+                                                onKeyDown={(e) => {
+                                                    if (e.key === 'Enter' && !e.shiftKey) {
+                                                        e.preventDefault();
+                                                        handleChatSend();
+                                                    }
+                                                }}
+                                                placeholder="Describe what to update in the BRD... (Enter to send)"
+                                                rows={1}
+                                                className="w-full px-3 py-2.5 text-xs border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-gray-50 resize-none placeholder-gray-400 overflow-y-auto min-h-[42px] max-h-[140px]"
+                                                style={{ height: '42px' }}
+                                                disabled={chatSending || processing}
+                                            />
+                                        </div>
+
+                                        <button
+                                            onClick={handleChatSend}
+                                            disabled={!chatInput.trim() || chatSending || processing}
+                                            className="flex-shrink-0 p-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-200 disabled:cursor-not-allowed text-white rounded-xl transition-colors shadow-sm"
+                                        >
+                                            <svg
+                                                className="w-4 h-4"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                viewBox="0 0 24 24"
+                                            >
+                                                <path
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                    strokeWidth={2}
+                                                    d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
+                                                />
+                                            </svg>
+                                        </button>
+                                    </div>
+
+                                </div>
+                            </>
+                        )}
+
+                        {/* ── Clarification Needed Tab ── */}
+                        {sidebarTab === 'clarification' && (
+                            <div className="flex-1 overflow-y-auto flex flex-col">
+                                {clarificationCount === 0 ? (
+                                    <div className="flex-1 flex flex-col items-center justify-center px-6 py-12 text-center">
+                                        <div className="w-14 h-14 rounded-full bg-green-50 flex items-center justify-center mx-auto mb-4">
+                                            <svg className="w-7 h-7 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                            </svg>
+                                        </div>
+                                        <p className="text-sm font-semibold text-gray-700 mb-1">No open questions</p>
+                                        <p className="text-xs text-gray-400 leading-relaxed max-w-[240px]">
+                                            The AI has no pending clarifications. All ambiguities are resolved.
+                                        </p>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div className="px-5 py-4 bg-amber-50 border-b border-amber-100 flex-shrink-0">
+                                            <p className="text-xs text-amber-700 leading-relaxed">
+                                                Answer these questions to refine specific sections of the analysis. The AI will surgically update only affected areas.
+                                            </p>
+                                        </div>
+                                        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3 bg-gray-50">
+                                            {clarificationQuestions.map((q, i) => (
+                                                <div key={i} className="bg-white rounded-xl p-4 border border-amber-100 shadow-sm">
+                                                    <div className="flex items-start gap-2 mb-2">
+                                                        <span className="flex-shrink-0 w-5 h-5 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold flex items-center justify-center mt-0.5">{i + 1}</span>
+                                                        <p className="text-xs font-medium text-gray-700 leading-relaxed">{q}</p>
+                                                    </div>
+                                                    <input
+                                                        type="text"
+                                                        value={userAnswers[i] || ''}
+                                                        onChange={e => setUserAnswers(prev => ({ ...prev, [i]: e.target.value }))}
+                                                        onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleQASubmit(); } }}
+                                                        className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:ring-2 focus:ring-amber-400 focus:border-amber-400 bg-gray-50 placeholder-gray-400"
+                                                        placeholder="Your answer..."
+                                                    />
+                                                </div>
+                                            ))}
+                                        </div>
+                                        <div className="px-5 py-4 border-t border-gray-100 bg-white flex-shrink-0">
+                                            <button
+                                                onClick={handleQASubmit}
+                                                disabled={chatSending || processing}
+                                                className="w-full py-2.5 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+                                            >
+                                                {chatSending || processing ? 'Updating...' : 'Submit Answers & Update Analysis'}
+                                            </button>
+                                            <p className="text-[10px] text-gray-400 mt-2 text-center">Answers are applied surgically to affected sections</p>
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                );
+            })()}
+
+            {/* Main Content Container */}
+            <div className={`transition-all duration-300 ${isSidebarOpen ? 'lg:mr-[460px]' : 'mr-0'}`}>
+                <div className="max-w-[1100px] mx-auto px-12 py-6 space-y-6">
+                    {result && (
+                        <div className="space-y-6 animate-fade-in-up">
+                            {/* Result Header - Redesigned */}
+                            <div className="bg-gradient-to-r from-white to-gray-50 rounded-2xl shadow-md border border-gray-200 overflow-hidden">
+                                {/* Top Section - File Info */}
+                                <div className="flex flex-col md:flex-row md:items-center justify-between p-5 border-b border-gray-100">
+                                    <div className="flex items-start gap-4 mb-4 md:mb-0">
+                                        <div className="flex-shrink-0 w-12 h-12 bg-gradient-to-br from-emerald-400 to-green-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/30">
+                                            <FileText className="w-6 h-6 text-white" />
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <h2 className="text-xl font-bold text-gray-900 truncate mb-1">{result.filename}</h2>
+                                            <div className="flex items-center gap-2 text-sm text-gray-600">
+                                                {selectedProject && (
+                                                    <>
+                                                        <span className="font-medium">{selectedProject.name}</span>
+                                                        <span className="text-gray-400">•</span>
+                                                    </>
+                                                )}
+                                                {analysisInProgress || processing ? (
+                                                    <div className="flex items-center gap-1.5">
+                                                        <div className="w-2.5 h-2.5 bg-amber-500 rounded-full animate-pulse"></div>
+                                                        <span className="font-semibold text-amber-600">Analysis in Progress</span>
+                                                    </div>
+                                                ) : (
+                                                    <div className="flex items-center gap-1.5">
+                                                        <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                                                        <span className="font-medium text-emerald-600">Analysis Complete</span>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Action Buttons - Right Side */}
+                                    {!isSidebarOpen && (
+                                        <div className="flex items-center gap-2">
+                                            <button
+                                                onClick={handleDownloadPDF}
+                                                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 rounded-lg transition-all hover:shadow-md"
+                                                title="Download PDF Report"
+                                            >
+                                                <Download className="w-4 h-4" />
+                                                <span className="hidden sm:inline">Download PDF</span>
+                                            </button>
+                                            <button
+                                                onClick={handleNewAnalysis}
+                                                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 rounded-lg transition-all hover:shadow-lg shadow-blue-500/30"
+                                            >
+                                                <Plus className="w-4 h-4" />
+                                                <span className="hidden sm:inline">New Analysis</span>
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Bottom Section - Interactive Buttons */}
+                                <div className="flex flex-wrap items-center gap-3 px-5 py-3 bg-gray-50/50">
+                                    {/* BRD Chat Button */}
+                                    <button
+                                        onClick={() => { setSidebarTab('chat'); setIsSidebarOpen(true); }}
+                                        className={`flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-all ${isSidebarOpen && sidebarTab === 'chat'
+                                            ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/30'
+                                            : 'bg-white text-blue-600 border border-blue-200 hover:bg-blue-50 hover:border-blue-300'
+                                            }`}
+                                        title="Open BRD Chat"
+                                    >
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                        </svg>
+                                        <span>BRD Chat</span>
+                                        {chatMessages.length > 0 && (
+                                            <span className={`px-2 py-0.5 text-xs font-bold rounded-full ${isSidebarOpen && sidebarTab === 'chat' ? 'bg-white text-blue-600' : 'bg-blue-600 text-white'
+                                                }`}>{chatMessages.length}</span>
+                                        )}
+                                    </button>
+
+                                    {/* Clarification Button */}
+                                    {(() => {
+                                        const qCount = (aiQuestions?.length > 0 ? aiQuestions : (result?.analysis?.questions || [])).length;
+                                        return (
+                                            <button
+                                                onClick={() => { setSidebarTab('clarification'); setIsSidebarOpen(true); }}
+                                                className={`flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-all ${isSidebarOpen && sidebarTab === 'clarification'
+                                                    ? 'bg-amber-600 text-white shadow-lg shadow-amber-500/30'
+                                                    : 'bg-white text-amber-600 border border-amber-200 hover:bg-amber-50 hover:border-amber-300'
+                                                    }`}
+                                                title="Clarification Needed"
+                                            >
+                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                                </svg>
+                                                <span>Clarification</span>
+                                                {qCount > 0 && (
+                                                    <span className={`px-2 py-0.5 text-xs font-bold rounded-full ${isSidebarOpen && sidebarTab === 'clarification' ? 'bg-white text-amber-600' : 'bg-amber-600 text-white'
+                                                        }`}>{qCount}</span>
+                                                )}
+                                            </button>
+                                        );
+                                    })()}
+
+                                    {/* Extra Actions when Sidebar is Open */}
+                                    {isSidebarOpen && (
+                                        <>
+                                            <button
+                                                onClick={handleDownloadPDF}
+                                                className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-all"
+                                            >
+                                                <Download className="w-4 h-4" />
+                                                <span>Download PDF</span>
+                                            </button>
+
+                                            <button
+                                                onClick={handleNewAnalysis}
+                                                className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-gradient-to-r from-blue-600 to-blue-700 rounded-lg hover:from-blue-700 hover:to-blue-800 transition-all"
+                                            >
+                                                <Plus className="w-4 h-4" />
+                                                <span>New Analysis</span>
+                                            </button>
+                                        </>
+                                    )}
+                                </div>
+                            </div>
+
+                            {hasGovernanceAssessment && !processing && result?.analysis?.analysis && String(result.analysis.analysis).trim().length > 0 && (
+                                <div className="bg-gradient-to-r from-app-status-warningBg to-orange-50 rounded-xl shadow-sm border border-amber-200/60 p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-amber-400 to-app-status-warning flex items-center justify-center shadow-lg shadow-amber-200">
+                                            <KeyRound className="w-5 h-5 text-white" />
+                                        </div>
+                                        <div>
+                                            <h3 className="text-sm font-bold text-amber-900">Prerequisite Classification</h3>
+                                            <p className="text-xs text-app-status-warning">Review AI-identified prerequisites, credentials, and access requirements before task creation.</p>
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={() => navigate('/prerequisites')}
+                                        className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-app-status-warning to-orange-500 rounded-lg shadow-lg shadow-app-status-warning/30 hover:shadow-app-status-warning/50 hover:-translate-y-0.5 transition-all active:scale-95 flex-shrink-0"
+                                    >
+                                        <KeyRound className="w-4 h-4" />
+                                        Review Prerequisites
+                                    </button>
+                                </div>
+                            )}
+
+                            <div id="analysis-content" className="bg-transparent space-y-6">
+                                {/* Stage-Based Progress Loader */}
+                                {processing && (
+                                    <div className="bg-app-bg-card rounded-xl border border-app-border p-6 space-y-4">
+                                        <div className="flex items-center justify-between mb-4">
+                                            <h3 className="text-lg font-bold text-app-text-main">Analysis in Progress</h3>
+                                        </div>
+
+
+                                        {/* Overall Progress Bar */}
+                                        <div className="mt-4 space-y-2">
+                                            <div className="flex justify-between items-center text-xs text-app-text-muted">
+                                                <span>{progressMessage}</span>
+                                                <span className="font-semibold">{progress}%</span>
+                                            </div>
+                                            <div className="w-full bg-app-bg-muted rounded-full h-2 overflow-hidden">
+                                                <div
+                                                    className="bg-gradient-to-r from-app-primary to-app-primary-hover h-2 rounded-full transition-all duration-500 ease-out shadow-[0_0_10px_rgba(37,99,235,0.5)]"
+                                                    style={{ width: `${progress}%` }}
+                                                ></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {error && (
+                                    <div className="mt-4 rounded-lg border border-red-200 bg-app-status-errorBg px-4 py-3">
+                                        <p className="text-sm font-medium text-app-status-error">{error}</p>
+                                    </div>
+                                )}
+
+                                {/* Key Metrics Row */}
+                                {result.analysis && (
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                                        {(() => {
+                                            const metrics = result.analysis.metrics || {};
+                                            const metricItems = [
+                                                { label: 'Deployment', value: metrics?.deployment || 'TBD', icon: Server, color: 'text-app-primary', bg: 'bg-app-primary-light' },
+                                                { label: 'Resources', value: metrics?.resources || 'TBD', icon: Users, color: 'text-purple-600', bg: 'bg-purple-50' },
+                                                { label: 'Complexity', value: metrics?.complexity || 'TBD', icon: Activity, color: 'text-orange-600', bg: 'bg-orange-50' },
+                                                { label: 'Timeline (For Developer Only Mode)', value: metrics?.timeline || 'TBD', icon: Clock, color: 'text-app-status-success', bg: 'bg-app-status-successBg' }
+                                            ];
+
+                                            return metricItems.map((metric, idx) => (
+                                                <div key={idx} className="bg-app-bg-card p-4 rounded-xl border border-app-border-light shadow-sm flex flex-col justify-between hover:shadow-md transition-shadow">
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <div className={`p-2 ${metric.bg} rounded-lg`}>
+                                                            <metric.icon className={`w-4 h-4 ${metric.color}`} />
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-[10px] uppercase tracking-wider font-semibold text-app-text-light">{metric.label}</p>
+                                                        <p className="text-sm font-bold text-app-text-main line-clamp-2 leading-tight" title={metric.value}>
+                                                            {metric.value}
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            ));
+                                        })()}
+                                    </div>
+                                )}
+
+                                {/* Main Content with Fixed Right Sidebar */}
+                                <div className="relative">
+                                    {/* Main Content Area - Add right margin when sidebar is open */}
+                                    <div>
+                                        <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6">
+                                            <h3 className="text-lg font-bold text-app-text-main mb-4 pb-2 border-b-2 border-app-border-light">
+                                                Executive Summary & Agent Analysis
+                                            </h3>
+                                            <div className="prose prose-lg prose-slate max-w-none text-app-text-label leading-relaxed">
+                                                {(() => {
+                                                    const analysisContent = result.analysis?.analysis || '';
+                                                    const explicitHtml = result.analysis?.html;
+                                                    const htmlToRender = explicitHtml || (isLikelyHtml(analysisContent) ? analysisContent : null);
+
+                                                    // Function to filter content for frontend display (hide ER diagrams and API sections)
+                                                    const filterContentForDisplay = (content) => {
+                                                        if (!content) return '';
+
+                                                        const lines = content.split('\n');
+                                                        const result = [];
+                                                        let inCodeBlock = false;
+                                                        let codeBlockType = '';
+                                                        let skipSection = false;
+                                                        let sectionLevel = 0;
+
+                                                        for (let i = 0; i < lines.length; i++) {
+                                                            const line = lines[i];
+                                                            const trimmed = line.trim();
+
+                                                            // Detect section headers to skip
+                                                            const headerMatch = trimmed.match(/^(#{1,6})\s+(.+)/);
+                                                            if (headerMatch) {
+                                                                const level = headerMatch[1].length;
+                                                                const headerText = headerMatch[2].toLowerCase();
+
+                                                                // Check if this is a section we want to hide
+                                                                const shouldHide =
+                                                                    headerText.includes('api specification') ||
+                                                                    headerText.includes('api endpoint') ||
+                                                                    headerText.includes('core api') ||
+                                                                    headerText.includes('deliverable mapping') ||
+                                                                    headerText.includes('files to create') ||
+                                                                    headerText.includes('phase 1:') ||
+                                                                    headerText.includes('phase 2:') ||
+                                                                    headerText.includes('phase 3:') ||
+                                                                    headerText.includes('phase 4:') ||
+                                                                    headerText.includes('phase 5:') ||
+                                                                    (headerText.match(/^\d+\.\d+/) && (
+                                                                        headerText.includes('api') ||
+                                                                        headerText.includes('deliverable')
+                                                                    ));
+
+                                                                if (shouldHide) {
+                                                                    skipSection = true;
+                                                                    sectionLevel = level;
+                                                                    continue;
+                                                                } else if (skipSection && level <= sectionLevel) {
+                                                                    // End of skipped section - new section at same or higher level
+                                                                    skipSection = false;
+                                                                    sectionLevel = 0;
+                                                                }
+                                                            }
+
+                                                            // Skip lines if we're in a hidden section
+                                                            if (skipSection) {
+                                                                continue;
+                                                            }
+
+                                                            // Handle code blocks
+                                                            if (trimmed.startsWith('```')) {
+                                                                if (!inCodeBlock) {
+                                                                    // Start of code block
+                                                                    inCodeBlock = true;
+                                                                    codeBlockType = trimmed.substring(3).trim().toLowerCase();
+                                                                    result.push(line);
+                                                                } else {
+                                                                    // End of code block
+                                                                    inCodeBlock = false;
+                                                                    codeBlockType = '';
+                                                                    result.push(line);
+                                                                }
+                                                                continue;
+                                                            }
+
+                                                            result.push(line);
+                                                        }
+
+                                                        return result.join('\n');
+                                                    };
+
+                                                    if (processing && !analysisContent.trim()) {
+                                                        return (
+                                                            <div className="text-sm text-app-text-muted italic">
+                                                                Generating analysis...
+                                                            </div>
+                                                        );
+                                                    }
+
+                                                    // Always use ReactMarkdown for consistent formatting
+                                                    return (
+                                                        <ReactMarkdown
+                                                            remarkPlugins={[remarkGfm]}
+                                                            components={markdownComponents}
+                                                        >
+                                                            {filterContentForDisplay(analysisContent)}
+                                                        </ReactMarkdown>
+                                                    );
+                                                })()}
+                                            </div>
+                                        </div>
+
+                                        {/* Raw Source (Collapsed) */}
+                                        <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4">
+                                            <details className="group">
+                                                <summary className="flex justify-between items-center font-medium cursor-pointer list-none text-xs text-app-text-light uppercase tracking-widest hover:text-app-text-label transition-colors">
+                                                    <span>View Processed Content</span>
+                                                    <span className="transition-transform group-open:rotate-180">
+                                                        <svg fill="none" height="16" shapeRendering="geometricPrecision" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" viewBox="0 0 24 24" width="16"><path d="M6 9l6 6 6-6"></path></svg>
+                                                    </span>
+                                                </summary>
+                                                <div className="mt-4 pt-4 border-t border-app-bg-page">
+                                                    {(() => {
+                                                        // Check if we have structured sections
+                                                        const sections = result.analysis?.sections || result.extraction?.sections;
+                                                        const markdown = result.extraction?.markdown || '';
+
+                                                        // If we have sections OR markdown with section separators, show tabs
+                                                        if ((sections && sections.length > 0) || markdown.includes('---')) {
+                                                            return <ProcessedContentTabs sections={sections} markdown={markdown} />;
+                                                        }
+
+                                                        // Fallback to HTML iframe if available
+                                                        if (result.extraction?.html) {
+                                                            return (
+                                                                <div className="bg-app-bg-card rounded-lg border border-app-border overflow-hidden">
+                                                                    <iframe
+                                                                        srcDoc={result.extraction.html}
+                                                                        className="w-full h-[420px] sm:h-[520px] lg:h-[600px] border-0"
+                                                                        title="Processed Content"
+                                                                        sandbox="allow-same-origin allow-scripts"
+                                                                    />
+                                                                </div>
+                                                            );
+                                                        }
+
+                                                        // Final fallback to plain markdown
+                                                        return (
+                                                            <div className="bg-app-bg-page rounded-lg p-4 text-xs font-mono text-app-text-label max-h-96 overflow-y-auto whitespace-pre-wrap border border-app-border-light">
+                                                                {markdown || '(No content extracted)'}
+                                                            </div>
+                                                        );
+                                                    })()}
+                                                </div>
+                                            </details>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
                         </div>
-                    </div>
-                )}
-            </div>
+                    )}
+                </div>
             </div>
 
             {/* Architecture Fullscreen Modal */}

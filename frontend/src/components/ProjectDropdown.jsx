@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ChevronDown, Search, FolderOpen, Check, Trash2 } from 'lucide-react';
+import { ChevronDown, Search, FolderOpen, Check, Trash2, Share2 } from 'lucide-react';
 
 export default function ProjectDropdown({
     projects = [],
@@ -79,7 +79,11 @@ export default function ProjectDropdown({
             >
                 <div className="flex items-center gap-2 min-w-0">
                     <div className={`w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 shadow-sm ${theme === 'dark' ? 'bg-white/10' : 'bg-gradient-to-br from-app-primary to-app-primary'}`}>
-                        <FolderOpen className={`w-3 h-3 ${theme === 'dark' ? 'text-white' : 'text-app-bg-card'}`} />
+                        {selectedProject?.type === 'share' ? (
+                            <Share2 className={`w-3 h-3 ${theme === 'dark' ? 'text-white' : 'text-app-bg-card'}`} />
+                        ) : (
+                            <FolderOpen className={`w-3 h-3 ${theme === 'dark' ? 'text-white' : 'text-app-bg-card'}`} />
+                        )}
                     </div>
                     <div className="text-left min-w-0">
                         <p className={`text-[10px] font-medium leading-none mb-0.5 ${theme === 'dark' ? 'text-white/70' : 'text-app-text-light'}`}>Project</p>
@@ -144,7 +148,9 @@ export default function ProjectDropdown({
                                                 }`}>
                                                 {isSelected
                                                     ? <Check className="w-3.5 h-3.5 text-app-bg-card" />
-                                                    : <FolderOpen className="w-3.5 h-3.5 text-app-text-muted" />
+                                                    : project.type === 'share' 
+                                                        ? <Share2 className="w-3.5 h-3.5 text-app-text-muted" />
+                                                        : <FolderOpen className="w-3.5 h-3.5 text-app-text-muted" />
                                                 }
                                             </div>
                                             <div className="flex-1 min-w-0">
@@ -153,9 +159,11 @@ export default function ProjectDropdown({
                                                 </p>
                                                 <div className="flex items-center gap-2 mt-0.5">
                                                     <span className={`w-1.5 h-1.5 rounded-full ${getStatusColor(project.status)}`}></span>
-                                                    <span className="text-[11px] text-app-text-light font-medium">{getStatusLabel(project.status)}</span>
-                                                    {project.documents?.length > 0 && (
-                                                        <span className="text-[11px] text-app-text-light">- {project.documents.length} doc{project.documents.length !== 1 ? 's' : ''}</span>
+                                                    <span className="text-[11px] text-app-text-light font-medium">{project.type === 'share' ? 'Active' : getStatusLabel(project.status)}</span>
+                                                    {(project.documents?.length > 0 || project.document_count > 0) && (
+                                                        <span className="text-[11px] text-app-text-light">
+                                                            - {project.type === 'share' ? project.document_count : project.documents.length} doc{(project.type === 'share' ? project.document_count : project.documents.length) !== 1 ? 's' : ''}
+                                                        </span>
                                                     )}
                                                 </div>
                                             </div>

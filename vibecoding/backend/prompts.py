@@ -251,7 +251,6 @@ When working with an existing project, it's highly recommended to:
    - App.jsx should ONLY contain:
      * Component imports
      * Basic routing/layout structure
-     * State management (if using Context/Redux)
    - Each feature should be its own component file
 
 2. FILE ORGANIZATION:

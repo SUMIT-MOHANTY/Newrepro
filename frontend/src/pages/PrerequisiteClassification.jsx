@@ -1744,7 +1744,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     <div className="mb-6 p-4 rounded-lg border border-yellow-500/50 bg-yellow-500/10 shadow-md">
                         <div className="flex items-start gap-3">
                             <AlertTriangle className="w-5 h-5 text-yellow-500 mt-0.5 flex-shrink-0" />
-                            <div className="text-sm text-yellow-200 flex-1">
+                            <div className="text-sm text-dark-200 flex-1">
                                 <p className="font-bold mb-1.5 text-base flex items-center gap-2">
                                     <span className="text-lg">ℹ️</span> No PAT Provided
                                 </p>

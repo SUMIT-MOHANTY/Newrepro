@@ -6,7 +6,7 @@ import App from './App.jsx'
 import { installUnauthorizedResponseInterceptor } from './utils/fetchInterceptor'
 
 const theme = localStorage.getItem('theme');
-if (theme === 'dark' || (!theme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+if (theme === 'dark') {
     document.documentElement.classList.add('dark');
     localStorage.setItem('theme', 'dark');
 } else {

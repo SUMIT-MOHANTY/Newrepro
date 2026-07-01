@@ -11,14 +11,20 @@ const GENERATED_NAME_PATTERNS = [
 ];
 
 export function getAgentSequence(agentOrId) {
-  const agentId = typeof agentOrId === 'string' ? agentOrId : agentOrId?.id;
+  let agentId = typeof agentOrId === 'string' ? agentOrId : agentOrId?.id;
+  if (agentId && agentId.includes('#')) {
+    agentId = agentId.split('#')[0];
+  }
   const match = String(agentId || '').match(/(\d+)$/);
   if (!match) return null;
   return Number.parseInt(match[1], 10);
 }
 
 export function getNeutralAgentName(agentOrId, fallbackName) {
-  const agentId = typeof agentOrId === 'string' ? agentOrId : agentOrId?.id;
+  let agentId = typeof agentOrId === 'string' ? agentOrId : agentOrId?.id;
+  if (agentId && agentId.includes('#')) {
+    agentId = agentId.split('#')[0];
+  }
   if (SYSTEM_AGENT_NAMES[agentId]) {
     return SYSTEM_AGENT_NAMES[agentId];
   }
@@ -44,7 +50,10 @@ export function getNeutralAgentName(agentOrId, fallbackName) {
 }
 
 export function getNeutralAgentLabel(agentOrId) {
-  const agentId = typeof agentOrId === 'string' ? agentOrId : agentOrId?.id;
+  let agentId = typeof agentOrId === 'string' ? agentOrId : agentOrId?.id;
+  if (agentId && agentId.includes('#')) {
+    agentId = agentId.split('#')[0];
+  }
   if (SYSTEM_AGENT_NAMES[agentId]) {
     return 'SYSTEM AGENT';
   }

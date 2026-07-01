@@ -52,6 +52,32 @@ def _extract_json_object(text: str) -> Optional[dict]:
     return None
 
 
+def clean_repository_structure_string(repo_structure: str) -> str:
+    """Strip top-level container folder from ASCII directory tree if present"""
+    if not repo_structure:
+        return ""
+        
+    lines = [line for line in repo_structure.split('\n') if line.strip()]
+    if not lines:
+        return ""
+        
+    first_line = lines[0].strip()
+    # A root container directory name usually contains no tree-drawing characters
+    if not any(c in first_line for c in ['│', '├', '└', '─', ' ']):
+        is_container = True
+        for line in lines[1:]:
+            stripped = line.strip()
+            if stripped and not any(line.startswith(c) for c in [' ', '│', '├', '└', '─', '┌', '┬', '┴']):
+                is_container = False
+                break
+        
+        if is_container:
+            cleaned_lines = lines[1:]
+            return "\n".join(cleaned_lines)
+            
+    return repo_structure
+
+
 def _has_architecture_block(text: str) -> bool:
     parsed = _extract_json_object(text)
     if not isinstance(parsed, dict):
@@ -280,6 +306,8 @@ Describe each role-based dashboard/screen:
 ### 0.5.1 Proposed Repository Structure
 Produce a FULL, exhaustive file tree with inline comments for every file.
 Include: backend, frontend, infra, docs, CI/CD, config, tests.
+
+CRITICAL: The repository structure tree MUST start directly with the root-level files and directories of the project (e.g. `src/`, `backend/`, `package.json`, `.gitignore`). Do NOT wrap the entire structure in a top-level parent folder named after the project.
 
 ### 0.5.2 File Path Specifications
 Call out the most critical files:
@@ -672,64 +700,132 @@ async def get_ai_config() -> dict:
         "model": llm_gateway.resolve_model()
     }
 
-FULL_PROJECT_TASK_PROMPT = """You are an expert Project Manager and Agile Practitioner.
-You are generating the FULL, COMPREHENSIVE task list for a project all at once.
+FULL_PROJECT_TASK_PROMPT = """You are an expert Software Architect, Project Manager, and Agile Practitioner.
+You are generating the FULL, COMPREHENSIVE task list for a software project in a SINGLE pass.
 
-CRITICAL: The VERY FIRST task you create (task with ID 1, phase="foundation")
-MUST be a **full-stack project bootstrap** that creates a COMPLETE, CLEAN and
-PRODUCTION-READY project structure for BOTH backend AND frontend.
+═══════════════════════════════════════════════════════
+PART 1 — STACK DETECTION (Read the BRD analysis FIRST before generating any tasks)
+═══════════════════════════════════════════════════════
 
-RULES:
+From the BRD ANALYSIS REPORT, identify:
+- FRONTEND: Which UI framework is used? (React, Vue, Next.js, Angular, Svelte, None, etc.)
+- BACKEND: Which server framework is used? (FastAPI, Express, Django, Flask, NestJS, None, etc.)
+- DATABASE: Which database is used? (PostgreSQL, MongoDB, SQLite, None, etc.)
+- IS_FULLSTACK: true if both frontend AND backend are explicitly required
+- IS_FRONTEND_ONLY: true if only a UI layer is needed
+- IS_BACKEND_ONLY: true if only a server/API layer is needed
+
+Use this detection to drive ALL task generation below. NEVER generate frontend tasks for a backend-only
+project, and NEVER generate backend tasks for a frontend-only project.
+
+═══════════════════════════════════════════════════════
+PART 2 — TASK-00: THE IMMOVABLE GATEWAY (ALWAYS the first task, sequence 1)
+═══════════════════════════════════════════════════════
+
+NON-NEGOTIABLE TASK-00 RULES:
+1. Task with sequence 1 is ALWAYS the FIRST object in the JSON array. No exceptions.
+2. Task 1 (TASK-00) has phase="foundation" and dependencies=[] (no dependencies).
+3. ALL other tasks MUST include 1 in their dependencies array.
+4. Task 1 wallet MUST be 10 (maximum — it is the most critical task in the project).
+5. Task 1 scope is STRICTLY determined by the detected stack:
+   - FULL-STACK: bootstrap creates BOTH frontend scaffold AND backend scaffold
+   - FRONTEND-ONLY: bootstrap creates ONLY frontend structure (NO backend folders, NO server files)
+   - BACKEND-ONLY: bootstrap creates ONLY backend structure (NO frontend folders, NO React/UI files)
+6. Task 1 description MUST state explicitly:
+   - GATEWAY TASK — all other tasks depend on this. Must complete before any other task starts.
+   - The EXACT directory tree to create (derived from the BRD analysis repository structure section 0.5.1)
+   - The EXACT config files to create (package.json/pyproject.toml, .env.example, .gitignore, README.md, and any framework config)
+   - The EXACT entry point files to create
+   - For frontend projects: AppLayout, design token file, mock data store, shared UI kit
+   - For backend projects: main entry file, CORS config, health endpoint, database connection stub
+   - What NOT to build in this task (no feature screens, no business logic, no DB schemas)
+7. Task 1 checklist MUST contain at minimum 8 FILE-LEVEL steps (see PART 4 for format rules).
+
+═══════════════════════════════════════════════════════
+PART 3 — PHASE-BASED DEVELOPMENT (Generate ONLY phases relevant to the detected stack)
+═══════════════════════════════════════════════════════
+
+Phase "foundation" → ALWAYS required. Contains TASK-00 (sequence 1) only.
+
+IF FRONTEND EXISTS in the detected stack:
+  Phase "frontend-core" → Frontend routing setup, layout shell, design tokens, shared UI library,
+    mock data store, authentication screens. These tasks DEPEND on foundation.
+  Phase "frontend-features" → Feature-specific screens/pages derived from BRD requirements.
+    NO real API calls — all data from mock store. DEPEND on frontend-core tasks.
+
+IF BACKEND EXISTS in the detected stack:
+  Phase "backend-core" → Database setup, core models/schemas, JWT auth implementation,
+    base middleware, CORS config, error handling. DEPEND on foundation.
+  Phase "backend-features" → Feature-specific API endpoints derived from BRD requirements.
+    DEPEND on backend-core tasks.
+
+IF BOTH FRONTEND AND BACKEND EXIST:
+  Phase "integration" → Connect frontend to real backend APIs, replace mock data with React Query
+    hooks, run E2E database connectivity tests. DEPEND on all feature tasks.
+
+Phase "integration" also covers testing, deployment preparation, Docker setup, and CI/CD
+  for ALL project types (even single-side projects).
+
+DEPENDENCY CHAIN (strictly enforced by the `dependencies` array):
+  foundation (1) → frontend-core → frontend-features → integration
+  foundation (1) → backend-core → backend-features → integration
+
+═══════════════════════════════════════════════════════
+PART 4 — CHECKLIST RULES (file-level precision MANDATORY)
+═══════════════════════════════════════════════════════
+
+Every checklist item MUST be a concrete, file-level action referencing EXACT paths.
+  ✗ FORBIDDEN (vague): "Set up development environment"
+  ✗ FORBIDDEN (vague): "Implement service layer"
+  ✗ FORBIDDEN (vague): "Build authentication module"
+  ✓ REQUIRED (file-level): "Create `src/components/ui/Button.tsx` with variants: primary, secondary, ghost, danger"
+  ✓ REQUIRED (file-level): "Create `backend/auth/routes.py` with POST /login, POST /register, POST /refresh-token"
+  ✓ REQUIRED (file-level): "Run `npm install react@18 react-router-dom@6 @tanstack/react-query@5` and verify package-lock.json"
+
+Checklist item counts:
+  - foundation / TASK-00 tasks → minimum 8, up to 12 items
+  - backend-core / backend-features tasks → 5 to 8 items
+  - frontend-core / frontend-features tasks → 5 to 8 items
+  - integration tasks → 4 to 7 items
+
+═══════════════════════════════════════════════════════
+PART 5 — GENERAL RULES
+═══════════════════════════════════════════════════════
+
 1. Generate ALL necessary tasks for the entire project from start to finish.
 2. Provide the complete list without repeating tasks or starting over.
 3. The total wallet combined for all tasks MUST NOT exceed the TOTAL WALLET provided.
-4. Each task's wallet MUST be between 1 and 10 (inclusive). Never assign 0 or any value above 10.
-5. YOU MUST NOT assign any agents. The `assignees` field MUST ALWAYS be an empty array `[]`.
-6. Ensure tasks follow a logical sequence from project start to completion (e.g., setup before features, features before testing).
-7. **Complexity-based Scoring**: Assign wallet points (1-10) based on task complexity (Simple = 1-3, Medium = 4-6, High/Complex = 7-10).
-8. **Smart Budgeting**: You MUST complete the entire project development within the total project wallet. Allocate points smartly so that high-priority/complex tasks get sufficient budget while still leaving enough for the remaining development.
-13. **MASSIVE PARALLELISM & MACHINE SPEED**: For `ai_first` mode, you are simulating a swarm of AI agents. You MUST ignore human constraints (8-hour workdays, sleep, weekends). Do NOT schedule tasks purely sequentially. Multiple complex tasks can run simultaneously 24/7. A 50-100 task project should be completed in **2-5 calendar DAYS**. Your deadlines must look like 'Today + 1 day', 'Today + 2 days', etc. DO NOT extend project timelines into months unless explicitly forced by external human dependencies.
-9. **Placeholder Handling for Missing Prerequisites**: If the PREREQUISITES section lists items marked as [NOT YET PROVIDED], you MUST include in the relevant task descriptions:
-    - Use environment variables with placeholder defaults so the app can still run.
-    - Use mock/stub services where applicable based on the project's tech stack.
-    - Add a clear note in the task description like: "NOTE: Using placeholder credentials — replace with real values once provided."
-    - This ensures development is NOT blocked by missing credentials or access.
-10. **PHASE-BASED DEVELOPMENT**: Assign each task to a phase based on its nature:
-    - "foundation": Project setup, structure, API contracts, database schema, configuration files.
-      For FULL-STACK projects, the **foundation phase MUST create**:
-        * Core application directories appropriate for the detected tech stack.
-        * Core dependencies definition files appropriate for the detected tech stack
-        * Root-level files: `.env.example`, `.gitignore`, `README.md`, and containerization config if applicable to the stack
-    - "backend-core": Core backend features (auth system, base models, base API setup, middleware)
-    - "backend-features": Feature-specific backend endpoints derived from the BRD
-    - "frontend-core": Frontend setup (routing, state management, API service layer, auth UI) BUILDING ON the foundation structure
-    - "frontend-features": Feature-specific frontend components derived from the BRD
-    - "integration": Testing, bug fixes, deployment preparation, end-to-end integration
-11. **DEPENDENCIES**: List task IDs from prior tasks that must complete BEFORE a given task can start:
-    - Foundation tasks have NO dependencies (empty array [])
-    - Backend features depend on backend-core tasks
-    - Frontend features depend on frontend-core tasks AND corresponding backend-features tasks
-    - Integration tasks depend on all feature tasks
-12. **DOMAIN**: Assign each task to a feature domain for better organization based on the features identified in the BRD.
+4. Each task wallet MUST be between 1 and 10 (inclusive). Never 0, never above 10.
+5. Wallet guide: 1-3=simple; 4-6=medium; 7-9=complex; 10=TASK-00 only.
+6. YOU MUST NOT assign any agents. `assignees` MUST ALWAYS be an empty array [].
+7. For `ai_first` execution mode: machine-speed deadlines (days, NOT months). A 50-task project = 2-5 DAYS.
+8. NO arbitrary task cap. Complex projects need 20-40+ tasks. Simple projects need 5-10 tasks.
+9. Every major screen/page = its own frontend-features task.
+10. Every major API domain = its own backend-features task.
+11. If prerequisites list [NOT YET PROVIDED] items, use env var placeholders and note: "NOTE: Using placeholder credentials".
+12. All tasks MUST be derived ONLY from the BRD analysis — no hallucinated features.
+13. DOMAIN: Assign each task a feature domain from the BRD (e.g., "auth", "user-management", "dashboard").
 
-Output ONLY a JSON array of task objects with this structure:
+Output ONLY a JSON array of task objects. No markdown, no prose, no code fences. First task MUST be TASK-00.
+
 [
   {
     "taskName": "string",
-    "description": "string",
-    "assignees": [],     // ALWAYS an empty array
-    "wallet": int,       // MUST be between 1 and 10
+    "description": "string — include exact file paths, scope, and what this task owns vs what it must not touch",
+    "assignees": [],
+    "wallet": int,
     "deadline": "YYYY-MM-DD",
     "startdate": "YYYY-MM-DD",
-    "task_type": "string",  // "EPIC", "FEATURE", "STORY", "TASK", or "BUG"
-    "priority": "string",   // "high", "medium", or "low"
-    "phase": "string",      // REQUIRED: "foundation", "backend-core", "backend-features", "frontend-core", "frontend-features", or "integration"
-    "dependencies": [int],  // Array of prior task IDs that must complete first. Foundation tasks have [].
-    "domain": "string"      // Feature domain derived from the BRD features
+    "task_type": "EPIC" | "FEATURE" | "STORY" | "TASK" | "BUG",
+    "priority": "high" | "medium" | "low",
+    "phase": "foundation" | "backend-core" | "backend-features" | "frontend-core" | "frontend-features" | "integration",
+    "dependencies": [int],
+    "domain": "string",
+    "checklist": [
+      {"text": "file-level action with exact path", "completed": false}
+    ]
   }
 ]
-
-Do not include any other markdown, text, or explanations. Only output the JSON array.
 """
 
 
@@ -1201,29 +1297,58 @@ def _parse_llm_task_response(content: str) -> list:
     return tasks
 
 
-CHECKLIST_GENERATION_PROMPT = """You are an expert Project Manager creating actionable checklists for development tasks.
+CHECKLIST_GENERATION_PROMPT = """You are a senior software architect and expert project manager generating file-precise, actionable implementation checklists for AI coding agents.
 
-Given a list of tasks, generate a checklist (sub-items) for EACH task. The checklist items should be:
-1. Specific, actionable sub-steps required to complete the task.
-2. Contextually relevant to the task description AND to the overall project.
-3. Ordered logically (setup → implementation → testing → review).
-4. Each task should have 3 to 7 checklist items.
-5. All checklist items should start as NOT completed (completed: false).
+CRITICAL OUTPUT RULES:
+1. Output ONLY a valid JSON object — no markdown, no prose, no code fences.
+2. Each key is the task ID (string). Each value is an array of checklist item objects.
+3. Every checklist item MUST be a concrete, file-level action — NOT a vague milestone.
+4. Reference EXACT file paths from the REPOSITORY STRUCTURE provided in the user content.
+5. Order items: scaffold/setup → install dependencies → implement → wire/integrate → test → verify.
 
-Output ONLY a JSON object where each key is the task ID (as a string) and the value is an array of checklist items:
+ITEM COUNT RULES (detected from task description keywords):
+- Tasks with "bootstrap", "TASK-00", "project setup", "scaffold", or "foundation" → MINIMUM 10 items, up to 15
+- Tasks with "backend", "api", "database", "auth", "service", "model", or "endpoint" → 6 to 9 items
+- Tasks with "frontend", "ui", "screen", "page", "component", or "view" → 6 to 9 items
+- Tasks with "test", "deploy", "ci/cd", "docker", or "integration" → 5 to 8 items
+- All other tasks → minimum 5 items, up to 8 items
+
+FILE-LEVEL ITEM FORMAT (MANDATORY — no exceptions):
+  ✗ FORBIDDEN (vague): "Set up development environment"
+  ✗ FORBIDDEN (vague): "Implement service layer"
+  ✗ FORBIDDEN (vague): "Build authentication module"
+  ✓ REQUIRED: "Create `src/components/ui/Button.tsx` exporting variants: primary, secondary, ghost, danger with forwarded ref and disabled state"
+  ✓ REQUIRED: "Create `backend/auth/routes.py` with POST /login, POST /register, POST /refresh-token endpoints returning signed JWT access and refresh tokens"
+  ✓ REQUIRED: "Create `src/mocks/mockData.ts` exporting typed arrays: mockUsers: User[] (8 records), mockProjects: Project[] (6 records) with realistic domain-appropriate names"
+  ✓ REQUIRED: "Run `npm install react@18 react-dom@18 react-router-dom@6 @tanstack/react-query@5` and confirm package-lock.json is updated"
+
+BOOTSTRAP / TASK-00 MANDATORY CHECKLIST STRUCTURE:
+For tasks identified as project bootstrap, TASK-00, or project scaffold, the checklist MUST include ALL steps below (adapted to the detected tech stack from user context):
+  1. Create ALL top-level directories from the repository structure: `mkdir -p <dir1> <dir2> ...` (list every directory from the repo tree)
+  2. Initialize the dependency manifest at its exact path: create package.json with correct name/scripts OR pyproject.toml/requirements.txt with all packages listed
+  3. Install core dependencies with exact commands: `npm install <pkg>@<version>` or `pip install <pkg>==<version>`
+  4. Create ALL root config files by exact filename: tsconfig.json, vite.config.ts, tailwind.config.ts, .env.example, .gitignore, README.md
+  5. Create the framework entry point at its exact path (e.g., `src/main.tsx` mounting <App /> into #root; `backend/main.py` with FastAPI app)
+  6. Create the router/entry component at exact path (e.g., `src/App.tsx`) with ALL application routes pre-registered
+  7. Create the shared layout at exact path (e.g., `src/components/layout/AppLayout.tsx`) with collapsible sidebar, top navbar, and <Outlet />
+  8. Create the design token file at exact path (e.g., `src/styles/tokens.css`) with CSS custom properties for primary/accent/semantic colors, typography scale, spacing scale
+  9. Create the global mock data store at exact path (e.g., `src/mocks/mockData.ts`) with 8+ realistic records per entity using domain-appropriate names
+  10. Create ALL shared UI components at their exact paths under `src/components/ui/`: Button, Badge, Card, Modal, Drawer, DataTable, SearchInput, Toast, LoadingSkeleton, EmptyState, PageHeader
+  11. Create backend entry point at exact path (e.g., `backend/main.py`) with FastAPI/Express instantiation, CORS config, and /health endpoint only — NO business logic
+  12. Verify structure and commit: `git init && git add . && git commit -m 'chore: initial project scaffold'`
+
+Use the REPOSITORY STRUCTURE and TECH STACK provided in the user message to determine exact file paths and commands.
+
+Output format (JSON object only — no other text):
 {
-  "1234": [
-    {"text": "Set up development environment", "completed": false},
-    {"text": "Create database schema", "completed": false},
-    {"text": "Write unit tests", "completed": false}
+  "<task_id_1>": [
+    {"text": "Create `src/components/ui/Button.tsx` with primary/secondary/ghost/danger variants, forwarded ref, and disabled state", "completed": false},
+    {"text": "Create `backend/auth/routes.py` — POST /login and POST /logout using JWT; imports from `backend/auth/service.py`", "completed": false}
   ],
-  "5678": [
-    {"text": "Design API endpoints", "completed": false},
-    {"text": "Implement authentication", "completed": false}
+  "<task_id_2>": [
+    {"text": "exact file-level action", "completed": false}
   ]
 }
-
-Do not include any other markdown, text, or explanations. Only output the JSON object.
 """
 
 
@@ -1259,12 +1384,12 @@ async def generate_checklists_for_tasks(
     model: Optional[str] = None,
 ) -> dict:
     """
-    Generate checklists for a batch of tasks using the LLM.
-    
+    Generate file-precise checklists for a batch of tasks using the LLM.
+
     Args:
         tasks_with_ids: List of dicts, each with 'id', 'taskName', 'description', 'task_type'
-        analysis_report: The BRD analysis for project context
-    
+        analysis_report: The full BRD analysis for project context (NOT truncated)
+
     Returns:
         Dict mapping task_id (str) -> list of checklist items
     """
@@ -1285,18 +1410,73 @@ async def generate_checklists_for_tasks(
         indent=2,
     )
 
-    text_content = (
-        f"TASKS TO CREATE CHECKLISTS FOR:\n{tasks_summary}\n\n"
-        f"PROJECT CONTEXT (BRD Analysis):\n{analysis_report[:3000]}\n\n"
-        f"Generate detailed, contextually relevant checklists for each task above."
+    # --- Extract repository structure from BRD analysis (section 0.5.1 or 0.5) ---
+    repo_structure = ""
+    _repo_patterns = [
+        r'##\s*0\.5\.1\s*[^\n]*\n(.*?)(?=\n##|\Z)',
+        r'###\s*0\.5\.1\s*[^\n]*\n(.*?)(?=\n###|\Z)',
+        r'0\.5\.1\s*[^\n]*\n(.*?)(?=\n##|\n###|\n\d+\.|\Z)',
+        r'##\s*0\.5\s+[Rr]epository[^\n]*\n(.*?)(?=\n##|\Z)',
+        r'###\s*0\.5\s+[Rr]epository[^\n]*\n(.*?)(?=\n###|\Z)',
+    ]
+    for _pat in _repo_patterns:
+        _m = re.search(_pat, analysis_report, re.IGNORECASE | re.DOTALL)
+        if _m:
+            _candidate = _m.group(1).strip()
+            _code_block = re.search(r'```(?:text|bash|shell|tree)?\s*(.*?)\s*```', _candidate, re.DOTALL)
+            repo_structure = _code_block.group(1).strip() if _code_block else _candidate
+            if repo_structure:
+                repo_structure = clean_repository_structure_string(repo_structure)
+                break
+
+    # --- Extract tech stack section (section 0.2) ---
+    tech_stack = ""
+    _ts_match = re.search(r'##\s*0\.2[^\n]*\n(.*?)(?=\n##|\Z)', analysis_report, re.IGNORECASE | re.DOTALL)
+    if _ts_match:
+        tech_stack = _ts_match.group(1).strip()[:2000]
+
+    # --- Detect if any task is a bootstrap / TASK-00 / foundation task ---
+    has_bootstrap_task = any(
+        any(kw in str(t.get("taskName", "") + " " + t.get("description", "")).lower()
+            for kw in ["task-00", "bootstrap", "scaffold", "project setup", "foundation", "gateway task"])
+        for t in tasks_with_ids
     )
+
+    # --- Build rich context for the LLM ---
+    context_parts = [f"TASKS TO CREATE CHECKLISTS FOR:\n{tasks_summary}"]
+
+    if repo_structure:
+        context_parts.append(
+            f"REPOSITORY STRUCTURE (use these EXACT paths in every file-level checklist item):\n{repo_structure}"
+        )
+    if tech_stack:
+        context_parts.append(f"TECH STACK:\n{tech_stack}")
+
+    # Fallback: if neither section was found, pass a larger slice of the analysis
+    if not repo_structure and not tech_stack:
+        context_parts.append(f"PROJECT CONTEXT (BRD Analysis):\n{analysis_report[:6000]}")
+
+    if has_bootstrap_task:
+        context_parts.append(
+            "IMPORTANT: One or more tasks above are BOOTSTRAP / TASK-00 / foundation tasks. "
+            "Apply the BOOTSTRAP MANDATORY CHECKLIST STRUCTURE from your system instructions for those tasks. "
+            "Use the REPOSITORY STRUCTURE above to reference exact directory and file paths."
+        )
+
+    context_parts.append(
+        "Generate file-precise, contextually accurate checklists for EVERY task listed above."
+    )
+    text_content = "\n\n".join(context_parts)
 
     messages = [
         {"role": "system", "content": CHECKLIST_GENERATION_PROMPT},
         {"role": "user", "content": text_content},
     ]
 
-    logger.info(f"Generating checklists for {len(tasks_with_ids)} tasks")
+    logger.info(
+        f"Generating checklists for {len(tasks_with_ids)} tasks "
+        f"(has_bootstrap={has_bootstrap_task}, repo_structure={'yes' if repo_structure else 'no'})"
+    )
 
     try:
         content = await llm_gateway.call_llm_and_extract(
@@ -1306,7 +1486,7 @@ async def generate_checklists_for_tasks(
             model=model,
             timeout=300.0,
         )
-        print(f"Checklist Generation AI response\n\n=================FROM ai_service.py [generate_checklists_for_tasks]==============\n{data}")
+        print(f"Checklist Generation AI response\n\n=================FROM ai_service.py [generate_checklists_for_tasks]==============\n{content}")
         log_llm_interaction_ai_service(messages, content)
         content = content.replace("```json", "").replace("```", "").strip()
         start_idx = content.find("{")
@@ -1369,16 +1549,35 @@ async def generate_task_batch(
         existing_task_summary = ""
         task_generation_mode = "fresh"
 
+    # --- Extract repository structure from analysis for explicit injection ---
+    _batch_repo_structure = ""
+    _batch_repo_patterns = [
+        r'##\s*0\.5\.1\s*[^\n]*\n(.*?)(?=\n##|\Z)',
+        r'###\s*0\.5\.1\s*[^\n]*\n(.*?)(?=\n###|\Z)',
+        r'0\.5\.1\s*[^\n]*\n(.*?)(?=\n##|\n###|\n\d+\.|\Z)',
+        r'##\s*0\.5\s+[Rr]epository[^\n]*\n(.*?)(?=\n##|\Z)',
+        r'###\s*0\.5\s+[Rr]epository[^\n]*\n(.*?)(?=\n###|\Z)',
+    ]
+    for _bp in _batch_repo_patterns:
+        _bm = re.search(_bp, analysis_report, re.IGNORECASE | re.DOTALL)
+        if _bm:
+            _bc = _bm.group(1).strip()
+            _bcb = re.search(r'```(?:text|bash|shell|tree)?\s*(.*?)\s*```', _bc, re.DOTALL)
+            _batch_repo_structure = _bcb.group(1).strip() if _bcb else _bc
+            if _batch_repo_structure:
+                _batch_repo_structure = clean_repository_structure_string(_batch_repo_structure)
+                break
+
     text_content = (
         f"PROJECT_NAME: Project\n"
         f"PROJECT_TYPE: {project_type}\n"
         f"PROJECT_DESCRIPTION:\n{analysis_report}\n\n"
-        f"TECH_STACK: (embedded in analysis if available)\n"
-        f"ARCHITECTURE: (embedded in analysis if available)\n"
-        f"REPOSITORY_STRUCTURE: (embedded in analysis if available)\n\n"
-        f"PRODUCT_REQUIREMENTS: (embedded in analysis if available)\n"
-        f"FEATURE_REQUESTS: (embedded in analysis if available)\n"
-        f"BUG_REPORTS: (embedded in analysis if available)\n\n"
+        f"TECH_STACK: (see TECH STACK section inside PROJECT_DESCRIPTION above)\n"
+        f"ARCHITECTURE: (see ARCHITECTURE section inside PROJECT_DESCRIPTION above)\n"
+        f"REPOSITORY_STRUCTURE:\n{_batch_repo_structure if _batch_repo_structure else '(see section 0.5.1 inside PROJECT_DESCRIPTION above)'}\n\n"
+        f"PRODUCT_REQUIREMENTS: (see FUNCTIONAL REQUIREMENTS section inside PROJECT_DESCRIPTION above)\n"
+        f"FEATURE_REQUESTS: (see FEATURES section inside PROJECT_DESCRIPTION above)\n"
+        f"BUG_REPORTS: None\n\n"
         f"EXISTING_TASK_SUMMARY:\n{existing_task_summary or 'None'}\n\n"
         f"TASK_GENERATION_MODE: {task_generation_mode}\n"
         f"MAX_TASKS_TO_GENERATE: {max_tasks_to_generate}\n"

@@ -467,7 +467,17 @@ const GovernanceForm = ({
         setError('');
 
         try {
-            // CRITICAL: Always check draft project FIRST to preserve credentials
+            // Validate project name
+            const trimmedName = projectName.trim();
+            if (!trimmedName) {
+                setError('Please enter a project name');
+                setIsCreatingProject(false);
+                return;
+            }
+
+            // CRITICAL FIX: Synchronize project with backend BEFORE navigation
+            // This prevents duplicate project creation by ensuring backend knows about the project
+            
             const projectKeyToUse = selectedProject?.projectToken || selectedProjectKey || undefined;
             const existingDraft = getDraftProject(projectKeyToUse);
 
@@ -475,11 +485,41 @@ const GovernanceForm = ({
             const existingClientId = existingDraft?.client_id || selectedProject?.client_id;
             const existingClientSecret = existingDraft?.client_secret || selectedProject?.client_secret;
 
-            // First create/update draft project - PRESERVE existing credentials
-            const draftProject = upsertDraftProject(createDraftProject(projectName, {
-                key: projectKeyToUse,
-                client_id: existingClientId || null,
-                client_secret: existingClientSecret || null,
+            // Call backend to ensure project exists (creates if needed, returns existing if found)
+            const response = await fetch(API_ENDPOINTS.PROJECT_ENSURE, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${localStorage.getItem('token')}`
+                },
+                body: JSON.stringify({
+                    project_token: projectKeyToUse,
+                    project_name: trimmedName,
+                    client_id: existingClientId || null,
+                    client_secret: existingClientSecret || null,
+                })
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                
+                // Handle duplicate name error specifically
+                if (response.status === 409) {
+                    setError(errorData.detail || 'A project with this name already exists. Please choose a different name.');
+                    setIsCreatingProject(false);
+                    return;
+                }
+                
+                throw new Error(errorData.detail || 'Failed to create project in backend');
+            }
+
+            const backendProject = await response.json();
+            
+            // Update draft project with backend-confirmed token and credentials
+            const draftProject = upsertDraftProject(createDraftProject(trimmedName, {
+                key: backendProject.project_token,
+                client_id: backendProject.client_id || null,
+                client_secret: backendProject.client_secret || null,
             }));
 
             if (!draftProject?.projectToken) {
@@ -487,11 +527,6 @@ const GovernanceForm = ({
                 setIsCreatingProject(false);
                 return;
             }
-
-            // NOTE:
-            // Do NOT create the external task project during initiation/governance.
-            // Project creation must happen during Task Creation (/api/agent/auto-generate/)
-            // so that the project deadline is derived strictly from the selected process_mode.
 
             // Wait a bit to ensure credentials are saved before navigation
             await new Promise(resolve => setTimeout(resolve, 100));
@@ -505,23 +540,11 @@ const GovernanceForm = ({
             setSelectedProjectKey?.(draftProject.key);
             setIsNewProjectMode?.(false);
 
-            // After successful draft creation, navigate straight to the Requirement Screening step.
-            // Previously the code redirected to the generic project URL (`/a/{token}`), which caused
-            // the AppLayout effect to immediately route back to the initiation step because the
-            // roadmap data hadn't been refreshed yet. Direct navigation to `/dashboard` (the
-            // Requirement Screening page) ensures a seamless one‑click transition.
             // Set a flag to tell AppLayout to skip its automatic redirect during this navigation.
             try {
                 sessionStorage.setItem('skipAppLayoutRedirect', 'true');
             } catch (e) {
                 // ignore storage errors (e.g., in private mode)
-            }
-
-            // Set a flag to tell AppLayout to skip its automatic redirect during this navigation.
-            try {
-                sessionStorage.setItem('skipAppLayoutRedirect', 'true');
-            } catch (e) {
-                // ignore storage errors
             }
 
             const nextStepPath = '/dashboard';
@@ -534,6 +557,7 @@ const GovernanceForm = ({
                 }
             }, 0);
         } catch (err) {
+            console.error('Project creation error:', err);
             setError(err.message || 'Failed to create project. Please try again.');
             setIsCreatingProject(false);
         }
@@ -675,7 +699,13 @@ const GovernanceForm = ({
                                             <input
                                                 type="text"
                                                 value={projectName}
-                                                onChange={(e) => setProjectName(e.target.value)}
+                                                onChange={(e) => {
+                                                    setProjectName(e.target.value);
+                                                    // Clear error when user starts typing
+                                                    if (error && error.includes('already exists')) {
+                                                        setError('');
+                                                    }
+                                                }}
                                                 onKeyDown={(e) => e.key === 'Enter' && goNext()}
                                                 placeholder="e.g. Customer Analytics Platform"
                                                 className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-blue-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border hover:border-app-border font-medium"
@@ -1091,11 +1121,19 @@ const GovernanceResult = ({ result, onBack, fetchRoadmapData, navigate }) => {
                                 setIsNavigating(true);
                                 
                                 try {
-                                    // Store result in session storage
+                                    // CRITICAL FIX: Ensure project token is properly set before navigation
+                                    // This prevents duplicate project creation
+                                    
+                                    // 1. Store result in session storage
                                     sessionStorage.setItem('governanceResult', JSON.stringify(result));
                                     sessionStorage.setItem('shouldStartAnalysis', 'true');
                                     
-                                    // Try to refresh roadmap data with timeout
+                                    // 2. Ensure project token is set in localStorage
+                                    if (result.project_token) {
+                                        localStorage.setItem('status_dashboard_selected_project_key', result.project_token);
+                                    }
+                                    
+                                    // 3. Try to refresh roadmap data with timeout
                                     if (fetchRoadmapData && result.project_token) {
                                         try {
                                             // Race between fetch and timeout (max 3 seconds)
@@ -1111,16 +1149,25 @@ const GovernanceResult = ({ result, onBack, fetchRoadmapData, navigate }) => {
                                         }
                                     }
                                     
-                                    // Navigate to Agent Analysis page using window.location for a hard navigation
-                                    // This ensures the page actually changes and React Router processes the route
-                                    window.location.href = '/agent-analysis';
+                                    // 4. Use React Router navigation with project token in URL
+                                    // This ensures the token is available even after page reload
+                                    const targetUrl = result.project_token 
+                                        ? `/agent-analysis?project=${result.project_token}`
+                                        : '/agent-analysis';
+                                    
+                                    navigate(targetUrl, {
+                                        replace: false,
+                                        state: {
+                                            projectToken: result.project_token,
+                                            shouldStartAnalysis: true
+                                        }
+                                    });
+                                    
                                 } catch (error) {
                                     console.error('Error during navigation:', error);
-                                    // Ensure navigation happens even on error
-                                    window.location.href = '/agent-analysis';
-                                } finally {
-                                    // Reset loading state after a delay (in case navigation is slow)
-                                    setTimeout(() => setIsNavigating(false), 1000);
+                                    setIsNavigating(false);
+                                    // Show error to user instead of forcing navigation
+                                    alert('Failed to navigate to Agent Analysis. Please try again.');
                                 }
                             }}
                             disabled={isNavigating}
