@@ -417,9 +417,10 @@ Sprint 4 tasks → linked_tasks: ["TASK-00", relevant Sprint 2/3 tasks]
 def _generate_sprints_and_milestones(
     project_start: datetime,
     project_deadline: datetime,
-    num_phases: int = 4
+    num_phases: int = 4,
+    project_type: str = "greenfield"
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """Generate multiple sprints and milestones based on project timeline"""
+    """Generate multiple sprints and milestones based on project timeline and type"""
     
     sprints = []
     milestones = []
@@ -427,19 +428,35 @@ def _generate_sprints_and_milestones(
     total_days = (project_deadline - project_start).days
     sprint_duration = max(total_days // num_phases, 7)  # At least 7 days per sprint
     
-    phase_names = [
-        ("Frontend Proto & Bootstrap", "Project bootstrap, setup, and all frontend UI screens/prototypes with dummy data"),
-        ("Backend Services & DB Config", "Database schemas, models, JWT auth, and third-party API configurations/external dependencies"),
-        ("Frontend-Backend Integration", "Connect frontend screens to backend APIs, replace dummy data, and run DB connectivity checks"),
-        ("Testing & Polish", "Comprehensive unit, integration, and E2E testing, and production deployment configuration")
-    ]
-    
-    milestone_names = [
-        ("Frontend Screens & Bootstrap Complete", "Repository bootstrapped and all frontend screens fully operational with dummy data"),
-        ("Backend Services Operational", "AWS config, database schemas, and all backend API controllers/endpoints fully developed"),
-        ("Integration & DB Sync Complete", "Frontend integrated with real backend APIs and database connectivity verified"),
-        ("Production & Testing Ready", "Frontend/backend test suites complete and production deployment validated")
-    ]
+    is_bf = str(project_type).lower().strip() in {"brownfield", "modernization", "migration"}
+    if is_bf:
+        phase_names = [
+            ("Repo Analysis & Change Mapping", "Clone repository, analyze existing codebase structure, and plan target modifications"),
+            ("Feature Enhancement & Implementation", "Implement code updates, add new service modules, and fix functional bugs"),
+            ("Regression Testing & Validation", "Validate code changes against existing test suites, perform manual regression tests, and prepare PR"),
+            ("Release & Deployment", "Deploy to staging, execute final checks, and merge to main production branch")
+        ]
+        
+        milestone_names = [
+            ("Codebase Analysis Completed", "Repository cloned, file structure parsed, and all change tasks mapped to source files"),
+            ("Enhancements Implemented", "All change requests code completed and verified in local containers"),
+            ("Validation & Tests Completed", "No regressions detected, unit tests updated, and Pull Request created for merge"),
+            ("Enhancements Released", "New changes safely merged and deployed to staging/production")
+        ]
+    else:
+        phase_names = [
+            ("Frontend Proto & Bootstrap", "Project bootstrap, setup, and all frontend UI screens/prototypes with dummy data"),
+            ("Backend Services & DB Config", "Database schemas, models, JWT auth, and third-party API configurations/external dependencies"),
+            ("Frontend-Backend Integration", "Connect frontend screens to backend APIs, replace dummy data, and run DB connectivity checks"),
+            ("Testing & Polish", "Comprehensive unit, integration, and E2E testing, and production deployment configuration")
+        ]
+        
+        milestone_names = [
+            ("Frontend Screens & Bootstrap Complete", "Repository bootstrapped and all frontend screens fully operational with dummy data"),
+            ("Backend Services Operational", "AWS config, database schemas, and all backend API controllers/endpoints fully developed"),
+            ("Integration & DB Sync Complete", "Frontend integrated with real backend APIs and database connectivity verified"),
+            ("Production & Testing Ready", "Frontend/backend test suites complete and production deployment validated")
+        ]
     
     for i in range(num_phases):
         sprint_start = project_start + timedelta(days=i * sprint_duration)
@@ -472,6 +489,7 @@ def _generate_sprints_and_milestones(
         milestones.append(milestone)
     
     return sprints, milestones
+
 
 
 def _parse_task_json(content: str) -> List[Dict[str, Any]]:
@@ -1196,6 +1214,230 @@ async def _generate_sprint_phase(
         return []
 
 
+async def generate_brownfield_tasks(
+    project_token: str,
+    context: Dict[str, Any],
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+    agent_list: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """
+    Generate tasks for brownfield/migration projects with skill-gap detection.
+
+    Brownfield task generation rules:
+    - NO TASK-00 (no project scaffold)
+    - First task is always TASK-REPO-ANALYSIS (clone + analyze existing repo)
+    - Subsequent tasks are file-level targeted change tasks
+    - Each task specifies: target_file, change_type, precise description of what to change
+    - Each task is tagged with required_skill and skill_flag
+
+    Returns:
+        Dict with keys:
+            tasks: List of generated task dicts (each has required_skill, skill_flag)
+            skill_gaps: {covered, missing, suggested_templates, has_gaps, gap_summary}
+            detected_tech_stack: {primary, required_skills, required_agent_templates, detected}
+    """
+    from brownfield_agent_service import (
+        get_brownfield_generation_context,
+        BROWNFIELD_GENERATION_PROMPT,
+        detect_required_tech_stack,
+        compute_skill_gaps,
+        tag_tasks_with_required_skills,
+    )
+
+    today = datetime.now().date()
+    project_deadline = today + timedelta(days=28)
+
+    sprints, milestones = _generate_sprints_and_milestones(
+        project_start=datetime.combine(today, datetime.min.time()),
+        project_deadline=datetime.combine(project_deadline, datetime.min.time()),
+        num_phases=3,  # Brownfield: Analyze → Implement → Validate
+        project_type="brownfield",
+    )
+
+    sprint_list = "\n".join([
+        f"- {s['name']}: {s['start_date']} to {s['deadline']} ({s['summary']})"
+        for s in sprints
+    ])
+
+    # Build brownfield-specific context
+    brownfield_context = get_brownfield_generation_context(
+        project_context=context,
+        repo_structure=context.get("repository_structure"),
+    )
+
+    generation_prompt = f"""
+{BROWNFIELD_GENERATION_PROMPT}
+
+AVAILABLE SPRINTS:
+==================
+{sprint_list}
+
+CURRENT DATE: {today.strftime('%Y-%m-%d')}
+PROJECT DEADLINE: {project_deadline.strftime('%Y-%m-%d')}
+
+{brownfield_context}
+
+=== BRD / CHANGE REQUEST DOCUMENT ===
+{context.get('brd_analysis', 'No analysis available')}
+===
+
+Generate a complete list of brownfield tasks. Output ONLY a valid JSON array.
+The FIRST task MUST be task_id "TASK-REPO-ANALYSIS".
+Do NOT include any TASK-00 or project scaffold tasks.
+Each task MUST include: task_id, taskName, description, task_type, target_file, change_type, priority, sprint, milestone, task_wallet, deadline, startdate, linked_tasks, checklist.
+"""
+
+    logger.info(f"[{project_token}] Brownfield task generation — calling LLM")
+    model_name = llm_gateway.resolve_model(model)
+
+    try:
+        raw_response = await llm_gateway.chat_completion(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a senior technical project manager specializing in brownfield development. "
+                        "Generate precise, actionable tasks for modifying an existing codebase. "
+                        "Output ONLY a valid JSON array of task objects with no markdown wrapping."
+                    ),
+                },
+                {"role": "user", "content": generation_prompt},
+            ],
+            api_url=api_url,
+            api_key=api_key,
+            model=model_name,
+            stream=False,
+        )
+
+        content = ""
+        if isinstance(raw_response, dict):
+            content = (
+                raw_response.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+        elif isinstance(raw_response, str):
+            content = raw_response
+
+        tasks = _parse_task_json(content)
+
+    except Exception as exc:
+        logger.error(f"[{project_token}] Brownfield LLM call failed: {exc}")
+        tasks = []
+
+    if not tasks:
+        logger.warning(f"[{project_token}] Brownfield LLM returned no tasks — using fallback")
+        # Fallback: return minimal TASK-REPO-ANALYSIS only
+        tasks = [
+            {
+                "task_id": "TASK-REPO-ANALYSIS",
+                "taskName": "Repo Analysis and Change Planning",
+                "description": (
+                    "Clone the existing repository. Analyze the full codebase structure. "
+                    "Map each requirement from the change request to specific existing files and "
+                    "functions that must be modified. Produce a structured change impact report."
+                ),
+                "task_type": "analysis",
+                "target_file": None,
+                "change_type": "analyze",
+                "priority": "critical",
+                "sprint": sprints[0]["name"] if sprints else "Sprint 1",
+                "milestone": milestones[0]["name"] if milestones else "Milestone 1",
+                "task_wallet": 3,
+                "startdate": today.strftime("%Y-%m-%d"),
+                "deadline": (today + timedelta(days=3)).strftime("%Y-%m-%d"),
+                "linked_tasks": [],
+                "checklist": [
+                    "Clone repository at user-specified branch",
+                    "Scan all existing files and directories",
+                    "Map each requirement to affected file(s)",
+                    "Identify regression risks",
+                    "Document change impact report",
+                ],
+                "assignedTo": [],
+                "reported_by": "system",
+            }
+        ]
+
+    # Enrich tasks
+    valid_tasks = []
+    for task in tasks:
+        if not task.get("task_id") or not task.get("taskName"):
+            continue
+
+        task.setdefault("assignedTo", [])
+        task.setdefault("reported_by", "system")
+        task.setdefault("priority", "medium")
+        task.setdefault("linked_tasks", [])
+        task.setdefault("target_file", None)
+        task.setdefault("change_type", "modify")
+
+        if not task.get("sprint"):
+            task["sprint"] = sprints[0]["name"] if sprints else "Sprint 1"
+        if not task.get("milestone"):
+            task["milestone"] = milestones[0]["name"] if milestones else "Milestone 1"
+
+        if "startdate" not in task:
+            task["startdate"] = today.strftime("%Y-%m-%d")
+        task.setdefault("planned_start", task["startdate"])
+        if "deadline" not in task:
+            task["deadline"] = project_deadline.strftime("%Y-%m-%d")
+
+        # Ensure TASK-REPO-ANALYSIS is the dependency for all other tasks
+        if task["task_id"] != "TASK-REPO-ANALYSIS":
+            linked = task.get("linked_tasks", [])
+            if "TASK-REPO-ANALYSIS" not in linked:
+                linked.insert(0, "TASK-REPO-ANALYSIS")
+            task["linked_tasks"] = linked
+
+        valid_tasks.append(task)
+
+    # ── Skill-gap detection ──────────────────────────────────────────────────
+    # Detect required tech stack from BRD text + repo file inventory
+    brd_text = str(context.get("brd_analysis", ""))
+    repo_structure_text = str(context.get("repository_structure", ""))
+    # Flatten repo structure text into a pseudo file-list for extension detection
+    repo_file_lines = [
+        line.strip() for line in repo_structure_text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+    tech_stack = detect_required_tech_stack(
+        brd_text=brd_text,
+        repo_files=repo_file_lines,
+        repo_structure_text=repo_structure_text,
+    )
+
+    skill_gaps = compute_skill_gaps(
+        required_skills=tech_stack["required_skills"],
+        required_agent_templates=tech_stack["required_agent_templates"],
+        agent_list=agent_list or [],
+    )
+
+    # Tag every task with required_skill and skill_flag
+    valid_tasks = tag_tasks_with_required_skills(valid_tasks, tech_stack, skill_gaps)
+
+    if skill_gaps["has_gaps"]:
+        logger.warning(
+            f"[{project_token}] SKILL GAPS DETECTED — {skill_gaps['gap_summary']}"
+        )
+    else:
+        logger.info(f"[{project_token}] Skill check passed — all required skills are covered")
+
+    logger.info(f"[{project_token}] Brownfield generation complete — {len(valid_tasks)} tasks")
+
+    return {
+        "tasks": valid_tasks,
+        "skill_gaps": skill_gaps,
+        "detected_tech_stack": tech_stack,
+    }
+
+
+
+
+
 async def generate_tasks_locally(
     project_token: str,
     db: Session,
@@ -1207,6 +1449,7 @@ async def generate_tasks_locally(
     api_url: Optional[str] = None,
     api_key: Optional[str] = None,
     model: Optional[str] = None,
+    branch: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Generate tasks using AI with multiple sprints and milestones
@@ -1222,6 +1465,40 @@ async def generate_tasks_locally(
     context = _build_project_context(project_token, db, user_id)
     if project_type:
         context["project_type"] = project_type
+
+    from brownfield_agent_service import is_brownfield_project
+    if is_brownfield_project(project_type):
+        if branch:
+            from bootstrap_persistence import set_bootstrap_branch
+            set_bootstrap_branch(db, project_token, branch)
+            context["bootstrap_branch"] = branch
+            logger.info(f"[{project_token}] Saved branch for brownfield bootstrap: {branch}")
+
+    # ── BROWNFIELD / MIGRATION PATH ────────────────────────────────────────────
+    # For brownfield/migration projects, use a completely different generation
+    # strategy: no TASK-00, no scaffold tasks, file-level change tasks only.
+    if is_brownfield_project(project_type):
+        logger.info(f"[{project_token}] BROWNFIELD mode — routing to brownfield task generation")
+        
+        # Query agents to check skill gaps
+        from sqlalchemy import text
+        all_agents = db.execute(
+            text("SELECT skills_tags, name, specialization FROM agents WHERE owner_id = :uid"),
+            {"uid": user_id}
+        ).fetchall()
+        agent_list = [
+            {"name": row[1], "skills_tags": row[0], "specialization": row[2]}
+            for row in all_agents
+        ]
+        
+        return await generate_brownfield_tasks(
+            project_token=project_token,
+            context=context,
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            agent_list=agent_list,
+        )
 
     # ── 2. Timeline ────────────────────────────────────────────────────────────
     today = datetime.now().date()

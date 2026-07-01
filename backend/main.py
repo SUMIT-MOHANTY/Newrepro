@@ -307,6 +307,8 @@ class AnalyzeRequest(BaseModel):
     # Targeted update fields — when present, triggers surgical update instead of full regen
     previous_analysis: Optional[Dict[str, Any]] = None
     update_type: Optional[str] = None  # feedback | revision | qa
+    # Optional hint: if a repo is connected, helps AI classify brownfield correctly
+    repo_url: Optional[str] = None
 
 class AIConfigUpdate(BaseModel):
     api_url: Optional[str] = None
@@ -8879,6 +8881,101 @@ async def get_agent_status(
         raise HTTPException(status_code=404, detail=str(e))
 
 
+async def _bg_run_agent(
+    agent_id: str,
+    git_repo_url: Optional[str],
+    git_token: Optional[str],
+    project_token: Optional[str],
+    x_task_token: Optional[str],
+    continuous: bool = True,
+):
+    """
+    Background wrapper task for running agents.
+    If the project is a brownfield/migration project, executes tasks using
+    brownfield_agent_service.run_brownfield_agent.
+    Otherwise, routes to the legacy agent_service.run_agent loop.
+    """
+    try:
+        from database import SessionLocal
+        import models
+        from brownfield_agent_service import is_brownfield_project, run_brownfield_agent
+        from bootstrap_persistence import get_bootstrap_branch
+        import agent_service
+
+        db = SessionLocal()
+        project_type = "greenfield"
+        try:
+            gov = db.query(models.GovernanceResponse).filter(
+                models.GovernanceResponse.project_token == project_token
+            ).first()
+            if gov and gov.project_type:
+                project_type = gov.project_type
+        finally:
+            db.close()
+
+        if is_brownfield_project(project_type):
+            logger.info(f"[{agent_id}] Running in BROWNFIELD mode wrapper for project {project_token}")
+            base_branch = get_bootstrap_branch(project_token) or "main"
+            
+            # Loop to pick and run tasks (continuous mode)
+            while True:
+                task = await agent_service._pick_next_task(
+                    agent_id=agent_id,
+                    project_token=project_token,
+                    task_token=x_task_token
+                )
+                if not task:
+                    if not continuous:
+                        break
+                    # Wait 30s before checking again
+                    await asyncio.sleep(30)
+                    continue
+
+                logger.info(f"[{agent_id}] Found brownfield task: {task.get('task_id')}")
+                state = agent_service._ensure_project_state(project_token)
+                agent_states = state["agent_states"]
+                agent_state = agent_states.setdefault(agent_id, {"output_log": []})
+                
+                # Update status to running
+                agent_state["status"] = "running"
+                agent_state["current_task"] = task
+                agent_state["progress"] = 0
+                agent_state["progress_message"] = f"Running brownfield task {task.get('task_id')}..."
+                
+                result = await run_brownfield_agent(
+                    agent_id=agent_id,
+                    project_token=project_token,
+                    task_token=x_task_token,
+                    task=task,
+                    git_repo_url=git_repo_url or "",
+                    git_token=git_token or "",
+                    base_branch=base_branch,
+                    agent_output_log=agent_state.setdefault("output_log", []),
+                )
+                
+                # Mark status back to idle/done after execution
+                agent_state["status"] = "idle"
+                agent_state["current_task"] = None
+                agent_state["progress"] = 100
+                agent_state["progress_message"] = "Idle"
+                
+                if not continuous:
+                    break
+        else:
+            logger.info(f"[{agent_id}] Running in GREENFIELD mode for project {project_token}")
+            await agent_service.run_agent(
+                agent_id,
+                git_repo_url=git_repo_url,
+                git_token=git_token,
+                continuous=continuous,
+                ignore_running_check=True,
+                project_token=project_token,
+                task_token=x_task_token,
+            )
+    except Exception as e:
+        logger.error(f"Wrapper agent runner failed for {agent_id}: {e}")
+
+
 class RunAgentRequest(BaseModel):
     git_repo_url: Optional[str] = None
     git_token: Optional[str] = None
@@ -8951,14 +9048,13 @@ async def run_agent(
     run_repo = effective_repo if effective_repo and effective_token else None
     run_token = effective_token if effective_repo and effective_token else None
     bg_task = asyncio.create_task(
-        agent_service.run_agent(
+        _bg_run_agent(
             agent_id,
             git_repo_url=run_repo,
             git_token=run_token,
             continuous=True,  # CRITICAL FIX: Enable continuous mode so agents keep working
-            ignore_running_check=True,
             project_token=project_token,
-            task_token=x_task_token,
+            x_task_token=x_task_token,
         )
     )
     bg_task.add_done_callback(_log_background_task_result)
@@ -11353,8 +11449,9 @@ class AutoGenerateRequest(BaseModel):
     milestone_id: Optional[int] = None
     auto_create_plan: Optional[bool] = False
     custom_rules: Optional[str] = None
-    project_type: Optional[str] = "greenfield"
+    project_type: Optional[str] = None  # If None, auto-detected from DB analysis result
     process_mode: Optional[str] = None
+    branch: Optional[str] = None  # User-specified branch for brownfield (was previously silently dropped)
 
 
 class ProjectBootstrapRequest(BaseModel):
@@ -11928,6 +12025,28 @@ async def generate_tasks_locally(
         
         # Get AI config
         ai_config = await ai_service.get_ai_config()
+
+        # --- AUTO-DETECT project_type from DB if not explicitly provided ---
+        effective_project_type = request.project_type  # may be None or "greenfield"
+        if not effective_project_type or effective_project_type == "greenfield":
+            gov = db.query(models.GovernanceResponse).filter(
+                models.GovernanceResponse.project_token == request.project_token
+            ).first()
+            if gov and gov.project_type and gov.project_type != "greenfield":
+                # DB has a non-greenfield type stored from analysis — use it
+                effective_project_type = gov.project_type
+                logger.info(f"[{request.project_token}] Auto-detected project_type from DB: {effective_project_type}")
+            else:
+                effective_project_type = effective_project_type or "greenfield"
+
+        # --- AUTO-DETECT branch from DB if not in request ---
+        effective_branch = request.branch
+        if not effective_branch:
+            from bootstrap_persistence import get_bootstrap_branch
+            stored_branch = get_bootstrap_branch(db, request.project_token)
+            if stored_branch:
+                effective_branch = stored_branch
+                logger.info(f"[{request.project_token}] Using stored branch: {effective_branch}")
         
         # Generate tasks using improved prompt
         tasks = await gen_tasks(
@@ -11936,12 +12055,22 @@ async def generate_tasks_locally(
             user_id=current_user.id,
             custom_rules=request.custom_rules,
             process_mode=request.process_mode or "ai_first",
-            project_type=request.project_type or "greenfield",
+            project_type=effective_project_type,
             prerequisites=request.prerequisites or [],
             api_url=ai_config.get("api_url"),
             api_key=settings.ai_api_key,
-            model=ai_config.get("model")
+            model=ai_config.get("model"),
+            branch=effective_branch,
         )
+        
+        # For brownfield projects, gen_tasks returns a dict with {tasks, skill_gaps, detected_tech_stack}
+        # For greenfield, it returns a plain list
+        skill_gaps = None
+        detected_tech_stack = None
+        if isinstance(tasks, dict):
+            skill_gaps = tasks.get("skill_gaps")
+            detected_tech_stack = tasks.get("detected_tech_stack")
+            tasks = tasks.get("tasks", [])
         
         if not tasks:
             raise HTTPException(
@@ -12015,6 +12144,8 @@ async def generate_tasks_locally(
             "tasks_created": len(tasks),
             "synced_to_nxdune": False,
             "sync_error": None,
+            "skill_gaps": skill_gaps,
+            "detected_tech_stack": detected_tech_stack,
         }
     
     except Exception as e:
@@ -12025,8 +12156,117 @@ async def generate_tasks_locally(
         )
 
 
+@app.get("/api/agent/projects/{project_token}/skill-gaps")
+async def get_project_skill_gaps(
+    project_token: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Compute skill gaps for a brownfield project.
+
+    Reads the stored project context (BRD analysis + repository structure) and
+    compares required tech skills against registered agents' skills_tags.
+
+    Returns:
+        {
+          "skill_gaps": {covered, missing, suggested_templates, has_gaps, gap_summary},
+          "detected_tech_stack": {primary, required_skills, required_agent_templates, detected},
+          "project_type": "brownfield"
+        }
+    """
+    try:
+        from task_generation_service import _build_project_context
+        from brownfield_agent_service import detect_required_tech_stack, compute_skill_gaps
+
+        context = _build_project_context(project_token, db, current_user.id)
+        project_type = context.get("project_type", "greenfield")
+
+        brd_text = str(context.get("brd_analysis", ""))
+        repo_structure_text = str(context.get("repository_structure", ""))
+        repo_file_lines = [
+            line.strip() for line in repo_structure_text.splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+
+        tech_stack = detect_required_tech_stack(
+            brd_text=brd_text,
+            repo_files=repo_file_lines,
+            repo_structure_text=repo_structure_text,
+        )
+
+        # Query DB directly for registered agents (avoids HTTP round-trip)
+
+        all_agents = db.execute(
+            text("SELECT skills_tags, name, specialization FROM agents WHERE owner_id = :uid"),
+            {"uid": current_user.id}
+        ).fetchall()
+        agent_list = [
+            {"name": row[1], "skills_tags": row[0], "specialization": row[2]}
+            for row in all_agents
+        ]
+
+        skill_gaps = compute_skill_gaps(
+            required_skills=tech_stack["required_skills"],
+            required_agent_templates=tech_stack["required_agent_templates"],
+            agent_list=agent_list,
+        )
+
+        return {
+            "skill_gaps": skill_gaps,
+            "detected_tech_stack": tech_stack,
+            "project_type": project_type,
+        }
+
+    except Exception as exc:
+        logger.error(f"Skill-gap check failed for {project_token}: {exc}")
+        raise HTTPException(status_code=500, detail=f"Skill-gap check failed: {str(exc)}")
+
+
+class SetProjectTypeRequest(BaseModel):
+    project_type: str
+
+
+@app.post("/api/agent/projects/{project_token}/project-type")
+async def set_project_type(
+    project_token: str,
+    payload: SetProjectTypeRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Set/persist the project type (greenfield, brownfield, modernization) for a project.
+    Stores the value in the GovernanceResponse table so it is available for downstream task generation.
+    """
+    try:
+        gov = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.project_token == project_token
+        ).first()
+        if not gov:
+            gov = models.GovernanceResponse(
+                project_token=project_token,
+                owner_id=current_user.id,
+                project_name=project_token,
+                project_type=payload.project_type,
+                classification="CONTROLLED_SANDBOX",
+                recommendation="Auto-created for project type storage."
+            )
+            db.add(gov)
+        else:
+            gov.project_type = payload.project_type
+        db.commit()
+        logger.info(f"[{project_token}] Successfully set project_type in DB: {payload.project_type}")
+        return {"status": "success", "project_type": payload.project_type}
+    except Exception as e:
+        logger.error(f"Failed to set project type: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to set project type: {str(e)}")
+
+
+
 @app.post("/api/agent/tasks/sync/")
 async def sync_tasks_to_nxdune(
+
     project_token: str = None,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),

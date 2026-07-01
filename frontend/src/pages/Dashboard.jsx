@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
-import { API_ENDPOINTS } from '../config';
+import { API_ENDPOINTS, API_BASE_URL } from '../config';
 import { clearAuthData } from '../utils/auth';
 import { sanitizeErrorMessage } from '../utils/errorHandling';
 import { customAlert, customPrompt } from '../utils/modalHelpers';
@@ -95,6 +95,23 @@ const parseAIResponse = (text) => {
         }
     }
 
+    const isRepoOrBrownfieldSignal = 
+        source.includes("--- REPOSITORY CONTEXT ---") || 
+        source.includes("REPOSITORY CONTEXT") ||
+        source.toLowerCase().includes("brownfield") ||
+        source.toLowerCase().includes("brown field") ||
+        source.toLowerCase().includes("change request");
+
+    const forceMetricsType = (metricsObj) => {
+        if (!metricsObj) {
+            return isRepoOrBrownfieldSignal ? { project_type: 'brownfield' } : null;
+        }
+        if (isRepoOrBrownfieldSignal) {
+            metricsObj.project_type = 'brownfield';
+        }
+        return metricsObj;
+    };
+
     if (lastValidFenced) {
         const before = source.slice(0, lastValidFenced.index);
         const after = source.slice(lastValidFenced.index + lastValidFenced.fullMatch.length);
@@ -102,7 +119,7 @@ const parseAIResponse = (text) => {
         return {
             report,
             questions: lastValidFenced.parsed.questions || [],
-            metrics: lastValidFenced.parsed.metrics || null,
+            metrics: forceMetricsType(lastValidFenced.parsed.metrics),
             title: lastValidFenced.parsed.title || null,
             prerequisites: lastValidFenced.parsed.prerequisites || [],
             architecture: lastValidFenced.parsed.architecture || null
@@ -113,7 +130,7 @@ const parseAIResponse = (text) => {
     if (lastJsonLikeFence) {
         const before = source.slice(0, lastJsonLikeFence.index);
         const after = source.slice(lastJsonLikeFence.index + lastJsonLikeFence.fullMatch.length);
-        return { report: `${before}${after}`.trim(), questions: [], metrics: null, title: null, prerequisites: [], architecture: null };
+        return { report: `${before}${after}`.trim(), questions: [], metrics: forceMetricsType(null), title: null, prerequisites: [], architecture: null };
     }
 
     // 2) Fallback: parse trailing raw JSON object without fences
@@ -126,7 +143,7 @@ const parseAIResponse = (text) => {
             return {
                 report,
                 questions: parsed.questions || [],
-                metrics: parsed.metrics || null,
+                metrics: forceMetricsType(parsed.metrics),
                 title: parsed.title || null,
                 prerequisites: parsed.prerequisites || [],
                 architecture: parsed.architecture || null
@@ -134,7 +151,7 @@ const parseAIResponse = (text) => {
         }
     }
 
-    return { report: source, questions: [], metrics: null, title: null, prerequisites: [], architecture: null };
+    return { report: source, questions: [], metrics: forceMetricsType(null), title: null, prerequisites: [], architecture: null };
 };
 
 const isLikelyHtml = (content = '') => {
@@ -620,6 +637,7 @@ const Dashboard = ({
     const [azureLinkUrl, setAzureLinkUrl] = useState('');
     const [azureLinkToken, setAzureLinkToken] = useState('');
     const [azureLinkBranch, setAzureLinkBranch] = useState('');
+    const [repoLinkBranch, setRepoLinkBranch] = useState(''); // User-specified branch for brownfield cloning
     const [azureLinkParsing, setAzureLinkParsing] = useState(false);
     const [azureLinkError, setAzureLinkError] = useState('');
     const [azureProjectRepos, setAzureProjectRepos] = useState([]);
@@ -754,6 +772,7 @@ const Dashboard = ({
         setAzureLinkUrl('');
         setAzureLinkToken('');
         setAzureLinkBranch('');
+        setRepoLinkBranch('');
         setCredentialsLocked(false);
     };
 
@@ -1194,6 +1213,37 @@ const Dashboard = ({
                 }));
                 fetchHistory();
                 refreshProjects?.();
+
+                // Extract project type and save to localStorage + DB
+                const metrics = newResult?.analysis?.metrics;
+                const projectType = metrics?.project_type || metrics?.projectType || 'greenfield';
+                localStorage.setItem(`project_type_${taskKey}`, projectType);
+                
+                // If a repository context is connected, update is_brownfield flag in metadata
+                if (analysisRepoContext?.repo || analysisRepoContext?.provider) {
+                    const repoMeta = repoContextMeta || buildRepoContextMeta(analysisRepoContext);
+                    if (repoMeta) {
+                        repoMeta.is_brownfield = projectType === 'brownfield' || projectType === 'modernization';
+                        persistRepoContextMetaForProject(repoMeta, taskKey);
+                    }
+                }
+                
+                // Call DB to set the project type
+                const userToken = localStorage.getItem('token');
+                fetch(`${API_BASE_URL}/api/agent/projects/${taskKey}/project-type`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${userToken}`
+                    },
+                    body: JSON.stringify({ project_type: projectType })
+                }).then(res => {
+                    if (res.ok) {
+                        console.log(`Successfully saved project type ${projectType} to DB`);
+                    }
+                }).catch(err => {
+                    console.error("Failed to auto-save project type to DB:", err);
+                });
 
                 // Always navigate to agent analysis after successful save
                 // The governance check happens in handleUpload before this
@@ -2630,7 +2680,7 @@ const Dashboard = ({
                 body: JSON.stringify({
                     owner: validateData.owner,
                     repo: validateData.repo,
-                    branch: 'main',
+                    branch: repoLinkBranch.trim() || 'main',
                     token: providedPat || null,
                     username: providedUsername || null,
                     password: providedPassword || null,
@@ -2647,7 +2697,7 @@ const Dashboard = ({
             }
 
             const resolvedRepo = data.repo || `${validateData.owner}/${validateData.repo}`;
-            const resolvedBranch = data.branch || 'main';
+            const resolvedBranch = data.branch || repoLinkBranch.trim() || 'main';
             const nextRepoContext = {
                 repo: resolvedRepo,
                 branch: resolvedBranch,
@@ -2655,6 +2705,7 @@ const Dashboard = ({
                 fromLink: true,
                 provider: 'github',
                 url: validateData.normalized_url || `https://github.com/${resolvedRepo}.git`,
+                userBranch: repoLinkBranch.trim() || null,
             };
             setRepoContext(nextRepoContext);
             persistRepoContextMetaForProject(nextRepoContext);
@@ -2813,6 +2864,7 @@ const Dashboard = ({
                 body: JSON.stringify({
                     repo_url: rawUrl,
                     token: providedPat || null,
+                    branch: repoLinkBranch.trim() || null,
                 }),
             });
             const data = await resp.json();
@@ -2826,11 +2878,12 @@ const Dashboard = ({
 
             const nextRepoContext = {
                 repo: data.repo,
-                branch: data.branch,
+                branch: data.branch || repoLinkBranch.trim() || null,
                 context: data.context,
                 fromLink: true,
                 provider: 'azure-devops',
                 url: data.url || rawUrl,
+                userBranch: repoLinkBranch.trim() || null,
             };
             setRepoContext(nextRepoContext);
             persistRepoContextMetaForProject(nextRepoContext);
@@ -3474,6 +3527,23 @@ const Dashboard = ({
                                                                     placeholder={repoLinkProvider === 'azure-devops' ? 'https://dev.azure.com/org/project/_git/repo or https://dev.azure.com/org/project' : 'https://github.com/owner/repo'}
                                                                     className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50"
                                                                 />
+                                                                {/* Branch Name — used for brownfield development to clone a specific existing branch */}
+                                                                <div className="relative">
+                                                                    <input
+                                                                        type="text"
+                                                                        id="repo-branch-input"
+                                                                        value={repoLinkBranch}
+                                                                        onChange={e => {
+                                                                            setRepoLinkBranch(e.target.value);
+                                                                            if (repoContext) { setRepoContext(null); clearRepoContextFromStorage(); }
+                                                                        }}
+                                                                        placeholder="Branch name (e.g. main, develop, feature/cr-123) — leave blank for default"
+                                                                        className="w-full px-3 py-2.5 border border-app-border rounded-lg text-sm focus:ring-2 focus:ring-app-primary focus:border-app-primary outline-none transition-all bg-app-bg-page/50 pr-28"
+                                                                    />
+                                                                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-bold text-app-primary bg-app-primary-light px-2 py-0.5 rounded-full uppercase tracking-wide select-none pointer-events-none">
+                                                                        Branch
+                                                                    </span>
+                                                                </div>
                                                                 {repoLinkProvider === 'azure-devops' ? (
                                                                     <input
                                                                         type="password"
@@ -3547,6 +3617,7 @@ const Dashboard = ({
                                                                                 setAzureLinkUrl('');
                                                                                 setAzureLinkToken('');
                                                                                 setAzureLinkBranch('');
+                                                                                setRepoLinkBranch('');
                                                                                 setAzureLinkError('');
                                                                             }}
                                                                             className="px-3 py-2 border border-red-200 text-app-status-error bg-app-status-errorBg rounded-lg hover:bg-app-status-errorBg text-sm font-semibold h-10 transition-colors"

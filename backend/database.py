@@ -12,9 +12,20 @@ engine = create_engine(
     }
 )
 
-# Enable WAL mode for better concurrent access
+# Enable WAL mode for better concurrent access and run migrations
 with engine.connect() as conn:
     conn.execute(text("PRAGMA journal_mode=WAL"))
+    
+    # Check if project_type column exists in governance_responses table
+    try:
+        cursor = conn.execute(text("PRAGMA table_info(governance_responses)"))
+        columns = [row[1] for row in cursor.fetchall()]
+        if columns and "project_type" not in columns:
+            print("Migrating database: Adding project_type column to governance_responses")
+            conn.execute(text("ALTER TABLE governance_responses ADD COLUMN project_type VARCHAR DEFAULT 'greenfield'"))
+    except Exception as e:
+        print(f"Database migration check skipped: {e}")
+        
     conn.commit()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

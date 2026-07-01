@@ -548,11 +548,31 @@ async def analyze_document_chunked(
     try:
         update_job_progress(15, "Preparing document content...")
         
+        # Extract repository context if present to avoid truncation
+        repo_context_text = ""
+        repo_marker = "--- REPOSITORY CONTEXT ---"
+        if repo_marker in document_content:
+            parts = document_content.split(repo_marker)
+            # The part after the marker contains the repository context
+            if len(parts) > 1:
+                repo_context_text = repo_marker + parts[1]
+                # Strip it from document_content to leave only the BRD content for truncation
+                document_content_brd = parts[0]
+            else:
+                document_content_brd = document_content
+        else:
+            document_content_brd = document_content
+
         # Prepare document content (truncate if too large for Stage 1)
         max_stage1_content = 8000
-        stage1_content = document_content[:max_stage1_content]
-        if len(document_content) > max_stage1_content:
+        stage1_content = document_content_brd[:max_stage1_content]
+        if len(document_content_brd) > max_stage1_content:
             stage1_content += "\n\n[Document truncated for initial analysis - full context will be used in later stages]"
+        
+        # Re-append repository context if it was extracted, so it's always included in Stage 1
+        if repo_context_text:
+            stage1_content += f"\n\n{repo_context_text}"
+
         
         # Add governance context if provided
         governance_text = _format_governance_context(governance_context)
@@ -742,12 +762,32 @@ async def analyze_document_chunked(
         if not final_json.get("architecture"):
             final_json["architecture"] = stage2_data.get("architecture", {"nodes": [], "edges": []})
         
+        # Force project_type to brownfield if repository context or brownfield signal keywords are present
+        is_brownfield_content = (
+            "--- REPOSITORY CONTEXT ---" in document_content
+            or "REPOSITORY CONTEXT" in document_content
+            or "brownfield" in document_content.lower()
+            or "brown field" in document_content.lower()
+            or "change request" in document_content.lower()
+        )
+        if is_brownfield_content:
+            if not final_json.get("metrics"):
+                final_json["metrics"] = {}
+            final_json["metrics"]["project_type"] = "brownfield"
+            logger.info("Auto-forced project_type to 'brownfield' in backend response due to document signals")
+
         update_job_progress(100, "Analysis complete!")
         
         return {
             "status": "success",
             "analysis": stage5_result,
             "model": model or "chunked-multi-stage",
+            "questions": final_json.get("questions", []),
+            "metrics": final_json.get("metrics"),
+            "prerequisites": final_json.get("prerequisites", []),
+            "architecture": final_json.get("architecture"),
+            "user_flow": final_json.get("user_flow"),
+            "title": final_json.get("title"),
             "stages": {
                 "stage1_requirements": stage1_data,
                 "stage2_architecture": stage2_data,

@@ -12,7 +12,7 @@ import {
     RefreshCw,
     Sparkles,
 } from 'lucide-react';
-import { API_ENDPOINTS } from '../config';
+import { API_ENDPOINTS, API_BASE_URL } from '../config';
 import { upsertDraftProject, getDraftProject } from '../utils/draftProjects';
 import { getCachedTaskToken, setCachedTaskToken as cacheTaskToken } from '../utils/tokenCache';
 
@@ -340,7 +340,48 @@ export default function TaskCreation({
     const [success, setSuccess] = useState('');
     const [creationStageIndex, setCreationStageIndex] = useState(0);
     const [liveCreatedTaskCount, setLiveCreatedTaskCount] = useState(0);
-    const [projectType, setProjectType] = useState('greenfield');
+    const [projectType, setProjectType] = useState(() => {
+        if (selectedProjectKey) {
+            return localStorage.getItem(`project_type_${selectedProjectKey}`) || 'greenfield';
+        }
+        return 'greenfield';
+    });
+
+    useEffect(() => {
+        if (selectedProjectKey) {
+            const savedType = localStorage.getItem(`project_type_${selectedProjectKey}`);
+            if (savedType) {
+                setProjectType(savedType);
+            } else {
+                setProjectType('greenfield');
+            }
+        }
+    }, [selectedProjectKey]);
+
+    const handleProjectTypeChange = (val) => {
+        setProjectType(val);
+        if (selectedProjectKey) {
+            localStorage.setItem(`project_type_${selectedProjectKey}`, val);
+            
+            // Persist the user's manual change in DB
+            const userToken = localStorage.getItem('token');
+            fetch(`${API_BASE_URL}/api/agent/projects/${selectedProjectKey}/project-type`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${userToken}`
+                },
+                body: JSON.stringify({ project_type: val })
+            }).then(res => {
+                if (res.ok) {
+                    console.log(`Saved manual project type change to DB: ${val}`);
+                }
+            }).catch(err => {
+                console.error("Failed to save project type change:", err);
+            });
+        }
+    };
+
     const [pagination, setPagination] = useState({
         count: 0,
         next: null,
@@ -820,12 +861,25 @@ export default function TaskCreation({
                 prerequisites = null;
             }
 
+            // Retrieve user branch name if stored for brownfield projects
+            let storedBranch = null;
+            try {
+                const storedRaw = localStorage.getItem(`repo_context_meta_${selectedProjectKey}`) || sessionStorage.getItem(`repo_context_meta_${selectedProjectKey}`);
+                if (storedRaw) {
+                    const parsed = JSON.parse(storedRaw);
+                    storedBranch = parsed.userBranch || parsed.branch;
+                }
+            } catch (err) {
+                console.warn('Failed to parse stored repo context branch:', err);
+            }
+
             const generatePayload = {
                 project_token: selectedProjectKey,
                 auto_create_plan: true,
                 custom_rules: customRules,
                 project_type: projectType,
                 process_mode: processMode,
+                branch: storedBranch || null,
             };
 
             if (prerequisites && prerequisites.length > 0) {
@@ -1119,7 +1173,7 @@ export default function TaskCreation({
                                 <span className="text-[10px] uppercase font-bold text-app-text-muted">Strategy:</span>
                                 <select
                                     value={projectType}
-                                    onChange={(e) => setProjectType(e.target.value)}
+                                    onChange={(e) => handleProjectTypeChange(e.target.value)}
                                     className="bg-app-bg-card border border-app-border rounded px-2 py-0.5 text-xs font-semibold text-app-primary-hover focus:outline-none focus:ring-1 focus:ring-app-primary"
                                 >
                                     <option value="greenfield">Greenfield (New Build)</option>
@@ -1128,6 +1182,13 @@ export default function TaskCreation({
                                 </select>
                             </div>
                         </div>
+
+                        {projectType !== 'greenfield' && (
+                            <div className="text-xs px-3 py-2 bg-blue-500/10 border border-blue-500/20 text-blue-400 rounded-lg flex items-center gap-2">
+                                <Sparkles className="w-3.5 h-3.5 text-blue-400 animate-pulse" />
+                                <span>Auto-detected <strong>{projectType === 'brownfield' ? 'Brownfield' : 'Modernization'}</strong> development from repository analysis.</span>
+                            </div>
+                        )}
 
                         <button
                             onClick={handleMasterCreate}
