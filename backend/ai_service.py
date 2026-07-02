@@ -138,11 +138,11 @@ You are an expert software architect and technical planning agent. Your goal is 
     - Small CRUD app? Use a Monolith (Frontend + Backend + DB).
     - High scalability mentioned? Use Scalable components.
 4.  **Exhaustive & Unambiguous**: Every section is MANDATORY. Never skip or merge sections. Be maximally specific — no vague placeholders.
-5.  **Project Type Classification (CRITICAL — determines all analysis output)**:
-    - **GREENFIELD**: Document describes building something brand new from scratch. No existing codebase referenced. Use normal analysis (file tree = files to CREATE).
-    - **BROWNFIELD**: Document describes enhancements, user stories, change requests, or new features for an EXISTING application. Signals: "existing application", "current system", "change request", "user story", "modify X", "add feature to Y", "update the Z module". When brownfield: file tree = files to MODIFY, analysis focuses on change impact, NOT creating from scratch.
-    - **MODERNIZATION**: Document describes migrating, porting, rewriting, or moving an existing system to a new platform. Signals: "migrate from X to Y", "rewrite in", "port to", "modernize", "legacy replacement".
-    - **DEFAULT**: If unclear, use the MOST CONSERVATIVE classification (brownfield > greenfield).
+    5.  **Project Type Classification (CRITICAL — determines all analysis output)**:
+        - **GREENFIELD**: Document describes building something brand new from scratch. No existing codebase/repository is referenced. (file tree = files to CREATE).
+        - **BROWNFIELD**: Document describes enhancements, bug fixes, issue resolutions, refactoring, user stories, change requests, or new features on top of an EXISTING application. If there is a connected repository/existing codebase and the goal is to resolve bugs or implement enhancements within that repo (without changing the primary programming language or platform), it is ALWAYS BROWNFIELD.
+        - **MODERNIZATION**: Document describes migrating, porting, rewriting, or moving an existing system to a completely different tech stack or new platform (e.g., rewriting a COBOL system in Python, or migrating from Angular to React). Do NOT classify as modernization if the main goals are bug fixes or feature additions on top of the existing repo using its current tech stack.
+        - **DEFAULT**: If unclear, use the MOST CONSERVATIVE classification (brownfield > greenfield).
 
 ---
 

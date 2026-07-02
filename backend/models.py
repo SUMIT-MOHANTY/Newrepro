@@ -337,6 +337,12 @@ class GovernanceResponse(Base):
     # Populated automatically after analysis completes from metrics.project_type
     project_type = Column(String, nullable=True, default="greenfield")
 
+    # Project-wise Git Repository settings
+    source_repo_url = Column(String, nullable=True)
+    source_repo_token = Column(String, nullable=True)
+    dest_repo_url = Column(String, nullable=True)
+    dest_repo_token = Column(String, nullable=True)
+
     owner = relationship("User", back_populates="governance_responses")
 
 class GovernanceQuestion(Base):

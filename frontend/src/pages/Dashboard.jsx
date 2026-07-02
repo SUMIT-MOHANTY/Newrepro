@@ -60,7 +60,7 @@ const AzureDevOpsIcon = ({ className = 'w-4 h-4' }) => (
     </svg>
 );
 
-const parseAIResponse = (text) => {
+const parseAIResponse = (text, repoContext = null) => {
     // Strip <think>...</think> blocks that some models (e.g. minimax-m2.5) embed in content
     let source = String(text || '');
     source = source.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
@@ -95,7 +95,13 @@ const parseAIResponse = (text) => {
         }
     }
 
+    const isRepoConnected = Boolean(
+        repoContext && 
+        (repoContext.repo || repoContext.url || repoContext.repo_url || repoContext.context)
+    );
+
     const isRepoOrBrownfieldSignal = 
+        isRepoConnected ||
         source.includes("--- REPOSITORY CONTEXT ---") || 
         source.includes("REPOSITORY CONTEXT") ||
         source.toLowerCase().includes("brownfield") ||
@@ -728,7 +734,21 @@ const Dashboard = ({
             const authToken = localStorage.getItem('token');
             if (!authToken || !projectKey) return;
 
-            // Find an agent to update (use the first non-system agent)
+            // 1. Save to project-wise git-config endpoint (Source Repository)
+            const gitPayload = { 
+                source_repo_url: repoUrl, 
+                source_repo_token: token 
+            };
+            await fetch(`${API_BASE_URL}/api/projects/${projectKey}/git-config`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${authToken}`,
+                },
+                body: JSON.stringify(gitPayload),
+            });
+
+            // 2. Fallback update to legacy AgentCredential table
             const agentsUrl = new URL(API_ENDPOINTS.AGENTS);
             agentsUrl.searchParams.set('project_token', projectKey);
             const agentsRes = await fetch(agentsUrl.toString(), {
@@ -743,10 +763,10 @@ const Dashboard = ({
 
             if (!targetAgent?.id) return;
 
-            // Update the agent's Git credentials
             const updateUrl = new URL(API_ENDPOINTS.AGENT_UPDATE(targetAgent.id));
             updateUrl.searchParams.set('project_token', projectKey);
-            const gitPayload = { git_repo_url: repoUrl, git_token: token };
+            const legacyPayload = { git_repo_url: repoUrl };
+            if (token) legacyPayload.git_token = token;
 
             await fetch(updateUrl.toString(), {
                 method: 'POST',
@@ -754,7 +774,7 @@ const Dashboard = ({
                     'Content-Type': 'application/json',
                     Authorization: `Bearer ${authToken}`,
                 },
-                body: JSON.stringify(gitPayload),
+                body: JSON.stringify(legacyPayload),
             });
         } catch (err) {
             console.warn('Failed to save Git credentials to backend:', err);
@@ -886,6 +906,30 @@ const Dashboard = ({
             const authToken = localStorage.getItem('token');
             if (!authToken || !projectKey) return;
 
+            // 1. Try to load from project-wise git-config endpoint
+            const configRes = await fetch(`${API_BASE_URL}/api/projects/${projectKey}/git-config`, {
+                headers: { Authorization: `Bearer ${authToken}` },
+            });
+            if (configRes.ok) {
+                const configData = await configRes.json().catch(() => ({}));
+                if (configData.source_repo_url) {
+                    const repoUrl = configData.source_repo_url;
+                    const isAzure = repoUrl.includes('dev.azure.com') || repoUrl.includes('visualstudio.com');
+                    if (isAzure) {
+                        setAzureLinkUrl(repoUrl);
+                        setRepoLinkProvider('azure-devops');
+                        setIsOAuthRepoSelected(false);
+                    } else {
+                        setGithubLinkUrl(repoUrl);
+                        setRepoLinkProvider('github');
+                        setGithubAuthMode('pat');
+                    }
+                    setCredentialsLocked(true);
+                    return;
+                }
+            }
+
+            // 2. Fallback to legacy agents registry loading
             const agentsUrl = new URL(API_ENDPOINTS.AGENTS);
             agentsUrl.searchParams.set('project_token', projectKey);
             const agentsRes = await fetch(agentsUrl.toString(), {
@@ -1653,7 +1697,7 @@ const Dashboard = ({
                 setError('Requirement Screening is saved. Complete Governance to start Agent Analysis.');
                 return;
             }
-            const normalized = parseAIResponse(parsedAnalysis.analysis || '');
+            const normalized = parseAIResponse(parsedAnalysis.analysis || '', parsedAnalysis.repoContextState || parsedAnalysis.repoContextMeta);
             // Load questions/answers from saved state
             const questions = (parsedAnalysis.questions?.length ? parsedAnalysis.questions : normalized.questions) || [];
             const metrics = parsedAnalysis.metrics || normalized.metrics;
@@ -2264,11 +2308,11 @@ const Dashboard = ({
             }
 
             const data = await response.json();
-            const { report, questions, metrics, title, prerequisites, architecture } = parseAIResponse(data.analysis || '');
+            const effectiveRepoContext = analysisOptions.repoContext || repoContext || null;
+            const { report, questions, metrics, title, prerequisites, architecture } = parseAIResponse(data.analysis || '', effectiveRepoContext);
             if (questions.length > 0) setProjectState(taskKey, { aiQuestions: questions });
 
             const effectiveGovernanceContext = analysisOptions.governanceContext || governanceContext || null;
-            const effectiveRepoContext = analysisOptions.repoContext || repoContext || null;
             const finalFilename = title || (initialContext || result).filename;
 
             const finalResult = {
@@ -2389,6 +2433,7 @@ const Dashboard = ({
         taskKey = selectedProjectKey,
         analysisOptions = {}
     ) => {
+        const effectiveRepoContext = analysisOptions.repoContext || repoContext || null;
         try {
             const response = await fetch(API_ENDPOINTS.AI_ANALYZE, {
                 method: 'POST',
@@ -2451,7 +2496,7 @@ const Dashboard = ({
                             }
 
                             // Parse questions dynamically during stream
-                            const { report, questions, metrics, prerequisites, architecture } = parseAIResponse(aiText);
+                            const { report, questions, metrics, prerequisites, architecture } = parseAIResponse(aiText, effectiveRepoContext);
                             if (questions.length > 0) setProjectState(taskKey, { aiQuestions: questions });
 
                             // Update UI gracefully
@@ -2478,10 +2523,9 @@ const Dashboard = ({
             }
 
             // Save history after stream completes
-            const { report, questions, metrics, title, prerequisites, architecture } = parseAIResponse(aiText);
+            const { report, questions, metrics, title, prerequisites, architecture } = parseAIResponse(aiText, effectiveRepoContext);
 
             const effectiveGovernanceContext = analysisOptions.governanceContext || governanceContext || null;
-            const effectiveRepoContext = analysisOptions.repoContext || repoContext || null;
             const finalFilename = title || (initialContext || result).filename;
 
             const finalResult = {

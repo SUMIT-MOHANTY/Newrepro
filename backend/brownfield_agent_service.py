@@ -393,13 +393,16 @@ def get_brownfield_repo_inventory(container_name: str) -> Dict[str, Any]:
 
 def setup_brownfield_git(
     container_name: str,
-    repo_url: str,
+    source_repo_url: str,
+    target_repo_url: str,
     token: str,
     base_branch: str,
     task_id: str,
+    target_repo_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Clone the existing repo at base_branch and create a feature branch.
+    Clone the existing source repo at base_branch and create a feature branch.
+    Then, set the origin to the target_repo_url for pushing.
     """
     utils = _get_agent_service_utils()
     build_git_auth_url = utils["build_git_auth_url"]
@@ -423,15 +426,15 @@ def setup_brownfield_git(
                 capture_output=True, text=True, timeout=10,
             )
 
-        if token and ("dev.azure.com" in repo_url or "visualstudio.com" in repo_url):
+        if token and ("dev.azure.com" in source_repo_url or "visualstudio.com" in source_repo_url):
             subprocess.run(
                 ["docker", "exec", container_name, "git", "config", "--global",
                  "credential.helper", "store"],
                 capture_output=True, text=True, timeout=10,
             )
 
-        auth_url = build_git_auth_url(repo_url, token)
-        auth_config = get_git_auth_config(repo_url, token)
+        source_auth_url = build_git_auth_url(source_repo_url, token)
+        auth_config = get_git_auth_config(source_repo_url, token)
 
         subprocess.run(
             ["docker", "exec", container_name, "sh", "-c",
@@ -441,23 +444,31 @@ def setup_brownfield_git(
 
         clone_cmd = ["docker", "exec", container_name, "git"]
         clone_cmd.extend(auth_config)
-        clone_cmd.extend(["clone", "--branch", base_branch, "--single-branch", auth_url, "/workspace"])
+        clone_cmd.extend(["clone", "--branch", base_branch, "--single-branch", source_auth_url, "/workspace"])
 
         clone = subprocess.run(clone_cmd, capture_output=True, text=True, timeout=300)
         if clone.returncode != 0:
             return {
                 "success": False,
                 "error": (
-                    f"BROWNFIELD: Failed to clone branch '{base_branch}'. "
+                    f"BROWNFIELD: Failed to clone branch '{base_branch}' from source repo. "
                     f"Ensure the branch exists on the remote. "
                     f"Git error: {clone.stderr.strip()}"
                 ),
             }
 
-        if token:
+        if target_repo_url and target_repo_url != source_repo_url:
+            push_token = target_repo_token or token
+            target_auth_url = build_git_auth_url(target_repo_url, push_token)
             subprocess.run(
                 ["docker", "exec", "-w", "/workspace", container_name,
-                 "git", "remote", "set-url", "origin", auth_url],
+                 "git", "remote", "set-url", "origin", target_auth_url],
+                capture_output=True, text=True, timeout=10,
+            )
+        elif token:
+            subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "remote", "set-url", "origin", source_auth_url],
                 capture_output=True, text=True, timeout=10,
             )
 
@@ -474,7 +485,7 @@ def setup_brownfield_git(
             }
 
         logger.info(
-            f"[BROWNFIELD] Cloned '{base_branch}' and created feature branch '{feature_branch}'"
+            f"[BROWNFIELD] Cloned '{base_branch}' from source and created feature branch '{feature_branch}' for target"
         )
         return {
             "success": True,
@@ -521,8 +532,9 @@ CRITICAL RULES:
 1. DO NOT create files from scratch unless they are genuinely NEW files required
 2. ALWAYS read the existing file content FIRST: cat /workspace/<filepath>
 3. Make SURGICAL, TARGETED changes only - preserve all unrelated existing code
-4. After changes run existing tests if available
-5. Push to branch: {feature_branch} (NOT to {base_branch})
+4. DO NOT overwrite configuration files (like pom.xml, package.json, build.gradle) with generic template files from scratch. Keep existing properties (e.g., Spring Boot versions, Java versions, dependency configurations, Sonar/Lombok/OpenFeign blocks) completely intact. Append/edit dependencies surgically.
+5. After changes run existing tests if available
+6. Push to branch: {feature_branch} (NOT to {base_branch})
 
 CURRENT TASK:
 Task ID: {task_id}
@@ -618,6 +630,8 @@ async def run_brownfield_agent(
     git_token: str,
     base_branch: str,
     agent_output_log: Optional[List[Dict[str, Any]]] = None,
+    target_repo_url: Optional[str] = None,
+    target_repo_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Execute a single brownfield task using an ephemeral Docker container.
@@ -683,7 +697,7 @@ async def run_brownfield_agent(
         _log(f"Cloning '{base_branch}' from remote...")
         git_result = await asyncio.to_thread(
             setup_brownfield_git,
-            container_name, git_repo_url, git_token, base_branch, task_id,
+            container_name, git_repo_url, target_repo_url, git_token, base_branch, task_id, target_repo_token,
         )
         if not git_result["success"]:
             _log(f"Git setup failed: {git_result['error']}", "error")
@@ -760,9 +774,9 @@ CRITICAL ARCHITECTURAL CONSTRAINTS:
 1. ❌ DO NOT generate any project initialization, scaffold, or setup tasks (no "Project Bootstrap", "Navigation Shell", "Create package.json").
 2. ❌ DO NOT generate greenfield folders or blank projects.
 3. ❌ Every task must operate on top of the existing codebase. The agent will checkout the user branch, modify code, push to a task branch, and merge to agent/integration.
-4. The FIRST task MUST be: "Repo Analysis and Change Planning" (task_id: TASK-REPO-ANALYSIS) under Sprint 1.
+4. The FIRST task MUST be: "Repo Analysis and Change Planning" (task_id: TASK-REPO-ANALYSIS).
 5. All subsequent tasks must specify the exact `target_file` (relative path from repository root) and `change_type` ("modify" | "add" | "delete" | "refactor").
-6. Map tasks to the available brownfield sprints (Sprint 1 - Repo Analysis & Change Mapping, Sprint 2 - Feature Enhancement & Implementation, Sprint 3 - Regression Testing & Validation).
+6. You MUST assign every task to one of the exact Sprints listed in the "AVAILABLE SPRINTS" section. Do NOT invent new sprint names, and do NOT add any custom suffixes to the sprint names. Group the tasks into the provided Sprints logically.
 
 FIRST TASK FORMAT (always include this):
 {
@@ -774,6 +788,7 @@ FIRST TASK FORMAT (always include this):
   "change_type": "analyze",
   "priority": "critical",
   "task_wallet": 2,
+  "sprint": "Sprint 1 - Repo Analysis & Change Mapping",
   "checklist": [
     "Clone repository at user-specified branch",
     "Scan all existing files and directories",
@@ -791,10 +806,11 @@ CHANGE TASK FORMAT (for each requirement/user story/bug fix):
   "task_type": "development",
   "target_file": "<relative path from repo root>",
   "change_type": "modify|add|delete|refactor",
-  "priority": "high|medium|low"
+  "priority": "high|medium|low",
+  "sprint": "<Exact Sprint Name from the AVAILABLE SPRINTS list>"
 }
 
-IMPORTANT: Vague tasks cause agent failures. Be precise. Specify exact files and directories to inspect and modify.
+IMPORTANT: Vague tasks cause agent failures. Be precise. Specify exact files and directories to inspect and modify based on the provided impact analysis.
 """
 
 
@@ -839,4 +855,4 @@ def is_brownfield_project(project_type: Optional[str]) -> bool:
     """Check if a project type requires brownfield agent execution."""
     if not project_type:
         return False
-    return str(project_type).lower().strip() in {"brownfield", "modernization", "migration"}
+    return str(project_type).lower().strip() in {"brownfield", "modernization"}

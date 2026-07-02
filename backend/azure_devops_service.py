@@ -6,12 +6,15 @@ Builds repository context for AI analysis from Azure DevOps Git repositories.
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import posixpath
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import httpx
+
+logger = logging.getLogger("azure_devops_service")
 
 
 CODE_EXTENSIONS = {
@@ -248,8 +251,6 @@ async def is_repo_public(
         return result
 
     has_pat = bool(pat and len(str(pat).strip()) > 0)
-    import logging
-    logger = logging.getLogger("azure_devops_service")
     logger.info(f"[is_repo_public] Checking {url} (Using PAT: {has_pat})")
 
     # Use follow_redirects=False to avoid being pushed to the Microsoft login page

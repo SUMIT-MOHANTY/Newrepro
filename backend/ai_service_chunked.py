@@ -90,6 +90,11 @@ Generate 3-8 clarification questions about:
 - Performance targets
 - Security specifications
 
+### 6. Development Classification
+Classify the project development type:
+- If a Repository Context is provided, or the BRD explicitly describes modifying an existing application, classify it as "Brownfield".
+- If building entirely from scratch, classify as "Greenfield".
+
 ## CRITICAL TEXT FORMATTING RULES
 **USE ONLY STANDARD ASCII CHARACTERS:**
 - Use regular hyphen `-` NOT Unicode hyphens (‑, –, —)
@@ -114,7 +119,12 @@ Return ONLY valid JSON (no markdown fences):
     "deployment": "...",
     "integrations": []
   },
-  "clarification_questions": ["q1", "q2", ...]
+  "clarification_questions": ["q1", "q2", ...],
+  "development_classification": {
+    "type": "Greenfield|Brownfield|Modernization",
+    "rationale": "...",
+    "existing_codebase_detected": true
+  }
 }"""
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -318,6 +328,7 @@ Provide COMPLETE file tree with inline comments.
 Include: backend, frontend, config, tests, docs, CI/CD
 
 CRITICAL: The repository structure tree MUST start directly with the root-level files and directories of the project (e.g. `src/`, `backend/`, `package.json`, `.gitignore`). Do NOT wrap the entire structure in a top-level parent folder named after the project.
+**BROWNFIELD EXCEPTION**: If the development classification is Brownfield or Modernization, DO NOT generate a complete repository file tree from scratch. Instead, generate an impact analysis tree showing ONLY the files that need to be created, modified, or deleted within the existing architecture.
 
 {_build_prerequisite_instruction_text()}
 
@@ -413,9 +424,9 @@ NOT a technical architecture diagram with databases, APIs, and servers.
 [Use Stage 3 API endpoints]
 
 ## 0.5 Repository Structure Planning
-[Use Stage 4 file tree]
+[Use Stage 4 file tree EXACTLY AS PROVIDED]
 
-CRITICAL: The repository structure tree MUST start directly with the root-level files and directories of the project (e.g. `src/`, `backend/`, `package.json`, `.gitignore`). Do NOT wrap the entire structure in a top-level parent folder named after the project.
+CRITICAL: If the Stage 4 tree is a "BROWNFIELD IMPACT ANALYSIS", output it exactly as is without modifying the structure. For Greenfield projects, the repository structure tree MUST start directly with the root-level files and directories of the project (e.g. `src/`, `backend/`, `package.json`, `.gitignore`). Do NOT wrap the entire structure in a top-level parent folder named after the project.
 
 ## 0.6 Scope Definition
 [Derive from Stage 1 requirements]
@@ -486,7 +497,7 @@ Return the complete Markdown report followed by a JSON block:
     "timeline": "...",
     "deployment": "...",
     "resources": "...",
-    "project_type": "greenfield|brownfield|modernization"
+    "project_type": "greenfield|brownfield|modernization" // MUST MATCH the classification from Stage 1
   }},
   "questions": [...],
   "prerequisites": [...],
@@ -693,6 +704,7 @@ async def analyze_document_chunked(
         update_job_progress(70, "Stage 4: Creating implementation plan...")
         logger.info("=== STAGE 4: Implementation Planning ===")
         stage4_context = {
+            "development_classification": stage1_data.get("development_classification"),
             "product_name": stage1_data.get("product_name"),
             "requirements_count": len(stage1_data.get("functional_requirements", [])),
             "architecture_pattern": stage2_data.get("architecture_pattern"),
@@ -762,19 +774,18 @@ async def analyze_document_chunked(
         if not final_json.get("architecture"):
             final_json["architecture"] = stage2_data.get("architecture", {"nodes": [], "edges": []})
         
-        # Force project_type to brownfield if repository context or brownfield signal keywords are present
-        is_brownfield_content = (
-            "--- REPOSITORY CONTEXT ---" in document_content
-            or "REPOSITORY CONTEXT" in document_content
-            or "brownfield" in document_content.lower()
-            or "brown field" in document_content.lower()
-            or "change request" in document_content.lower()
-        )
-        if is_brownfield_content:
+        # Ensure project_type is reliably carried over from Stage 1 intelligent classification
+        stage1_class = stage1_data.get("development_classification", {}).get("type", "").lower()
+        if stage1_class and ("brown" in stage1_class or "modern" in stage1_class):
             if not final_json.get("metrics"):
                 final_json["metrics"] = {}
             final_json["metrics"]["project_type"] = "brownfield"
-            logger.info("Auto-forced project_type to 'brownfield' in backend response due to document signals")
+            logger.info("Enforced 'brownfield' project_type from Stage 1 intelligent classification")
+        elif stage1_class and "green" in stage1_class:
+            if not final_json.get("metrics"):
+                final_json["metrics"] = {}
+            final_json["metrics"]["project_type"] = "greenfield"
+            logger.info("Enforced 'greenfield' project_type from Stage 1 intelligent classification")
 
         update_job_progress(100, "Analysis complete!")
         

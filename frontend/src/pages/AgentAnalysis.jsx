@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { API_ENDPOINTS } from '../config';
+import { API_ENDPOINTS, API_BASE_URL } from '../config';
 import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -425,7 +425,7 @@ const ProcessedContentTabs = ({ sections, markdown }) => {
 };
 
 
-const parseAIResponse = (text) => {
+const parseAIResponse = (text, repoContext = null) => {
     let source = String(text || '').trim();
     source = source.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
     source = source.replace(/<think>[\s\S]*/gi, '').trim();
@@ -457,21 +457,8 @@ const parseAIResponse = (text) => {
         }
     }
 
-    const isRepoOrBrownfieldSignal = 
-        source.includes("--- REPOSITORY CONTEXT ---") || 
-        source.includes("REPOSITORY CONTEXT") ||
-        source.toLowerCase().includes("brownfield") ||
-        source.toLowerCase().includes("brown field") ||
-        source.toLowerCase().includes("change request");
-
     const forceMetricsType = (metricsObj) => {
-        if (!metricsObj) {
-            return isRepoOrBrownfieldSignal ? { project_type: 'brownfield' } : null;
-        }
-        if (isRepoOrBrownfieldSignal) {
-            metricsObj.project_type = 'brownfield';
-        }
-        return metricsObj;
+        return metricsObj || null;
     };
 
     if (lastValidFenced) {
@@ -803,9 +790,10 @@ export default function AgentAnalysis({
             // alongside the patched report. Merge these with existing data.
             const isTargetedUpdate = Boolean(data.update_type || data.change_summary);
             const existingAnalysis = (initialContext || result)?.analysis || {};
+            const effectiveRepoContext = analysisOptions.repoContext || repoContext || null;
 
             const { report: parsedReport, questions: parsedQuestions, metrics: parsedMetrics,
-                title, prerequisites: parsedPrereqs, architecture: parsedArch } = parseAIResponse(data.analysis || '');
+                title, prerequisites: parsedPrereqs, architecture: parsedArch } = parseAIResponse(data.analysis || '', effectiveRepoContext);
 
             const report = parsedReport;
             // For targeted updates, prefer backend-returned data (already merged with previous)
@@ -825,7 +813,6 @@ export default function AgentAnalysis({
             if (questions.length > 0) setAiQuestions(questions);
 
             const effectiveGovernanceContext = analysisOptions.governanceContext || governanceContext || null;
-            const effectiveRepoContext = analysisOptions.repoContext || repoContext || null;
             const finalFilename = title || (initialContext || result)?.filename;
 
             const finalResult = {
@@ -852,6 +839,22 @@ export default function AgentAnalysis({
                         : (data.stages || existingAnalysis.stages || {}),
                 }
             };
+
+            // Persist the detected project type to localStorage and DB
+            const pt = metrics?.project_type || data.project_type || existingAnalysis.metrics?.project_type;
+            if (pt && selectedProjectKey) {
+                const normalizedPt = String(pt).toLowerCase();
+                localStorage.setItem(`project_type_${selectedProjectKey}`, normalizedPt);
+                fetch(`${API_BASE_URL}/api/agent/projects/${selectedProjectKey}/project-type`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ project_type: normalizedPt })
+                }).catch(err => console.error("Failed to save project type from analysis:", err));
+            }
+
             setResult(finalResult);
             setProgress(100);
             setProgressMessage('Analysis complete!');
@@ -878,6 +881,7 @@ export default function AgentAnalysis({
         initialContext = null,
         analysisOptions = {}
     ) => {
+        const effectiveRepoContext = analysisOptions.repoContext || repoContext || null;
         try {
             const response = await fetch(API_ENDPOINTS.AI_ANALYZE, {
                 method: 'POST',
@@ -935,7 +939,7 @@ export default function AgentAnalysis({
                                 aiText += delta.content;
                             }
 
-                            const { report, questions, metrics, prerequisites, architecture } = parseAIResponse(aiText);
+                            const { report, questions, metrics, prerequisites, architecture } = parseAIResponse(aiText, effectiveRepoContext);
                             if (questions.length > 0) setAiQuestions(questions);
 
                             setResult(prev => ({
@@ -957,7 +961,7 @@ export default function AgentAnalysis({
                 }
             }
 
-            const { report, questions, metrics, title, prerequisites, architecture } = parseAIResponse(aiText);
+            const { report, questions, metrics, title, prerequisites, architecture } = parseAIResponse(aiText, effectiveRepoContext);
 
             if (!architecture && !analysisOptions.forceArchitectureRetry) {
                 setProgress(92);
@@ -992,6 +996,22 @@ export default function AgentAnalysis({
                     model: payload.model || 'Streaming...'
                 }
             };
+
+            // Persist the detected project type to localStorage and DB
+            const pt = metrics?.project_type || finalResult.analysis.metrics?.project_type;
+            if (pt && selectedProjectKey) {
+                const normalizedPt = String(pt).toLowerCase();
+                localStorage.setItem(`project_type_${selectedProjectKey}`, normalizedPt);
+                fetch(`${API_BASE_URL}/api/agent/projects/${selectedProjectKey}/project-type`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ project_type: normalizedPt })
+                }).catch(err => console.error("Failed to save project type from stream analysis:", err));
+            }
+
             setResult(finalResult);
             setProgress(100);
             setProgressMessage('Analysis complete!');

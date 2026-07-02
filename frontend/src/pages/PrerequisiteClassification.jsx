@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { API_ENDPOINTS, VIBE_WORKSPACE_URL } from '../config';
+import { API_ENDPOINTS, VIBE_WORKSPACE_URL, API_BASE_URL } from '../config';
 import {
     KeyRound, CheckCircle2, Circle, AlertCircle, AlertTriangle, ArrowRight,
     ChevronLeft, Database, Globe, Server,
@@ -822,6 +822,22 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 if (!token) return;
                 setIsLoadingGitConfig(true);
 
+                // 1. Try project-wise git-config endpoint first (Destination Repository)
+                const configRes = await fetch(`${API_BASE_URL}/api/projects/${selectedProjectKey}/git-config`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (configRes.ok) {
+                    const configData = await configRes.json().catch(() => ({}));
+                    if (configData.dest_repo_url) {
+                        if (!isMounted) return;
+                        setGlobalGitRepoUrl(configData.dest_repo_url);
+                        setHasSavedGlobalGitToken(Boolean(configData.dest_repo_token));
+                        setGlobalGitToken('');
+                        return;
+                    }
+                }
+
+                // 2. Legacy fallback
                 const url = new URL(API_ENDPOINTS.AGENTS);
                 url.searchParams.set('project_token', selectedProjectKey);
                 const res = await fetch(url.toString(), {
@@ -1275,9 +1291,32 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     throw new Error('Please enter a valid Git repository URL (e.g., https://github.com/org/repo.git).');
                 }
                 
-                // PAT is optional - no longer required
-
                 // Save global Git config from prerequisites so all agents reuse it.
+                const sourceUrl = analysisRepoSuggestion?.url || repo;
+                localStorage.setItem(`source_repo_url_${selectedProjectKey}`, sourceUrl);
+
+                // 1. Save destination Git config to project-wise git-config endpoint
+                const destGitConfigPayload = {
+                    dest_repo_url: repo,
+                };
+                if (pat) destGitConfigPayload.dest_repo_token = pat;
+
+                const destConfigRes = await fetch(`${API_BASE_URL}/api/projects/${selectedProjectKey}/git-config`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${token}`,
+                    },
+                    body: JSON.stringify(destGitConfigPayload),
+                });
+                
+                if (!destConfigRes.ok) {
+                    const errData = await destConfigRes.json().catch(() => ({}));
+                    const errorMsg = errData?.detail || 'Failed to save project Git configuration.';
+                    throw new Error(sanitizeErrorMessage(errorMsg));
+                }
+                
+                // 2. Fallback update to legacy AgentCredential table
                 const agentsUrl = new URL(API_ENDPOINTS.AGENTS);
                 agentsUrl.searchParams.set('project_token', selectedProjectKey);
                 const agentsRes = await fetch(agentsUrl.toString(), {

@@ -202,14 +202,27 @@ def is_bootstrap_pushed(project_token: str) -> bool:
     Check if bootstrap has been successfully pushed.
 
     Priority order (local-first, no NXDune dependency):
+    0. Brownfield/Migration projects are implicitly pushed (no bootstrap task)
     1. ProjectCanonicalState.is_ready and bootstrap_branch is not None — most authoritative, written atomically at bootstrap completion
-    2. BootstrapState.status == "success" — legacy fallback, also written at completion
-    3. Task table TASK-00 synced_to_nxdune — recovery fallback for pre-migration data
-
-    REMOVED: The fragile AgentMessage heuristic that caused false positives by treating
-    any agent message containing "bootstrap" as proof of completion, causing the master
-    agent to skip real work and confuse non-bootstrap completions with bootstrap ones.
     """
+    # ── Priority 0: Auto-pushed for Brownfield / Migration ──────────────────
+    try:
+        from database import SessionLocal
+        import models
+        db_session = SessionLocal()
+        try:
+            gov = db_session.query(models.GovernanceResponse).filter(
+                models.GovernanceResponse.project_token == project_token
+            ).first()
+            if gov and gov.project_type:
+                from brownfield_agent_service import is_brownfield_project
+                if is_brownfield_project(gov.project_type):
+                    return True
+        finally:
+            db_session.close()
+    except Exception as pt_err:
+        logger.warning(f"Failed to check project type in is_bootstrap_pushed: {pt_err}")
+
     # ── Priority 1: ProjectCanonicalState (local-first, most authoritative) ─
     try:
         from local_state_manager import get_canonical_state

@@ -920,6 +920,65 @@ def _extract_repository_structure(analysis_text: str) -> str:
     logger.error("❌ Could not find section 0.5.1 or 0.5 in BRD analysis - agents will have no structure guidance!")
     return ""
 
+def _get_real_repository_structure(repo_url: str, token: str = None, branch: str = None) -> str:
+    """Clones repository to a temporary directory and scans its file structure"""
+    import subprocess
+    import os
+    import tempfile
+    import shutil
+    import urllib.parse
+    
+    auth_url = repo_url
+    if token:
+        parsed = urllib.parse.urlparse(repo_url)
+        # Safely insert the token for authentication
+        auth_url = f"https://{token}@{parsed.netloc}{parsed.path}"
+        
+    temp_dir = tempfile.mkdtemp()
+    try:
+        clone_cmd = ["git", "clone", "--depth", "1"]
+        if branch:
+            clone_cmd.extend(["--branch", branch])
+        clone_cmd.extend([auth_url, temp_dir])
+        
+        logger.info(f"Cloning repository for structure scanning: {repo_url} (branch: {branch or 'default'})")
+        result = subprocess.run(clone_cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            logger.warning(f"Failed to clone repository for structure scanning: {result.stderr}")
+            return ""
+            
+        exclude_dirs = {".git", "node_modules", "target", "bin", "build", "dist", ".gradle", ".mvn", "__pycache__"}
+        
+        tree_lines = []
+        for root, dirs, files in os.walk(temp_dir):
+            # Exclude directories in-place to avoid walking down them
+            dirs[:] = [d for d in dirs if d not in exclude_dirs]
+            
+            rel_path = os.path.relpath(root, temp_dir)
+            if rel_path == ".":
+                depth = 0
+            else:
+                depth = rel_path.count(os.sep) + 1
+                
+            prefix = "│   " * (depth - 1) + "├── " if depth > 0 else ""
+            
+            if rel_path != ".":
+                tree_lines.append(f"{prefix}{os.path.basename(root)}/")
+                
+            file_prefix = "│   " * depth + "├── "
+            for file in sorted(files):
+                ext = os.path.splitext(file)[1].lower()
+                # Include source code, config and text files
+                if ext in {".java", ".py", ".js", ".ts", ".tsx", ".jsx", ".xml", ".properties", ".yml", ".yaml", ".json", ".md", ".txt", ".sql", ".sh", ".cmd", ".bat", ".html", ".css", ".jsp", ".jspx", ".gradle", ".csproj", ".sln"}:
+                    tree_lines.append(f"{file_prefix}{file}")
+                    
+        return "\n".join(tree_lines)
+    except Exception as e:
+        logger.error(f"Error scanning repository: {e}")
+        return ""
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
 def _build_project_context(
     project_token: str,
     db: Session,
@@ -947,6 +1006,8 @@ def _build_project_context(
             "classification": gov_response.classification,
             "weighted_score": gov_response.weighted_score,
         }
+        if gov_response.project_type:
+            context["project_type"] = gov_response.project_type
     
     # Get document analysis for this specific project
     # First try to find a document that has this project_token in its analysis_result
@@ -965,6 +1026,7 @@ def _build_project_context(
             Document.analysis_result.isnot(None)
         ).order_by(Document.upload_date.desc()).first()
     
+    brd_analysis_structure = ""
     if document and document.analysis_result:
         try:
             analysis = json.loads(document.analysis_result)
@@ -976,13 +1038,52 @@ def _build_project_context(
             
             # Extract repository structure from section 0.5.1
             raw_struct = _extract_repository_structure(raw_analysis)
-            context["repository_structure"] = clean_repository_structure_string(raw_struct)
+            brd_analysis_structure = clean_repository_structure_string(raw_struct)
             
             if "project_type" in analysis:
                 context["project_type"] = analysis["project_type"]
+            elif "metrics" in analysis and isinstance(analysis.get("metrics"), dict) and "project_type" in analysis["metrics"]:
+                context["project_type"] = analysis["metrics"]["project_type"]
         except Exception as e:
             logger.warning(f"Failed to parse document analysis: {e}")
+            
+    # Set the fallback repository structure
+    context["repository_structure"] = brd_analysis_structure
+
+    # Check if a repository is connected and contains files (for any project type)
+    repo_url = None
+    repo_token = None
+    branch = None
     
+    if gov_response:
+        repo_url = gov_response.source_repo_url or gov_response.dest_repo_url
+        repo_token = gov_response.source_repo_token or gov_response.dest_repo_token
+        # Try to find a bootstrap branch
+        try:
+            from bootstrap_persistence import get_bootstrap_branch
+            branch = get_bootstrap_branch(project_token)
+        except Exception:
+            pass
+            
+    if not repo_url:
+        from models import AgentCredential
+        cred = db.query(AgentCredential).filter(
+            AgentCredential.project_token == project_token,
+            AgentCredential.owner_id == user_id
+        ).first()
+        if cred:
+            repo_url = cred.git_repo_url
+            repo_token = cred.git_token
+            
+    if repo_url:
+        logger.info(f"[{project_token}] Connected repository found: {repo_url}. Attempting to scan actual repository structure...")
+        real_structure = _get_real_repository_structure(repo_url, repo_token, branch)
+        if real_structure:
+            context["repository_structure"] = real_structure
+            logger.info(f"[{project_token}] Successfully scanned actual repository structure ({len(real_structure)} chars)")
+        else:
+            logger.warning(f"[{project_token}] Actual repository scan returned empty, keeping BRD-extracted structure as fallback")
+            
     return context
 
 
@@ -1293,7 +1394,7 @@ Each task MUST include: task_id, taskName, description, task_type, target_file, 
     model_name = llm_gateway.resolve_model(model)
 
     try:
-        raw_response = await llm_gateway.chat_completion(
+        raw_response = await llm_gateway.call_llm(
             messages=[
                 {
                     "role": "system",
@@ -1308,16 +1409,11 @@ Each task MUST include: task_id, taskName, description, task_type, target_file, 
             api_url=api_url,
             api_key=api_key,
             model=model_name,
-            stream=False,
         )
 
         content = ""
         if isinstance(raw_response, dict):
-            content = (
-                raw_response.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-            )
+            content = llm_gateway.extract_content_from_response(raw_response)
         elif isinstance(raw_response, str):
             content = raw_response
 
@@ -1463,14 +1559,20 @@ async def generate_tasks_locally(
 
     # ── 1. Build project context ───────────────────────────────────────────────
     context = _build_project_context(project_token, db, user_id)
-    if project_type:
+    
+    # If the caller passed a generic "greenfield" but the document analysis
+    # detected something else (e.g. "brownfield"), use the detected type.
+    if project_type == "greenfield" and context.get("project_type") and context["project_type"] != "greenfield":
+        project_type = context["project_type"]
+        logger.info(f"[{project_token}] Overriding default greenfield with document-detected project_type: {project_type}")
+    elif project_type:
         context["project_type"] = project_type
 
     from brownfield_agent_service import is_brownfield_project
     if is_brownfield_project(project_type):
         if branch:
             from bootstrap_persistence import set_bootstrap_branch
-            set_bootstrap_branch(db, project_token, branch)
+            set_bootstrap_branch(project_token, branch)
             context["bootstrap_branch"] = branch
             logger.info(f"[{project_token}] Saved branch for brownfield bootstrap: {branch}")
 
@@ -1480,12 +1582,30 @@ async def generate_tasks_locally(
     if is_brownfield_project(project_type):
         logger.info(f"[{project_token}] BROWNFIELD mode — routing to brownfield task generation")
         
-        # Query agents to check skill gaps
+        # Query agents to check skill gaps via organization mappings
         from sqlalchemy import text
-        all_agents = db.execute(
-            text("SELECT skills_tags, name, specialization FROM agents WHERE owner_id = :uid"),
+        user_row = db.execute(
+            text("SELECT organization_name FROM users WHERE id = :uid"),
             {"uid": user_id}
-        ).fetchall()
+        ).fetchone()
+        user_org = user_row[0] if user_row else None
+        
+        if user_org:
+            all_agents = db.execute(
+                text("""
+                    SELECT a.skills_tags, a.name, a.specialization 
+                    FROM agents a
+                    JOIN organization_agent_mappings m ON a.id = m.agent_id
+                    WHERE lower(m.organization_name) = :org_name
+                """),
+                {"org_name": user_org.lower()}
+            ).fetchall()
+        else:
+            all_agents = db.execute(
+                text("SELECT skills_tags, name, specialization FROM agents WHERE project_token = :project_token OR project_token IS NULL"),
+                {"project_token": project_token}
+            ).fetchall()
+
         agent_list = [
             {"name": row[1], "skills_tags": row[0], "specialization": row[2]}
             for row in all_agents

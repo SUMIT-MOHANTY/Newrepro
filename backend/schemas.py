@@ -310,3 +310,16 @@ class GovernanceResult(BaseModel):
 class AccessRequest(BaseModel):
     path: str
     section_name: str
+
+class ProjectGitConfigRequest(BaseModel):
+    source_repo_url: Optional[str] = None
+    source_repo_token: Optional[str] = None
+    dest_repo_url: Optional[str] = None
+    dest_repo_token: Optional[str] = None
+
+class ProjectGitConfigResponse(BaseModel):
+    source_repo_url: Optional[str] = None
+    source_repo_token: Optional[str] = None
+    dest_repo_url: Optional[str] = None
+    dest_repo_token: Optional[str] = None
+

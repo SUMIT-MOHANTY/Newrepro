@@ -184,16 +184,20 @@ async def _publish_master_workspace_note(state: AgentWorkflowState) -> Dict[str,
                         "errors": errors,
                     }
             else:
-                # No bootstrap task exists in the list of tasks. Mark as success with no-git.
+                from bootstrap_persistence import get_bootstrap_branch
+                existing_branch = get_bootstrap_branch(project_token)
+                final_branch = existing_branch if existing_branch else "no-git"
+
+                # No bootstrap task exists in the list of tasks. Mark as success with the branch.
                 agent_service._log_master_agent(
-                    "ℹ️ No bootstrap task found in the plan. Setting default bootstrap success branch 'no-git'.",
+                    f"ℹ️ No bootstrap task found in the plan. Setting bootstrap success branch '{final_branch}'.",
                     project_token=project_token,
                 )
                 set_bootstrap_success(
                     project_token,
                     master_note_id=result.get("note_id"),
                     workspace_tree=result.get("workspace_tree"),
-                    bootstrap_branch="no-git"
+                    bootstrap_branch=final_branch
                 )
         
         # Broadcast success

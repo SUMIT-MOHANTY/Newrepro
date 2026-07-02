@@ -4,12 +4,15 @@ Handles OAuth flow & fetching repository data for AI context.
 """
 import io
 import base64
+import logging
 import posixpath
 import re
 import zipfile
 import httpx
 from typing import Optional, Dict, Any, List, Tuple
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"

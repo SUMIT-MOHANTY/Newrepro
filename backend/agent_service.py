@@ -9989,8 +9989,32 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
 
         # Ensure the remote URL has credentials embedded so push works without a TTY.
         # This is now standard for all providers to guarantee non-interactive operation.
-        if token:
-            auth_url = _build_git_auth_url(repo_url, token)
+        push_repo_url = repo_url
+        push_token = token
+        
+        if project_token:
+            try:
+                from database import SessionLocal
+                import models
+                from brownfield_agent_service import is_brownfield_project
+                
+                db = SessionLocal()
+                try:
+                    gov = db.query(models.GovernanceResponse).filter(
+                        models.GovernanceResponse.project_token == project_token
+                    ).first()
+                    if gov and is_brownfield_project(gov.project_type or ""):
+                        if gov.dest_repo_url:
+                            push_repo_url = gov.dest_repo_url
+                            push_token = gov.dest_repo_token or token
+                            logger.info(f"[_setup_git_in_container] Detected Brownfield/Migration project. Setting origin remote to target: {push_repo_url}")
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.error(f"[_setup_git_in_container] Failed to check for target push repository: {e}")
+
+        if push_token:
+            auth_url = _build_git_auth_url(push_repo_url, push_token)
             subprocess.run(
                 ["docker", "exec", "-w", "/workspace", container_name,
                  "git", "remote", "set-url", "origin", auth_url],
@@ -10527,7 +10551,12 @@ yarn-error.log
         # Azure DevOps: use clean URL + http.extraHeader (no TTY prompt risk).
         # GitHub/other: use token-embedded URL + no extra headers.
         auth_config = _get_git_auth_config(repo_url, token)   # [] for GitHub
-        push_remote = _build_git_auth_url(repo_url, token) if (repo_url and token) else "origin"
+        
+        # In brownfield/migration mode, origin has already been updated to the destination/target repo.
+        if branch_name and (branch_name.startswith("dsuite/change-") or "dsuite" in branch_name):
+            push_remote = "origin"
+        else:
+            push_remote = _build_git_auth_url(repo_url, token) if (repo_url and token) else "origin"
         
         push_cmd = ["docker", "exec", "-w", "/workspace", container_name, "git"]
         push_cmd.extend(auth_config)
@@ -13970,7 +13999,7 @@ def _infer_project_stack(
             if frontend_scores.get("jinja-html", 0) > max(frontend_scores.get("static-html", 0), frontend_scores.get("react-vite", 0)):
                 frontend = "jinja-html"
             else:
-                frontend = "static-html" if frontend_scores.get("static-html") >= frontend_scores.get("react-vite") else "react-vite"
+                frontend = "static-html" if frontend_scores.get("static-html", 0) >= frontend_scores.get("react-vite", 0) else "react-vite"
         if frontend == "jinja-html":
             backend = "flask"
             reason = "Specification indicates backend is not applicable except Flask template rendering."
@@ -13982,7 +14011,7 @@ def _infer_project_stack(
             if frontend_scores.get("jinja-html", 0) > max(frontend_scores.get("static-html", 0), frontend_scores.get("react-vite", 0)):
                 frontend = "jinja-html"
             else:
-                frontend = "static-html" if frontend_scores.get("static-html") >= frontend_scores.get("react-vite") else "react-vite"
+                frontend = "static-html" if frontend_scores.get("static-html", 0) >= frontend_scores.get("react-vite", 0) else "react-vite"
         if frontend == "jinja-html":
             backend = "flask"
             reason = "Tasks describe Flask-rendered templates, so Flask + Jinja was selected."
@@ -18072,7 +18101,7 @@ async def _sync_rollup_status_for_completed_task(
                 children = [
                     t for t in all_tasks
                     if str(parent_id) in [str(lt) for lt in (t.get("linked_tasks") or [])]
-                    and (t.get("task_type") or "").upper() in ["TASK", "BUG"]
+                    and (t.get("task_type") or "").upper() in ["TASK", "BUG", "ANALYSIS", "DEVELOPMENT", "TESTING"]
                 ]
                 
                 # If all children are complete, mark parent complete
@@ -18096,7 +18125,7 @@ async def _sync_rollup_status_for_completed_task(
             milestone_tasks = [
                 t for t in all_tasks
                 if _extract_task_parent_id(t, "milestone") == milestone_id
-                and (t.get("task_type") or "").upper() in ["TASK", "BUG"]
+                and (t.get("task_type") or "").upper() in ["TASK", "BUG", "ANALYSIS", "DEVELOPMENT", "TESTING"]
             ]
             if milestone_tasks and all(_is_completed_task_status(t.get("status")) for t in milestone_tasks):
                 try:
@@ -18123,7 +18152,7 @@ async def _sync_rollup_status_for_completed_task(
             sprint_tasks = [
                 t for t in all_tasks
                 if _extract_task_parent_id(t, "sprint") == sprint_id
-                and (t.get("task_type") or "").upper() in ["TASK", "BUG"]
+                and (t.get("task_type") or "").upper() in ["TASK", "BUG", "ANALYSIS", "DEVELOPMENT", "TESTING"]
             ]
             if sprint_tasks and all(_is_completed_task_status(t.get("status")) for t in sprint_tasks):
                 try:
@@ -18146,7 +18175,7 @@ async def _sync_rollup_status_for_completed_task(
                     )
 
         # FIX: Only check executable tasks (TASK/BUG) for project completion, not containers
-        executable_tasks = [t for t in all_tasks if (t.get("task_type") or "").upper() in ["TASK", "BUG"]]
+        executable_tasks = [t for t in all_tasks if (t.get("task_type") or "").upper() in ["TASK", "BUG", "ANALYSIS", "DEVELOPMENT", "TESTING"]]
         if executable_tasks and all(_is_completed_task_status(t.get("status")) for t in executable_tasks):
             result["project_completed"] = await _update_project_status(
                 "Completed",
@@ -18453,7 +18482,7 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
             # EPIC, FEATURE, STORY are organizational containers, not implementation units
             # TASK-00 is the bootstrap task (type TASK) and runs first — all others wait for it
             task_type = (t.get("task_type") or "").upper()
-            if task_type not in ["TASK", "BUG", "FEATURE"]:
+            if task_type not in ["TASK", "BUG", "FEATURE", "ANALYSIS", "DEVELOPMENT", "TESTING"]:
                 skip_reasons.setdefault("non_executable_type", 0)
                 skip_reasons["non_executable_type"] += 1
                 continue
@@ -19973,6 +20002,54 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 "message": f"✅ Container '{container_name}' created with /workspace/ ready"
             })
 
+            # For Migration projects, clone legacy source repo to /legacy in the container
+            if project_token:
+                try:
+                    from database import SessionLocal
+                    import models
+                    db_session = SessionLocal()
+                    gov = db_session.query(models.GovernanceResponse).filter(
+                        models.GovernanceResponse.project_token == project_token
+                    ).first()
+                    if gov and (gov.project_type or "").lower() == "migration":
+                        if gov.source_repo_url:
+                            from brownfield_agent_service import build_git_auth_url, get_git_auth_config
+                            src_token = gov.source_repo_token or ""
+                            auth_url = build_git_auth_url(gov.source_repo_url, src_token)
+                            auth_config = get_git_auth_config(gov.source_repo_url, src_token)
+                            
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": f"🚚 MIGRATION MODE: Cloning legacy source codebase from {gov.source_repo_url} to /legacy..."
+                            })
+                            # Clean up if any /legacy folder exists
+                            subprocess.run(
+                                ["docker", "exec", container_name, "rm", "-rf", "/legacy"],
+                                capture_output=True, text=True, timeout=10
+                            )
+                            # Clone legacy repo
+                            clone_cmd = ["docker", "exec", container_name, "git"]
+                            clone_cmd.extend(auth_config)
+                            clone_cmd.extend(["clone", auth_url, "/legacy"])
+                            
+                            clone_run = subprocess.run(clone_cmd, capture_output=True, text=True, timeout=180)
+                            if clone_run.returncode == 0:
+                                agent["output_log"].append({
+                                    "time": datetime.utcnow().isoformat(),
+                                    "type": "info",
+                                    "message": "✅ Legacy source codebase cloned successfully to /legacy"
+                                })
+                            else:
+                                agent["output_log"].append({
+                                    "time": datetime.utcnow().isoformat(),
+                                    "type": "warning",
+                                    "message": f"⚠️ Failed to clone legacy source codebase: {clone_run.stderr.strip()}"
+                                })
+                    db_session.close()
+                except Exception as e:
+                    logger.error(f"Failed to clone legacy source repo: {e}")
+
                 # ── BOOTSTRAP COORDINATION: Determine if this agent should bootstrap ────
             if use_git:
                 # Check if this is a bootstrap task
@@ -20036,6 +20113,10 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     # ── INTELLIGENT BOOTSTRAP BRANCH DISCOVERY (3-layer, no hardcoding) ──
                     # Layer 1: Persistent DB (survives server restarts)
                     bootstrap_branch = get_bootstrap_branch(project_token)
+                    if not bootstrap_branch and task.get("_brownfield_mode"):
+                        bootstrap_branch = task.get("_base_branch") or "main"
+                        set_bootstrap_branch(project_token, bootstrap_branch)
+                        
                     if bootstrap_branch:
                         agent["output_log"].append({
                             "time": datetime.utcnow().isoformat(),
@@ -20847,6 +20928,33 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             # Prepend context to dynamic system prompt
             if claude_and_skills_context:
                 dynamic_system_prompt = f"{claude_and_skills_context}\n\n{dynamic_system_prompt}"
+
+            # Prepend legacy codebase migration instructions for Migration projects
+            if project_token:
+                try:
+                    from database import SessionLocal
+                    import models
+                    db_session = SessionLocal()
+                    gov = db_session.query(models.GovernanceResponse).filter(
+                        models.GovernanceResponse.project_token == project_token
+                    ).first()
+                    if gov and (gov.project_type or "").lower() == "migration":
+                        migration_context = (
+                            "=== LEGISLATIVE LEGACY CODEBASE MIGRATION ===\n"
+                            "You are performing a codebase migration task from a legacy system to a newer tech stack.\n"
+                            "The legacy source code has been cloned and is located at `/legacy` inside your container.\n"
+                            "You can view, read, and search the legacy code files under `/legacy` to understand the business logic, "
+                            "algorithms, validation rules, data schemas, and requirements.\n"
+                            "You must write the migrated, translated code inside `/workspace` (which is your active git checkout for the destination repository).\n"
+                            "Follow the project scaffold structure and coding guidelines established in `/workspace` (e.g. from the project bootstrap or previous tasks).\n"
+                            "Verify your new code in `/workspace` via the verification tools and make sure all changes compile correctly.\n"
+                            "Do NOT modify or touch `/legacy` — treat `/legacy` as a read-only reference of the older implementation.\n"
+                            "============================================="
+                        )
+                        dynamic_system_prompt = f"{migration_context}\n\n{dynamic_system_prompt}"
+                    db_session.close()
+                except Exception as e:
+                    logger.error(f"Failed to prepend migration prompt context: {e}")
 
             agent["progress"] = 25
             agent["progress_message"] = "AI is generating build script..."
@@ -25426,7 +25534,7 @@ async def _master_supervisor_loop(
                     continue
                 # FIX: Master supervisor should only assign executable tasks (TASK/BUG), not containers
                 task_type = (task.get("task_type") or "").upper()
-                if task_type not in ["TASK", "BUG", "FEATURE"]:
+                if task_type not in ["TASK", "BUG", "FEATURE", "ANALYSIS", "DEVELOPMENT", "TESTING"]:
                     continue
                 available_tasks.append(task)
             

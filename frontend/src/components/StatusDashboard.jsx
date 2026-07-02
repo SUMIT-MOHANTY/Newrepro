@@ -710,6 +710,11 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         setAgents(prev => prev.map(a => a.id === agentId ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' } : a));
 
         const body = repoUrl && repoToken ? { git_repo_url: repoUrl, git_token: repoToken } : {};
+        const sourceUrl = localStorage.getItem(`source_repo_url_${selectedProjectKey}`);
+        if (sourceUrl) {
+            body.source_repo_url = sourceUrl;
+        }
+
         try {
             const headers = {
                 'Authorization': `Bearer ${token}`,
@@ -827,10 +832,17 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
             if (selectedProjectKey) headers['x-project-token'] = selectedProjectKey;
             if (hasValidTaskToken) headers['x-task-token'] = taskToken;
+            
+            const body = {};
+            const sourceUrl = localStorage.getItem(`source_repo_url_${selectedProjectKey}`);
+            if (sourceUrl) {
+                body.source_repo_url = sourceUrl;
+            }
+
             await fetch(withProjectToken(API_ENDPOINTS.AGENT_RUN_ALL), {
                 method: 'POST',
                 headers,
-                body: JSON.stringify({}),
+                body: JSON.stringify(body),
             });
             await fetchAgents();
             await fetchTasks(false, 1, true);

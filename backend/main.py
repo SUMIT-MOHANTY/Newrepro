@@ -4649,6 +4649,60 @@ async def ensure_project_exists(
     }
 
 
+@app.post("/api/projects/{project_token}/git-config", response_model=schemas.ProjectGitConfigResponse)
+async def save_project_git_config(
+    project_token: str,
+    request: schemas.ProjectGitConfigRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    project_token = _normalize_project_token(project_token)
+    db_response = db.query(models.GovernanceResponse).filter(
+        models.GovernanceResponse.project_token == project_token
+    ).first()
+    if not db_response:
+        raise HTTPException(status_code=404, detail="Project not found")
+        
+    if request.source_repo_url is not None:
+        db_response.source_repo_url = request.source_repo_url
+    if request.source_repo_token is not None:
+        db_response.source_repo_token = request.source_repo_token
+    if request.dest_repo_url is not None:
+        db_response.dest_repo_url = request.dest_repo_url
+    if request.dest_repo_token is not None:
+        db_response.dest_repo_token = request.dest_repo_token
+        
+    db.commit()
+    db.refresh(db_response)
+    return schemas.ProjectGitConfigResponse(
+        source_repo_url=db_response.source_repo_url,
+        source_repo_token=db_response.source_repo_token,
+        dest_repo_url=db_response.dest_repo_url,
+        dest_repo_token=db_response.dest_repo_token,
+    )
+
+
+@app.get("/api/projects/{project_token}/git-config", response_model=schemas.ProjectGitConfigResponse)
+async def get_project_git_config(
+    project_token: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    project_token = _normalize_project_token(project_token)
+    db_response = db.query(models.GovernanceResponse).filter(
+        models.GovernanceResponse.project_token == project_token
+    ).first()
+    if not db_response:
+        raise HTTPException(status_code=404, detail="Project not found")
+        
+    return schemas.ProjectGitConfigResponse(
+        source_repo_url=db_response.source_repo_url,
+        source_repo_token=db_response.source_repo_token,
+        dest_repo_url=db_response.dest_repo_url,
+        dest_repo_token=db_response.dest_repo_token,
+    )
+
+
 @app.post("/governance/submit", response_model=schemas.GovernanceResult)
 async def submit_governance_response(
     request: schemas.GovernanceSubmission,
@@ -5585,7 +5639,7 @@ You MUST return the output in a JSON list of objects containing fields 'name', '
             api_url=settings.ai_api_url,
             api_key=settings.ai_api_key,
             model=settings.ai_model,
-            timeout=60.0
+            timeout=120.0
         )
         
         # Extract JSON list from response
@@ -8937,6 +8991,8 @@ async def _bg_run_agent(
     project_token: Optional[str],
     x_task_token: Optional[str],
     continuous: bool = True,
+    source_repo_url: Optional[str] = None,
+    source_repo_token: Optional[str] = None,
 ):
     """
     Background wrapper task for running agents.
@@ -8965,6 +9021,8 @@ async def _bg_run_agent(
         if is_brownfield_project(project_type):
             logger.info(f"[{agent_id}] Running in BROWNFIELD mode wrapper for project {project_token}")
             base_branch = get_bootstrap_branch(project_token) or "main"
+            if base_branch == "no-git":
+                base_branch = "main"
             
             # Loop to pick and run tasks (continuous mode)
             while True:
@@ -8996,10 +9054,12 @@ async def _bg_run_agent(
                     project_token=project_token,
                     task_token=x_task_token,
                     task=task,
-                    git_repo_url=git_repo_url or "",
-                    git_token=git_token or "",
+                    git_repo_url=source_repo_url or git_repo_url or "",
+                    git_token=source_repo_token or git_token or "",
                     base_branch=base_branch,
                     agent_output_log=agent_state.setdefault("output_log", []),
+                    target_repo_url=git_repo_url or "",
+                    target_repo_token=git_token or "",
                 )
                 
                 # Mark status back to idle/done after execution
@@ -9142,6 +9202,7 @@ async def reset_agent(
 
 class RunAllRequest(BaseModel):
     agents_config: Optional[Dict[str, Dict[str, str]]] = None
+    source_repo_url: Optional[str] = None
 
 
 @app.post("/agents/run-all")
@@ -9282,6 +9343,56 @@ async def run_all_agents(
     # Launch all idle agents using the coordinated workflow with master agent supervision
     task_token = x_task_token or agent_service.get_project_task_token(project_token)
     
+    # Check if this is a brownfield project
+    from brownfield_agent_service import is_brownfield_project
+    project_type = "greenfield"
+    source_repo_url = None
+    source_repo_token = None
+    dest_repo_url = None
+    dest_repo_token = None
+    
+    try:
+        gov = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.project_token == project_token
+        ).first()
+        if gov:
+            if gov.project_type:
+                project_type = gov.project_type
+            source_repo_url = gov.source_repo_url
+            source_repo_token = gov.source_repo_token
+            dest_repo_url = gov.dest_repo_url
+            dest_repo_token = gov.dest_repo_token
+    except Exception as e:
+        logger.error(f"Failed to check project type: {e}")
+
+    # Fallbacks
+    source_repo_url = source_repo_url or (request.source_repo_url if request else None)
+    git_repo_url_to_use = dest_repo_url or provided_repo
+    git_token_to_use = dest_repo_token or provided_token
+
+    if is_brownfield_project(project_type):
+        logger.info(f"[{project_token}] Launching {len(available_agents)} agents in BROWNFIELD mode")
+        for agent_id in available_agents:
+            asyncio.create_task(
+                _bg_run_agent(
+                    agent_id=agent_id,
+                    git_repo_url=git_repo_url_to_use,
+                    git_token=git_token_to_use,
+                    project_token=project_token,
+                    x_task_token=task_token,
+                    continuous=True,
+                    source_repo_url=source_repo_url,
+                    source_repo_token=source_repo_token,
+                )
+            )
+        return {
+            "started": True,
+            "agents": available_agents,
+            "total_tasks": len(project_tasks),
+            "workflow_result": "Started independent brownfield agents",
+            "message": f"Launched {len(available_agents)} agent(s) in brownfield mode.",
+        }
+
     # Build agents_config for the workflow
     workflow_agents_config = {}
     for agent_id in available_agents:
@@ -12439,7 +12550,7 @@ async def generate_tasks_locally(
         effective_branch = request.branch
         if not effective_branch:
             from bootstrap_persistence import get_bootstrap_branch
-            stored_branch = get_bootstrap_branch(db, request.project_token)
+            stored_branch = get_bootstrap_branch(request.project_token)
             if stored_branch:
                 effective_branch = stored_branch
                 logger.info(f"[{request.project_token}] Using stored branch: {effective_branch}")
@@ -12592,11 +12703,23 @@ async def get_project_skill_gaps(
         )
 
         # Query DB directly for registered agents (avoids HTTP round-trip)
+        user_org = current_user.organization_name
+        if user_org:
+            all_agents = db.execute(
+                text("""
+                    SELECT a.skills_tags, a.name, a.specialization 
+                    FROM agents a
+                    JOIN organization_agent_mappings m ON a.id = m.agent_id
+                    WHERE lower(m.organization_name) = :org_name
+                """),
+                {"org_name": user_org.lower()}
+            ).fetchall()
+        else:
+            all_agents = db.execute(
+                text("SELECT skills_tags, name, specialization FROM agents WHERE project_token = :project_token OR project_token IS NULL"),
+                {"project_token": project_token}
+            ).fetchall()
 
-        all_agents = db.execute(
-            text("SELECT skills_tags, name, specialization FROM agents WHERE owner_id = :uid"),
-            {"uid": current_user.id}
-        ).fetchall()
         agent_list = [
             {"name": row[1], "skills_tags": row[0], "specialization": row[2]}
             for row in all_agents
