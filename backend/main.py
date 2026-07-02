@@ -506,8 +506,10 @@ async def get_ai_config(
 
 @app.post("/ai/analyze")
 async def analyze_document_with_ai(
-    request: AnalyzeRequest,
+    analyze_req: AnalyzeRequest,
+    request: Request,
     current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Analyze document content using AI with job-based polling support.
@@ -523,33 +525,89 @@ async def analyze_document_with_ai(
     Uses chunked multi-stage analysis by default (configurable via USE_CHUNKED_ANALYSIS env var)
     to reduce payload size and improve reliability.
     """
-    if _all_answers_skipped_from_governance_context(request.governance_context):
+    if _all_answers_skipped_from_governance_context(analyze_req.governance_context):
         raise HTTPException(status_code=403, detail=ALL_SKIPPED_ANALYZE_BLOCK_MESSAGE)
 
+    # Automatically resolve project token and inject the actual repository structure context
+    # if it's connected and not already in the document content
+    project_token = request.headers.get("x-task-token") or request.headers.get("X-Task-Token")
+    if not project_token:
+        project_token = request.query_params.get("project_token")
+    if not project_token:
+        referer = request.headers.get("referer") or ""
+        if "project_token=" in referer:
+            try:
+                import urllib.parse
+                parsed = urllib.parse.urlparse(referer)
+                queries = urllib.parse.parse_qs(parsed.query)
+                token_list = queries.get("project_token")
+                if token_list:
+                    project_token = token_list[0]
+            except Exception:
+                pass
+
+    if project_token and "--- REPOSITORY CONTEXT ---" not in (analyze_req.document_content or ""):
+        gov = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.project_token == project_token
+        ).first()
+        
+        repo_url = None
+        repo_token = None
+        branch = None
+        
+        if gov:
+            repo_url = gov.source_repo_url or gov.dest_repo_url
+            repo_token = gov.source_repo_token or gov.dest_repo_token
+            try:
+                from bootstrap_persistence import get_bootstrap_branch
+                branch = get_bootstrap_branch(project_token)
+            except Exception:
+                pass
+                
+        if not repo_url:
+            cred = db.query(models.AgentCredential).filter(
+                models.AgentCredential.project_token == project_token,
+                models.AgentCredential.owner_id == current_user.id
+            ).first()
+            if cred:
+                repo_url = cred.git_repo_url
+                repo_token = cred.git_token
+                
+        if repo_url:
+            try:
+                from task_generation_service import _get_real_repository_structure
+                logger.info(f"[{project_token}] Fetching repository structure for document analysis from {repo_url}...")
+                real_structure = _get_real_repository_structure(repo_url, repo_token, branch)
+                if real_structure:
+                    analyze_req.document_content = f"{analyze_req.document_content or ''}\n\n--- REPOSITORY CONTEXT ---\n{real_structure}"
+                    logger.info(f"[{project_token}] Successfully injected repository structure into document content")
+            except Exception as e:
+                logger.warning(f"Failed to scan repo structure for document analysis: {e}")
+
     # If streaming is requested, use the old behavior (no job system)
-    if request.stream:
+    if analyze_req.stream:
         logger.info("Using streaming mode - bypassing job system")
         if settings.use_chunked_analysis:
             result = await ai_service_chunked.analyze_document(
-                document_content=request.document_content,
-                api_url=request.api_url,
-                api_key=request.api_key,
-                model=request.model,
-                stream=request.stream,
-                user_feedback=request.user_feedback,
-                image_paths=request.image_paths,
-                governance_context=request.governance_context,
+                document_content=analyze_req.document_content,
+                api_url=analyze_req.api_url,
+                api_key=analyze_req.api_key,
+                model=analyze_req.model,
+                stream=analyze_req.stream,
+                user_feedback=analyze_req.user_feedback,
+                image_paths=analyze_req.image_paths,
+                governance_context=analyze_req.governance_context,
             )
         else:
             result = await ai_service.analyze_document(
-                document_content=request.document_content,
-                api_url=request.api_url,
-                api_key=request.api_key,
-                model=request.model,
-                stream=request.stream,
-                user_feedback=request.user_feedback,
-                image_paths=request.image_paths,
-                governance_context=request.governance_context,
+                document_content=analyze_req.document_content,
+                api_url=analyze_req.api_url,
+                api_key=analyze_req.api_key,
+                model=analyze_req.model,
+                stream=analyze_req.stream,
+                user_feedback=analyze_req.user_feedback,
+                image_paths=analyze_req.image_paths,
+                governance_context=analyze_req.governance_context,
             )
         
         if isinstance(result, dict) and result.get("status") == "error":
@@ -571,48 +629,48 @@ async def analyze_document_with_ai(
             # --- TARGETED UPDATE PATH ---
             # If a previous_analysis is supplied, perform a surgical diff-based update
             # instead of regenerating everything from scratch.
-            if request.previous_analysis and isinstance(request.previous_analysis, dict):
-                logger.info(f"Job {job_id}: Performing targeted update (type={request.update_type})")
+            if analyze_req.previous_analysis and isinstance(analyze_req.previous_analysis, dict):
+                logger.info(f"Job {job_id}: Performing targeted update (type={analyze_req.update_type})")
                 job.update_progress(15, "Analyzing what needs to change...")
-                change_request = request.user_feedback or ""
+                change_request = analyze_req.user_feedback or ""
                 result = await ai_service_chunked.update_analysis_targeted(
-                    previous_analysis=request.previous_analysis,
+                    previous_analysis=analyze_req.previous_analysis,
                     change_request=change_request,
-                    document_content=request.document_content,
-                    api_url=request.api_url,
-                    api_key=request.api_key,
-                    model=request.model,
-                    governance_context=request.governance_context,
+                    document_content=analyze_req.document_content,
+                    api_url=analyze_req.api_url,
+                    api_key=analyze_req.api_key,
+                    model=analyze_req.model,
+                    governance_context=analyze_req.governance_context,
                     job_id=job_id,
-                    update_type=request.update_type or "feedback",
+                    update_type=analyze_req.update_type or "feedback",
                 )
             # --- FULL ANALYSIS PATH ---
             elif settings.use_chunked_analysis:
                 logger.info(f"Job {job_id}: Using chunked multi-stage analysis")
                 job.update_progress(20, "Stage 1: Extracting requirements...")
                 result = await ai_service_chunked.analyze_document(
-                    document_content=request.document_content,
-                    api_url=request.api_url,
-                    api_key=request.api_key,
-                    model=request.model,
+                    document_content=analyze_req.document_content,
+                    api_url=analyze_req.api_url,
+                    api_key=analyze_req.api_key,
+                    model=analyze_req.model,
                     stream=False,
-                    user_feedback=request.user_feedback,
-                    image_paths=request.image_paths,
-                    governance_context=request.governance_context,
+                    user_feedback=analyze_req.user_feedback,
+                    image_paths=analyze_req.image_paths,
+                    governance_context=analyze_req.governance_context,
                     job_id=job_id,
                 )
             else:
                 logger.info(f"Job {job_id}: Using original single-stage analysis")
                 job.update_progress(30, "Analyzing document with AI...")
                 result = await ai_service.analyze_document(
-                    document_content=request.document_content,
-                    api_url=request.api_url,
-                    api_key=request.api_key,
-                    model=request.model,
+                    document_content=analyze_req.document_content,
+                    api_url=analyze_req.api_url,
+                    api_key=analyze_req.api_key,
+                    model=analyze_req.model,
                     stream=False,
-                    user_feedback=request.user_feedback,
-                    image_paths=request.image_paths,
-                    governance_context=request.governance_context,
+                    user_feedback=analyze_req.user_feedback,
+                    image_paths=analyze_req.image_paths,
+                    governance_context=analyze_req.governance_context,
                 )
             
             # Handle errors

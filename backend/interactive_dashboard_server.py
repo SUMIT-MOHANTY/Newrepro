@@ -17,6 +17,11 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
+def table_exists(conn, table_name):
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
+    return cur.fetchone() is not None
+
 @app.get("/api/summary")
 def get_summary():
     conn = get_db_connection()
@@ -35,12 +40,15 @@ def get_summary():
     cur.execute("SELECT COUNT(*) FROM governance_responses")
     total_projects = cur.fetchone()[0]
     
-    cur.execute("SELECT COUNT(*) FROM user_sessions")
-    total_sessions = cur.fetchone()[0]
-    
-    cur.execute("SELECT SUM(duration_seconds) FROM user_sessions")
-    total_duration = cur.fetchone()[0] or 0
-    
+    if table_exists(conn, "user_sessions"):
+        cur.execute("SELECT COUNT(*) FROM user_sessions")
+        total_sessions = cur.fetchone()[0]
+        cur.execute("SELECT SUM(duration_seconds) FROM user_sessions")
+        total_duration = cur.fetchone()[0] or 0
+    else:
+        total_sessions = 0
+        total_duration = 0
+        
     cur.execute("SELECT COUNT(*) FROM bootstrap_states WHERE status='success'")
     successful_runs = cur.fetchone()[0]
     
@@ -55,6 +63,13 @@ def get_summary():
     cur.execute("SELECT classification, COUNT(*) as cnt FROM governance_responses GROUP BY classification")
     classifications = {r["classification"]: r["cnt"] for r in cur.fetchall()}
 
+    # AI usage metrics
+    cur.execute("SELECT SUM(prompt_tokens), SUM(completion_tokens), SUM(cost) FROM ai_usage_logs")
+    ai_stats = cur.fetchone()
+    total_prompt = ai_stats[0] or 0
+    total_completion = ai_stats[1] or 0
+    total_cost = ai_stats[2] or 0.0
+
     conn.close()
     
     return {
@@ -68,7 +83,10 @@ def get_summary():
         "successful_runs": successful_runs,
         "failed_runs": failed_runs,
         "run_statuses": run_statuses,
-        "classifications": classifications
+        "classifications": classifications,
+        "total_prompt_tokens": total_prompt,
+        "total_completion_tokens": total_completion,
+        "total_cost": round(total_cost, 4)
     }
 
 @app.get("/api/users")
@@ -84,9 +102,16 @@ def get_users_list():
     cur.execute("SELECT owner_id, COUNT(*) as cnt FROM governance_responses GROUP BY owner_id")
     projects_by_user = {r["owner_id"]: r["cnt"] for r in cur.fetchall()}
     
-    # Query sessions stats per user
-    cur.execute("SELECT user_id, COUNT(*) as count, SUM(duration_seconds) as total_time FROM user_sessions GROUP BY user_id")
-    session_stats = {r["user_id"]: {"count": r["count"], "total_time": r["total_time"]} for r in cur.fetchall()}
+    # Query sessions stats per user (if table exists)
+    if table_exists(conn, "user_sessions"):
+        cur.execute("SELECT user_id, COUNT(*) as count, SUM(duration_seconds) as total_time FROM user_sessions GROUP BY user_id")
+        session_stats = {r["user_id"]: {"count": r["count"], "total_time": r["total_time"]} for r in cur.fetchall()}
+    else:
+        session_stats = {}
+
+    # Query AI usage stats per user
+    cur.execute("SELECT user_id, SUM(prompt_tokens) as prompt, SUM(completion_tokens) as completion, SUM(cost) as cost FROM ai_usage_logs GROUP BY user_id")
+    ai_stats = {r["user_id"]: {"tokens": (r["prompt"] or 0) + (r["completion"] or 0), "cost": r["cost"] or 0.0} for r in cur.fetchall()}
     
     # Query user org roles
     cur.execute("""
@@ -114,6 +139,7 @@ def get_users_list():
     for u in users:
         uid = u["id"]
         stats = session_stats.get(uid, {"count": 0, "total_time": 0})
+        user_ai = ai_stats.get(uid, {"tokens": 0, "cost": 0.0})
         
         # Format last login
         last_login_str = u.get("last_login")
@@ -142,7 +168,9 @@ def get_users_list():
             "roles": roles.get(uid, []),
             "permission_count": permissions.get(uid, 0),
             "github_username": u.get("github_username") or "—",
-            "azure_devops_username": u.get("azure_devops_username") or "—"
+            "azure_devops_username": u.get("azure_devops_username") or "—",
+            "ai_tokens": user_ai["tokens"],
+            "ai_cost": round(user_ai["cost"], 4)
         })
         
     conn.close()
@@ -157,9 +185,16 @@ def get_user_detail(user_id: int):
     cur.execute("SELECT * FROM governance_responses WHERE owner_id=?", (user_id,))
     projects = [dict(r) for r in cur.fetchall()]
     
-    # Sessions for this user
-    cur.execute("SELECT * FROM user_sessions WHERE user_id=? ORDER BY session_start DESC LIMIT 20", (user_id,))
-    sessions = [dict(r) for r in cur.fetchall()]
+    # Sessions for this user (if table exists)
+    if table_exists(conn, "user_sessions"):
+        cur.execute("SELECT * FROM user_sessions WHERE user_id=? ORDER BY session_start DESC LIMIT 20", (user_id,))
+        sessions = [dict(r) for r in cur.fetchall()]
+    else:
+        sessions = []
+    
+    # AI usage summary by model
+    cur.execute("SELECT model, SUM(prompt_tokens) as prompt, SUM(completion_tokens) as completion, SUM(cost) as cost, COUNT(*) as count FROM ai_usage_logs WHERE user_id=? GROUP BY model", (user_id,))
+    ai_usage = [dict(r) for r in cur.fetchall()]
     
     # Permissions paths
     cur.execute("""
@@ -174,7 +209,8 @@ def get_user_detail(user_id: int):
     return {
         "projects": projects,
         "sessions": sessions,
-        "permissions": sorted(permissions)
+        "permissions": sorted(permissions),
+        "ai_usage": ai_usage
     }
 
 @app.get("/api/projects")
@@ -216,9 +252,23 @@ def get_organizations():
     cur.execute("SELECT organization_name, COUNT(*) as project_count FROM governance_responses GROUP BY organization_name")
     proj_counts = {r["organization_name"]: r["project_count"] for r in cur.fetchall() if r["organization_name"]}
     
-    # Add project count
+    # AI usage per org (aggregating users' usage)
+    cur.execute("""
+        SELECT u.organization_name, SUM(a.prompt_tokens + a.completion_tokens) as tokens, SUM(a.cost) as cost
+        FROM ai_usage_logs a
+        JOIN users u ON a.user_id = u.id
+        WHERE u.organization_name IS NOT NULL AND u.organization_name != ''
+        GROUP BY u.organization_name
+    """)
+    ai_by_org = {r["organization_name"]: {"tokens": r["tokens"] or 0, "cost": r["cost"] or 0.0} for r in cur.fetchall()}
+
+    # Add project count and AI metrics
     for o in orgs:
-        o["project_count"] = proj_counts.get(o["organization_name"], 0)
+        org_name = o["organization_name"]
+        o["project_count"] = proj_counts.get(org_name, 0)
+        org_ai = ai_by_org.get(org_name, {"tokens": 0, "cost": 0.0})
+        o["ai_tokens"] = org_ai["tokens"]
+        o["ai_cost"] = round(org_ai["cost"], 4)
         
     conn.close()
     return orgs
@@ -227,14 +277,17 @@ def get_organizations():
 def get_sessions(limit: int = 100):
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("""
-        SELECT s.*, u.email as user_email, u.first_name, u.last_name 
-        FROM user_sessions s
-        JOIN users u ON s.user_id = u.id
-        ORDER BY s.session_start DESC
-        LIMIT ?
-    """, (limit,))
-    sessions = [dict(r) for r in cur.fetchall()]
+    if table_exists(conn, "user_sessions"):
+        cur.execute("""
+            SELECT s.*, u.email as user_email, u.first_name, u.last_name 
+            FROM user_sessions s
+            JOIN users u ON s.user_id = u.id
+            ORDER BY s.session_start DESC
+            LIMIT ?
+        """, (limit,))
+        sessions = [dict(r) for r in cur.fetchall()]
+    else:
+        sessions = []
     conn.close()
     return sessions
 
@@ -687,6 +740,8 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
                             <th onclick="sortUserTable('projects')">Projects ⇅</th>
                             <th onclick="sortUserTable('sessions')">Sessions ⇅</th>
                             <th onclick="sortUserTable('hours')">Total Time (Hrs) ⇅</th>
+                            <th onclick="sortUserTable('ai_tokens')">AI Tokens ⇅</th>
+                            <th onclick="sortUserTable('ai_cost')">AI Cost ⇅</th>
                         </tr>
                     </thead>
                     <tbody id="users-table-body">
@@ -737,6 +792,8 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
                             <th>Active Users</th>
                             <th>Org Admins</th>
                             <th>Projects Created</th>
+                            <th>AI Tokens</th>
+                            <th>AI Cost</th>
                         </tr>
                     </thead>
                     <tbody id="orgs-table-body">
@@ -775,6 +832,23 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
                 </div>
 
                 <div class="info-card" style="margin-bottom: 24px;">
+                    <div class="info-title">AI Token Usage &amp; Cost Breakdown</div>
+                    <table style="width:100%; border-collapse:collapse; font-size:12px;">
+                        <thead>
+                            <tr style="background:var(--surf-hover)">
+                                <th style="padding:6px 10px; text-align:left;">Model</th>
+                                <th style="padding:6px 10px; text-align:left;">Requests</th>
+                                <th style="padding:6px 10px; text-align:left;">Prompt Tokens</th>
+                                <th style="padding:6px 10px; text-align:left;">Completion Tokens</th>
+                                <th style="padding:6px 10px; text-align:left;">Total Tokens</th>
+                                <th style="padding:6px 10px; text-align:left;">Cost (USD)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="modal-user-ai-usage">
+                            <!-- Populated dynamically -->
+                        </tbody>
+                    </table>
+                </div>
                     <div class="info-title" id="modal-permissions-title">Permissions Paths</div>
                     <div id="modal-user-permissions" style="max-height: 120px; overflow-y: auto;">None</div>
                 </div>
@@ -891,6 +965,16 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
                     <div class="kpi-value" style="color:var(--green)">${summaryData.successful_runs}</div>
                     <div class="kpi-desc" style="color:var(--red)">Failed: ${summaryData.failed_runs} runs</div>
                 </div>
+                <div class="kpi-card">
+                    <div class="kpi-title">AI Tokens Consumed</div>
+                    <div class="kpi-value">${(summaryData.total_prompt_tokens + summaryData.total_completion_tokens >= 1000000) ? ((summaryData.total_prompt_tokens + summaryData.total_completion_tokens)/1000000).toFixed(2) + 'M' : (summaryData.total_prompt_tokens + summaryData.total_completion_tokens).toLocaleString()}</div>
+                    <div class="kpi-desc">P: ${(summaryData.total_prompt_tokens >= 1000000) ? (summaryData.total_prompt_tokens/1000000).toFixed(2) + 'M' : summaryData.total_prompt_tokens.toLocaleString()} / C: ${(summaryData.total_completion_tokens >= 1000000) ? (summaryData.total_completion_tokens/1000000).toFixed(2) + 'M' : summaryData.total_completion_tokens.toLocaleString()}</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-title">Total AI Spend</div>
+                    <div class="kpi-value" style="color:var(--accent)">$${summaryData.total_cost.toFixed(2)}</div>
+                    <div class="kpi-desc">Aggregate API usage costs</div>
+                </div>
             `;
         }
 
@@ -929,6 +1013,8 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
                 else if (userSortCol === 'projects') { valA = a.projects_count; valB = b.projects_count; }
                 else if (userSortCol === 'sessions') { valA = a.sessions_count; valB = b.sessions_count; }
                 else if (userSortCol === 'hours') { valA = a.total_duration_hours; valB = b.total_duration_hours; }
+                else if (userSortCol === 'ai_tokens') { valA = a.ai_tokens; valB = b.ai_tokens; }
+                else if (userSortCol === 'ai_cost') { valA = a.ai_cost; valB = b.ai_cost; }
 
                 if (valA < valB) return userSortAsc ? -1 : 1;
                 if (valA > valB) return userSortAsc ? 1 : -1;
@@ -949,6 +1035,8 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
                     <td style="font-family:'JetBrains Mono', monospace;">${u.projects_count}</td>
                     <td style="font-family:'JetBrains Mono', monospace;">${u.sessions_count}</td>
                     <td style="font-family:'JetBrains Mono', monospace; font-weight:600; color:var(--accent);">${u.total_duration_hours} hrs</td>
+                    <td style="font-family:'JetBrains Mono', monospace;">${u.ai_tokens ? u.ai_tokens.toLocaleString() : '0'}</td>
+                    <td style="font-family:'JetBrains Mono', monospace; font-weight:600; color:var(--yellow);">${u.ai_cost ? '$' + u.ai_cost.toFixed(2) : '$0.00'}</td>
                 `;
                 body.appendChild(tr);
             });
@@ -1029,6 +1117,21 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
             }
             
             document.getElementById('modal-user-justification').innerHTML = justificationText;
+
+            // Render AI Breakdown
+            const aiUsageBody = document.getElementById('modal-user-ai-usage');
+            aiUsageBody.innerHTML = res.ai_usage && res.ai_usage.length > 0
+                ? res.ai_usage.map(ai => `
+                    <tr>
+                        <td style="padding:6px 10px; font-weight:600;">${ai.model}</td>
+                        <td style="padding:6px 10px; font-family:'JetBrains Mono', monospace;">${ai.count}</td>
+                        <td style="padding:6px 10px; font-family:'JetBrains Mono', monospace;">${(ai.prompt || 0).toLocaleString()}</td>
+                        <td style="padding:6px 10px; font-family:'JetBrains Mono', monospace;">${(ai.completion || 0).toLocaleString()}</td>
+                        <td style="padding:6px 10px; font-family:'JetBrains Mono', monospace; font-weight:600;">${((ai.prompt || 0) + (ai.completion || 0)).toLocaleString()}</td>
+                        <td style="padding:6px 10px; font-family:'JetBrains Mono', monospace; font-weight:600; color:var(--yellow);">$${(ai.cost || 0.0).toFixed(4)}</td>
+                    </tr>
+                `).join('')
+                : '<tr><td colspan="6" style="text-align:center; padding:12px; color:var(--text-dim)">No AI usage logs recorded</td></tr>';
 
             // Render Permissions
             document.getElementById('modal-permissions-title').textContent = `Access Permissions (${res.permissions.length} paths)`;
@@ -1118,6 +1221,8 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
                     <td style="font-family:'JetBrains Mono', monospace; color:var(--green)">${o.active_count}</td>
                     <td style="font-family:'JetBrains Mono', monospace; color:var(--yellow)">${o.admin_count}</td>
                     <td style="font-family:'JetBrains Mono', monospace; color:var(--accent)">${o.project_count}</td>
+                    <td style="font-family:'JetBrains Mono', monospace;">${o.ai_tokens ? o.ai_tokens.toLocaleString() : '0'}</td>
+                    <td style="font-family:'JetBrains Mono', monospace; font-weight:600; color:var(--yellow)">${o.ai_cost ? '$' + o.ai_cost.toFixed(2) : '$0.00'}</td>
                 `;
                 body.appendChild(tr);
             });
@@ -1156,12 +1261,15 @@ def get_all_static_data():
     cur.execute("SELECT COUNT(*) FROM governance_responses")
     total_projects = cur.fetchone()[0]
     
-    cur.execute("SELECT COUNT(*) FROM user_sessions")
-    total_sessions = cur.fetchone()[0]
-    
-    cur.execute("SELECT SUM(duration_seconds) FROM user_sessions")
-    total_duration = cur.fetchone()[0] or 0
-    
+    if table_exists(conn, "user_sessions"):
+        cur.execute("SELECT COUNT(*) FROM user_sessions")
+        total_sessions = cur.fetchone()[0]
+        cur.execute("SELECT SUM(duration_seconds) FROM user_sessions")
+        total_duration = cur.fetchone()[0] or 0
+    else:
+        total_sessions = 0
+        total_duration = 0
+        
     cur.execute("SELECT COUNT(*) FROM bootstrap_states WHERE status='success'")
     successful_runs = cur.fetchone()[0]
     
@@ -1176,6 +1284,13 @@ def get_all_static_data():
     cur.execute("SELECT classification, COUNT(*) as cnt FROM governance_responses GROUP BY classification")
     classifications = {r["classification"]: r["cnt"] for r in cur.fetchall()}
 
+    # AI usage metrics
+    cur.execute("SELECT SUM(prompt_tokens), SUM(completion_tokens), SUM(cost) FROM ai_usage_logs")
+    ai_stats = cur.fetchone()
+    total_prompt = ai_stats[0] or 0
+    total_completion = ai_stats[1] or 0
+    total_cost = ai_stats[2] or 0.0
+
     summary_data = {
         "total_users": total_users,
         "active_users": active_users,
@@ -1187,7 +1302,10 @@ def get_all_static_data():
         "successful_runs": successful_runs,
         "failed_runs": failed_runs,
         "run_statuses": run_statuses,
-        "classifications": classifications
+        "classifications": classifications,
+        "total_prompt_tokens": total_prompt,
+        "total_completion_tokens": total_completion,
+        "total_cost": round(total_cost, 4)
     }
     
     # Query all users
@@ -1198,9 +1316,16 @@ def get_all_static_data():
     cur.execute("SELECT owner_id, COUNT(*) as cnt FROM governance_responses GROUP BY owner_id")
     projects_by_user = {r["owner_id"]: r["cnt"] for r in cur.fetchall()}
     
-    # Query sessions stats per user
-    cur.execute("SELECT user_id, COUNT(*) as count, SUM(duration_seconds) as total_time FROM user_sessions GROUP BY user_id")
-    session_stats = {r["user_id"]: {"count": r["count"], "total_time": r["total_time"]} for r in cur.fetchall()}
+    # Query sessions stats per user (if table exists)
+    if table_exists(conn, "user_sessions"):
+        cur.execute("SELECT user_id, COUNT(*) as count, SUM(duration_seconds) as total_time FROM user_sessions GROUP BY user_id")
+        session_stats = {r["user_id"]: {"count": r["count"], "total_time": r["total_time"]} for r in cur.fetchall()}
+    else:
+        session_stats = {}
+
+    # Query AI usage stats per user
+    cur.execute("SELECT user_id, SUM(prompt_tokens) as prompt, SUM(completion_tokens) as completion, SUM(cost) as cost FROM ai_usage_logs GROUP BY user_id")
+    ai_stats_by_user = {r["user_id"]: {"tokens": (r["prompt"] or 0) + (r["completion"] or 0), "cost": r["cost"] or 0.0} for r in cur.fetchall()}
     
     # Query user org roles
     cur.execute("""
@@ -1228,6 +1353,7 @@ def get_all_static_data():
     for u in users:
         uid = u["id"]
         stats = session_stats.get(uid, {"count": 0, "total_time": 0})
+        user_ai = ai_stats_by_user.get(uid, {"tokens": 0, "cost": 0.0})
         
         # Format last login
         last_login_str = u.get("last_login")
@@ -1256,7 +1382,9 @@ def get_all_static_data():
             "roles": roles.get(uid, []),
             "permission_count": permissions.get(uid, 0),
             "github_username": u.get("github_username") or "—",
-            "azure_devops_username": u.get("azure_devops_username") or "—"
+            "azure_devops_username": u.get("azure_devops_username") or "—",
+            "ai_tokens": user_ai["tokens"],
+            "ai_cost": round(user_ai["cost"], 4)
         })
         
     # Projects + Owner + Latest Run status
@@ -1286,9 +1414,23 @@ def get_all_static_data():
     cur.execute("SELECT organization_name, COUNT(*) as project_count FROM governance_responses GROUP BY organization_name")
     proj_counts = {r["organization_name"]: r["project_count"] for r in cur.fetchall() if r["organization_name"]}
     
-    # Add project count
+    # AI usage per org (aggregating users' usage)
+    cur.execute("""
+        SELECT u.organization_name, SUM(a.prompt_tokens + a.completion_tokens) as tokens, SUM(a.cost) as cost
+        FROM ai_usage_logs a
+        JOIN users u ON a.user_id = u.id
+        WHERE u.organization_name IS NOT NULL AND u.organization_name != ''
+        GROUP BY u.organization_name
+    """)
+    ai_by_org = {r["organization_name"]: {"tokens": r["tokens"] or 0, "cost": r["cost"] or 0.0} for r in cur.fetchall()}
+
+    # Add project count and AI metrics
     for o in orgs:
-        o["project_count"] = proj_counts.get(o["organization_name"], 0)
+        org_name = o["organization_name"]
+        o["project_count"] = proj_counts.get(org_name, 0)
+        org_ai = ai_by_org.get(org_name, {"tokens": 0, "cost": 0.0})
+        o["ai_tokens"] = org_ai["tokens"]
+        o["ai_cost"] = round(org_ai["cost"], 4)
 
     # Fetch details for all users
     user_details_cache = {}
@@ -1297,8 +1439,16 @@ def get_all_static_data():
         cur.execute("SELECT * FROM governance_responses WHERE owner_id=?", (uid,))
         user_projects = [dict(r) for r in cur.fetchall()]
         
-        cur.execute("SELECT * FROM user_sessions WHERE user_id=? ORDER BY session_start DESC LIMIT 20", (uid,))
-        user_sessions = [dict(r) for r in cur.fetchall()]
+        # Sessions for this user (if table exists)
+        if table_exists(conn, "user_sessions"):
+            cur.execute("SELECT * FROM user_sessions WHERE user_id=? ORDER BY session_start DESC LIMIT 20", (uid,))
+            user_sess = [dict(r) for r in cur.fetchall()]
+        else:
+            user_sess = []
+            
+        # AI usage details per user
+        cur.execute("SELECT model, SUM(prompt_tokens) as prompt, SUM(completion_tokens) as completion, SUM(cost) as cost, COUNT(*) as count FROM ai_usage_logs WHERE user_id=? GROUP BY model", (uid,))
+        user_ai_details = [dict(r) for r in cur.fetchall()]
         
         cur.execute("""
             SELECT DISTINCT p.path 
@@ -1310,8 +1460,9 @@ def get_all_static_data():
         
         user_details_cache[uid] = {
             "projects": user_projects,
-            "sessions": user_sessions,
-            "permissions": sorted(user_permissions)
+            "sessions": user_sess,
+            "permissions": sorted(user_permissions),
+            "ai_usage": user_ai_details
         }
         
     conn.close()

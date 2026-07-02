@@ -428,7 +428,7 @@ def _generate_sprints_and_milestones(
     total_days = (project_deadline - project_start).days
     sprint_duration = max(total_days // num_phases, 7)  # At least 7 days per sprint
     
-    is_bf = str(project_type).lower().strip() in {"brownfield", "modernization", "migration"}
+    is_bf = str(project_type).lower().strip() == "brownfield"
     if is_bf:
         phase_names = [
             ("Repo Analysis & Change Mapping", "Clone repository, analyze existing codebase structure, and plan target modifications"),

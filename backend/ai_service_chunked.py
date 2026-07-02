@@ -92,7 +92,8 @@ Generate 3-8 clarification questions about:
 
 ### 6. Development Classification
 Classify the project development type:
-- If a Repository Context is provided, or the BRD explicitly describes modifying an existing application, classify it as "Brownfield".
+- If modifying an existing application directly inside its existing structure, classify as "Brownfield".
+- If migrating from an existing application to a brand new repository structure, classify as "Migration".
 - If building entirely from scratch, classify as "Greenfield".
 
 ## CRITICAL TEXT FORMATTING RULES
@@ -121,7 +122,7 @@ Return ONLY valid JSON (no markdown fences):
   },
   "clarification_questions": ["q1", "q2", ...],
   "development_classification": {
-    "type": "Greenfield|Brownfield|Modernization",
+    "type": "Greenfield|Brownfield|Migration|Modernization",
     "rationale": "...",
     "existing_codebase_detected": true
   }
@@ -328,7 +329,11 @@ Provide COMPLETE file tree with inline comments.
 Include: backend, frontend, config, tests, docs, CI/CD
 
 CRITICAL: The repository structure tree MUST start directly with the root-level files and directories of the project (e.g. `src/`, `backend/`, `package.json`, `.gitignore`). Do NOT wrap the entire structure in a top-level parent folder named after the project.
-**BROWNFIELD EXCEPTION**: If the development classification is Brownfield or Modernization, DO NOT generate a complete repository file tree from scratch. Instead, generate an impact analysis tree showing ONLY the files that need to be created, modified, or deleted within the existing architecture.
+
+Define the repository structure based on the project type:
+- **BROWNFIELD**: DO NOT generate a complete repository file tree from scratch. You MUST work directly within the existing repository structure and files. Generate an impact analysis tree showing ONLY the files that need to be created, modified, or deleted within the existing architecture. You MUST use the `existing_repository_structure` provided in the context to map all existing files and paths correctly. DO NOT make up paths or package directories that do not exist.
+- **MIGRATION / MODERNIZATION**: Plan a new repository structure (from scratch). You should use the `existing_repository_structure` (if provided in the context) to map the source files and structure to the new destination repository structure.
+- **GREENFIELD**: Plan a new repository structure (from scratch). If an `existing_repository_structure` is provided in the context, you MUST analyze it first to understand the functionalities already implemented in the previous repository, and use that knowledge to design the new repository structure.
 
 {_build_prerequisite_instruction_text()}
 
@@ -711,6 +716,8 @@ async def analyze_document_chunked(
             "tech_stack_summary": [t.get("technology") for t in stage2_data.get("tech_stack", [])[:8]],
             "api_count": len(stage3_data.get("api_endpoints", []))
         }
+        if repo_context_text:
+            stage4_context["existing_repository_structure"] = repo_context_text.replace("--- REPOSITORY CONTEXT ---", "").strip()
         
         stage4_messages = [
             {"role": "system", "content": STAGE_4_IMPLEMENTATION_PROMPT},

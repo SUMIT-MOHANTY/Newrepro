@@ -855,4 +855,4 @@ def is_brownfield_project(project_type: Optional[str]) -> bool:
     """Check if a project type requires brownfield agent execution."""
     if not project_type:
         return False
-    return str(project_type).lower().strip() in {"brownfield", "modernization"}
+    return str(project_type).lower().strip() == "brownfield"
