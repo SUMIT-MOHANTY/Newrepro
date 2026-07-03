@@ -2800,7 +2800,8 @@ def check_case_sensitivity():
                         for ext in ['.tsx', '.ts', '.jsx', '.js', '.css', '.scss', '.json']:
                             if child.lower() == (part_lower + ext):
                                 matched_child = child
-                                casing_error = True
+                                if child != (part + ext):
+                                    casing_error = True
                                 break
                                 
             if casing_error and matched_child:
