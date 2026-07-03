@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { Users, Trash2, Edit, Activity, Clock, CheckCircle, AlertCircle, RefreshCw, Filter, Server, Database, GitBranch, Bot, Globe, Plus, Upload, Code, Coffee, Zap, Triangle, Hash } from 'lucide-react';
+import { Users, Trash2, Edit, Activity, Clock, CheckCircle, AlertCircle, RefreshCw, Filter, Server, Database, GitBranch, Bot, Globe, Plus, Upload, Code, Coffee, Zap, Triangle, Hash, Link2, Terminal, Cpu, Workflow } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 
 import { getNeutralAgentName, getNeutralAgentLabel } from '../utils/agentNames';
@@ -94,6 +94,39 @@ const PREDEFINED_TEMPLATES = [
     icon: Triangle,
     accentColor: 'from-cyan-400 to-blue-500',
     colorClass: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/20 hover:border-cyan-500/40 hover:text-cyan-300'
+  },
+  {
+    name: 'Jira MCP Agent',
+    isMcp: true,
+    tags: 'Jira, Project Management, Issue Tracking, MCP Server, Integration',
+    specialization: 'Integration',
+    description: 'MCP agent that connects to Jira via Model Context Protocol. It can view, create, and transition Jira issues directly.',
+    skills: `# Jira MCP Agent Skill\n\n## Role\nYou are an integration agent equipped with the Jira Model Context Protocol (MCP) server. You connect to Jira to view, create, update, and search for issues, epics, and sprints.\n\n## MCP Integration Link\n- Official Registry: [Jira MCP Server GitHub](https://github.com/modelcontextprotocol/servers/tree/main/src/jira)\n- Package Name: \`@modelcontextprotocol/server-jira\`\n\n## Setup Configuration\nEnsure your client configuration defines the server:\n\`\`\`json\n{\n  "mcpServers": {\n    "jira": {\n      "command": "npx",\n      "args": ["-y", "@modelcontextprotocol/server-jira"],\n      "env": {\n        "JIRA_API_TOKEN": "<YOUR_JIRA_API_TOKEN>",\n        "JIRA_EMAIL": "<YOUR_JIRA_EMAIL>",\n        "JIRA_HOST": "<YOUR_JIRA_HOST>"\n      }\n    }\n  }\n}\n\`\`\`\n\n## Core Responsibilities\n1. Search Issues: Find Jira tickets matching specific queries, assignees, or statuses.\n2. Create & Update: Initialize tickets, add comments, log work, and transition states (e.g. To Do -> In Progress -> Done).\n3. Backlog Management: Fetch backlog tasks, summarize sprint progress, and highlight blockages.`,
+    icon: Workflow,
+    accentColor: 'from-blue-500 to-cyan-500',
+    colorClass: 'text-blue-400 bg-blue-500/10 border-blue-500/20 hover:border-blue-500/40 hover:text-blue-300'
+  },
+  {
+    name: 'GitHub MCP Agent',
+    isMcp: true,
+    tags: 'GitHub, Git, PRs, Code Reviews, MCP Server, Integration',
+    specialization: 'Integration',
+    description: 'MCP agent that connects to GitHub repository APIs via Model Context Protocol. It handles PR reviews, issue management, and file contents.',
+    skills: `# GitHub MCP Agent Skill\n\n## Role\nYou are an integration agent equipped with the GitHub Model Context Protocol (MCP) server. You connect to GitHub to manage issues, pull requests, files, and branches.\n\n## MCP Integration Link\n- Official Registry: [GitHub MCP Server GitHub](https://github.com/modelcontextprotocol/servers/tree/main/src/github)\n- Package Name: \`@modelcontextprotocol/server-github\`\n\n## Setup Configuration\nEnsure your client configuration defines the server:\n\`\`\`json\n{\n  "mcpServers": {\n    "github": {\n      "command": "npx",\n      "args": ["-y", "@modelcontextprotocol/server-github"],\n      "env": {\n        "GITHUB_PERSONAL_ACCESS_TOKEN": "<YOUR_GITHUB_TOKEN>"\n      }\n    }\n  }\n}\n\`\`\`\n\n## Core Responsibilities\n1. PR Automation: Create pull requests, list reviews, merge code, and add comments.\n2. Issue Management: File bug reports, list repository issues, and organize labels/milestones.\n3. Code Inspection: Search repository files, retrieve code contents, and check commit histories.`,
+    icon: GitBranch,
+    accentColor: 'from-slate-400 to-slate-600',
+    colorClass: 'text-slate-400 bg-slate-500/10 border-slate-500/20 hover:border-slate-500/40 hover:text-slate-300'
+  },
+  {
+    name: 'Slack MCP Agent',
+    isMcp: true,
+    tags: 'Slack, Chat, Notifications, Team Sync, MCP Server, Integration',
+    specialization: 'Integration',
+    description: 'MCP agent that connects to Slack via Model Context Protocol. It posts notifications, reads channel history, and handles communication workflows.',
+    skills: `# Slack MCP Agent Skill\n\n## Role\nYou are an integration agent equipped with the Slack Model Context Protocol (MCP) server. You interface with Slack to coordinate team communication and notifications.\n\n## MCP Integration Link\n- Official Registry: [Slack MCP Server GitHub](https://github.com/modelcontextprotocol/servers/tree/main/src/slack)\n- Package Name: \`@modelcontextprotocol/server-slack\`\n\n## Setup Configuration\nEnsure your client configuration defines the server:\n\`\`\`json\n{\n  "mcpServers": {\n    "slack": {\n      "command": "npx",\n      "args": ["-y", "@modelcontextprotocol/server-slack"],\n      "env": {\n        "SLACK_BOT_TOKEN": "<YOUR_SLACK_BOT_TOKEN>"\n      }\n    }\n  }\n}\n\`\`\`\n\n## Core Responsibilities\n1. Post Messages: Send rich text or blocks to public/private channels or direct messages.\n2. Monitor Channels: Retrieve history, search conversations, and summarize thread contexts.\n3. Status Sync: Set active status, update profiles, and automate reminders.`,
+    icon: Cpu,
+    accentColor: 'from-pink-500 to-purple-600',
+    colorClass: 'text-pink-400 bg-pink-500/10 border-pink-500/20 hover:border-pink-500/40 hover:text-pink-300'
   }
 ];
 
@@ -125,6 +158,7 @@ export default function AgentsPage({ projects = [] }) {
   const [addAgentError, setAddAgentError] = useState('');
   const [isConfiguringTemplate, setIsConfiguringTemplate] = useState(false);
   const [editingAgentId, setEditingAgentId] = useState(null);
+  const [showMcpHelper, setShowMcpHelper] = useState(false);
 
   // Skill-gap detection state (brownfield projects)
   const [skillGapData, setSkillGapData] = useState(null);
@@ -749,7 +783,16 @@ export default function AgentsPage({ projects = [] }) {
                 : 'bg-app-text-label/20 text-app-text-main hover:bg-app-text-label/30'
                 }`}
             >
-              Samples ({PREDEFINED_TEMPLATES.length})
+              Samples ({PREDEFINED_TEMPLATES.filter(t => !t.isMcp).length})
+            </button>
+            <button
+              onClick={() => setFilter('mcp')}
+              className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${filter === 'mcp'
+                ? 'bg-app-primary text-white'
+                : 'bg-app-text-label/20 text-app-text-main hover:bg-app-text-label/30'
+                }`}
+            >
+              MCP ({PREDEFINED_TEMPLATES.filter(t => t.isMcp).length})
             </button>
             <button
               onClick={() => setFilter('shared')}
@@ -882,7 +925,7 @@ export default function AgentsPage({ projects = [] }) {
           {!loading && !error && (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {filter === 'samples' ? (
-                PREDEFINED_TEMPLATES.map((tmpl) => {
+                PREDEFINED_TEMPLATES.filter(tmpl => !tmpl.isMcp).map((tmpl) => {
                   const IconComponent = tmpl.icon;
                   return (
                     <div
@@ -898,6 +941,7 @@ export default function AgentsPage({ projects = [] }) {
                           <div className={`w-9 h-9 rounded-lg bg-app-bg-page border flex items-center justify-center shadow-lg ${
                             tmpl.name.includes('Frontend') ? 'text-emerald-500 dark:text-emerald-400 border-emerald-500/20 dark:border-emerald-500/30 bg-emerald-500/10 dark:bg-emerald-500/20' :
                             tmpl.name.includes('Backend') ? 'text-blue-500 dark:text-blue-400 border-blue-500/20 dark:border-blue-500/30 bg-blue-500/10 dark:bg-blue-500/20' :
+                            tmpl.specialization === 'Integration' ? 'text-cyan-500 dark:text-cyan-400 border-cyan-500/20 dark:border-cyan-500/30 bg-cyan-500/10 dark:bg-cyan-500/20' :
                             'text-purple-500 dark:text-purple-400 border-purple-500/20 dark:border-purple-500/30 bg-purple-500/10 dark:bg-purple-500/20'
                           }`}>
                             <IconComponent className="w-4 h-4 text-current font-bold" />
@@ -917,6 +961,87 @@ export default function AgentsPage({ projects = [] }) {
                               </span>
                             </div>
                             <p className="text-[9px] text-app-text-light uppercase tracking-wider font-semibold">Sample Template</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Description */}
+                      <div className="p-2 rounded-lg bg-app-bg-muted/40 border border-app-border-light/30 flex-1 flex flex-col justify-between mb-3">
+                        <div>
+                          <p className="text-[11px] leading-relaxed text-app-text-main">
+                            {tmpl.description}
+                          </p>
+                          <div className="flex flex-wrap gap-1 mt-2">
+                            {tmpl.tags.split(', ').map((tag, idx) => (
+                              <span
+                                key={idx}
+                                className="px-1 py-0.5 rounded text-[8px] font-semibold bg-app-bg-page text-app-text-muted border border-app-border-light/40"
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Action buttons */}
+                      <div className="grid grid-cols-2 gap-2 mt-auto">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNewAgentName(tmpl.name);
+                            setNewAgentTags(tmpl.tags);
+                            setSkillsContent(tmpl.skills);
+                            setSkillsFileName(`${tmpl.name.toLowerCase().replace(/ & /g, '_').replace(/ /g, '_')}_skills.md`);
+                            setIsConfiguringTemplate(true);
+                            setShowAddAgentModal(true);
+                          }}
+                          className="py-1.5 rounded-lg bg-app-bg-muted hover:bg-app-bg-hover border border-app-border-light text-xs font-bold text-app-text-main transition-all flex items-center justify-center gap-1 cursor-pointer"
+                        >
+                          <Bot className="w-3.5 h-3.5" />
+                          <span>Configure</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleQuickAddAgent(tmpl)}
+                          disabled={loading}
+                          className="py-1.5 rounded-lg bg-app-primary hover:bg-blue-600 text-white text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer shadow-sm hover:shadow"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Quick Add</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              ) : filter === 'mcp' ? (
+                PREDEFINED_TEMPLATES.filter(tmpl => tmpl.isMcp).map((tmpl) => {
+                  const IconComponent = tmpl.icon;
+                  return (
+                    <div
+                      key={tmpl.name}
+                      className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-3.5 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow"
+                    >
+                      {/* Top accent bar */}
+                      <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${tmpl.accentColor}`}></div>
+
+                      <div className="flex items-start justify-between mb-2">
+                        <div className="flex items-center gap-2.5">
+                          {/* Agent Icon/Logo */}
+                          <div className={`w-9 h-9 rounded-lg bg-app-bg-page border flex items-center justify-center shadow-lg text-cyan-500 dark:text-cyan-400 border-cyan-500/20 dark:border-cyan-500/30 bg-cyan-500/10 dark:bg-cyan-500/20`}>
+                            <IconComponent className="w-4 h-4 text-current font-bold" />
+                          </div>
+
+                          <div>
+                            <div className="flex items-center gap-1.5">
+                              <h4 className="text-xs font-bold text-app-text-main">
+                                {tmpl.name}
+                              </h4>
+                              <span className="px-1.5 py-0.5 text-[8px] font-bold rounded-full uppercase tracking-wider bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                                {tmpl.specialization}
+                              </span>
+                            </div>
+                            <p className="text-[9px] text-app-text-light uppercase tracking-wider font-semibold">MCP Server</p>
                           </div>
                         </div>
                       </div>
@@ -1321,6 +1446,98 @@ export default function AgentsPage({ projects = [] }) {
                         disabled={addingAgent}
                       />
                       <p className="text-[10px] text-app-text-muted mt-1">Used by Master Agent to match task capabilities.</p>
+                    </div>
+
+                    {/* MCP Configuration Helper */}
+                    <div className="mt-4 border border-app-border-light/60 rounded-xl bg-app-bg-muted/30 overflow-hidden">
+                      <button
+                        type="button"
+                        onClick={() => setShowMcpHelper(!showMcpHelper)}
+                        className="w-full px-4 py-2.5 flex items-center justify-between text-xs font-bold text-app-text-main bg-app-bg-muted/40 hover:bg-app-bg-muted/80 transition-colors border-b border-app-border-light/40"
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <Workflow className="w-3.5 h-3.5 text-cyan-400" />
+                          Model Context Protocol (MCP) Setup
+                        </span>
+                        <span className="text-[10px] text-app-text-muted font-mono">
+                          {showMcpHelper ? '[-]' : '[+]'}
+                        </span>
+                      </button>
+                      
+                      {showMcpHelper && (
+                        <div className="p-4 space-y-3 text-xs leading-relaxed animate-in fade-in duration-200">
+                          <p className="text-app-text-muted">
+                            Model Context Protocol (MCP) lets agents connect to external tools like Jira, Slack, or databases. You can define these connections in the agent's skills.
+                          </p>
+                          <div className="p-2.5 rounded bg-app-bg-page border border-app-border-light font-mono text-[10px] text-app-text-muted break-all">
+                            <span className="text-cyan-400 font-bold">Official Servers: </span>
+                            <a href="https://github.com/modelcontextprotocol/servers" target="_blank" rel="noreferrer" className="text-app-primary hover:underline flex items-center gap-1 mt-1">
+                              <Link2 className="w-3.5 h-3.5" /> github.com/modelcontextprotocol/servers
+                            </a>
+                          </div>
+                          
+                          <div className="space-y-1.5">
+                            <span className="text-[11px] font-bold text-app-text-main block">Insert MCP Skill Template:</span>
+                            <div className="grid grid-cols-2 gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setNewAgentName('Jira MCP Agent');
+                                  setNewAgentTags('Jira, Project Management, MCP Server, Integration');
+                                  setSkillsFileName('jira_mcp_skills.md');
+                                  const tmpl = PREDEFINED_TEMPLATES.find(t => t.name === 'Jira MCP Agent');
+                                  if (tmpl) setSkillsContent(tmpl.skills);
+                                }}
+                                className="px-2 py-1.5 rounded bg-app-bg-card hover:bg-app-bg-hover border border-app-border-light/60 font-semibold text-[10px] text-app-text-main text-left truncate transition-colors flex items-center gap-1 cursor-pointer"
+                              >
+                                <Workflow className="w-3 h-3 text-blue-400 shrink-0" />
+                                <span className="truncate">Jira MCP Server</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setNewAgentName('GitHub MCP Agent');
+                                  setNewAgentTags('GitHub, Git, PRs, MCP Server, Integration');
+                                  setSkillsFileName('github_mcp_skills.md');
+                                  const tmpl = PREDEFINED_TEMPLATES.find(t => t.name === 'GitHub MCP Agent');
+                                  if (tmpl) setSkillsContent(tmpl.skills);
+                                }}
+                                className="px-2 py-1.5 rounded bg-app-bg-card hover:bg-app-bg-hover border border-app-border-light/60 font-semibold text-[10px] text-app-text-main text-left truncate transition-colors flex items-center gap-1 cursor-pointer"
+                              >
+                                <GitBranch className="w-3 h-3 text-slate-400 shrink-0" />
+                                <span className="truncate">GitHub MCP Server</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setNewAgentName('Slack MCP Agent');
+                                  setNewAgentTags('Slack, Chat, MCP Server, Integration');
+                                  setSkillsFileName('slack_mcp_skills.md');
+                                  const tmpl = PREDEFINED_TEMPLATES.find(t => t.name === 'Slack MCP Agent');
+                                  if (tmpl) setSkillsContent(tmpl.skills);
+                                }}
+                                className="px-2 py-1.5 rounded bg-app-bg-card hover:bg-app-bg-hover border border-app-border-light/60 font-semibold text-[10px] text-app-text-main text-left truncate transition-colors flex items-center gap-1 cursor-pointer"
+                              >
+                                <Cpu className="w-3 h-3 text-pink-400 shrink-0" />
+                                <span className="truncate">Slack MCP Server</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setNewAgentName('Custom MCP Agent');
+                                  setNewAgentTags('MCP Server, Custom Tool, Integration');
+                                  setSkillsFileName('custom_mcp_skills.md');
+                                  setSkillsContent(`# Custom MCP Agent Skill\n\n## Role\nYou are a custom MCP integration agent.\n\n## Setup Configuration\n\`\`\`json\n{\n  "mcpServers": {\n    "custom-server": {\n      "command": "node",\n      "args": ["/path/to/server.js"],\n      "env": {}\n    }\n  }\n}\n\`\`\``);
+                                }}
+                                className="px-2 py-1.5 rounded bg-app-bg-card hover:bg-app-bg-hover border border-app-border-light/60 font-semibold text-[10px] text-app-text-main text-left truncate transition-colors flex items-center gap-1 cursor-pointer"
+                              >
+                                <Terminal className="w-3 h-3 text-yellow-400 shrink-0" />
+                                <span className="truncate">Generic Template</span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     {/* If skillsContent is NOT present, show the upload box here in the single column view */}
