@@ -9096,7 +9096,10 @@ async def _bg_run_agent(
                     await asyncio.sleep(30)
                     continue
 
-                logger.info(f"[{agent_id}] Found brownfield task: {task.get('task_id')}")
+                raw_seq = task.get("sequence") or task.get("seq") or task.get("task_sequence") or task.get("task_seq") or task.get("task_id") or task.get("id") or "UNKNOWN"
+                log_task_id = f"TASK-{raw_seq:02d}" if isinstance(raw_seq, int) else (f"TASK-{int(raw_seq):02d}" if str(raw_seq).isdigit() else str(raw_seq))
+                
+                logger.info(f"[{agent_id}] Found brownfield task: {log_task_id}")
                 state = agent_service._ensure_project_state(project_token)
                 agent_states = state["agent_states"]
                 agent_state = agent_states.setdefault(agent_id, {"output_log": []})
@@ -9105,7 +9108,7 @@ async def _bg_run_agent(
                 agent_state["status"] = "running"
                 agent_state["current_task"] = task
                 agent_state["progress"] = 0
-                agent_state["progress_message"] = f"Running brownfield task {task.get('task_id')}..."
+                agent_state["progress_message"] = f"Running brownfield task {log_task_id}..."
                 
                 result = await run_brownfield_agent(
                     agent_id=agent_id,

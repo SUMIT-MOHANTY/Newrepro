@@ -508,7 +508,15 @@ def build_brownfield_agent_prompt_prefix(
     feature_branch: str,
 ) -> str:
     """Build the BROWNFIELD MODE prompt prefix for the agent AI."""
-    task_id = task.get("task_id") or task.get("external_task_id") or "TASK-???"
+    raw_seq = task.get("sequence") or task.get("seq") or task.get("task_sequence") or task.get("task_seq") or task.get("task_id") or task.get("id") or "???"
+    if isinstance(raw_seq, int):
+        task_id = f"TASK-{raw_seq:02d}"
+    elif str(raw_seq).isdigit():
+        task_id = f"TASK-{int(raw_seq):02d}"
+    else:
+        task_id = str(raw_seq)
+        if not task_id.startswith("TASK-") and task_id != "???":
+            task_id = f"TASK-{task_id}"
     task_title = task.get("title") or task.get("taskName") or "Unknown Task"
     task_desc = task.get("description") or ""
     target_file = task.get("target_file") or ""
@@ -678,7 +686,15 @@ async def run_brownfield_agent(
         })
         logger.info(f"[BROWNFIELD][{agent_id}] {message}")
 
-    task_id = task.get("task_id") or task.get("external_task_id") or "UNKNOWN"
+    raw_seq = task.get("sequence") or task.get("seq") or task.get("task_sequence") or task.get("task_seq") or task.get("task_id") or task.get("id") or "UNKNOWN"
+    if isinstance(raw_seq, int):
+        task_id = f"TASK-{raw_seq:02d}"
+    elif str(raw_seq).isdigit():
+        task_id = f"TASK-{int(raw_seq):02d}"
+    else:
+        task_id = str(raw_seq)
+        if not task_id.startswith("TASK-") and task_id != "UNKNOWN":
+            task_id = f"TASK-{task_id}"
 
     _log(f"BROWNFIELD MODE — Starting task {task_id}")
     _log(f"  Repo: {git_repo_url}  Branch: {base_branch}")
