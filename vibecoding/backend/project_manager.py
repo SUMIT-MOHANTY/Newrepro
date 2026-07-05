@@ -276,7 +276,7 @@ class ProjectManager:
 
         try:
             container = self.docker_client.containers.run(
-                "vibecoding-agent-runtime:latest",
+                self.DEFAULT_IMAGE,
                 name=cname,
                 detach=True,
                 remove=False,
@@ -885,7 +885,7 @@ class ProjectManager:
         has_pkg = any(workspace_dir.rglob('package.json'))
         metadata = {
             "runtime": "multi-stack" if (has_py and has_pkg) else ("python" if has_py else "node" if has_pkg else "universal"),
-            "docker_image": "vibecoding-agent-runtime:latest",
+            "docker_image": self.DEFAULT_IMAGE,
             "port": 80,
             "additional_ports": [],
             "created_at": datetime.now().isoformat(),
@@ -1506,7 +1506,7 @@ class ProjectManager:
         # This is needed for create_container_for_code to work
         metadata = {
             "runtime": "universal",
-            "docker_image": "vibecoding-agent-runtime:latest",
+            "docker_image": self.DEFAULT_IMAGE,
             "port": 80,
             "additional_ports": [],
             "created_at": datetime.now().isoformat(),
@@ -1704,7 +1704,7 @@ except Exception as e:
                 metadata = json.load(f)
             
             runtime = metadata.get('runtime', 'static-html')
-            docker_image = metadata.get('docker_image', 'vibecoding-agent-runtime:latest')
+            docker_image = metadata.get('docker_image', self.DEFAULT_IMAGE)
             
             # Support multiple ports
             primary_port = metadata.get('port', 80)
