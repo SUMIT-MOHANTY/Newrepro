@@ -12671,7 +12671,8 @@ def _classify_task_assignment_lane(task: Dict[str, Any]) -> str:
     if any(has_token(title_text, token) for token in ("deploy", "docker", "infra", "ci", "cd", "release", "observability", "monitor")):
         return "devops"
     if any(has_token(title_text, token) for token in ("governance", "compliance", "risk", "audit", "brd", "policy", "regulation", "assessment")):
-        return "governance"
+        if not any(tok in title_text for tok in ("migration", "table", "sql", "db", "database", "entity", "repository", "model", "schema", "controller", "service", "dto", "api", "endpoint", "analysis", "planning", "plan", "mapping", "map")):
+            return "governance"
 
     phase = str(task.get("task_phase") or task.get("phase") or "").strip().lower()
     domain = str(_normalize_task_domain(task) or "").strip().lower()
@@ -12699,7 +12700,8 @@ def _classify_task_assignment_lane(task: Dict[str, Any]) -> str:
     if any(has_token(combined, token) for token in ("deploy", "docker", "infra", "ci", "cd", "release", "observability", "monitor")):
         return "devops"
     if any(has_token(combined, token) for token in ("governance", "compliance", "risk", "audit", "brd", "policy", "regulation", "assessment")):
-        return "governance"
+        if not any(tok in title_text for tok in ("migration", "table", "sql", "db", "database", "entity", "repository", "model", "schema", "controller", "service", "dto", "api", "endpoint", "analysis", "planning", "plan", "mapping", "map")):
+            return "governance"
     if phase.startswith("frontend") or domain == "frontend":
         return "frontend"
     if phase.startswith("backend") or domain == "backend":

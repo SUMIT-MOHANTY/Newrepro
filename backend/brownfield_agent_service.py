@@ -580,7 +580,7 @@ async def provision_brownfield_container(
     ensure_agent_runtime_image = utils["ensure_agent_runtime_image"]
     AGENT_RUNTIME_IMAGE = utils["AGENT_RUNTIME_IMAGE"]
 
-    container_name = f"{BROWNFIELD_CONTAINER_PREFIX}{project_token[:12]}_{agent_id}_{uuid.uuid4().hex[:6]}"
+    container_name = f"{BROWNFIELD_CONTAINER_PREFIX}{project_token[:12]}_{agent_id.replace('#', '_')}_{uuid.uuid4().hex[:6]}"
 
     try:
         image_result = await asyncio.to_thread(ensure_agent_runtime_image)

@@ -94,3 +94,4 @@ backend/scratch*
 backend/seed_*
 backend/logs_*
 backend/interactive_dashboard_report.html
+vibecoding/interactive_dashboard_report.html
