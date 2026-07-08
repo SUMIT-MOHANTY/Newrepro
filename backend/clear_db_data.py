@@ -12,7 +12,13 @@ from models import (
     OrganizationSSOSetting, AgentCredential, Agent,
     OrganizationAgentQuota, OrganizationAgentMapping,
     Document, GovernanceResponse, GovernanceQuestion,
-    GovernanceQuestionOption, Task, AgentMessage
+    GovernanceQuestionOption, Task, AgentMessage,
+    ChatMessage, UserProjectAssociation, HandoffToken,
+    SharedDocument, SharedDocumentFile, SharedDocumentRecipient,
+    SharedDocumentAccessLog, ShareProject,
+    AgentTaskOwnership, ProjectCanonicalState,
+    AgentExecutionCheckpoint, NXDuneSyncLog,
+    BootstrapState
 )
 
 
@@ -29,6 +35,17 @@ def clear_database_except_users():
         
         tables_to_clear = [
             (AgentMessage, "Agent Messages"),
+            (ChatMessage, "Chat Messages"),
+            (SharedDocumentAccessLog, "Shared Document Access Logs"),
+            (SharedDocumentRecipient, "Shared Document Recipients"),
+            (SharedDocumentFile, "Shared Document Files"),
+            (SharedDocument, "Shared Documents"),
+            (ShareProject, "Share Projects"),
+            (AgentTaskOwnership, "Agent Task Ownerships"),
+            (AgentExecutionCheckpoint, "Agent Execution Checkpoints"),
+            (NXDuneSyncLog, "NXDune Sync Logs"),
+            (ProjectCanonicalState, "Project Canonical States"),
+            (BootstrapState, "Bootstrap States"),
             (Task, "Tasks"),
             (GovernanceQuestionOption, "Governance Question Options"),
             (GovernanceQuestion, "Governance Questions"),
@@ -43,10 +60,12 @@ def clear_database_except_users():
             (OAuthAuthorizationCode, "OAuth Authorization Codes"),
             (OAuthClient, "OAuth Clients"),
             (OrganizationInvite, "Organization Invites"),
+            (UserProjectAssociation, "User Project Associations"),
             (UserOrganizationRole, "User Organization Roles"),
             (OrganizationRolePermission, "Organization Role Permissions"),
             (OrganizationRole, "Organization Roles"),
             (PasswordReset, "Password Resets"),
+            (HandoffToken, "Handoff Tokens"),
         ]
         
         total_deleted = 0
@@ -55,7 +74,7 @@ def clear_database_except_users():
             count = db.query(model).count()
             if count > 0:
                 db.query(model).delete()
-                print(f"✓ Cleared {count} records from {name}")
+                print(f"[OK] Cleared {count} records from {name}")
                 total_deleted += count
             else:
                 print(f"  {name}: already empty")
@@ -63,7 +82,7 @@ def clear_database_except_users():
         db.commit()
         
         print("=" * 60)
-        print(f"✓ Database cleanup complete!")
+        print(f"[OK] Database cleanup complete!")
         print(f"  Total records deleted: {total_deleted}")
         
         # Import User model to check count
@@ -74,7 +93,7 @@ def clear_database_except_users():
         
     except Exception as e:
         db.rollback()
-        print(f"✗ Error during cleanup: {str(e)}")
+        print(f"[ERROR] Error during cleanup: {str(e)}")
         raise
     finally:
         db.close()
@@ -83,17 +102,25 @@ def clear_database_except_users():
 if __name__ == "__main__":
     import sys
     
-    print("\n" + "=" * 60)
-    print("DATABASE CLEANUP SCRIPT")
-    print("=" * 60)
-    print("This will DELETE all data except user login credentials.")
-    print("User accounts (email, password, etc.) will be preserved.")
-    print("=" * 60)
-    
-    response = input("\nAre you sure you want to continue? (yes/no): ").strip().lower()
-    
-    if response == "yes":
+    # Check if force/yes is passed as command line argument to bypass prompt
+    force_run = False
+    if len(sys.argv) > 1 and sys.argv[1].lower() in ("--force", "-f", "yes", "force"):
+        force_run = True
+        
+    if force_run:
         clear_database_except_users()
     else:
-        print("\n✗ Operation cancelled.")
-        sys.exit(0)
+        print("\n" + "=" * 60)
+        print("DATABASE CLEANUP SCRIPT")
+        print("=" * 60)
+        print("This will DELETE all data except user login credentials.")
+        print("User accounts (email, password, etc.) will be preserved.")
+        print("=" * 60)
+        
+        response = input("\nAre you sure you want to continue? (yes/no): ").strip().lower()
+        
+        if response == "yes":
+            clear_database_except_users()
+        else:
+            print("\n[CANCELLED] Operation cancelled.")
+            sys.exit(0)

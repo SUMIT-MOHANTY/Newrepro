@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { API_ENDPOINTS, VIBE_WORKSPACE_URL } from '../config';
+import { API_ENDPOINTS, VIBE_WORKSPACE_URL, API_BASE_URL } from '../config';
 import {
     KeyRound, CheckCircle2, Circle, AlertCircle, AlertTriangle, ArrowRight,
     ChevronLeft, Database, Globe, Server,
@@ -542,6 +542,18 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const [showRedirectionConfirmation, setShowRedirectionConfirmation] = useState(false);
     const [redirectionTarget, setRedirectionTarget] = useState(null);
 
+    // Redirect to new project page if no projects exist
+    useEffect(() => {
+        if (!projects || projects.length === 0) {
+            const timer = setTimeout(() => {
+                if (!projects || projects.length === 0) {
+                    navigate('/new-project');
+                }
+            }, 500);
+            return () => clearTimeout(timer);
+        }
+    }, [projects, navigate]);
+
     const handleConfirmRedirection = async () => {
         if (!redirectionTarget) return;
         try {
@@ -578,7 +590,24 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const [isLoadingGitConfig, setIsLoadingGitConfig] = useState(false);
     const [analysisRepoSuggestion, setAnalysisRepoSuggestion] = useState(null);
     const [repoProvider, setRepoProvider] = useState('github');
-
+    
+    // Git validation state
+    const [isValidatingGit, setIsValidatingGit] = useState(false);
+    const [gitValidationResult, setGitValidationResult] = useState(null);
+    const [gitValidationError, setGitValidationError] = useState('');
+    
+    // Claude.md file upload state
+    const [claudeMdFiles, setClaudeMdFiles] = useState([]);
+    const [showClaudeMdViewer, setShowClaudeMdViewer] = useState(false);
+    const [selectedClaudeMdContent, setSelectedClaudeMdContent] = useState('');
+    const [selectedClaudeMdName, setSelectedClaudeMdName] = useState('');
+    
+    // Skills.md file upload state
+    const [skillsMdFiles, setSkillsMdFiles] = useState([]);
+    const [showSkillsMdViewer, setShowSkillsMdViewer] = useState(false);
+    const [selectedSkillsMdContent, setSelectedSkillsMdContent] = useState('');
+    const [selectedSkillsMdName, setSelectedSkillsMdName] = useState('');
+    
     // Determine recommended mode based on governance classification
     const recommendedMode = useMemo(() => {
         try {
@@ -690,6 +719,26 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
         if (selectedProjectKey) {
             const saved = localStorage.getItem(`custom_rules_${selectedProjectKey}`) || '';
             setCustomRules(saved);
+            
+            // Load saved claude.md files
+            const savedClaudeFiles = localStorage.getItem(`claude_md_files_${selectedProjectKey}`);
+            if (savedClaudeFiles) {
+                try {
+                    setClaudeMdFiles(JSON.parse(savedClaudeFiles));
+                } catch (e) {
+                    console.error('Failed to parse saved claude.md files:', e);
+                }
+            }
+            
+            // Load saved skills.md files
+            const savedSkillsFiles = localStorage.getItem(`skills_md_files_${selectedProjectKey}`);
+            if (savedSkillsFiles) {
+                try {
+                    setSkillsMdFiles(JSON.parse(savedSkillsFiles));
+                } catch (e) {
+                    console.error('Failed to parse saved skills.md files:', e);
+                }
+            }
         }
     }, [selectedProjectKey]);
 
@@ -698,6 +747,46 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
             localStorage.setItem(`custom_rules_${selectedProjectKey}`, customRules);
         }
     }, [selectedProjectKey, customRules]);
+    
+    // Save claude.md files when they change
+    useEffect(() => {
+        if (selectedProjectKey && claudeMdFiles.length > 0) {
+            localStorage.setItem(`claude_md_files_${selectedProjectKey}`, JSON.stringify(claudeMdFiles));
+            
+            // Also save to backend
+            const token = localStorage.getItem('token');
+            if (token) {
+                fetch(API_ENDPOINTS.GOVERNANCE_CLAUDE_MD_FILES(selectedProjectKey), {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify(claudeMdFiles)
+                }).catch(err => console.error('Failed to save claude.md files to backend:', err));
+            }
+        }
+    }, [selectedProjectKey, claudeMdFiles]);
+    
+    // Save skills.md files when they change
+    useEffect(() => {
+        if (selectedProjectKey && skillsMdFiles.length > 0) {
+            localStorage.setItem(`skills_md_files_${selectedProjectKey}`, JSON.stringify(skillsMdFiles));
+            
+            // Also save to backend
+            const token = localStorage.getItem('token');
+            if (token) {
+                fetch(API_ENDPOINTS.GOVERNANCE_SKILLS_MD_FILES(selectedProjectKey), {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify(skillsMdFiles)
+                }).catch(err => console.error('Failed to save skills.md files to backend:', err));
+            }
+        }
+    }, [selectedProjectKey, skillsMdFiles]);
 
     // Derive project name from the projects list or governance context
     useEffect(() => {
@@ -733,6 +822,22 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 if (!token) return;
                 setIsLoadingGitConfig(true);
 
+                // 1. Try project-wise git-config endpoint first (Destination Repository)
+                const configRes = await fetch(`${API_BASE_URL}/api/projects/${selectedProjectKey}/git-config`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (configRes.ok) {
+                    const configData = await configRes.json().catch(() => ({}));
+                    if (configData.dest_repo_url) {
+                        if (!isMounted) return;
+                        setGlobalGitRepoUrl(configData.dest_repo_url);
+                        setHasSavedGlobalGitToken(Boolean(configData.dest_repo_token));
+                        setGlobalGitToken('');
+                        return;
+                    }
+                }
+
+                // 2. Legacy fallback
                 const url = new URL(API_ENDPOINTS.AGENTS);
                 url.searchParams.set('project_token', selectedProjectKey);
                 const res = await fetch(url.toString(), {
@@ -968,6 +1073,128 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
             })
         );
     }, []);
+    
+    // Handle claude.md file upload
+    const handleClaudeMdUpload = useCallback((event) => {
+        const files = Array.from(event.target.files || []);
+        const mdFiles = files.filter(file => file.name.toLowerCase().endsWith('.md'));
+        
+        if (mdFiles.length === 0) {
+            setError('Please upload only .md files');
+            return;
+        }
+        
+        mdFiles.forEach(file => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const content = e.target.result;
+                setClaudeMdFiles(prev => {
+                    // Check if file already exists
+                    const existingIndex = prev.findIndex(f => f.name === file.name);
+                    if (existingIndex >= 0) {
+                        // Replace existing file
+                        const updated = [...prev];
+                        updated[existingIndex] = {
+                            name: file.name,
+                            content: content,
+                            uploadedAt: new Date().toISOString(),
+                        };
+                        return updated;
+                    } else {
+                        // Add new file
+                        return [...prev, {
+                            name: file.name,
+                            content: content,
+                            uploadedAt: new Date().toISOString(),
+                        }];
+                    }
+                });
+            };
+            reader.onerror = () => {
+                setError(`Failed to read file: ${file.name}`);
+            };
+            reader.readAsText(file);
+        });
+        
+        // Clear the input
+        event.target.value = '';
+    }, []);
+    
+    // Handle viewing claude.md file
+    const handleViewClaudeMd = useCallback((file) => {
+        setSelectedClaudeMdContent(file.content);
+        setSelectedClaudeMdName(file.name);
+        setShowClaudeMdViewer(true);
+    }, []);
+    
+    // Handle removing claude.md file
+    const handleRemoveClaudeMd = useCallback((fileName) => {
+        setClaudeMdFiles(prev => prev.filter(f => f.name !== fileName));
+        if (selectedProjectKey) {
+            const updated = claudeMdFiles.filter(f => f.name !== fileName);
+            if (updated.length === 0) {
+                localStorage.removeItem(`claude_md_files_${selectedProjectKey}`);
+            }
+        }
+    }, [selectedProjectKey, claudeMdFiles]);
+    
+    // Handle skills.md file upload
+    const handleSkillsMdUpload = useCallback((event) => {
+        const files = Array.from(event.target.files || []);
+        
+        files.forEach(file => {
+            if (!file.name.endsWith('.md')) {
+                alert(`${file.name} is not a markdown file. Only .md files are allowed.`);
+                return;
+            }
+            
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const content = e.target.result;
+                setSkillsMdFiles(prev => {
+                    // Check if file already exists
+                    const existingIndex = prev.findIndex(f => f.name === file.name);
+                    const newFile = {
+                        name: file.name,
+                        content: content,
+                        uploadedAt: new Date().toISOString()
+                    };
+                    
+                    if (existingIndex >= 0) {
+                        // Replace existing file
+                        const updated = [...prev];
+                        updated[existingIndex] = newFile;
+                        return updated;
+                    } else {
+                        // Add new file
+                        return [...prev, newFile];
+                    }
+                });
+            };
+            reader.readAsText(file);
+        });
+        
+        // Clear the input
+        event.target.value = '';
+    }, []);
+    
+    // Handle viewing skills.md file
+    const handleViewSkillsMd = useCallback((file) => {
+        setSelectedSkillsMdContent(file.content);
+        setSelectedSkillsMdName(file.name);
+        setShowSkillsMdViewer(true);
+    }, []);
+    
+    // Handle removing skills.md file
+    const handleRemoveSkillsMd = useCallback((fileName) => {
+        setSkillsMdFiles(prev => prev.filter(f => f.name !== fileName));
+        if (selectedProjectKey) {
+            const updated = skillsMdFiles.filter(f => f.name !== fileName);
+            if (updated.length === 0) {
+                localStorage.removeItem(`skills_md_files_${selectedProjectKey}`);
+            }
+        }
+    }, [selectedProjectKey, skillsMdFiles]);
 
     // Group by category
     const grouped = useMemo(() => {
@@ -978,6 +1205,52 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
         });
         return groups;
     }, [prerequisites]);
+
+    // Validate Git connection
+    const handleValidateGitConnection = useCallback(async () => {
+        if (!globalGitRepoUrl.trim()) {
+            setGitValidationError('Please enter a repository URL first');
+            return;
+        }
+
+        setIsValidatingGit(true);
+        setGitValidationError('');
+        setGitValidationResult(null);
+
+        try {
+            const token = localStorage.getItem('token');
+            const response = await fetch(API_ENDPOINTS.GIT_VALIDATE_CONNECTION, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                    repo_url: globalGitRepoUrl.trim(),
+                    pat: globalGitToken.trim() || null,
+                    provider: repoProvider,
+                }),
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.detail || 'Validation failed');
+            }
+
+            setGitValidationResult(data);
+            
+            // If URL was normalized, update the input field
+            if (data.normalized_url && data.normalized_url !== globalGitRepoUrl.trim()) {
+                setGlobalGitRepoUrl(data.normalized_url);
+            }
+        } catch (err) {
+            console.error('Git validation error:', err);
+            setGitValidationError(sanitizeErrorMessage(err));
+        } finally {
+            setIsValidatingGit(false);
+        }
+    }, [globalGitRepoUrl, globalGitToken, repoProvider]);
 
     const totalItems = prerequisites.length;
     const providedCount = prerequisites.filter(p => p.provided).length;
@@ -1018,9 +1291,32 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     throw new Error('Please enter a valid Git repository URL (e.g., https://github.com/org/repo.git).');
                 }
                 
-                // PAT is optional - no longer required
-
                 // Save global Git config from prerequisites so all agents reuse it.
+                const sourceUrl = analysisRepoSuggestion?.url || repo;
+                localStorage.setItem(`source_repo_url_${selectedProjectKey}`, sourceUrl);
+
+                // 1. Save destination Git config to project-wise git-config endpoint
+                const destGitConfigPayload = {
+                    dest_repo_url: repo,
+                };
+                if (pat) destGitConfigPayload.dest_repo_token = pat;
+
+                const destConfigRes = await fetch(`${API_BASE_URL}/api/projects/${selectedProjectKey}/git-config`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${token}`,
+                    },
+                    body: JSON.stringify(destGitConfigPayload),
+                });
+                
+                if (!destConfigRes.ok) {
+                    const errData = await destConfigRes.json().catch(() => ({}));
+                    const errorMsg = errData?.detail || 'Failed to save project Git configuration.';
+                    throw new Error(sanitizeErrorMessage(errorMsg));
+                }
+                
+                // 2. Fallback update to legacy AgentCredential table
                 const agentsUrl = new URL(API_ENDPOINTS.AGENTS);
                 agentsUrl.searchParams.set('project_token', selectedProjectKey);
                 const agentsRes = await fetch(agentsUrl.toString(), {
@@ -1365,10 +1661,18 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                             {processMode === 'vibe_coding' ? 'VibeCoding Launched' : 'Prerequisites Acknowledged'}
                         </h2>
                         <p className="text-app-text-muted text-sm mb-6 leading-relaxed max-w-md mx-auto">
-                            {processMode === 'vibe_coding' 
-                                ? `VibeCoding workspace opened with BRD for "${projectName || 'this project'}". Project creation and task execution will begin automatically.`
-                                : `${providedCount} of ${totalItems} prerequisite items have been confirmed for <strong>${projectName || 'this project'}</strong>.`
-                            }
+                            {processMode === 'vibe_coding' ? (
+                                <>
+                                    VibeCoding workspace opened with BRD for{" "}
+                                    <strong>{projectName || 'this project'}</strong>.
+                                    {" "}Project creation and task execution will begin automatically.
+                                </>
+                            ) : (
+                                <>
+                                    {providedCount} of {totalItems} prerequisite items have been confirmed for{" "}
+                                    <strong>{projectName || 'this project'}</strong>.
+                                </>
+                            )}
                         </p>
 
                         <div className="flex items-center justify-center gap-2 text-sm text-app-text-light">
@@ -1479,7 +1783,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     <div className="mb-6 p-4 rounded-lg border border-yellow-500/50 bg-yellow-500/10 shadow-md">
                         <div className="flex items-start gap-3">
                             <AlertTriangle className="w-5 h-5 text-yellow-500 mt-0.5 flex-shrink-0" />
-                            <div className="text-sm text-yellow-200 flex-1">
+                            <div className="text-sm text-dark-200 flex-1">
                                 <p className="font-bold mb-1.5 text-base flex items-center gap-2">
                                     <span className="text-lg">ℹ️</span> No PAT Provided
                                 </p>
@@ -1650,11 +1954,30 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
                                                 {/* Content */}
                                                 <div className="flex-1 min-w-0">
-                                                    <div className="flex items-center gap-2 mb-1 flex-wrap">
-                                                        <span className={`text-sm font-semibold ${item.provided ? 'text-app-text-muted' : 'text-app-text-main'}`}>
-                                                            {item.name}
-                                                        </span>
-                                                        <PriorityBadge priority={item.priority} />
+                                                    <div className="flex items-center justify-between gap-2 mb-1 flex-wrap">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className={`text-sm font-semibold ${item.provided ? 'text-app-text-muted' : 'text-app-text-main'}`}>
+                                                                {item.name}
+                                                            </span>
+                                                            <PriorityBadge priority={item.priority} />
+                                                        </div>
+                                                        {/* Secret flag toggle - moved to right side */}
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => toggleSecret(item.id)}
+                                                            className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium transition-colors ${item.containsSecret
+                                                                ? 'border-red-200 bg-app-status-errorBg text-app-status-error'
+                                                                : 'border-app-border bg-app-bg-page text-app-text-label hover:bg-app-bg-muted'
+                                                                }`}
+                                                            title="Mark as sensitive (will be excluded from AI payload)"
+                                                        >
+                                                            {item.containsSecret ? (
+                                                                <CheckCircle2 className="w-3.5 h-3.5 text-app-status-error" />
+                                                            ) : (
+                                                                <Circle className="w-3.5 h-3.5 text-app-text-light" />
+                                                            )}
+                                                            Sensitive
+                                                        </button>
                                                     </div>
                                                     <p className="text-xs text-app-text-muted leading-relaxed mb-2.5 max-w-2xl">
                                                         {item.description}
@@ -1707,24 +2030,6 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                                             )}
                                                         </div>
                                                     )}
-
-                                                    {/* Secret flag toggle */}
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => toggleSecret(item.id)}
-                                                        className={`mt-2 inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium transition-colors ${item.containsSecret
-                                                            ? 'border-red-200 bg-app-status-errorBg text-app-status-error'
-                                                            : 'border-app-border bg-app-bg-page text-app-text-label hover:bg-app-bg-muted'
-                                                            }`}
-                                                        title="Mark as sensitive (will be excluded from AI payload)"
-                                                    >
-                                                        {item.containsSecret ? (
-                                                            <CheckCircle2 className="w-3.5 h-3.5 text-app-status-error" />
-                                                        ) : (
-                                                            <Circle className="w-3.5 h-3.5 text-app-text-light" />
-                                                        )}
-                                                        Sensitive
-                                                    </button>
                                                 </div>
                                             </div>
                                         ))}
@@ -1756,6 +2061,242 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         <div className="flex items-center gap-2 text-[11px] text-app-primary font-medium bg-app-primary-light/50 px-3 py-2 rounded-lg italic">
                             <AlertCircle className="w-3.5 h-3.5" />
                             Rules are saved automatically for this project.
+                        </div>
+                    </div>
+                )}
+
+                {/* ── AI CONTEXT FILES UPLOAD SECTION ── */}
+                <div className="bg-app-bg-card/90 backdrop-blur-xl rounded-2xl shadow-sm border border-app-border-light/80 p-6 mb-6 space-y-4">
+                    <div className="flex items-center gap-2 mb-1">
+                        <div className="w-8 h-8 rounded-lg bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center">
+                            <FileKey className="w-4 h-4 text-violet-600 dark:text-violet-400" />
+                        </div>
+                        <h3 className="text-base font-bold text-app-text-main">AI Operational Directives</h3>
+                    </div>
+                    <p className="text-sm text-app-text-muted">
+                        Upload markdown files that contain project context, guidelines, or documentation. These files will be available for reference during development.
+                    </p>
+                    
+                    {/* Upload Button */}
+                    <div className="flex items-center gap-3">
+                        <label className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-gradient-to-r from-violet-500 to-purple-600 rounded-lg hover:shadow-lg transition-all cursor-pointer">
+                            <Package className="w-4 h-4" />
+                            Upload Context Files
+                            <input
+                                type="file"
+                                accept=".md"
+                                multiple
+                                onChange={handleClaudeMdUpload}
+                                className="hidden"
+                            />
+                        </label>
+                        <span className="text-xs text-app-text-muted">
+                            {claudeMdFiles.length > 0 ? `${claudeMdFiles.length} file${claudeMdFiles.length !== 1 ? 's' : ''} uploaded` : 'No files uploaded yet'}
+                        </span>
+                    </div>
+                    
+                    {/* Uploaded Files List */}
+                    {claudeMdFiles.length > 0 && (
+                        <div className="space-y-2 mt-4">
+                            <p className="text-xs font-semibold text-app-text-label uppercase tracking-wider">Uploaded Files</p>
+                            <div className="space-y-2">
+                                {claudeMdFiles.map((file, index) => (
+                                    <div
+                                        key={index}
+                                        className="flex items-center justify-between p-3 bg-app-bg-page border border-app-border rounded-lg hover:bg-app-bg-hover transition-colors"
+                                    >
+                                        <div className="flex items-center gap-3 flex-1 min-w-0">
+                                            <FileKey className="w-4 h-4 text-violet-600 dark:text-violet-400 flex-shrink-0" />
+                                            <div className="flex-1 min-w-0">
+                                                <p className="text-sm font-semibold text-app-text-main truncate">{file.name}</p>
+                                                <p className="text-xs text-app-text-muted">
+                                                    Uploaded {new Date(file.uploadedAt).toLocaleDateString()} at {new Date(file.uploadedAt).toLocaleTimeString()}
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-2 flex-shrink-0">
+                                            <button
+                                                onClick={() => handleViewClaudeMd(file)}
+                                                className="px-3 py-1.5 text-xs font-semibold text-violet-600 dark:text-violet-400 hover:bg-violet-100 dark:hover:bg-violet-900/30 rounded-md transition-colors"
+                                            >
+                                                View
+                                            </button>
+                                            <button
+                                                onClick={() => handleRemoveClaudeMd(file.name)}
+                                                className="px-3 py-1.5 text-xs font-semibold text-app-status-error hover:bg-app-status-errorBg rounded-md transition-colors"
+                                            >
+                                                Remove
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                    
+                    <div className="flex items-center gap-2 text-[11px] text-violet-600 dark:text-violet-400 font-medium bg-violet-100 dark:bg-violet-900/30 px-3 py-2 rounded-lg italic">
+                        <Info className="w-3.5 h-3.5" />
+                        Context files are saved per project and can be referenced during development.
+                    </div>
+                </div>
+
+                {/* ── SKILLS.MD UPLOAD SECTION ── */}
+                <div className="bg-app-bg-card/90 backdrop-blur-xl rounded-2xl shadow-sm border border-app-border-light/80 p-6 mb-6 space-y-4">
+                    <div className="flex items-center gap-2 mb-1">
+                        <div className="w-8 h-8 rounded-lg bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center">
+                            <Sparkles className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                        </div>
+                        <h3 className="text-base font-bold text-app-text-main">Cognitive Skill Modules</h3>
+                    </div>
+                    <p className="text-sm text-app-text-muted">
+                        Upload reusable markdown modules files that define agent capabilities, coding standards, or specialized knowledge. Each skill can be referenced by agents during task execution.
+                    </p>
+                    
+                    {/* Upload Button */}
+                    <div className="flex items-center gap-3">
+                        <label className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-gradient-to-r from-emerald-500 to-teal-600 rounded-lg hover:shadow-lg transition-all cursor-pointer">
+                            <Sparkles className="w-4 h-4" />
+                            Upload Skills.md
+                            <input
+                                type="file"
+                                accept=".md"
+                                multiple
+                                onChange={handleSkillsMdUpload}
+                                className="hidden"
+                            />
+                        </label>
+                        <span className="text-xs text-app-text-muted">
+                            {skillsMdFiles.length > 0 ? `${skillsMdFiles.length} skill${skillsMdFiles.length !== 1 ? 's' : ''} uploaded` : 'No skills uploaded yet'}
+                        </span>
+                    </div>
+                    
+                    {/* Uploaded Files List */}
+                    {skillsMdFiles.length > 0 && (
+                        <div className="space-y-2 mt-4">
+                            <p className="text-xs font-semibold text-app-text-label uppercase tracking-wider">Uploaded Skills</p>
+                            <div className="space-y-2">
+                                {skillsMdFiles.map((file, index) => (
+                                    <div
+                                        key={index}
+                                        className="flex items-center justify-between p-3 bg-app-bg-page border border-app-border rounded-lg hover:bg-app-bg-hover transition-colors"
+                                    >
+                                        <div className="flex items-center gap-3 flex-1 min-w-0">
+                                            <Sparkles className="w-4 h-4 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
+                                            <div className="flex-1 min-w-0">
+                                                <p className="text-sm font-semibold text-app-text-main truncate">{file.name}</p>
+                                                <p className="text-xs text-app-text-muted">
+                                                    Uploaded {new Date(file.uploadedAt).toLocaleDateString()} at {new Date(file.uploadedAt).toLocaleTimeString()}
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-2 flex-shrink-0">
+                                            <button
+                                                onClick={() => handleViewSkillsMd(file)}
+                                                className="px-3 py-1.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/30 rounded-md transition-colors"
+                                            >
+                                                View
+                                            </button>
+                                            <button
+                                                onClick={() => handleRemoveSkillsMd(file.name)}
+                                                className="px-3 py-1.5 text-xs font-semibold text-app-status-error hover:bg-app-status-errorBg rounded-md transition-colors"
+                                            >
+                                                Remove
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                    
+                    <div className="flex items-center gap-2 text-[11px] text-emerald-600 dark:text-emerald-400 font-medium bg-emerald-100 dark:bg-emerald-900/30 px-3 py-2 rounded-lg italic">
+                        <Info className="w-3.5 h-3.5" />
+                        Skills.md files are saved per project and define specialized capabilities for agents.
+                    </div>
+                </div>
+
+                {/* ── AI CONTEXT FILE VIEWER MODAL ── */}
+                {showClaudeMdViewer && (
+                    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[9999] p-4">
+                        <div className="bg-app-bg-card rounded-2xl shadow-2xl border border-app-border max-w-4xl w-full max-h-[80vh] flex flex-col">
+                            {/* Modal Header */}
+                            <div className="flex items-center justify-between p-6 border-b border-app-border">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-10 h-10 rounded-xl bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center">
+                                        <FileKey className="w-5 h-5 text-violet-600 dark:text-violet-400" />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-lg font-bold text-app-text-main">{selectedClaudeMdName}</h3>
+                                        <p className="text-xs text-app-text-muted">Context File Viewer</p>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => setShowClaudeMdViewer(false)}
+                                    className="w-8 h-8 rounded-lg hover:bg-app-bg-hover flex items-center justify-center transition-colors"
+                                >
+                                    <span className="text-xl text-app-text-muted">×</span>
+                                </button>
+                            </div>
+                            
+                            {/* Modal Content */}
+                            <div className="flex-1 overflow-y-auto p-6">
+                                <pre className="text-sm text-app-text-main bg-app-bg-page p-4 rounded-lg border border-app-border whitespace-pre-wrap break-words font-mono">
+                                    {selectedClaudeMdContent}
+                                </pre>
+                            </div>
+                            
+                            {/* Modal Footer */}
+                            <div className="flex items-center justify-end gap-3 p-6 border-t border-app-border">
+                                <button
+                                    onClick={() => setShowClaudeMdViewer(false)}
+                                    className="px-4 py-2.5 text-sm font-semibold text-app-text-main bg-app-bg-page border border-app-border rounded-lg hover:bg-app-bg-hover transition-colors"
+                                >
+                                    Close
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* ── SKILLS.MD VIEWER MODAL ── */}
+                {showSkillsMdViewer && (
+                    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[9999] p-4">
+                        <div className="bg-app-bg-card rounded-2xl shadow-2xl border border-app-border max-w-4xl w-full max-h-[80vh] flex flex-col">
+                            {/* Modal Header */}
+                            <div className="flex items-center justify-between p-6 border-b border-app-border">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-10 h-10 rounded-xl bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center">
+                                        <Sparkles className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-lg font-bold text-app-text-main">{selectedSkillsMdName}</h3>
+                                        <p className="text-xs text-app-text-muted">Skills.md File Viewer</p>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => setShowSkillsMdViewer(false)}
+                                    className="w-8 h-8 rounded-lg hover:bg-app-bg-hover flex items-center justify-center transition-colors"
+                                >
+                                    <span className="text-xl text-app-text-muted">×</span>
+                                </button>
+                            </div>
+                            
+                            {/* Modal Content */}
+                            <div className="flex-1 overflow-y-auto p-6">
+                                <pre className="text-sm text-app-text-main bg-app-bg-page p-4 rounded-lg border border-app-border whitespace-pre-wrap break-words font-mono">
+                                    {selectedSkillsMdContent}
+                                </pre>
+                            </div>
+                            
+                            {/* Modal Footer */}
+                            <div className="flex items-center justify-end gap-3 p-6 border-t border-app-border">
+                                <button
+                                    onClick={() => setShowSkillsMdViewer(false)}
+                                    className="px-4 py-2.5 text-sm font-semibold text-app-text-main bg-app-bg-page border border-app-border rounded-lg hover:bg-app-bg-hover transition-colors"
+                                >
+                                    Close
+                                </button>
+                            </div>
                         </div>
                     </div>
                 )}
@@ -1809,13 +2350,52 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                     <input
                                         type="text"
                                         value={globalGitRepoUrl}
-                                        onChange={(e) => setGlobalGitRepoUrl(e.target.value)}
+                                        onChange={(e) => {
+                                            setGlobalGitRepoUrl(e.target.value);
+                                            // Clear validation when URL changes
+                                            setGitValidationResult(null);
+                                            setGitValidationError('');
+                                        }}
                                         placeholder={repoProvider === 'azure-devops'
                                             ? 'https://dev.azure.com/ORG/PROJECT/_git/REPO'
                                             : 'https://github.com/org/repo.git'
                                         }
                                         className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-blue-400 text-sm bg-app-bg-card text-app-text-main transition-all duration-200"
                                     />
+                                    
+                                    {/* Validation Result */}
+                                    {gitValidationResult && (
+                                        <div className="mt-3 p-3 rounded-lg border border-emerald-200 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-800">
+                                            <div className="flex items-start gap-2">
+                                                <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 mt-0.5 flex-shrink-0" />
+                                                <div className="flex-1 min-w-0">
+                                                    <p className="text-sm font-semibold text-emerald-700 dark:text-dark-300">
+                                                        {gitValidationResult.message}
+                                                    </p>
+                                                    {gitValidationResult.normalized_url && gitValidationResult.normalized_url !== globalGitRepoUrl && (
+                                                        <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">
+                                                            URL normalized to: {gitValidationResult.normalized_url}
+                                                        </p>
+                                                    )}
+                                                    {repoProvider === 'azure-devops' && gitValidationResult.organization && (
+                                                        <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">
+                                                            Organization: {gitValidationResult.organization} | Project: {gitValidationResult.project} | Repo: {gitValidationResult.repo}
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+                                    
+                                    {/* Validation Error */}
+                                    {gitValidationError && (
+                                        <div className="mt-3 p-3 rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/20 dark:border-red-800">
+                                            <div className="flex items-start gap-2">
+                                                <AlertCircle className="w-4 h-4 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
+                                                <p className="text-sm text-red-700 dark:text-red-300">{gitValidationError}</p>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                                 <div>
                                     <label className="block text-[11px] font-bold text-app-text-label mb-2 uppercase tracking-widest">
@@ -1824,7 +2404,12 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                     <input
                                         type="password"
                                         value={globalGitToken}
-                                        onChange={(e) => setGlobalGitToken(e.target.value)}
+                                        onChange={(e) => {
+                                            setGlobalGitToken(e.target.value);
+                                            // Clear validation when token changes
+                                            setGitValidationResult(null);
+                                            setGitValidationError('');
+                                        }}
                                         placeholder={hasSavedGlobalGitToken ? 'Leave blank to keep existing PAT' : 'Optional for public repos (ghp_... or Azure PAT)'}
                                         className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-blue-400 text-sm bg-app-bg-card text-app-text-main transition-all duration-200"
                                     />
@@ -1832,10 +2417,36 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                         {hasSavedGlobalGitToken
                                             ? 'PAT already saved for this project. Enter a new one only if you want to replace it.'
                                             : repoProvider === 'azure-devops'
-                                                ? 'Azure DevOps PAT with Code access (optional for public repos).'
+                                                ? 'Azure DevOps PAT with Code (Read & Write) permissions. Required for pushing code.'
                                                 : 'GitHub PAT with repo scope (optional for public repos).'}
                                     </p>
                                 </div>
+                                
+                                {/* Validate Button */}
+                                <div>
+                                    <button
+                                        type="button"
+                                        onClick={handleValidateGitConnection}
+                                        disabled={isValidatingGit || !globalGitRepoUrl.trim()}
+                                        className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-gradient-to-r from-app-primary to-app-primary-hover rounded-lg hover:shadow-lg transition-all disabled:from-app-border disabled:to-app-text-light disabled:cursor-not-allowed"
+                                    >
+                                        {isValidatingGit ? (
+                                            <>
+                                                <Loader2 className="w-4 h-4 animate-spin" />
+                                                Validating...
+                                            </>
+                                        ) : (
+                                            <>
+                                                <CheckCircle2 className="w-4 h-4" />
+                                                Test Connection
+                                            </>
+                                        )}
+                                    </button>
+                                    <p className="text-xs text-app-text-muted mt-2">
+                                        Click to verify the repository URL and PAT are correct before proceeding.
+                                    </p>
+                                </div>
+                                
                                 {isLoadingGitConfig && (
                                     <p className="text-xs text-app-text-muted">Loading saved Git config...</p>
                                 )}

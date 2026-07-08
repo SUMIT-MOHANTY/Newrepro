@@ -311,7 +311,8 @@ const ChatPanel = ({
               onRestore={onRestore}
               messageIndex={idx}
               executingTaskId={executingTaskId}
-              isLatest={idx === processedMessages.length - 1}
+              onRestore={onRestore}
+              messageIndex={idx}
             />
           );
         })}
@@ -322,42 +323,42 @@ const ChatPanel = ({
           !processedMessages[processedMessages.length - 1]?.isThinking &&
           lastThinkingLogsRef.current.length === 0
         )) && (
-            <div className="flex gap-3">
+          <div className="flex gap-3">
+            <div className={cn(
+              'flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center',
+              darkMode ? 'bg-white/5' : 'bg-gray-100'
+            )}>
+              <Sparkles className={cn('w-4 h-4', darkMode ? 'text-gray-400' : 'text-gray-600')} />
+            </div>
+            <div className="flex-1 min-w-0">
               <div className={cn(
-                'flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center',
-                darkMode ? 'bg-white/5' : 'bg-gray-100'
+                'rounded-lg px-4 py-3',
+                isRestoring
+                  ? (darkMode ? 'bg-amber-500/10 text-amber-300 border border-amber-500/20' : 'bg-amber-50 text-amber-700 border border-amber-200')
+                  : (darkMode ? 'bg-white/5 text-gray-200' : 'bg-gray-100 text-gray-900')
               )}>
-                <Sparkles className={cn('w-4 h-4', darkMode ? 'text-gray-400' : 'text-gray-600')} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className={cn(
-                  'rounded-lg px-4 py-3',
-                  isRestoring
-                    ? (darkMode ? 'bg-amber-500/10 text-amber-300 border border-amber-500/20' : 'bg-amber-50 text-amber-700 border border-amber-200')
-                    : (darkMode ? 'bg-white/5 text-gray-200' : 'bg-gray-100 text-gray-900')
-                )}>
-                  <div className="flex items-center gap-2">
-                    {isRestoring ? (
-                      <>
-                        <div className="flex gap-1">
-                          <span className="w-2 h-2 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
-                          <span className="w-2 h-2 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
-                          <span className="w-2 h-2 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
-                        </div>
-                        <span className="text-xs font-semibold">Restoring...</span>
-                      </>
-                    ) : (
+                <div className="flex items-center gap-2">
+                  {isRestoring ? (
+                    <>
                       <div className="flex gap-1">
-                        <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
-                        <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
-                        <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                        <span className="w-2 h-2 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                        <span className="w-2 h-2 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                        <span className="w-2 h-2 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
                       </div>
-                    )}
-                  </div>
+                      <span className="text-xs font-semibold">Restoring...</span>
+                    </>
+                  ) : (
+                    <div className="flex gap-1">
+                      <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                      <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                      <span className="w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
-          )}
+          </div>
+        )}
 
         <div ref={messagesEndRef} />
       </div>

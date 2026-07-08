@@ -217,3 +217,159 @@ def log_code_generation_success(agent_id, task_id, script_length, files_created)
             f.write(f"  Files created: {files_created}\n")
     except Exception as e:
         print(f"[LOG ERROR] Failed to write success log: {e}")
+
+def log_ai_tracker(messages, response_data):
+    """
+    Clearly tracks what was sent to the AI (including system prompt)
+    and what was received in response, with token counts in a txt file.
+    Includes comprehensive call-stack backtrace to understand exactly
+    where and why the AI call was made.
+    """
+    import json
+    import inspect
+    TRACKER_FILE = os.path.join(LOG_DIR, "ai_calls_tracker.txt")
+    try:
+        # Determine caller information dynamically
+        caller_file = "Unknown File"
+        caller_func = "Unknown Function"
+        caller_line = 0
+        calling_code = "Unknown Code Line"
+        why_called = "Generic AI Call"
+        
+        # Analyze frame stack
+        stack = inspect.stack()
+        for idx, frame_info in enumerate(stack):
+            filename = frame_info.filename
+            function = frame_info.function
+            lineno = frame_info.lineno
+            
+            # Skip logging files and general wrappers to find the real business logic caller
+            if any(term in filename.lower() for term in ["llm_logs.py", "llm_gateway.py", "inspect"]):
+                continue
+                
+            caller_file = os.path.basename(filename)
+            caller_func = function
+            caller_line = lineno
+            if frame_info.code_context:
+                calling_code = frame_info.code_context[0].strip()
+                
+            # Get function docstring if possible to explain "why"
+            try:
+                frame = frame_info.frame
+                func_obj = frame.f_globals.get(function)
+                if func_obj and func_obj.__doc__:
+                    why_called = func_obj.__doc__.strip().split('\n')[0]
+                else:
+                    # Provide intuitive explanations based on common functions
+                    func_lower = function.lower()
+                    if "bootstrap" in func_lower:
+                        why_called = "Initializing project structure and initial setup scaffold (Bootstrap)"
+                    elif "brd" in func_lower:
+                        why_called = "Analyzing Business Requirements Document (BRD) to extract specs"
+                    elif "plan" in func_lower or "task" in func_lower:
+                        why_called = "Planning features, breaking down tasks, or managing task schedules"
+                    elif "review" in func_lower or "check" in func_lower:
+                        why_called = "Running agent self-review / code quality checks to auto-heal errors"
+                    elif "fix" in func_lower or "heal" in func_lower:
+                        why_called = "Generating fixes or self-healing codebase/lint errors"
+                    else:
+                        why_called = f"Executing standard business logic in {function}()"
+            except Exception:
+                pass
+            break
+
+        content_text = ""
+        model_name = "Unknown Model"
+        usage = {"input_tokens": 0, "output_tokens": 0}
+        
+        if isinstance(response_data, dict):
+            # Try extracting content
+            # Try importing dynamically to avoid circular import issues
+            try:
+                from llm_gateway import extract_content_from_response
+                content_text = extract_content_from_response(response_data)
+            except Exception:
+                # Fallback if import fails
+                content_text = response_data.get("response") or response_data.get("text") or str(response_data)
+            
+            # Model name
+            model_name = response_data.get("model", "Unknown Model")
+            
+            # Token usage
+            raw_usage = response_data.get("usage") or {}
+            if "prompt_tokens" in raw_usage:
+                usage["input_tokens"] = raw_usage.get("prompt_tokens", 0)
+                usage["output_tokens"] = raw_usage.get("completion_tokens", 0)
+            elif "input_tokens" in raw_usage:
+                usage["input_tokens"] = raw_usage.get("input_tokens", 0)
+                usage["output_tokens"] = raw_usage.get("output_tokens", 0)
+                if "cache_creation_input_tokens" in raw_usage:
+                    usage["cache_creation_input_tokens"] = raw_usage["cache_creation_input_tokens"]
+                if "cache_read_input_tokens" in raw_usage:
+                    usage["cache_read_input_tokens"] = raw_usage["cache_read_input_tokens"]
+            else:
+                # If usage is not present, estimate it based on character length
+                total_input_chars = sum(len(str(m.get("content", ""))) for m in messages)
+                usage["input_tokens"] = total_input_chars // 4
+                usage["output_tokens"] = len(str(content_text)) // 4
+        else:
+            content_text = str(response_data)
+            total_input_chars = sum(len(str(m.get("content", ""))) for m in messages)
+            usage["input_tokens"] = total_input_chars // 4
+            usage["output_tokens"] = len(content_text) // 4
+
+        # Construct the sample JSON format for AI response tracking
+        formatted_response_json = {
+            "content": [
+                {
+                    "text": content_text,
+                    "type": "text"
+                }
+            ],
+            "id": response_data.get("id") if isinstance(response_data, dict) else "unknown_msg_id",
+            "model": model_name,
+            "role": "assistant",
+            "stop_reason": response_data.get("stop_reason") if isinstance(response_data, dict) else "end_turn",
+            "stop_sequence": response_data.get("stop_sequence") if isinstance(response_data, dict) else None,
+            "type": "message",
+            "usage": {
+                "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", 0),
+                "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
+                "input_tokens": usage.get("input_tokens", 0),
+                "output_tokens": usage.get("output_tokens", 0)
+            }
+        }
+
+        with open(TRACKER_FILE, "a", encoding="utf-8") as f:
+            f.write("\n" + "="*80 + "\n")
+            f.write(f"TRACKED AI CALL - {datetime.utcnow().isoformat()}\n")
+            f.write("="*80 + "\n")
+            
+            # Write caller information and explanation of why the call was made
+            f.write("\n[SOURCE CODE & CALL ORIGIN DETAILS]\n")
+            f.write(f"File Name:     {caller_file}\n")
+            f.write(f"Function Name: {caller_func}()\n")
+            f.write(f"Line Number:   {caller_line}\n")
+            f.write(f"Triggering Code: {calling_code}\n")
+            f.write(f"Call Purpose:  {why_called}\n")
+            
+            # Write System Prompt and User Prompt
+            f.write("\n[INPUT / PROMPTS SENT TO AI]\n")
+            for msg in messages:
+                role = msg.get("role", "unknown").upper()
+                content = msg.get("content", "")
+                f.write(f"--- {role} ---\n{content}\n\n")
+            
+            f.write("\n[AI RESPONSE METADATA & RAW USAGE]\n")
+            f.write(json.dumps(formatted_response_json, indent=4))
+            f.write("\n\n")
+            
+            # Write unescaped readable text content for easy reading
+            f.write("#" * 80 + "\n")
+            f.write("# [READABLE AI TEXT CONTENT - response.content[0].text]\n")
+            f.write("#" * 80 + "\n\n")
+            f.write(content_text if content_text else "(No text content generated)")
+            f.write("\n\n" + "="*80 + "\n")
+            
+    except Exception as e:
+        print(f"[TRACKER ERROR] Failed to write AI tracker log: {e}")

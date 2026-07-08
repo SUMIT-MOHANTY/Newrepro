@@ -115,26 +115,19 @@ target/
             
         return workspace_dir
 
-    def _run_git_command_raw(self, workspace_dir: Path, args: List[str]) -> Dict[str, Any]:
-        """Low-level git command execution without path resolution logic."""
-        # Clean up stale lock if modifying repo
-        if args and args[0] in ("add", "commit", "checkout", "stash", "reset", "clean", "rm", "merge", "rebase"):
-            lock_file = workspace_dir / ".git" / "index.lock"
-            if lock_file.exists():
-                try:
-                    lock_file.unlink()
-                    logger.info("🧹 Removed stale .git/index.lock file")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to remove stale index.lock: {e}")
-
+    def _run_git_command(self, project_id: str, args: List[str]) -> Dict[str, Any]:
+        workspace_dir = self._get_workspace_dir(project_id)
         try:
-            git_exe = "/usr/bin/git" if os.name != "nt" else "git"
+            env = os.environ.copy()
+            env["GIT_TERMINAL_PROMPT"] = "0"
+            
             result = subprocess.run(
                 [git_exe] + args,
                 cwd=workspace_dir,
                 capture_output=True,
                 text=True,
-                check=False
+                check=False,
+                env=env
             )
             return {
                 "status": "success" if result.returncode == 0 else "error",
@@ -541,7 +534,7 @@ target/
     def checkout_commit(self, project_id: str, commit_hash: str) -> Dict[str, Any]:
         return self._run_git_command(project_id, ["checkout", commit_hash])
 
-    def add_remote(self, project_id: str, remote_url: str, remote_name: str = "origin") -> Dict[str, Any]:
+    def add_remote(self, project_id: str, remote_url: str, remote_name: str = "origin", username: Optional[str] = None, token: Optional[str] = None) -> Dict[str, Any]:
         # Clean up the URL - remove trailing slashes and ensure .git extension for GitHub/GitLab URLs
         remote_url = remote_url.strip().rstrip('/')
         if remote_url.startswith("https://") and not remote_url.endswith('.git'):
@@ -552,13 +545,23 @@ target/
         # Check if remote exists
         check_remotes = self._run_git_command(project_id, ["remote"])
         res = {"status": "success"}
-        if remote_name in check_remotes["stdout"].split():
+        if remote_name in check_remotes.get("stdout", "").split():
             res = self._run_git_command(project_id, ["remote", "set-url", remote_name, remote_url])
         else:
             res = self._run_git_command(project_id, ["remote", "add", remote_name, remote_url])
             
-        # We DO NOT run fetch without credentials here, since it triggers Git Credential Manager popup.
-        # list_branches fetches using the PAT/Token when needed.
+        # Immediately try to fetch
+        if res["status"] == "success":
+            fetch_command = ["fetch", remote_name, "--prune"]
+            
+            # If token is provided, inject it for this initial fetch
+            if token and remote_url.startswith("https://"):
+                user_part = f"{username}:" if username else ""
+                auth_url = remote_url.replace("https://", f"https://{user_part}{token}@")
+                # Use authenticated URL for one-time fetch to avoid saving token in repo config
+                fetch_command = ["fetch", auth_url, f"+refs/heads/*:refs/remotes/{remote_name}/*", "--prune"]
+            
+            self._run_git_command(project_id, fetch_command)
             
         return res
 

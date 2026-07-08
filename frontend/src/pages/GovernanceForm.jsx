@@ -467,7 +467,17 @@ const GovernanceForm = ({
         setError('');
 
         try {
-            // CRITICAL: Always check draft project FIRST to preserve credentials
+            // Validate project name
+            const trimmedName = projectName.trim();
+            if (!trimmedName) {
+                setError('Please enter a project name');
+                setIsCreatingProject(false);
+                return;
+            }
+
+            // CRITICAL FIX: Synchronize project with backend BEFORE navigation
+            // This prevents duplicate project creation by ensuring backend knows about the project
+            
             const projectKeyToUse = selectedProject?.projectToken || selectedProjectKey || undefined;
             const existingDraft = getDraftProject(projectKeyToUse);
 
@@ -475,11 +485,41 @@ const GovernanceForm = ({
             const existingClientId = existingDraft?.client_id || selectedProject?.client_id;
             const existingClientSecret = existingDraft?.client_secret || selectedProject?.client_secret;
 
-            // First create/update draft project - PRESERVE existing credentials
-            const draftProject = upsertDraftProject(createDraftProject(projectName, {
-                key: projectKeyToUse,
-                client_id: existingClientId || null,
-                client_secret: existingClientSecret || null,
+            // Call backend to ensure project exists (creates if needed, returns existing if found)
+            const response = await fetch(API_ENDPOINTS.PROJECT_ENSURE, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${localStorage.getItem('token')}`
+                },
+                body: JSON.stringify({
+                    project_token: projectKeyToUse,
+                    project_name: trimmedName,
+                    client_id: existingClientId || null,
+                    client_secret: existingClientSecret || null,
+                })
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                
+                // Handle duplicate name error specifically
+                if (response.status === 409) {
+                    setError(errorData.detail || 'A project with this name already exists. Please choose a different name.');
+                    setIsCreatingProject(false);
+                    return;
+                }
+                
+                throw new Error(errorData.detail || 'Failed to create project in backend');
+            }
+
+            const backendProject = await response.json();
+            
+            // Update draft project with backend-confirmed token and credentials
+            const draftProject = upsertDraftProject(createDraftProject(trimmedName, {
+                key: backendProject.project_token,
+                client_id: backendProject.client_id || null,
+                client_secret: backendProject.client_secret || null,
             }));
 
             if (!draftProject?.projectToken) {
@@ -487,11 +527,6 @@ const GovernanceForm = ({
                 setIsCreatingProject(false);
                 return;
             }
-
-            // NOTE:
-            // Do NOT create the external task project during initiation/governance.
-            // Project creation must happen during Task Creation (/api/agent/auto-generate/)
-            // so that the project deadline is derived strictly from the selected process_mode.
 
             // Wait a bit to ensure credentials are saved before navigation
             await new Promise(resolve => setTimeout(resolve, 100));
@@ -505,23 +540,11 @@ const GovernanceForm = ({
             setSelectedProjectKey?.(draftProject.key);
             setIsNewProjectMode?.(false);
 
-            // After successful draft creation, navigate straight to the Requirement Screening step.
-            // Previously the code redirected to the generic project URL (`/a/{token}`), which caused
-            // the AppLayout effect to immediately route back to the initiation step because the
-            // roadmap data hadn't been refreshed yet. Direct navigation to `/dashboard` (the
-            // Requirement Screening page) ensures a seamless one‑click transition.
             // Set a flag to tell AppLayout to skip its automatic redirect during this navigation.
             try {
                 sessionStorage.setItem('skipAppLayoutRedirect', 'true');
             } catch (e) {
                 // ignore storage errors (e.g., in private mode)
-            }
-
-            // Set a flag to tell AppLayout to skip its automatic redirect during this navigation.
-            try {
-                sessionStorage.setItem('skipAppLayoutRedirect', 'true');
-            } catch (e) {
-                // ignore storage errors
             }
 
             const nextStepPath = '/dashboard';
@@ -534,6 +557,7 @@ const GovernanceForm = ({
                 }
             }, 0);
         } catch (err) {
+            console.error('Project creation error:', err);
             setError(err.message || 'Failed to create project. Please try again.');
             setIsCreatingProject(false);
         }
@@ -675,7 +699,13 @@ const GovernanceForm = ({
                                             <input
                                                 type="text"
                                                 value={projectName}
-                                                onChange={(e) => setProjectName(e.target.value)}
+                                                onChange={(e) => {
+                                                    setProjectName(e.target.value);
+                                                    // Clear error when user starts typing
+                                                    if (error && error.includes('already exists')) {
+                                                        setError('');
+                                                    }
+                                                }}
                                                 onKeyDown={(e) => e.key === 'Enter' && goNext()}
                                                 placeholder="e.g. Customer Analytics Platform"
                                                 className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-blue-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border hover:border-app-border font-medium"
@@ -1074,99 +1104,6 @@ const GovernanceResult = ({ result, onBack, fetchRoadmapData, navigate }) => {
 
 
                 {/* ══════════════════════════════════════════════
-                   NEXT STEPS + RESOURCES (side-by-side cards)
-                ══════════════════════════════════════════════ */}
-                <div className="max-w-6xl mb-5">
-                    {classification === 'SANDBOX' && (
-                        <>
-                            <div className="bg-app-primary-light rounded-2xl p-5 border border-app-primary-ring">
-                                <h3 className="text-app-primary-dark font-bold text-sm mb-3 flex items-center gap-2">
-                                    <ArrowRight className="w-4 h-4" /> Next Steps
-                                </h3>
-
-                                <ol className="text-app-text-label space-y-2 text-sm list-none">
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Get credentials from email</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Clone your repository</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Start development immediately</li>
-                                    <li className="flex gap-2"><span className="bg-blue-200 text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">4</span> Submit review at 90 days</li>
-                                </ol>
-                            </div>
-                        </>
-                    )}
-                    {classification === 'CONTROLLED_SANDBOX' && (
-                        <>
-                            <div className="bg-app-status-warningBg rounded-2xl p-5 border border-amber-200">
-                                <h3 className="text-amber-800 font-bold text-sm mb-3 flex items-center gap-2">
-                                    <AlertTriangle className="w-4 h-4" /> Requirements
-                                </h3>
-                                <ul className="text-app-text-label space-y-2 text-sm">
-                                    <li className="flex gap-2"><span className="text-app-status-warning">•</span> Use Azure DevOps template</li>
-                                    <li className="flex gap-2"><span className="text-app-status-warning">•</span> Use .NET scaffold</li>
-                                    <li className="flex gap-2"><span className="text-app-status-warning">•</span> Submit for IT check</li>
-                                    <li className="flex gap-2"><span className="text-app-status-warning">•</span> Follow CI/CD pipeline</li>
-                                </ul>
-                            </div>
-                            <div className="bg-app-primary-light rounded-2xl p-5 border border-app-primary-ring">
-                                <h3 className="text-app-primary-dark font-bold text-sm mb-3 flex items-center gap-2">
-                                    <ArrowRight className="w-4 h-4" /> Next Steps
-                                </h3>
-                                <ol className="text-app-text-label space-y-2 text-sm list-none">
-                                    <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Request Azure DevOps project</li>
-                                    <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Set up standard repository</li>
-                                    <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Submit for architecture review</li>
-                                    <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">4</span> Proceed after approval</li>
-                                </ol>
-                            </div>
-                        </>
-                    )}
-                    {classification === 'ENTERPRISE' && (
-                        <>
-                            <div className="bg-app-status-errorBg rounded-2xl p-5 border border-red-200">
-                                <h3 className="text-red-800 font-bold text-sm mb-3 flex items-center gap-2">
-                                    <AlertCircle className="w-4 h-4" /> Required Processes
-                                </h3>
-                                <ul className="text-app-text-label space-y-2 text-sm">
-                                    {isSkipFollowUpCase ? (
-                                        <>
-                                            <li className="flex gap-2"><span className="text-red-400">•</span> Screening answers were skipped</li>
-                                            <li className="flex gap-2"><span className="text-red-400">•</span> IT follow-up is required</li>
-                                        </>
-                                    ) : (
-                                        <>
-                                            <li className="flex gap-2"><span className="text-red-400">•</span> Architecture board review</li>
-                                            <li className="flex gap-2"><span className="text-red-400">•</span> Threat modeling</li>
-                                            <li className="flex gap-2"><span className="text-red-400">•</span> Full security assessment</li>
-                                            <li className="flex gap-2"><span className="text-red-400">•</span> SDLC compliance</li>
-                                        </>
-                                    )}
-                                </ul>
-                            </div>
-                            <div className="bg-app-primary-light rounded-2xl p-5 border border-app-primary-ring">
-                                <h3 className="text-app-primary-dark font-bold text-sm mb-3 flex items-center gap-2">
-                                    <ArrowRight className="w-4 h-4" /> Next Steps
-                                </h3>
-                                <ol className="text-app-text-label space-y-2 text-sm list-none">
-                                    {isSkipFollowUpCase ? (
-                                        <>
-                                            <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Our IT team will reach out to you</li>
-                                            <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Wait for IT guidance to continue</li>
-                                            <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Thanks for connecting with us</li>
-                                        </>
-                                    ) : (
-                                        <>
-                                            <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">1</span> Contact enterprise architecture team</li>
-                                            <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">2</span> Prepare threat model documentation</li>
-                                            <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">3</span> Schedule architecture board review</li>
-                                            <li className="flex gap-2"><span className="bg-app-primary-ring text-app-primary-dark rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold flex-shrink-0">4</span> Complete security assessment</li>
-                                        </>
-                                    )}
-                                </ol>
-                            </div>
-                        </>
-                    )}
-                </div>
-
-                {/* ══════════════════════════════════════════════
                    ACTION BUTTONS
                 ══════════════════════════════════════════════ */}
                 <div className="flex flex-col sm:flex-row gap-3 pb-12 md:pb-24">
@@ -1184,11 +1121,19 @@ const GovernanceResult = ({ result, onBack, fetchRoadmapData, navigate }) => {
                                 setIsNavigating(true);
                                 
                                 try {
-                                    // Store result in session storage
+                                    // CRITICAL FIX: Ensure project token is properly set before navigation
+                                    // This prevents duplicate project creation
+                                    
+                                    // 1. Store result in session storage
                                     sessionStorage.setItem('governanceResult', JSON.stringify(result));
                                     sessionStorage.setItem('shouldStartAnalysis', 'true');
                                     
-                                    // Try to refresh roadmap data with timeout
+                                    // 2. Ensure project token is set in localStorage
+                                    if (result.project_token) {
+                                        localStorage.setItem('status_dashboard_selected_project_key', result.project_token);
+                                    }
+                                    
+                                    // 3. Try to refresh roadmap data with timeout
                                     if (fetchRoadmapData && result.project_token) {
                                         try {
                                             // Race between fetch and timeout (max 3 seconds)
@@ -1204,15 +1149,25 @@ const GovernanceResult = ({ result, onBack, fetchRoadmapData, navigate }) => {
                                         }
                                     }
                                     
-                                    // Navigate to Agent Analysis page (always happens)
-                                    navigate('/agent-analysis');
+                                    // 4. Use React Router navigation with project token in URL
+                                    // This ensures the token is available even after page reload
+                                    const targetUrl = result.project_token 
+                                        ? `/agent-analysis?project=${result.project_token}`
+                                        : '/agent-analysis';
+                                    
+                                    navigate(targetUrl, {
+                                        replace: false,
+                                        state: {
+                                            projectToken: result.project_token,
+                                            shouldStartAnalysis: true
+                                        }
+                                    });
+                                    
                                 } catch (error) {
                                     console.error('Error during navigation:', error);
-                                    // Ensure navigation happens even on error
-                                    navigate('/agent-analysis');
-                                } finally {
-                                    // Reset loading state after a delay (in case navigation is slow)
-                                    setTimeout(() => setIsNavigating(false), 1000);
+                                    setIsNavigating(false);
+                                    // Show error to user instead of forcing navigation
+                                    alert('Failed to navigate to Agent Analysis. Please try again.');
                                 }
                             }}
                             disabled={isNavigating}

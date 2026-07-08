@@ -170,18 +170,44 @@ class CoordinatedAgentWrapper:
         # Predict files this task will work on
         predicted_files = []
         if assigned_task:
-            task_desc = assigned_task.get("description", "")
-            task_title = assigned_task.get("title", "")
+            task_desc = (assigned_task.get("description", "") or "").lower()
+            task_title = (assigned_task.get("title", "") or "").lower()
+            task_combined = f"{task_title} {task_desc}"
             
-            # Simple file prediction based on task content
-            if "dockerfile" in task_desc.lower() or "docker" in task_title.lower():
+            # Detect tech stack from task context
+            is_spring = any(w in task_combined for w in ("spring", "java", "maven", "gradle", "pom.xml", ".java", "jpa", "hibernate"))
+            is_dotnet = any(w in task_combined for w in (".net", "c#", "csharp", ".csproj", "asp.net"))
+            is_python = any(w in task_combined for w in ("python", "fastapi", "flask", "django", "uvicorn"))
+            is_node = any(w in task_combined for w in ("node", "express", "npm", "typescript", "javascript"))
+            
+            # Simple file prediction based on task content + stack
+            if "dockerfile" in task_combined or "docker" in task_combined:
                 predicted_files = ["Dockerfile", "docker-compose.yml", ".dockerignore"]
-            elif "api" in task_desc.lower() or "endpoint" in task_desc.lower():
-                predicted_files = ["app.py", "main.py", "routes.py", "api.py"]
-            elif "frontend" in task_desc.lower() or "react" in task_desc.lower():
+            elif "api" in task_combined or "endpoint" in task_combined:
+                if is_spring:
+                    predicted_files = ["src/main/java/controller/", "src/main/java/service/", "src/main/resources/application.yml"]
+                elif is_dotnet:
+                    predicted_files = ["Controllers/", "Services/", "Program.cs"]
+                elif is_node:
+                    predicted_files = ["src/routes/", "src/controllers/", "package.json"]
+                else:
+                    predicted_files = ["app.py", "main.py", "routes.py", "api.py"]
+            elif "frontend" in task_combined or "react" in task_combined:
                 predicted_files = ["src/App.jsx", "src/components/", "package.json"]
-            elif "database" in task_desc.lower() or "schema" in task_desc.lower():
-                predicted_files = ["models.py", "schema.sql", "migrations/"]
+            elif "database" in task_combined or "schema" in task_combined:
+                if is_spring:
+                    predicted_files = ["src/main/java/model/", "src/main/java/repository/", "src/main/resources/application.yml"]
+                elif is_dotnet:
+                    predicted_files = ["Models/", "Data/", "Migrations/"]
+                else:
+                    predicted_files = ["models.py", "schema.sql", "migrations/"]
+            elif "auth" in task_combined:
+                if is_spring:
+                    predicted_files = ["src/main/java/config/SecurityConfig.java", "src/main/java/service/AuthService.java"]
+                elif is_dotnet:
+                    predicted_files = ["Controllers/AuthController.cs", "Services/AuthService.cs"]
+                else:
+                    predicted_files = ["auth.py", "middleware.py", "config.py"]
         
         # Request file locks for predicted files
         locked_files = []
@@ -221,6 +247,9 @@ class CoordinatedAgentWrapper:
         monitor_task = asyncio.create_task(
             self._coordination_monitor()
         )
+        
+        # Initialize result to a safe default to prevent UnboundLocalError if execution is cancelled
+        result = {"success": False, "tasks_completed": 0, "failed_tasks": 0}
         
         try:
             # Run the original agent function

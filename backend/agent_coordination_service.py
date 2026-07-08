@@ -223,7 +223,7 @@ class AgentCoordinationService:
                 "agent_id": agent_id,
                 "file_path": file_path,
                 "lock_type": lock_type,
-                "granted": True
+                "success": True
             }
         )
         

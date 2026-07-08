@@ -30,7 +30,7 @@ async def _publish_master_workspace_note(state: AgentWorkflowState) -> Dict[str,
     import agent_service
     import agent_communication_service as comm
     from database import SessionLocal
-    from bootstrap_persistence import set_bootstrap_success, set_bootstrap_failed
+    from bootstrap_persistence import set_bootstrap_success, set_bootstrap_failed, is_bootstrap_pushed, save_bootstrap_planning_note
 
     logger.info("[LangGraph] Publishing master workspace note...")
     agent_service._log_master_agent(
@@ -84,11 +84,121 @@ async def _publish_master_workspace_note(state: AgentWorkflowState) -> Dict[str,
         
     else:
         # Success - persist to database
-        set_bootstrap_success(
+        save_bootstrap_planning_note(
             project_token,
             master_note_id=result.get("note_id"),
             workspace_tree=result.get("workspace_tree")
         )
+        
+        # Check if bootstrap task needs to be executed
+        if not is_bootstrap_pushed(project_token):
+            try:
+                tasks = await agent_service._fetch_external_tasks(project_token)
+            except Exception as fetch_exc:
+                logger.warning(f"[LangGraph] Failed to fetch external tasks for checking bootstrap: {fetch_exc}")
+                tasks = []
+            
+            bootstrap_task = next(
+                (t for t in tasks if (
+                    str(t.get("task_id") or t.get("external_id") or "").upper().startswith("TASK-00")
+                    or "bootstrap" in str(t.get("title") or t.get("taskName") or "").lower()
+                )),
+                None
+            )
+            
+            if bootstrap_task:
+                agent_service._log_master_agent(
+                    f"🚀 Master Agent executing bootstrap task: {bootstrap_task.get('title') or bootstrap_task.get('taskName') or 'Untitled'}",
+                    project_token=project_token,
+                )
+                
+                # Fetch Git credentials for this project
+                repo_creds = agent_service._resolve_project_git_credentials(project_token, state.get("agents_config"))
+                git_repo_url = repo_creds.get("repo_url")
+                git_token = repo_creds.get("token")
+                
+                try:
+                    run_result = await agent_service.run_agent(
+                        agent_id="M_agent_01",
+                        git_repo_url=git_repo_url,
+                        git_token=git_token,
+                        assigned_task=bootstrap_task,
+                        project_token=project_token,
+                        task_token=state.get("task_token"),
+                    )
+                    
+                    if not run_result or not run_result.get("success"):
+                        run_error = (run_result.get("error") if run_result else None) or "Unknown execution error"
+                        agent_service._log_master_agent(
+                            f"❌ Master Agent bootstrap execution failed: {run_error}",
+                            project_token=project_token,
+                            level="error",
+                        )
+                        set_bootstrap_failed(project_token, run_error)
+                        errors.append(f"bootstrap execution failed: {run_error}")
+                        
+                        # Broadcast failure
+                        db = SessionLocal()
+                        try:
+                            await comm.send_message(
+                                db=db,
+                                project_token=project_token or "",
+                                from_agent="MASTER_AGENT",
+                                message=f"🚫 Bootstrap failed: {run_error}. Coordination monitor will create fix task.",
+                                msg_type="BLOCKED",
+                                payload={"bootstrap_failure": True, "error": str(run_error)}
+                            )
+                        finally:
+                            db.close()
+                            
+                        return {
+                            "master_note": result,
+                            "errors": errors,
+                        }
+                    else:
+                        agent_service._log_master_agent(
+                            "✅ Master Agent bootstrap execution succeeded.",
+                            project_token=project_token,
+                        )
+                except Exception as run_exc:
+                    logger.exception(f"[LangGraph] Master Agent bootstrap execution failed: {run_exc}")
+                    set_bootstrap_failed(project_token, str(run_exc))
+                    errors.append(f"bootstrap execution failed: {str(run_exc)}")
+                    
+                    # Broadcast failure
+                    db = SessionLocal()
+                    try:
+                        await comm.send_message(
+                            db=db,
+                            project_token=project_token or "",
+                            from_agent="MASTER_AGENT",
+                            message=f"🚫 Bootstrap failed: {run_exc}. Coordination monitor will create fix task.",
+                            msg_type="BLOCKED",
+                            payload={"bootstrap_failure": True, "error": str(run_exc)}
+                        )
+                    finally:
+                        db.close()
+                        
+                    return {
+                        "master_note": result,
+                        "errors": errors,
+                    }
+            else:
+                from bootstrap_persistence import get_bootstrap_branch
+                existing_branch = get_bootstrap_branch(project_token)
+                final_branch = existing_branch if existing_branch else "no-git"
+
+                # No bootstrap task exists in the list of tasks. Mark as success with the branch.
+                agent_service._log_master_agent(
+                    f"ℹ️ No bootstrap task found in the plan. Setting bootstrap success branch '{final_branch}'.",
+                    project_token=project_token,
+                )
+                set_bootstrap_success(
+                    project_token,
+                    master_note_id=result.get("note_id"),
+                    workspace_tree=result.get("workspace_tree"),
+                    bootstrap_branch=final_branch
+                )
         
         # Broadcast success
         db = SessionLocal()

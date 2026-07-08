@@ -2,7 +2,7 @@
 // Uses environment variables with fallback defaults
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
-export const VIBE_WORKSPACE_URL = import.meta.env.VITE_VIBE_WORKSPACE_URL || 'http://localhost:5174';  // No /vibecoding - it's added by vite base config
+export const VIBE_WORKSPACE_URL = import.meta.env.VITE_VIBE_WORKSPACE_URL || 'http://localhost:5174/vibecoding';
 
 // API Endpoints
 export const API_ENDPOINTS = {
@@ -34,6 +34,22 @@ export const API_ENDPOINTS = {
     DOCUMENTS_UPLOAD: `${API_BASE_URL}/documents/upload`,
     DOCUMENTS_UPLOAD_ANALYZE: `${API_BASE_URL}/documents/upload-and-analyze`,
     DOCUMENTS_EXTRACT_URL: `${API_BASE_URL}/documents/extract-from-url`,
+    
+    // Share Document
+    SHARE_DOC: `${API_BASE_URL}/api/share-doc`,
+    SHARE_DOC_STATS: `${API_BASE_URL}/api/share-doc/stats`,
+    SHARE_PROJECTS: `${API_BASE_URL}/api/share-projects`,
+    SHARE_PROJECT: (projectToken) => `${API_BASE_URL}/api/share-projects/${projectToken}`,
+    SHARE_PROJECT_UPLOAD_FILES: (projectToken) => `${API_BASE_URL}/api/share-projects/${projectToken}/upload-files`,
+    SHARE_PROJECT_DELETE_FILE: (projectToken, fileId) => `${API_BASE_URL}/api/share-projects/${projectToken}/files/${fileId}`,
+    SHARED_DOCUMENT: (shareToken) => `${API_BASE_URL}/api/shared/${shareToken}`,
+    SHARED_DOCUMENT_DOWNLOAD: (shareToken, fileId) => `${API_BASE_URL}/api/shared/${shareToken}/download/${fileId}`,
+    SHARED_DOCUMENT_VIEW: (shareToken, fileId) => `${API_BASE_URL}/api/shared/${shareToken}/view/${fileId}`,
+
+    // Chat Messages
+    CHAT_MESSAGES_SAVE: `${API_BASE_URL}/chat/messages`,
+    CHAT_MESSAGES_GET: (documentId) => `${API_BASE_URL}/chat/messages/${documentId}`,
+    CHAT_MESSAGES_DELETE: (documentId) => `${API_BASE_URL}/chat/messages/${documentId}`,
 
     // AI
     AI_CONFIG: `${API_BASE_URL}/ai/config`,
@@ -53,10 +69,16 @@ export const API_ENDPOINTS = {
     GOVERNANCE_REVISION_REASON: (id) => `${API_BASE_URL}/governance/${id}/revision-reason`,
     GOVERNANCE_ROADMAP_STEP: (id) => `${API_BASE_URL}/governance/${id}/roadmap-step`,
     GOVERNANCE_PREREQUISITES_COMPLETE: (id) => `${API_BASE_URL}/governance/${id}/prerequisites-complete`,
+    GOVERNANCE_CLAUDE_MD_FILES: (id) => `${API_BASE_URL}/governance/${id}/claude-md-files`,
+    GOVERNANCE_SKILLS_MD_FILES: (id) => `${API_BASE_URL}/governance/${id}/skills-md-files`,
+    GOVERNANCE_ELICITATION_TECHNIQUES: (id) => `${API_BASE_URL}/api/projects/${id}/elicitation-techniques`,
     GOVERNANCE_QUESTION_ALL: `${API_BASE_URL}/governance/questions/all`,
     GOVERNANCE_QUESTION_CREATE: `${API_BASE_URL}/governance/questions`,
     GOVERNANCE_QUESTION_UPDATE: (id) => `${API_BASE_URL}/governance/questions/${id}`,
     GOVERNANCE_QUESTION_DELETE: (id) => `${API_BASE_URL}/governance/questions/${id}`,
+
+    // Projects
+    PROJECT_ENSURE: `${API_BASE_URL}/api/projects/ensure`,
 
     // GitHub
     GITHUB_AUTH_URL: `${API_BASE_URL}/github/auth-url`,
@@ -74,6 +96,9 @@ export const API_ENDPOINTS = {
     AZURE_DEVOPS_SAVE_CREDENTIALS: `${API_BASE_URL}/azure-devops/save-credentials`,
     AZURE_DEVOPS_GET_CREDENTIALS: `${API_BASE_URL}/azure-devops/credentials`,
     AZURE_DEVOPS_LIST_PROJECT_REPOS: `${API_BASE_URL}/azure-devops/list-project-repos`,
+    
+    // Git Validation
+    GIT_VALIDATE_CONNECTION: `${API_BASE_URL}/git/validate-connection`,
 
     // AI Agents (Backend Docker Execution)
     AGENTS: `${API_BASE_URL}/agents`,
@@ -94,12 +119,15 @@ export const API_ENDPOINTS = {
     AGENT_PREVIEW_STATUS: `${API_BASE_URL}/agents/preview/status`,
     AGENT_PREVIEW_STOP: `${API_BASE_URL}/agents/preview/stop`,
     AGENT_PREVIEW_FIX: `${API_BASE_URL}/agents/preview/fix`,
+    AGENT_PREVIEW_WS: (projectToken) => `${API_BASE_URL.replace('http', 'ws')}/ws/preview/${projectToken}`,
 
     // External Task Management API
     AGENT_AUTO_GENERATE: `${API_BASE_URL}/api/agent/auto-generate/`,
     AGENT_TASKS_GENERATE_LOCAL: `${API_BASE_URL}/api/agent/tasks/generate-local/`,
     AGENT_TASKS_LOCAL: `${API_BASE_URL}/api/agent/tasks/local/`,
+    AGENT_TASKS_SAVE_LOCAL: `${API_BASE_URL}/api/agent/tasks/save-local/`,
     AGENT_TASKS_SYNC: `${API_BASE_URL}/api/agent/tasks/sync/`,
+    AGENT_TASKS_SELECTION: `${API_BASE_URL}/api/agent/tasks/selection/`,
     AGENT_PROJECT_CONFIG: `${API_BASE_URL}/api/agent/project-config/`,
     AGENT_PROJECT_BOOTSTRAP: `${API_BASE_URL}/api/agent/project-bootstrap/`,
     AGENT_TASKS: `${API_BASE_URL}/api/agent/tasks-list/`,

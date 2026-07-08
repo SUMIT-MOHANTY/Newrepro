@@ -23,6 +23,9 @@ import Plugins from './pages/Plugins';
 import InviteSignup from './pages/InviteSignup';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
+import ShareDocument from './pages/ShareDocument';
+import SharedDocumentViewer from './pages/SharedDocumentViewer';
+// import Billing from './pages/billing';
 
 function App() {
   return (
@@ -41,6 +44,7 @@ function App() {
         <Route path="/github/callback" element={<GitHubCallback />} />
         <Route path="/azure-devops/callback" element={<AzureDevOpsCallback />} />
         <Route path="/sso/callback" element={<SsoCallback />} />
+        <Route path="/shared/:shareToken" element={<SharedDocumentViewer />} />
 
         {/* Authenticated routes — wrapped with AppLayout for uniform sidebar/navbar */}
         <Route path="/dashboard" element={
@@ -106,6 +110,16 @@ function App() {
         <Route path="/governance-management" element={
           <AppLayout>
             {(layoutProps) => <GovernanceManagement {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/share-doc" element={
+          <AppLayout>
+            {(layoutProps) => <ShareDocument {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/billing" element={
+          <AppLayout>
+            {(layoutProps) => <Billing {...layoutProps} />}
           </AppLayout>
         } />
         <Route path="/app/:projectId" element={

@@ -3,6 +3,9 @@ import { useNavigate, Link } from 'react-router-dom';
 import { Mail, Lock, ArrowRight, Loader2, ShieldCheck, Eye, EyeOff, Sparkles, Sun, Moon } from 'lucide-react';
 import { API_BASE_URL, API_ENDPOINTS } from '../config';
 import { sanitizeErrorMessage } from '../utils/errorHandling';
+import logo from '../assets/logo.png';
+import bourntecLogo from '../assets/bourntec_logo.png';
+import OrganizationSelect from './OrganizationSelect';
 
 const isAllowedNextUrl = (nextUrl) => {
     if (!nextUrl) return false;
@@ -29,6 +32,12 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
     const [error, setError] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [isSsoLoading, setIsSsoLoading] = useState(false);
+    
+    // Organization selection states for multi-org users
+    const [requiresSelection, setRequiresSelection] = useState(false);
+    const [orgs, setOrgs] = useState([]);
+    const [tempToken, setTempToken] = useState('');
+
     const navigate = useNavigate();
 
     const finishNavigate = (path) => {
@@ -39,37 +48,84 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
     const nextParam = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '').get('next');
     const nextUrl = isAllowedNextUrl(nextParam) ? nextParam : null;
 
-    useEffect(() => {
-        // Apply stored theme to DOM on mount
-        const storedTheme = localStorage.getItem('theme') || 'dark';
-        if (storedTheme === 'dark') {
-            document.documentElement.classList.add('dark');
-            document.documentElement.setAttribute('data-theme', 'dark');
-        } else {
-            document.documentElement.classList.remove('dark');
-            document.documentElement.setAttribute('data-theme', 'light');
+    const handlePostLoginRedirect = async (accessToken) => {
+        // Check if user has any projects (backend or draft)
+        let hasAnyProjects = false;
+        let lastProjectToken = null;
+        
+        try {
+            // Check backend projects
+            const projectsResponse = await fetch(`${API_BASE_URL}/governance/history`, {
+                headers: { 'Authorization': `Bearer ${accessToken}` },
+            });
+            
+            if (projectsResponse.ok) {
+                const projectsData = await projectsResponse.json();
+                const submissions = projectsData.submissions || [];
+                hasAnyProjects = submissions.length > 0;
+            }
+            
+            // Check draft projects in localStorage
+            if (!hasAnyProjects) {
+                const draftProjectsRaw = localStorage.getItem('draft_projects');
+                if (draftProjectsRaw) {
+                    try {
+                        const draftProjects = JSON.parse(draftProjectsRaw);
+                        hasAnyProjects = Array.isArray(draftProjects) && draftProjects.length > 0;
+                    } catch {
+                        // Ignore parse errors
+                    }
+                }
+            }
+        } catch (projectCheckError) {
+            console.debug('Could not check projects:', projectCheckError);
         }
-        setTheme(storedTheme);
-
-        const handleThemeChange = () => {
-            setTheme(localStorage.getItem('theme') || 'dark');
-        };
-        window.addEventListener('theme-changed', handleThemeChange);
-        return () => window.removeEventListener('theme-changed', handleThemeChange);
-    }, []);
-
-    const toggleTheme = () => {
-        const newTheme = theme === 'dark' ? 'light' : 'dark';
-        localStorage.setItem('theme', newTheme);
-        setTheme(newTheme);
-        if (newTheme === 'dark') {
-            document.documentElement.classList.add('dark');
-            document.documentElement.setAttribute('data-theme', 'dark');
-        } else {
-            document.documentElement.classList.remove('dark');
-            document.documentElement.setAttribute('data-theme', 'light');
+        
+        // If no projects exist at all, redirect to new project page
+        if (!hasAnyProjects) {
+            if (nextUrl) {
+                window.location.assign(appendDsuiteToken(nextUrl, accessToken));
+                return;
+            }
+            finishNavigate('/new-project');
+            return;
         }
-        window.dispatchEvent(new Event('theme-changed'));
+        
+        // User has projects - check if they have a saved progress page
+        try {
+            const progressResponse = await fetch(`${API_BASE_URL}/users/me/progress`, {
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                },
+            });
+            
+            if (progressResponse.ok) {
+                const progressData = await progressResponse.json();
+                const lastPage = progressData.last_page_path;
+                lastProjectToken = progressData.last_project_token;
+                
+                // If user has a last page and it's not login/signup, redirect there
+                if (lastPage && lastPage !== '/login' && lastPage !== '/signup' && lastPage !== '/') {
+                    if (nextUrl) {
+                        window.location.assign(appendDsuiteToken(nextUrl, accessToken));
+                    } else {
+                        finishNavigate(lastPage);
+                    }
+                    return;
+                }
+            }
+        } catch (progressError) {
+            console.debug('Could not fetch user progress:', progressError);
+            // Continue with default navigation
+        }
+        
+        if (nextUrl) {
+            window.location.assign(appendDsuiteToken(nextUrl, accessToken));
+            return;
+        }
+        
+        // Default: redirect to status dashboard
+        finishNavigate('/status-dashboard');
     };
 
     const handleSubmit = async (e) => {
@@ -92,18 +148,37 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
             }
 
             const data = await response.json();
-            localStorage.setItem('token', data.access_token);
-            if (nextUrl) {
-                window.location.assign(appendDsuiteToken(nextUrl, data.access_token));
+            
+            // Check if organization selection is required
+            if (data.requires_selection) {
+                setTempToken(data.access_token);
+                setOrgs(data.organizations || []);
+                setRequiresSelection(true);
                 return;
             }
-            finishNavigate('/status-dashboard');
+
+            localStorage.setItem('token', data.access_token);
+            await handlePostLoginRedirect(data.access_token);
         } catch {
             setError('Invalid email or password. Please try again.');
         } finally {
             setIsLoading(false);
         }
     };
+
+    if (requiresSelection) {
+        return (
+            <OrganizationSelect
+                organizations={orgs}
+                tempToken={tempToken}
+                onSelectComplete={async (finalToken) => {
+                    localStorage.setItem('token', finalToken);
+                    setRequiresSelection(false);
+                    await handlePostLoginRedirect(finalToken);
+                }}
+            />
+        );
+    }
 
     const handleSsoLogin = async () => {
         setError('');

@@ -2,6 +2,7 @@ from datetime import datetime
 from sqlalchemy import Boolean, Column, Integer, String, ForeignKey, DateTime, Text, JSON, Float, UniqueConstraint
 from sqlalchemy.orm import relationship
 from database import Base
+from models_bootstrap_state import BootstrapState
 
 class User(Base):
     __tablename__ = "users"
@@ -19,6 +20,8 @@ class User(Base):
     azure_devops_token = Column(String, nullable=True)
     azure_devops_username = Column(String, nullable=True)
     last_login = Column(DateTime, nullable=True)
+    last_page_path = Column(String, nullable=True)  # Track last visited page
+    last_project_token = Column(String, nullable=True)  # Track last active project
 
     documents = relationship("Document", back_populates="owner")
     governance_responses = relationship("GovernanceResponse", back_populates="owner")
@@ -86,6 +89,17 @@ class UserOrganizationRole(Base):
 
     user = relationship("User", back_populates="organization_role_mappings")
     role = relationship("OrganizationRole", back_populates="user_mappings")
+
+class UserProjectAssociation(Base):
+    __tablename__ = "user_project_associations"
+    __table_args__ = (
+        UniqueConstraint("user_id", "project_token", name="uq_user_project_assoc"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    project_token = Column(String, ForeignKey("governance_responses.project_token"), index=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 class OrganizationInvite(Base):
     __tablename__ = "organization_invites"
@@ -195,9 +209,15 @@ class Agent(Base):
     __tablename__ = "agents"
 
     id = Column(String, primary_key=True, index=True)
+    display_id = Column(String, nullable=True)
     name = Column(String, nullable=False)
     type = Column(String, nullable=True)
     project_token = Column(String, index=True, nullable=True)
+    skills_content = Column(Text, nullable=True)
+    skills_summary = Column(String(500), nullable=True)
+    skills_tags = Column(JSON, nullable=True)
+    specialization = Column(String, nullable=True)
+    face = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class OrganizationAgentQuota(Base):
@@ -224,6 +244,9 @@ class OrganizationAgentMapping(Base):
     """
     Maps an agent record in `agents` table to an organization, and flags whether it is a built-in default.
     This avoids changing the existing `agents` schema while allowing org-scoped listing/quotas.
+    
+    shared_count / dedicated_count track how many instances of this agent type are allocated
+    to a project as shared or dedicated, enabling quantity-based allocation.
     """
     __tablename__ = "organization_agent_mappings"
     __table_args__ = (
@@ -237,6 +260,9 @@ class OrganizationAgentMapping(Base):
     agent_kind = Column(String, index=True, nullable=True)
     agent_sub_type = Column(String, index=True, nullable=True)  # 'dev' or 'test'
     is_default = Column(Boolean, default=False)
+    # Quantity-based allocation counts (0 means unallocated for that type)
+    shared_count = Column(Integer, nullable=False, default=0)
+    dedicated_count = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class Document(Base):
@@ -258,6 +284,7 @@ class GovernanceResponse(Base):
     id = Column(Integer, primary_key=True, index=True)
     project_token = Column(String, unique=True, index=True)
     owner_id = Column(Integer, ForeignKey("users.id"))
+    organization_name = Column(String, index=True, nullable=True)
     project_name = Column(String, index=True)
     submission_date = Column(DateTime, default=datetime.utcnow)
     
@@ -299,6 +326,22 @@ class GovernanceResponse(Base):
 
     # Store roadmap steps data (steps, step_statuses, current_step, etc.)
     steps_data = Column(JSON, nullable=True)
+    
+    # Store claude.md files (always loaded for all agents)
+    claude_md_files = Column(JSON, nullable=True)  # Array of {name, content, uploadedAt}
+    
+    # Store skills.md files (selectively loaded based on task relevance)
+    skills_md_files = Column(JSON, nullable=True)  # Array of {name, content, uploadedAt}
+
+    # AI-classified project type: greenfield | brownfield | modernization
+    # Populated automatically after analysis completes from metrics.project_type
+    project_type = Column(String, nullable=True, default="greenfield")
+
+    # Project-wise Git Repository settings
+    source_repo_url = Column(String, nullable=True)
+    source_repo_token = Column(String, nullable=True)
+    dest_repo_url = Column(String, nullable=True)
+    dest_repo_token = Column(String, nullable=True)
 
     owner = relationship("User", back_populates="governance_responses")
 
@@ -360,7 +403,8 @@ class Task(Base):
     # Checklist
     checklist = Column(Text, nullable=True)  # JSON string of checklist items
     
-    # Sync status
+    # Selection and sync status
+    selected = Column(Boolean, default=False)  # User has selected this task for sync
     synced_to_nxdune = Column(Boolean, default=False)
     nxdune_task_id = Column(Integer, nullable=True)  # ID from NXDUNE after sync
     
@@ -414,3 +458,335 @@ class HandoffToken(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     expires_at = Column(DateTime, nullable=False, index=True)
     used_at = Column(DateTime, nullable=True)  # Track when token was used
+
+
+class ChatMessage(Base):
+    """Store BRD chat messages for persistent conversation history"""
+    __tablename__ = "chat_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id"), index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    
+    # Message content
+    role = Column(String, nullable=False)  # 'user' or 'assistant'
+    content = Column(Text, nullable=False)
+    
+    # Optional metadata
+    is_error = Column(Boolean, default=False)
+    is_qa = Column(Boolean, default=False)  # Whether this is a Q&A submission
+    affected_sections = Column(JSON, nullable=True)  # Sections affected by this update
+    change_summary = Column(Text, nullable=True)  # Summary of changes made
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    
+    # Relationships
+    document = relationship("Document")
+    user = relationship("User")
+
+
+class SharedDocument(Base):
+    """Store shared BRD documents with secure access controls"""
+    __tablename__ = "shared_documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    share_token = Column(String, unique=True, index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    share_project_id = Column(Integer, ForeignKey("share_projects.id"), index=True, nullable=True)
+    title = Column(String, nullable=True)
+    access_type = Column(String, default="once")  # 'once' or 'always'
+    expiration_time = Column(String, nullable=True)
+    expires_at = Column(DateTime, nullable=True, index=True)
+    require_password = Column(Boolean, default=False)
+    password_hash = Column(String, nullable=True)
+    access_count = Column(Integer, default=0)
+    view_limit = Column(Integer, nullable=True)  # Limit number of views
+    can_download = Column(Boolean, default=True)  # Control download permissions
+    allow_anonymous = Column(Boolean, default=True)  # Allow public access without individual token
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    # Relationships
+    user = relationship("User")
+    share_project = relationship("ShareProject", back_populates="shared_documents")
+    files = relationship("SharedDocumentFile", back_populates="shared_document", cascade="all, delete-orphan")
+    recipients = relationship("SharedDocumentRecipient", back_populates="shared_document", cascade="all, delete-orphan")
+    access_logs = relationship("SharedDocumentAccessLog", back_populates="shared_document", cascade="all, delete-orphan")
+
+
+class SharedDocumentFile(Base):
+    """Store files associated with shared documents"""
+    __tablename__ = "shared_document_files"
+
+    id = Column(Integer, primary_key=True, index=True)
+    share_id = Column(Integer, ForeignKey("shared_documents.id"), index=True, nullable=False)
+    filename = Column(String, nullable=False)
+    original_filename = Column(String, nullable=False)
+    file_path = Column(String, nullable=False)
+    file_size = Column(Integer, nullable=True)
+    file_type = Column(String, nullable=True)
+    zip_password = Column(String, nullable=True)
+    uploaded_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    shared_document = relationship("SharedDocument", back_populates="files")
+
+
+class SharedDocumentRecipient(Base):
+    """Store email recipients for shared documents"""
+    __tablename__ = "shared_document_recipients"
+
+    id = Column(Integer, primary_key=True, index=True)
+    share_id = Column(Integer, ForeignKey("shared_documents.id"), index=True, nullable=False)
+    email = Column(String, nullable=False)
+    share_token = Column(String, unique=True, index=True, nullable=True) # Unique token for this recipient
+    access_level = Column(String, default="view") # 'view' or 'download' (if global allows)
+    notified_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    shared_document = relationship("SharedDocument", back_populates="recipients")
+
+
+class SharedDocumentAccessLog(Base):
+    """Log access attempts to shared documents"""
+    __tablename__ = "shared_document_access_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    share_id = Column(Integer, ForeignKey("shared_documents.id"), index=True, nullable=False)
+    accessed_at = Column(DateTime, default=datetime.utcnow, index=True)
+    ip_address = Column(String, nullable=True)
+    user_agent = Column(String, nullable=True)
+    recipient_email = Column(String, nullable=True) # To track specific recipients
+    action = Column(String, default="view") # 'view' or 'download'
+    filename = Column(String, nullable=True) # Which file was accessed
+
+    # Relationships
+    shared_document = relationship("SharedDocument", back_populates="access_logs")
+
+
+class ShareProject(Base):
+    """Store share document projects - separate from regular governance projects"""
+    __tablename__ = "share_projects"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_token = Column(String, unique=True, index=True, nullable=False)
+    owner_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    project_name = Column(String, nullable=False)
+    description = Column(String, default="Shared Documents")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    current_step = Column(Integer, default=0) # Track last visited step
+    
+    # Relationships
+    owner = relationship("User")
+    shared_documents = relationship("SharedDocument", back_populates="share_project")
+
+
+class AIUsageLog(Base):
+    """Store AI usage logs for cost calculation and metrics"""
+    __tablename__ = "ai_usage_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=True)
+    project_token = Column(String, index=True, nullable=True)
+    model = Column(String, nullable=True)
+    prompt_tokens = Column(Integer, default=0)
+    completion_tokens = Column(Integer, default=0)
+    cost = Column(Float, default=0.0)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class UserActivityLog(Base):
+    """Store detailed user activity logs for security/audit tracking"""
+    __tablename__ = "user_activity_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=True)
+    action = Column(String, nullable=False)
+    method = Column(String, nullable=True)
+    path = Column(String, nullable=True)
+    ip_address = Column(String, nullable=True)
+    user_agent = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class ProjectRuntimeState(Base):
+    """Store active project runtime states like claimed tasks, agent state logs, etc."""
+    __tablename__ = "project_runtime_states"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_token = Column(String, unique=True, index=True, nullable=False)
+    master_tree_created = Column(Boolean, default=False)
+    claimed_task_ids = Column(JSON, default=list)  # List/Set of claimed task IDs
+    agent_states = Column(JSON, default=dict)      # Agent status & output logs
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ── Local-First State Management Models ──────────────────────────────────────
+# These models form the primary source of truth for agent orchestration.
+# NXDune is treated as a secondary synchronization layer only.
+
+class AgentTaskOwnership(Base):
+    """
+    Canonical record of which agent owns which task, written atomically at claim time.
+    Survives server restarts — eliminates the "Skipping persisted assignment restore" problem.
+    Local DB wins over NXDune for completed tasks (NXDune may have stale status).
+    """
+    __tablename__ = "agent_task_ownerships"
+    __table_args__ = (
+        UniqueConstraint("project_token", "task_id", name="uq_agent_task_ownership"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_token = Column(String, index=True, nullable=False)
+    task_id = Column(String, index=True, nullable=False)        # e.g. "TASK-01"
+    agent_id = Column(String, index=True, nullable=False)       # which agent owns it
+
+    # Task metadata snapshot (stored at claim time so agents can resume without NXDune)
+    task_title = Column(String, nullable=True)
+    task_data = Column(JSON, nullable=True)                     # Full task dict snapshot
+    task_lane = Column(String, nullable=True)                   # "frontend" | "backend" | "qa" | "devops"
+
+    # Execution lifecycle
+    status = Column(String, nullable=False, default="claimed")  # claimed | in_progress | done | failed
+    claimed_at = Column(DateTime, nullable=True, index=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    # Output artifacts
+    branch_name = Column(String, nullable=True)                 # git branch e.g. "agent/task-01-auth"
+    files_written = Column(JSON, default=list)                  # list of file paths created/modified
+    error_message = Column(Text, nullable=True)
+
+    # NXDune sync tracking
+    nxdune_synced = Column(Boolean, default=False)
+    nxdune_synced_at = Column(DateTime, nullable=True)
+    nxdune_sync_attempts = Column(Integer, default=0)
+
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ProjectCanonicalState(Base):
+    """
+    Immutable bootstrap artifacts: canonical project tree, technical spec, and tech stack.
+    Written ONCE when the bootstrap task completes successfully.
+    Subsequent writes are no-ops unless force_reset=True is explicitly passed.
+
+    All agents read from here instead of re-generating or querying NXDune.
+    Resolves: repeated canonical tree/spec regeneration across restarts.
+    """
+    __tablename__ = "project_canonical_states"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_token = Column(String, unique=True, index=True, nullable=False)
+
+    # Immutable bootstrap artifacts
+    canonical_tree = Column(Text, nullable=True)        # JSON string of the project tree
+    technical_spec = Column(Text, nullable=True)        # Full technical specification text
+    tech_stack = Column(JSON, nullable=True)            # Detected tech stack dict
+    bootstrap_branch = Column(String, nullable=True)    # Branch where bootstrap was pushed
+
+    # Domain-to-paths mapping for targeted context injection
+    # {domain: [file_paths]} — populated from canonical_tree after bootstrap
+    domain_file_map = Column(JSON, nullable=True)
+
+    # State flags
+    is_ready = Column(Boolean, default=False)           # True = bootstrap fully completed
+    force_reset = Column(Boolean, default=False)        # True = allow overwrite (admin only)
+
+    # Version tracking for debugging
+    version = Column(Integer, default=1)
+    last_agent_id = Column(String, nullable=True)       # Which agent wrote this
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AgentExecutionCheckpoint(Base):
+    """
+    Versioned snapshots of per-agent execution progress.
+    Written at each major execution milestone so agents can resume after server restart
+    without re-querying NXDune or losing progress context.
+    """
+    __tablename__ = "agent_execution_checkpoints"
+    __table_args__ = (
+        UniqueConstraint("project_token", "agent_id", name="uq_agent_execution_checkpoint"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_token = Column(String, index=True, nullable=False)
+    agent_id = Column(String, index=True, nullable=False)
+
+    # Latest task context
+    current_task_id = Column(String, nullable=True, index=True)
+    current_task_data = Column(JSON, nullable=True)     # Full task dict
+    current_task_status = Column(String, nullable=True) # "claimed" | "in_progress" | "done"
+
+    # Execution state for resume
+    progress = Column(Integer, default=0)               # 0-100
+    progress_message = Column(String, nullable=True)
+    last_milestone = Column(String, nullable=True)      # Last completed milestone name
+
+    # Files written so far in current task (for file ownership tracking)
+    files_written_so_far = Column(JSON, default=list)
+
+    # Version counter — incremented on every update
+    version = Column(Integer, default=1)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class NXDuneSyncLog(Base):
+    """
+    Audit trail of all NXDune sync attempts.
+    When NXDune updates fail, the failure is recorded here so no state is lost.
+    Agents can query this to determine if their last push reached NXDune or is pending retry.
+    No background service — the existing NXDune update flow writes here on failure.
+    """
+    __tablename__ = "nxdune_sync_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_token = Column(String, index=True, nullable=False)
+    agent_id = Column(String, index=True, nullable=True)
+    task_id = Column(String, index=True, nullable=True)
+
+    # What operation was attempted
+    operation = Column(String, nullable=False)          # "task_complete" | "progress_update" | "task_claim"
+    payload = Column(JSON, nullable=True)               # The data that was (or should be) sent to NXDune
+
+    # Result
+    success = Column(Boolean, nullable=False)
+    status_code = Column(Integer, nullable=True)
+    error_message = Column(Text, nullable=True)
+    response_body = Column(Text, nullable=True)
+
+    # Retry tracking
+    retry_count = Column(Integer, default=0)
+    last_retry_at = Column(DateTime, nullable=True)
+    permanently_failed = Column(Boolean, default=False)  # True = stop retrying
+
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class AgentNote(Base):
+    """Local storage of agent notes for local-first coordination"""
+    __tablename__ = "agent_notes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_token = Column(String, index=True, nullable=False)
+    title = Column(String, index=True, nullable=False)  # e.g. "STATUS::..." or "MASTER::..."
+    content_payload = Column(JSON, nullable=False)
+    content_text = Column(Text, nullable=True)
+    user = Column(String, nullable=True)
+    
+    # Sync tracking
+    synced_to_nxdune = Column(Boolean, default=False)
+    nxdune_note_id = Column(Integer, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+

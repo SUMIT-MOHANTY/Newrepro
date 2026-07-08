@@ -11,12 +11,13 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
+from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 import httpx
 from dotenv import load_dotenv
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ai_config import ai_config
 from project_manager import project_manager
@@ -1564,7 +1565,9 @@ Your analysis:"""
                 {"role": "user", "content": complexity_prompt}
             ], temperature=0.1)
             
-            response_text = complexity_response["choices"][0]["message"].get("content", "").strip() if "choices" in complexity_response else "{}"
+            # response_text = complexity_response["choices"][0]["message"].get("content", "").strip() if "choices" in complexity_response else "{}"
+            print(complexity_response)
+            response_text = ''
             logger.info(f"🤖 AI raw response: {response_text[:200]}")
             
             # Parse JSON response
@@ -2219,7 +2222,13 @@ async def git_remote(request: GitRequest):
     try:
         if not request.remote_url:
             raise HTTPException(status_code=400, detail="Remote URL is required")
-        result = git_manager.add_remote(request.project_id, request.remote_url, request.remote_name)
+        result = git_manager.add_remote(
+            request.project_id, 
+            request.remote_url, 
+            request.remote_name,
+            request.username,
+            request.token
+        )
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

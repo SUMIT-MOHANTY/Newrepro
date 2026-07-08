@@ -146,6 +146,29 @@ function getTaskSprintLabel(task) {
     return 'Unassigned';
 }
 
+function safeGetAssignees(assignedTo) {
+    if (!assignedTo) return [];
+    if (Array.isArray(assignedTo)) return assignedTo;
+    if (typeof assignedTo === 'string') {
+        let current = assignedTo.trim();
+        if (current === '[]' || current === '""' || current === '"[]"') return [];
+        try {
+            const parsed = JSON.parse(current);
+            if (Array.isArray(parsed)) return parsed;
+            if (typeof parsed === 'string') {
+                return safeGetAssignees(parsed);
+            }
+            return [parsed];
+        } catch (e) {
+            if (current.includes(',')) {
+                return current.split(',').map(s => s.trim()).filter(Boolean);
+            }
+            return [current];
+        }
+    }
+    return [];
+}
+
 function toNumber(value) {
     const n = Number(value);
     return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
@@ -182,6 +205,57 @@ function sanitizePrerequisiteForAiPayload(item = {}) {
 
 export default function StatusDashboard({ projects = [], projectsLoading = false, selectedProjectKey, selectedRole, fetchRoadmapData }) {
     const navigate = useNavigate();
+    
+    const getClockedHours = (task) => {
+        const hours = task.time_taken || task.duration || task.time_spent || 0;
+        const timerLogs = task.timer_logs || [];
+        if (timerLogs.length > 0) {
+            let calculated = 0;
+            let clockInTime = null;
+            let isClockedIn = false;
+            
+            const sortedLogs = [...timerLogs].sort((a, b) => {
+                const timeA = a.timestamp || a.created_at || a.time || '';
+                const timeB = b.timestamp || b.created_at || b.time || '';
+                return timeA.localeCompare(timeB);
+            });
+            
+            for (const log of sortedLogs) {
+                if (log.action === 'clock_in') {
+                    clockInTime = new Date(log.timestamp || log.created_at || log.time);
+                    isClockedIn = true;
+                } else if (log.action === 'clock_out' && clockInTime) {
+                    const clockOutTime = new Date(log.timestamp || log.created_at || log.time);
+                    const diffHrs = (clockOutTime - clockInTime) / 3600000;
+                    calculated += Math.max(0, diffHrs);
+                    clockInTime = null;
+                    isClockedIn = false;
+                }
+            }
+            
+            if (isClockedIn && clockInTime) {
+                const diffHrs = (new Date() - clockInTime) / 3600000;
+                calculated += Math.max(0, diffHrs);
+            }
+            if (calculated > 0) return calculated.toFixed(1);
+        }
+        return hours ? Number(hours).toFixed(1) : null;
+    };
+
+    const isCurrentlyClockedIn = (task) => {
+        if (task.is_clocked_in || task.timer_active) return true;
+        const timerLogs = task.timer_logs || [];
+        if (timerLogs.length > 0) {
+            const sortedLogs = [...timerLogs].sort((a, b) => {
+                const timeA = a.timestamp || a.created_at || a.time || '';
+                const timeB = b.timestamp || b.created_at || b.time || '';
+                return timeA.localeCompare(timeB);
+            });
+            const latest = sortedLogs[sortedLogs.length - 1];
+            return latest && latest.action === 'clock_in';
+        }
+        return false;
+    };
     const location = useLocation();
     const queryClient = useQueryClient();
     const [showModal, setShowModal] = useState(false);
@@ -222,7 +296,11 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const [isDeploying, setIsDeploying] = useState(false);
     const [isFixing, setIsFixing] = useState(false);
     const [showPreviewLogs, setShowPreviewLogs] = useState(false);
+    const [deployLogs, setDeployLogs] = useState([]);
+    const wsRef = useRef(null);
     const [processMode, setProcessMode] = useState(() => getProcessModeForProject(localStorage.getItem(PROJECT_STORAGE_KEY) || ''));
+    const currentPreviewLogs = (deployLogs && deployLogs.length > 0) ? deployLogs : (previewStatus?.logs || []);
+
 
     // ── External Task API State ──────────────────────────────────────
     const [isGeneratingTasks, setIsGeneratingTasks] = useState(false);
@@ -259,6 +337,20 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         });
         return sprints.size;
     }, [sortedTaskList]);
+
+    const uniqueSprints = useMemo(() => {
+        const sprintsMap = new Map();
+        taskList.forEach(task => {
+            const sprintId = extractEntityId(task, 'sprint');
+            const sprintLabel = getTaskSprintLabel(task);
+            if (sprintId != null && sprintId !== '') {
+                sprintsMap.set(String(sprintId), sprintLabel);
+            }
+        });
+        return Array.from(sprintsMap.entries())
+            .map(([id, name]) => ({ id, name }))
+            .sort((a, b) => toNumber(a.id) - toNumber(b.id));
+    }, [taskList]);
     const autoAiAssistRunRef = useRef(new Set());
 
     const selectedProjectKeyRef = useRef(selectedProjectKey);
@@ -364,6 +456,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         queryKey: ['projectInfo', selectedProjectKey, taskToken],
         queryFn: async () => {
             const headers = { 'Authorization': `Bearer ${token}` };
+            if (selectedProjectKey) headers['x-project-token'] = selectedProjectKey;
             if (taskToken) headers['x-task-token'] = taskToken;
             const res = await fetch(API_ENDPOINTS.AGENT_PROJECT_INFO, { headers });
             if (!res.ok) throw new Error('Failed to fetch project info');
@@ -376,6 +469,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         queryKey: ['dashboardData', selectedProjectKey, taskToken],
         queryFn: async () => {
             const headers = { 'Authorization': `Bearer ${token}` };
+            if (selectedProjectKey) headers['x-project-token'] = selectedProjectKey;
             if (taskToken) headers['x-task-token'] = taskToken;
             const res = await fetch(API_ENDPOINTS.AGENT_DASHBOARD, { headers });
             if (!res.ok) throw new Error('Failed to fetch dashboard data');
@@ -414,8 +508,14 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             return;
         }
         const cached = getCachedTaskToken(selectedProjectKey, TOKEN_CACHE_MIN_TTL_SECONDS);
-        setTaskToken(cached?.token || null);
-        setTaskTokenProjectKey(cached?.token ? selectedProjectKey : null);
+        
+        if (cached?.token) {
+            setTaskToken(cached.token);
+            setTaskTokenProjectKey(selectedProjectKey);
+        } else {
+            setTaskToken(selectedProjectKey);
+            setTaskTokenProjectKey(selectedProjectKey);
+        }
     }, [selectedProjectKey]);
 
     // Role logic is handled centrally by AppLayout
@@ -443,9 +543,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             const clientSecret = proj?.client_secret;
 
             if (!clientId || !clientSecret) {
-                if (!hasCachedToken && isMounted) {
-                    setTaskToken(null);
-                    setTaskTokenProjectKey(null);
+                if (isMounted) {
+                    setTaskToken(selectedProjectKey);
+                    setTaskTokenProjectKey(selectedProjectKey);
                 }
                 return;
             }
@@ -470,15 +570,15 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                     cacheTaskToken(selectedProjectKey, data.access);
                 } else if (isMounted) {
                     if (!hasCachedToken) {
-                        setTaskToken(null);
-                        setTaskTokenProjectKey(null);
+                        setTaskToken(selectedProjectKey);
+                        setTaskTokenProjectKey(selectedProjectKey);
                     }
                 }
             } catch (e) {
                 console.error("Error fetching task token", e);
                 if (!hasCachedToken && isMounted) {
-                    setTaskToken(null);
-                    setTaskTokenProjectKey(null);
+                    setTaskToken(selectedProjectKey);
+                    setTaskTokenProjectKey(selectedProjectKey);
                 }
             }
         };
@@ -527,24 +627,27 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
         setTaskListError(null);
         try {
-            const url = page > 1 ? `${API_ENDPOINTS.AGENT_TASKS}?page=${page}` : API_ENDPOINTS.AGENT_TASKS;
+            const url = page > 1 ? `${API_ENDPOINTS.AGENT_TASKS_TOTAL}?page=${page}` : API_ENDPOINTS.AGENT_TASKS_TOTAL;
             const headers = { 'Authorization': `Bearer ${token}` };
+            if (selectedProjectKey) headers['x-project-token'] = selectedProjectKey;
             if (hasValidTaskToken) headers['x-task-token'] = taskToken;
 
             const res = await fetch(url, { headers });
             if (res.ok) {
                 const data = await res.json();
                 if (Array.isArray(data)) {
-                    setTaskList(data);
-                    setTotalTaskCount(data.length);
+                    const processed = data.map(item => (item.is_completed || item.task_progress === 100) ? { ...item, taskStatus: 'Completed', task_progress: 100 } : item);
+                    setTaskList(processed);
+                    setTotalTaskCount(processed.length);
 
                 } else if (data && Array.isArray(data.results)) {
+                    const processedResults = data.results.map(item => (item.is_completed || item.task_progress === 100) ? { ...item, taskStatus: 'Completed', task_progress: 100 } : item);
                     if (append) {
-                        setTaskList(prev => [...prev, ...data.results]);
+                        setTaskList(prev => [...prev, ...processedResults]);
                     } else {
-                        setTaskList(data.results);
+                        setTaskList(processedResults);
                     }
-                    setTotalTaskCount(data.count || data.results.length);
+                    setTotalTaskCount(data.count || processedResults.length);
 
                     setNextPageUrl(data.next);
                 } else if (data && typeof data.count === 'number') {
@@ -607,11 +710,17 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         setAgents(prev => prev.map(a => a.id === agentId ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' } : a));
 
         const body = repoUrl && repoToken ? { git_repo_url: repoUrl, git_token: repoToken } : {};
+        const sourceUrl = localStorage.getItem(`source_repo_url_${selectedProjectKey}`);
+        if (sourceUrl) {
+            body.source_repo_url = sourceUrl;
+        }
+
         try {
             const headers = {
                 'Authorization': `Bearer ${token}`,
                 'Content-Type': 'application/json'
             };
+            if (selectedProjectKey) headers['x-project-token'] = selectedProjectKey;
             if (hasValidTaskToken) headers['x-task-token'] = taskToken;
             await fetch(withProjectToken(API_ENDPOINTS.AGENT_RUN(agentId)), {
                 method: 'POST',
@@ -721,11 +830,19 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
         try {
             const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+            if (selectedProjectKey) headers['x-project-token'] = selectedProjectKey;
             if (hasValidTaskToken) headers['x-task-token'] = taskToken;
+            
+            const body = {};
+            const sourceUrl = localStorage.getItem(`source_repo_url_${selectedProjectKey}`);
+            if (sourceUrl) {
+                body.source_repo_url = sourceUrl;
+            }
+
             await fetch(withProjectToken(API_ENDPOINTS.AGENT_RUN_ALL), {
                 method: 'POST',
                 headers,
-                body: JSON.stringify({}),
+                body: JSON.stringify(body),
             });
             await fetchAgents();
             await fetchTasks(false, 1, true);
@@ -763,6 +880,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             : a));
         try {
             const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+            if (selectedProjectKey) headers['x-project-token'] = selectedProjectKey;
             if (hasValidTaskToken) headers['x-task-token'] = taskToken;
             await fetch(withProjectToken(API_ENDPOINTS.AGENT_RUN_ALL), {
                 method: 'POST',
@@ -871,6 +989,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 'Authorization': `Bearer ${token}`,
                 'Content-Type': 'application/json'
             };
+            if (selectedProjectKey) headers['x-project-token'] = selectedProjectKey;
             if (hasValidTaskToken) headers['x-task-token'] = taskToken;
 
             const createOne = async (kind, subType) => {
@@ -994,8 +1113,81 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         }
     }, [token, selectedProjectKey, fetchPreviewStatus]);
 
+    // WebSocket log streaming for Deploy Preview
+    useEffect(() => {
+        if (!selectedProjectKey || (previewStatus.status !== 'deploying' && previewStatus.status !== 'running')) {
+            if (wsRef.current) {
+                wsRef.current.close();
+                wsRef.current = null;
+            }
+            return;
+        }
+
+        const wsUrl = API_ENDPOINTS.AGENT_PREVIEW_WS(selectedProjectKey);
+        console.log(`[Preview WS] Connecting to ${wsUrl}`);
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+            console.log('[Preview WS] ✅ Connected');
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                if (data.type === 'deploy_log') {
+                    const newLog = {
+                        time: data.timestamp || new Date().toISOString(),
+                        message: data.content,
+                        metadata: data.metadata,
+                    };
+                    setDeployLogs((prev) => {
+                        if (prev.some(l => l.message === newLog.message && l.time === newLog.time)) {
+                            return prev;
+                        }
+                        return [...prev, newLog];
+                    });
+
+                    // Auto-transition preview status if agent reported success
+                    if (data.metadata?.status === 'success') {
+                        setPreviewStatus(prev => ({
+                            ...prev,
+                            status: 'running',
+                            preview_url: data.metadata.preview_url || `/app/${selectedProjectKey}/`,
+                            stack: prev.stack || 'auto',
+                        }));
+                        refreshRoadmap();
+                    } else if (data.metadata?.status === 'error') {
+                        setPreviewStatus(prev => ({
+                            ...prev,
+                            status: 'error',
+                        }));
+                    }
+                }
+            } catch (err) {
+                console.error('[Preview WS] Failed to parse message:', err);
+            }
+        };
+
+        ws.onerror = (err) => {
+            console.warn('[Preview WS] Error:', err);
+        };
+
+        ws.onclose = () => {
+            console.log('[Preview WS] Connection closed');
+        };
+
+        return () => {
+            if (wsRef.current) {
+                wsRef.current.close();
+                wsRef.current = null;
+            }
+        };
+    }, [selectedProjectKey, previewStatus.status, refreshRoadmap]);
+
     const handleDeployPreview = async () => {
         setIsDeploying(true);
+        setDeployLogs([]);
         try {
             const params = selectedProjectKey ? `?project_token=${selectedProjectKey}` : '';
             const res = await fetch(`${API_ENDPOINTS.AGENT_PREVIEW_DEPLOY}${params}`, {
@@ -1023,6 +1215,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
     const handleFixWithAI = async () => {
         setIsFixing(true);
+        setDeployLogs([]);
         try {
             const params = selectedProjectKey ? `?project_token=${selectedProjectKey}` : '';
             const res = await fetch(`${API_ENDPOINTS.AGENT_PREVIEW_FIX}${params}`, {
@@ -1294,6 +1487,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${token}`
             };
+            if (selectedProjectKey) headers['x-project-token'] = selectedProjectKey;
             if (hasValidTaskToken) headers['x-task-token'] = taskToken;
 
             // Include prerequisites data if available
@@ -2327,7 +2521,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                             <Globe className="w-full h-full text-violet-600" />
                                                         </div>
                                                         <div>
-                                                            <h4 className="text-sm font-bold text-app-text-main">Deploy Agent</h4>
+                                            <h4 className="text-sm font-bold text-app-text-main">Deploy Agent</h4>
                                                             <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">agent/integration</p>
                                                         </div>
                                                     </div>
@@ -2346,6 +2540,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                         )}
                                                     </div>
                                                 </div>
+
+
 
                                                 <div className="flex-1 flex flex-col justify-end">
                                                     {previewStatus.status === 'running' && previewStatus.preview_url ? (
@@ -2391,10 +2587,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                                 </button>
                                                             </div>
 
-                                                            {showPreviewLogs && previewStatus.logs && (
+                                                            {showPreviewLogs && currentPreviewLogs && (
                                                                 <div className="mt-2 bg-app-text-main rounded-lg p-2 max-h-32 overflow-y-auto">
                                                                     <div className="space-y-0.5 font-mono text-[9px]">
-                                                                        {previewStatus.logs.map((log, i) => (
+                                                                        {currentPreviewLogs.map((log, i) => (
                                                                             <div key={i} className="text-app-text-light">
                                                                                 <span className="text-app-text-label mr-1">[{new Date(log.time).toLocaleTimeString()}]</span>
                                                                                 {log.message}
@@ -2415,10 +2611,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                                 <Loader2 className="w-4 h-4 animate-spin text-app-primary" />
                                                                 <span className="text-[11px] font-medium">Deploying preview...</span>
                                                             </div>
-                                                            {previewStatus.logs && previewStatus.logs.length > 0 && (
+                                                            {currentPreviewLogs && currentPreviewLogs.length > 0 && (
                                                                 <div className="bg-app-text-main rounded-lg p-2 h-20 overflow-y-auto">
                                                                     <div className="space-y-0.5 font-mono text-[9px]">
-                                                                        {previewStatus.logs.map((log, i) => (
+                                                                        {currentPreviewLogs.map((log, i) => (
                                                                             <div key={i} className="text-app-text-light">
                                                                                 <span className="text-violet-400 mr-1">›</span>
                                                                                 {log.message}
@@ -2427,6 +2623,15 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                                     </div>
                                                                 </div>
                                                             )}
+                                                            {previewStatus.server_log && (
+                                                                <div className="bg-slate-950 rounded-lg p-2.5 max-h-40 overflow-y-auto border border-violet-500/20 shadow-inner">
+                                                                    <div className="text-[9px] font-bold text-violet-400 mb-1 font-mono flex items-center gap-1.5">
+                                                                        <span className="w-1.5 h-1.5 rounded-full bg-violet-400 animate-pulse"></span>
+                                                                        Live Container Console Output:
+                                                                    </div>
+                                                                    <pre className="font-mono text-[8px] text-emerald-400 whitespace-pre-wrap leading-relaxed select-all" ref={(el) => { if (el) el.scrollTop = el.scrollHeight; }}>{previewStatus.server_log}</pre>
+                                                                 </div>
+                                                             )}
                                                         </div>
                                                     ) : previewStatus.status === 'error' ? (
                                                         <div className="space-y-3">
@@ -2434,15 +2639,24 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                                 <AlertCircle className="w-3.5 h-3.5" />
                                                                 <span>Deployment Failed</span>
                                                             </div>
-                                                            {previewStatus.logs && previewStatus.logs.length > 0 && (
+                                                            {currentPreviewLogs && currentPreviewLogs.length > 0 && (
                                                                 <div className="bg-app-text-main rounded-lg p-2 max-h-24 overflow-y-auto">
                                                                     <div className="space-y-0.5 font-mono text-[9px]">
-                                                                        {previewStatus.logs.slice(-5).map((log, i) => (
+                                                                        {currentPreviewLogs.slice(-5).map((log, i) => (
                                                                             <div key={i} className="text-red-400/80">
                                                                                 {log.message}
                                                                             </div>
                                                                         ))}
                                                                     </div>
+                                                                </div>
+                                                            )}
+                                                            {previewStatus.server_log && (
+                                                                <div className="bg-slate-950 rounded-lg p-2.5 max-h-44 overflow-y-auto border border-red-500/20 shadow-inner">
+                                                                    <div className="text-[9px] font-bold text-red-400 mb-1 font-mono flex items-center gap-1.5">
+                                                                        <span className="w-1.5 h-1.5 rounded-full bg-red-400"></span>
+                                                                        Container Build/Server Logs:
+                                                                    </div>
+                                                                    <pre className="font-mono text-[8px] text-red-300 whitespace-pre-wrap leading-relaxed select-all">{previewStatus.server_log}</pre>
                                                                 </div>
                                                             )}
                                                             <div className="flex items-center gap-2">
@@ -2518,15 +2732,17 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                 </div>
                                                 <div>
                                                     <h3 className="text-sm font-bold text-app-text-main uppercase tracking-wide">Vibe Coding Mode</h3>
-                                                    <p className="text-xs text-app-text-light mt-0.5">AI-powered development workspace</p>
+                                                    <p className="text-xs text-app-text-dark mt-0.5">AI-powered development workspace</p>
                                                 </div>
                                             </div>
-                                            <p className="text-xs text-app-text-light mb-4">
+                                            <p className="text-xs text-app-text-dark mb-4">
                                                 Your project is configured for Vibe Coding. Open the VibeCoding workspace to start building with AI assistance.
                                             </p>
                                             <button
                                                 onClick={async () => {
-                                                    const baseUrl = `${VIBE_WORKSPACE_URL}/a/${selectedProjectKey}?name=${encodeURIComponent(selectedProject?.name || selectedProjectKey)}&mode=vibe_coding`;
+                                                    const selectedProject = projects.find(p => p.key === selectedProjectKey);
+                                                    const workspaceUrl = VIBE_WORKSPACE_URL.endsWith('/') ? VIBE_WORKSPACE_URL.slice(0, -1) : VIBE_WORKSPACE_URL;
+                                                    const baseUrl = `${workspaceUrl}/a/${selectedProjectKey}?name=${encodeURIComponent(selectedProject?.name || selectedProjectKey)}&mode=vibe_coding`;
                                                     try {
                                                         const token = localStorage.getItem('token');
                                                         const res = await fetch(API_ENDPOINTS.VIBECODING_HANDOFF, {
@@ -2668,7 +2884,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         <div>
                                             <h3 className="text-sm font-bold text-app-text-main">Generated Tasks</h3>
                                             <p className="text-[10px] text-app-text-light uppercase tracking-wider font-semibold">
-                                                {taskList.length} of {totalTaskCount} task{totalTaskCount !== 1 ? 's' : ''} from NXDUNE{taskList.length > 0 ? ` • ${sprintCount} sprint${sprintCount !== 1 ? 's' : ''}` : ''}
+                                                {taskList.length} of {totalTaskCount} task{totalTaskCount !== 1 ? 's' : ''} • {taskList.some(t => t.synced_to_nxdune) ? 'synced with NXDune' : 'active locally'}{taskList.length > 0 ? ` • ${sprintCount} sprint${sprintCount !== 1 ? 's' : ''}` : ''}
                                             </p>
                                         </div>
                                     </div>
@@ -2741,6 +2957,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                 const progress = task.task_progress || 0;
                                                 const progressColor = progress >= 80 ? 'bg-app-status-success' : progress >= 40 ? 'bg-app-primary' : 'bg-app-status-warning';
                                                 const sprintLabel = getTaskSprintLabel(task);
+                                                const assignees = safeGetAssignees(task.assignedTo);
 
                                                 return (
                                                     <div key={task.id || index} className="px-6 py-3 hover:bg-app-bg-page/70 transition-colors group">
@@ -2753,9 +2970,32 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
                                                             {/* Task Name & Desc */}
                                                             <div className="min-w-0 pr-4">
-                                                                <div className="flex items-center gap-2 mb-0.5">
+                                                                <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                                                                     <h4 className="text-sm font-bold text-app-text-main truncate" title={task.taskName}>{task.taskName || 'Untitled Task'}</h4>
                                                                     <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${typeStyles[taskType] || typeStyles.TASK}`}>{taskType}</span>
+                                                                    {task.synced_to_nxdune && (
+                                                                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400 border border-emerald-200/50 uppercase tracking-wide">
+                                                                            <CheckCircle2 className="w-2.5 h-2.5" />
+                                                                            Synced
+                                                                        </span>
+                                                                    )}
+                                                                    {task.selected && (
+                                                                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold bg-blue-100 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400 border border-blue-200/50 uppercase tracking-wide">
+                                                                            <CheckCircle2 className="w-2.5 h-2.5" />
+                                                                            Saved Locally
+                                                                        </span>
+                                                                    )}
+                                                                    {getClockedHours(task) && (
+                                                                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-bold bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-400 border border-green-200/50">
+                                                                            {getClockedHours(task)} hrs clocked
+                                                                        </span>
+                                                                    )}
+                                                                    {isCurrentlyClockedIn(task) && (
+                                                                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400 border border-amber-200/50 animate-pulse">
+                                                                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                                                                            Actively Clocked In
+                                                                        </span>
+                                                                    )}
                                                                 </div>
                                                                 <p className="text-xs text-app-text-light truncate max-w-[900px]" title={task.description}>{task.description || 'No description'}</p>
                                                             </div>
@@ -2789,10 +3029,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                             <div className="flex items-center gap-1 overflow-hidden">
                                                                 <Users className="w-3 h-3 text-app-border flex-shrink-0" />
                                                                 <div className="flex flex-wrap gap-0.5 max-h-8 overflow-hidden">
-                                                                    {(task.assignedTo || []).slice(0, 2).map((name, i) => (
+                                                                    {assignees.slice(0, 2).map((name, i) => (
                                                                         <span key={i} className="inline-flex items-center px-1.5 py-0.5 bg-app-primary-light text-app-primary-hover rounded text-[9px] font-bold truncate max-w-[45px]">{name}</span>
                                                                     ))}
-                                                                    {(task.assignedTo || []).length > 2 && <span className="text-[9px] font-bold text-app-text-light">+{(task.assignedTo || []).length - 2}</span>}
+                                                                    {assignees.length > 2 && <span className="text-[9px] font-bold text-app-text-light">+{assignees.length - 2}</span>}
                                                                 </div>
                                                             </div>
 
@@ -2819,6 +3059,18 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                             <div className="flex justify-between items-start">
                                                                 <h4 className="text-sm font-bold text-app-text-main line-clamp-1">{task.taskName}</h4>
                                                                 <span className={`px-1.5 py-0.5 rounded text-[8px] font-black ${typeStyles[taskType]}`}>{taskType}</span>
+                                                            </div>
+                                                            <div className="flex flex-wrap gap-1.5">
+                                                                {task.synced_to_nxdune && (
+                                                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400 border border-emerald-200/50 uppercase tracking-wide">
+                                                                        Synced
+                                                                    </span>
+                                                                )}
+                                                                {task.selected && (
+                                                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold bg-blue-100 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400 border border-blue-200/50 uppercase tracking-wide">
+                                                                        Saved Locally
+                                                                    </span>
+                                                                )}
                                                             </div>
                                                             <div className="flex justify-between items-center text-[10px]">
                                                                 <div className="flex items-center gap-2">

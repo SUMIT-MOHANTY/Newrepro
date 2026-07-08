@@ -187,10 +187,9 @@ const ChatMessage = ({
   onExecuteTask,
   onExecuteAllTasks,
   onEditTask,
+  executingTaskId,
   onRestore,
   messageIndex,
-  executingTaskId,
-  isLatest
 }) => {
   // Debug: Log message to see what we're receiving - disabled to prevent console flooding
   /*

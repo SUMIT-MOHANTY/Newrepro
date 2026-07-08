@@ -91,7 +91,8 @@ export default function InviteSignup() {
             }
             localStorage.setItem('token', data.access_token);
             setSuccess(`Welcome! You joined ${data.organization_name || 'the organization'} as ${data.role_name || 'a member'}.`);
-            setTimeout(() => navigate('/status-dashboard'), 250);
+            // Redirect invited users to new project page to start their first project
+            setTimeout(() => navigate('/new-project'), 250);
         } catch (err) {
             setError(err.message || 'Unable to join organization.');
         } finally {

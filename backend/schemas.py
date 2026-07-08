@@ -25,6 +25,8 @@ class User(UserBase):
 class Token(BaseModel):
     access_token: str
     token_type: str
+    requires_selection: Optional[bool] = False
+    organizations: Optional[list[str]] = None
 
 class TokenData(BaseModel):
     email: Optional[str] = None
@@ -163,6 +165,9 @@ class OrganizationRbacMeResponse(BaseModel):
     organization_name: Optional[str] = None
     role_name: Optional[str] = None
     allowed_paths: list[str] = Field(default_factory=list)
+
+class SelectOrganizationRequest(BaseModel):
+    organization_name: str
 
 class OrganizationUserResponse(BaseModel):
     id: int
@@ -305,3 +310,16 @@ class GovernanceResult(BaseModel):
 class AccessRequest(BaseModel):
     path: str
     section_name: str
+
+class ProjectGitConfigRequest(BaseModel):
+    source_repo_url: Optional[str] = None
+    source_repo_token: Optional[str] = None
+    dest_repo_url: Optional[str] = None
+    dest_repo_token: Optional[str] = None
+
+class ProjectGitConfigResponse(BaseModel):
+    source_repo_url: Optional[str] = None
+    source_repo_token: Optional[str] = None
+    dest_repo_url: Optional[str] = None
+    dest_repo_token: Optional[str] = None
+
