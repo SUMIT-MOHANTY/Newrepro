@@ -250,9 +250,9 @@ export default function Documentation() {
                             { step: '1', title: 'Upload BRD', desc: 'Go to DSuite Dashboard and click "New Project". Upload your requirements as a PDF, DOCX, image, or enter a public URL.' },
                             { step: '2', title: 'Governance screening', desc: 'Answer the 17 governance questions. The system evaluates parameters like data sensitivity, APIs, and AI risks to classify the project path.' },
                             { step: '3', title: 'Review Tech Blueprint', desc: 'Inspect the generated ER database schema, architecture designs, Mermaid diagrams, and proposed file structures.' },
-                            { step: '4', title: 'Approve Sprint Backlog', desc: 'Verify the automatically decomposed backlog tasks. Adjust sprint timelines, dependencies, and checklist priorities.' },
-                            { step: '5', title: 'Vibe & Generate Code', desc: 'Move to the VibeCoding environment. Spawn autonomous Builder-Critic agents that write code, compile, and show a live app preview.' },
-                            { step: '6', title: 'Push to Git', desc: 'Approve the code and let VibeCoding package and deliver commits directly to your target GitHub/DevOps repository.' }
+                            { step: '4', title: 'Task Creation', desc: 'Verify the automatically decomposed tasks according to requirements. Adjust timelines, dependencies, and checklist priorities.' },
+                            { step: '5', title: 'Development', desc: 'Implement tasks through two choices: spawn autonomous worker agents to write and test code automatically, or build manually using the VibeCoding workspace.' },
+                            { step: '6', title: 'Deploy', desc: 'Approve the verified codebase and let the platform package and deliver commits directly to your target GitHub/DevOps repository.' }
                         ].map((s, idx) => (
                             <div key={idx} style={{ 
                                 display: 'flex', 
