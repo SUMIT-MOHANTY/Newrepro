@@ -13,7 +13,7 @@ import GitHubCallback from './pages/GitHubCallback';
 import AzureDevOpsCallback from './pages/AzureDevOpsCallback';
 import SsoCallback from './pages/SsoCallback';
 import LandingPage from './pages/LandingPage';
-import HowItWorks from './pages/HowItWorks';
+import Documentation from './pages/Documentation';
 import OrganizationAdmin from './pages/OrganizationAdmin';
 import GovernanceManagement from './pages/GovernanceManagement';
 import AppPreview from './pages/AppPreview';
@@ -37,7 +37,7 @@ function App() {
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/" element={<LandingPage />} />
-        <Route path="/how-it-works" element={<HowItWorks />} />
+        <Route path="/docs" element={<Documentation />} />
         <Route path="/github/callback" element={<GitHubCallback />} />
         <Route path="/azure-devops/callback" element={<AzureDevOpsCallback />} />
         <Route path="/sso/callback" element={<SsoCallback />} />
