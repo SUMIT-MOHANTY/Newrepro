@@ -149,7 +149,6 @@ export default function Documentation() {
                 {
                     category: 'SUPPORT',
                     items: [
-                        { id: 'downloads', title: 'Downloads & Guides', icon: <DownloadCloud size={16} /> },
                         { id: 'faq', title: 'Frequently Asked Questions', icon: <HelpCircle size={16} /> }
                     ]
                 }

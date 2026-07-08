@@ -94,15 +94,15 @@ export default function LandingPage() {
                     flyerButton.innerHTML = 'Brochure';
                     
                     if (flyerButton.tagName === 'A') {
-                        flyerButton.href = '/Dsuite-Brochure.pdf';
-                        flyerButton.download = 'Dsuite-Brochure.pdf';
+                        flyerButton.href = '/Dsuite_Brochure.pdf';
+                        flyerButton.download = 'Dsuite_Brochure.pdf';
                     } else {
                         flyerButton.style.cursor = 'pointer';
                         flyerButton.onclick = (e) => {
                             e.preventDefault();
                             const link = document.createElement('a');
-                            link.href = '/dsuite-flyer-jpg 1.pdf';
-                            link.download = 'dsuite-flyer.pdf';
+                            link.href = '/Dsuite_Brochure.pdf';
+                            link.download = 'Dsuite_Brochure.pdf';
                             document.body.appendChild(link);
                             link.click();
                             document.body.removeChild(link);
