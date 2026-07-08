@@ -1,0 +1,255 @@
+@import url('https://fonts.googleapis.com/css2?family=Onest:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  /* Modern Color System */
+  --gray-950: #0a0a0f;
+  --gray-900: #111118;
+  --gray-800: #1a1a24;
+  --gray-700: #2a2a3a;
+  --gray-600: #4a4a5e;
+  --gray-500: #6a6a7e;
+  --gray-400: #9a9aae;
+  --gray-300: #c5c5d2;
+  --gray-200: #e5e5ea;
+  --gray-100: #f5f5f7;
+  --white: #ffffff;
+  
+  /* Brand Colors - Obsidian Theme */
+  --primary: #7c3aed;
+  --primary-light: #a78bfa;
+  --primary-dark: #5b21b6;
+  --secondary: #06b6d4;
+  --accent: #d97706;
+  --success: #059669;
+  --error: #dc2626;
+  --warning: #fb923c;
+  
+  /* Gradients - Obsidian Theme */
+  --gradient-primary: linear-gradient(135deg, #7c3aed 0%, #a78bfa 100%);
+  --gradient-secondary: linear-gradient(135deg, #06b6d4 0%, #0891b2 100%);
+  --gradient-warm: linear-gradient(135deg, #d97706 0%, #f97316 100%);
+  --gradient-success: linear-gradient(135deg, #059669 0%, #10b981 100%);
+  
+  /* Typography */
+  --font-display: 'Onest', -apple-system, sans-serif;
+  --font-body: 'Space Grotesk', -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Consolas', monospace;
+  
+  /* Spacing */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  
+  /* Effects */
+  --blur-sm: 8px;
+  --blur-md: 12px;
+  --blur-lg: 16px;
+  --blur-xl: 24px;
+  
+  /* Dark Theme (Default) */
+  --bg: #040406;
+  --bg-secondary: #08080c;
+  --bg-tertiary: #0e0e16;
+  --surface: #0a0a0f;
+  --surface-hover: #12121a;
+  --text: var(--white);
+  --text-secondary: #a1a1aa;
+  --text-tertiary: #71717a;
+  --border: rgba(255, 255, 255, 0.05);
+  --border-light: rgba(255, 255, 255, 0.1);
+}
+
+/* Light Theme */
+[data-theme="light"] {
+  --bg: #fafbfc;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f4f4f5;
+  --surface: #ffffff;
+  --surface-hover: #f4f4f5;
+  --text: #18181b;
+  --text-secondary: #52525b;
+  --text-tertiary: #71717a;
+  --border: #e4e4e7;
+  --border-light: #d4d4d8;
+  
+  /* Light theme gradients - Violet Theme */
+  --gradient-primary: linear-gradient(135deg, #8b5cf6 0%, #a855f7 100%);
+  --gradient-secondary: linear-gradient(135deg, #06b6d4 0%, #22d3ee 100%);
+  --gradient-warm: linear-gradient(135deg, #f59e0b 0%, #fb923c 100%);
+  --gradient-success: linear-gradient(135deg, #10b981 0%, #34d399 100%);
+}
+
+[data-theme="light"] body {
+  background: #f8fafc;
+}
+
+[data-theme="light"] .animated-bg::before {
+  background: 
+    radial-gradient(circle at 20% 20%, rgba(99, 102, 241, 0.06) 0%, transparent 40%),
+    radial-gradient(circle at 80% 80%, rgba(14, 165, 233, 0.06) 0%, transparent 40%),
+    radial-gradient(circle at 50% 50%, rgba(245, 158, 11, 0.04) 0%, transparent 40%);
+}
+
+[data-theme="light"] .grid-pattern {
+  background-image: 
+    linear-gradient(rgba(0, 0, 0, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.02) 1px, transparent 1px);
+}
+
+[data-theme="light"] ::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border: 2px solid #f8fafc;
+}
+
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  [data-theme="light"] .glass-card {
+    padding: var(--space-4);
+    border-radius: 16px;
+  }
+  
+  [data-theme="light"] .card {
+    padding: var(--space-3);
+  }
+}
+
+html {
+  font-size: 16px;
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-body);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--surface);
+  border-radius: 10px;
+  border: 2px solid var(--bg);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--surface-hover);
+}
+
+/* Animated Background */
+.animated-bg {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.animated-bg::before {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: 
+    radial-gradient(circle at 20% 20%, rgba(99, 102, 241, 0.15) 0%, transparent 50%),
+    radial-gradient(circle at 80% 80%, rgba(14, 165, 233, 0.15) 0%, transparent 50%),
+    radial-gradient(circle at 50% 50%, rgba(245, 158, 11, 0.1) 0%, transparent 50%);
+  animation: rotate 60s linear infinite;
+}
+
+@keyframes rotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.grid-pattern {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-image: 
+    linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+  background-size: 50px 50px;
+  z-index: 0;
+  pointer-events: none;
+  mask-image: radial-gradient(ellipse 80% 50% at 50% 0%, black 40%, transparent 110%);
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+}
+
+/* Utilities */
+.container {
+  width: 100%;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 var(--space-6);
+}
+
+@media (min-width: 768px) {
+  .container {
+    padding: 0 var(--space-8);
+  }
+}
+
+@media (min-width: 1024px) {
+  .container {
+    padding: 0 var(--space-12);
+  }
+}
+
+.gradient-text {
+  background: var(--gradient-primary);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
