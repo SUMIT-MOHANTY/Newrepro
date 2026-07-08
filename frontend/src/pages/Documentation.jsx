@@ -204,6 +204,26 @@ export default function Documentation() {
                             <p style={{ fontSize: '14px', lineHeight: '1.6', color: textMuted, margin: 0 }}>
                                 Focuses on spawn-to-execution sandbox management, automated Builder-Critic coding loops, live real-time progress logs, isolated environments, and automatic Git commits. It provides a direct VibeCoding mode where users can develop, modify, and build applications themselves.
                             </p>
+                            <div style={{ marginTop: '12px' }}>
+                                <a 
+                                    href="https://sandbox1-dsuite.bourntec.com/vibecoding/"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '4px',
+                                        color: '#db2777',
+                                        fontSize: '13px',
+                                        fontWeight: '600',
+                                        textDecoration: 'none'
+                                    }}
+                                    onMouseEnter={e => e.currentTarget.style.textDecoration = 'underline'}
+                                    onMouseLeave={e => e.currentTarget.style.textDecoration = 'none'}
+                                >
+                                    Launch Vibecoding ↗
+                                </a>
+                            </div>
                         </div>
                     </div>
 
@@ -670,6 +690,47 @@ export default function Documentation() {
                     <p style={{ fontSize: '15px', lineHeight: '1.7', color: textMain, marginBottom: '24px' }}>
                         When coding starts, VibeCoding provisions isolated sandbox scopes for safety, resource throttling, and developer runtime setup.
                     </p>
+
+                    <div style={{
+                        marginBottom: '28px',
+                        padding: '16px 20px',
+                        borderRadius: '12px',
+                        backgroundColor: isLight ? 'rgba(124, 58, 237, 0.04)' : 'rgba(139, 92, 246, 0.08)',
+                        border: `1px solid ${isLight ? 'rgba(124, 58, 237, 0.12)' : 'rgba(139, 92, 246, 0.2)'}`,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '12px'
+                    }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '18px' }}>🚀</span>
+                            <h4 style={{ fontSize: '15px', fontWeight: '700', color: textHeading, margin: 0 }}>Try VibeCoding Sandbox Live</h4>
+                        </div>
+                        <p style={{ fontSize: '13px', color: textMuted, margin: 0, lineHeight: '1.6' }}>
+                            Experience the hands-on code workspace firsthand. Boot isolated sandbox runs, write logic with autonomous assistant subagents, and test builds in real time.
+                        </p>
+                        <a 
+                            href="https://sandbox1-dsuite.bourntec.com/vibecoding/"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '6px',
+                                padding: '8px 14px',
+                                borderRadius: '6px',
+                                background: 'linear-gradient(135deg, #7c3aed 0%, #db2777 100%)',
+                                color: '#ffffff',
+                                fontSize: '12px',
+                                fontWeight: '700',
+                                textDecoration: 'none',
+                                alignSelf: 'flex-start',
+                                marginTop: '4px',
+                                boxShadow: '0 4px 12px rgba(124, 58, 237, 0.2)'
+                            }}
+                        >
+                            Launch VibeCoding ↗
+                        </a>
+                    </div>
 
                     <h3 style={{ fontSize: '18px', fontWeight: '700', color: textHeading, marginBottom: '16px' }}>Agent Specifications & Sandbox Infrastructure</h3>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>

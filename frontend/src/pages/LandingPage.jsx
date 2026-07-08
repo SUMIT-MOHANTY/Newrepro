@@ -255,15 +255,65 @@ export default function LandingPage() {
             }
         };
 
+        const updateVibeCodingButton = () => {
+            const spans = Array.from(document.querySelectorAll('span, button, a'));
+            const badge = spans.find(el => {
+                const txt = (el.textContent || '').trim();
+                const isBadge = el.style.borderRadius === '9999px' || el.style.display === 'inline-flex' || el.style.padding === '4px 12px';
+                return (txt === 'Vibe Coding Mode' || txt === 'Launch Vibe Coding \u2197') && isBadge;
+            });
+            if (badge) {
+                badge.style.cursor = 'pointer';
+                badge.style.userSelect = 'none';
+                badge.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    window.open('https://sandbox1-dsuite.bourntec.com/vibecoding/', '_blank');
+                };
+                badge.textContent = 'Launch Vibe Coding \u2197';
+                badge.style.background = 'linear-gradient(90deg, #ec4899, #db2777)';
+                badge.style.color = '#ffffff';
+                badge.style.textDecoration = 'none';
+                badge.style.transition = 'all 0.2s ease';
+                badge.style.boxShadow = '0 0 12px rgba(236, 72, 153, 0.4)';
+                badge.onmouseenter = () => {
+                    badge.style.opacity = '0.9';
+                    badge.style.transform = 'scale(1.05)';
+                    badge.style.textDecoration = 'underline';
+                    badge.style.boxShadow = '0 0 16px rgba(236, 72, 153, 0.6)';
+                };
+                badge.onmouseleave = () => {
+                    badge.style.opacity = '1';
+                    badge.style.transform = 'scale(1)';
+                    badge.style.textDecoration = 'none';
+                    badge.style.boxShadow = '0 0 12px rgba(236, 72, 153, 0.4)';
+                };
+            }
+            // Revert any accidental modifications to non-badge subtitle text
+            spans.forEach(el => {
+                const txt = (el.textContent || '').trim();
+                const isBadge = el.style.borderRadius === '9999px' || el.style.display === 'inline-flex' || el.style.padding === '4px 12px';
+                if (txt === 'Launch Vibe Coding \u2197' && !isBadge) {
+                    el.textContent = 'Vibe Coding Mode';
+                    el.style.cursor = '';
+                    el.onclick = null;
+                }
+            });
+        };
+
         // Try to inject multiple times to account for compiled script rendering delays
         const delays = [100, 300, 500, 1000, 1500, 2000, 3000];
         const timeouts = delays.map(delay => setTimeout(() => {
             injectNavbarButtons();
             rebrandLandingLogos();
+            updateVibeCodingButton();
         }, delay));
 
         // 4. Intercept click events on CTA buttons
         const handleGlobalClick = (e) => {
+            // Update button when anything is clicked (mode switch)
+            setTimeout(updateVibeCodingButton, 50);
+
             const target = e.target.closest('button, a');
             if (!target) return;
             
