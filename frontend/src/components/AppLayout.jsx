@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { API_ENDPOINTS } from '../config';
 import { clearAuthData } from '../utils/auth';
 import { customError } from '../utils/modalHelpers';
-import { Menu, Settings, Moon, Sun, Lock, Mail, ShieldAlert, CheckCircle } from 'lucide-react';
+import { Menu, Settings, Moon, Sun, Lock, Mail, ShieldAlert, CheckCircle, BookOpen } from 'lucide-react';
 import Sidebar from './Sidebar';
 import RoadmapHeader from './RoadmapHeader';
 import AgentsPage from './AgentsPage';
@@ -1181,6 +1181,17 @@ export default function AppLayout({ children }) {
                                         )}
                                     </div>
                                 )}
+
+                                {/* User Docs Button */}
+                                <button
+                                    type="button"
+                                    onClick={() => navigate('/docs')}
+                                    className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded-md text-white/80 hover:text-white transition-colors border border-white/20 text-sm font-medium cursor-pointer"
+                                    aria-label="User Documentation"
+                                >
+                                    <BookOpen className="w-4 h-4" />
+                                    <span>User Docs</span>
+                                </button>
 
                                 {/* Theme Toggle Button */}
                                 <button

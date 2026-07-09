@@ -169,10 +169,14 @@ class VersionSupervisor:
             
             if action == 'switch':
                 vid = data.get('version_id')
-                if vid == 'workspace':
-                    success = self.start_workspace()
+                if vid == self.current_version and self.current_process and self.current_process.poll() is None:
+                    self.log("🔌", f"Already running version: {vid} (skipping restart)")
+                    success = True
                 else:
-                    success = self.start_version(vid)
+                    if vid == 'workspace':
+                        success = self.start_workspace()
+                    else:
+                        success = self.start_version(vid)
                 resp = {'status': 'ok' if success else 'error', 'version': vid}
             elif action == 'status':
                 resp = {

@@ -104,16 +104,14 @@ const ThinkingBlock = ({ logs, status, title, darkMode, autoScroll = false }) =>
                   )}>
                     {log.message}
                   </p>
-                  {/* Timestamp display removed - uncomment if needed
                   {log.timestamp && (
                     <p className={cn(
                       "text-[10px] mt-0.5",
-                      darkMode ? "text-gray-600" : "text-gray-400"
+                      darkMode ? "text-gray-500" : "text-gray-400"
                     )}>
-                      {new Date(log.timestamp).toLocaleTimeString()}
+                      {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                     </p>
                   )}
-                  */}
                 </div>
               </div>
             ))}

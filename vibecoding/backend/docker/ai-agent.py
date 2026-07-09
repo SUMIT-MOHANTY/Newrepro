@@ -30,40 +30,31 @@ from typing import Dict, Any, List, Optional
 # Import task-based development modules
 from task_planner import TaskPlanner, Task
 from task_executor import TaskExecutor
-from task_executor import TaskExecutor
 
-#!/usr/bin/env python3
-"""
-"""
+# Import robustness modules (git backup, syntax validation)
+from workspace_git import WorkspaceGit
+from syntax_validator import SyntaxValidator
 
-import json
-import os
-import re
-import subprocess
 import tempfile
-from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Tuple
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PROMPTS
 # ─────────────────────────────────────────────────────────────────────────────
 
-_CLASSIFY_PROMPT = """You are a senior engineering lead classifying a developer request.
+_OPTIMIZED_CLASSIFY_PROMPT = """You are a senior engineering lead classifying a developer request.
+WORKSPACE: has_existing_code={has_code}, files={file_count}, tree (first 40): {files_json}
+SNIPPETS: {file_snippets}
+REQUEST: "{prompt}"
 
-WORKSPACE STATE:
-- has_existing_code: {has_code}
-- file_count: {file_count}
-- files (first 40): {files_json}
+CRITICAL RULE: If has_existing_code is true, NEVER return CREATE_APP unless the user explicitly requests to wipe/reset/start over. Otherwise, choose EDIT_FILE or FIX_BUG.
 
-USER REQUEST:
-{prompt}
-
-Respond with ONLY valid JSON (no markdown fences, no extra text):
+Respond with ONLY valid JSON:
 {{
-  "mode": "CREATE_APP",
-  "confidence": 0.97,
-  "reasoning": "one sentence",
-  "scope": "broad",
+  "mode": "EDIT_FILE",
+  "confidence": 0.95,
+  "reasoning": "Brief explanation",
+  "scope": "surgical",
   "target_files": [],
   "line_refs": [],
   "is_line_edit": false,
@@ -71,61 +62,44 @@ Respond with ONLY valid JSON (no markdown fences, no extra text):
   "requires_new_deps": false
 }}
 
-mode values (pick exactly one):
-  CREATE_APP     – build from scratch (use ONLY when workspace is empty or user says start over)
-  ADD_FILE       – create a brand-new file
-  EDIT_FILE      – change lines/sections in existing file(s)
-  FIX_BUG        – fix a described bug
-  ADD_FEATURE    – add a feature (may touch several files)
-  REFACTOR       – restructure / rename / clean
-  STYLE_CHANGE   – CSS / visual / theme only
-  CONFIG_CHANGE  – env / config file only
-  DELETE         – remove file or code block
-  EXPLAIN        – user wants explanation, no code change
+Modes:
+  CREATE_APP: Empty workspace / explicit reset.
+  ADD_FILE / DELETE: File creation / removal.
+  EDIT_FILE / FIX_BUG / ADD_FEATURE: Modify existing code.
+  REFACTOR / STYLE_CHANGE: Code cleanup / CSS styling only.
+  CONFIG_CHANGE: env/config update.
+  EXPLAIN: Questions only, no code changes.
 
-scope: "surgical" (≤2 files, tiny change) | "moderate" | "broad"
-target_files: file paths mentioned by user (empty list if none)
-line_refs: any line numbers mentioned (empty list if none)
-is_line_edit: true when user references specific line numbers
-requires_redeploy: false for EXPLAIN / pure REFACTOR
+Scope: "surgical" (<=2 files) | "moderate" | "broad"
 """
 
-_PLAN_PROMPT = """You are a precise code-modification engine. 
-
-USER REQUEST:
-{prompt}
-
+_OPTIMIZED_PLAN_PROMPT = """You are a precise code-modification engine.
+REQUEST: {prompt}
 INTENT: {intent_json}
-
-CURRENT FILES (line-numbered):
+FILES (line-numbered):
 {context}
 
-Produce a JSON change plan. Return ONLY valid JSON — no markdown fences, no explanation.
-
-Operation types:
-  REPLACE_LINES   – replace line range with new content  (needs: file, start_line, end_line, new_content)
-  INSERT_BEFORE   – insert before line N                 (needs: file, line, new_content)
-  INSERT_AFTER    – insert after line N                  (needs: file, line, new_content)
-  DELETE_LINES    – remove line range                    (needs: file, start_line, end_line)
-  APPEND          – add to end of file                   (needs: file, new_content)
-  PREPEND         – add to start of file                 (needs: file, new_content)
-  FULL_REWRITE    – replace entire file                  (needs: file, new_content)
-  CREATE_FILE     – new file                             (needs: file, new_content)
-  DELETE_FILE     – remove file                          (needs: file)
-  REPLACE_PATTERN – regex replace (last resort, no line# known) (needs: file, pattern, replacement, flags)
+Produce a JSON change plan. Output ONLY valid JSON.
+Operations:
+  REPLACE_LINES   - Needs: file, start_line, end_line, new_content
+  INSERT_BEFORE   - Needs: file, line, new_content
+  INSERT_AFTER    - Needs: file, line, new_content
+  DELETE_LINES    - Needs: file, start_line, end_line
+  APPEND / PREPEND- Needs: file, new_content
+  CREATE_FILE     - Needs: file, new_content
+  DELETE_FILE     - Needs: file
+  REPLACE_PATTERN - Needs: file, pattern, replacement
 
 RULES:
-1. Line numbers refer to the numbered content shown above (1-indexed, match exactly).
-2. new_content must be COMPLETE — no "...", no placeholders ever.
-3. Preserve existing indentation style (tabs vs spaces).
-4. Imports go at the top of the file, never in the middle of a function.
-5. For REPLACE_LINES the new_content replaces start_line..end_line inclusive.
-6. Multiple ops on the same file are applied in order — line numbers shift after each op,
-   so express subsequent ops on that file relative to the ORIGINAL line numbers.
-7. For a small files (< 60 lines) prefer FULL_REWRITE over many REPLACE_LINES.
+1. line numbers are 1-indexed and must match the context exactly.
+2. new_content must be complete without placeholders. Preserve indentation.
+3. Imports go at the top of files.
+4. For small files (<60 lines) prefer FULL_REWRITE over REPLACE_LINES.
+5. Do not modify backend files for frontend requests, and vice versa.
 
+Example Output:
 {{
-  "plan_summary": "one sentence",
+  "plan_summary": "Summary",
   "requires_install": false,
   "new_packages": [],
   "requires_redeploy": true,
@@ -136,47 +110,133 @@ RULES:
       "file": "src/App.jsx",
       "start_line": 12,
       "end_line": 12,
-      "new_content": "  const color = 'red';",
-      "description": "Change button color to red"
-    }},
-    {{
-      "op_id": "op_002",
-      "op_type": "CREATE_FILE",
-      "file": "src/utils/helpers.js",
-      "new_content": "export const fmt = (d) => d.toLocaleDateString();\\n",
-      "description": "Add helpers utility"
+      "new_content": "const color = 'red';",
+      "description": "change color"
     }}
   ]
 }}
 """
 
-_VERIFY_PROMPT = """You are a code-review bot verifying that file changes were applied correctly.
-
-ORIGINAL REQUEST: {prompt}
-
-PLANNED OPERATIONS:
+_OPTIMIZED_VERIFY_PROMPT = """Verify if the planned changes were correctly applied to the file context.
+REQUEST: {prompt}
+PLANNED OPS:
 {ops_json}
-
-ACTUAL FILE CONTENTS AFTER CHANGES (line-numbered):
+ACTUAL FILE CONTENT:
 {after_context}
 
 Respond with ONLY valid JSON:
 {{
   "all_changes_applied": true,
   "issues": [],
-  "files_ok": ["src/App.jsx"],
+  "files_ok": [],
   "files_with_issues": []
 }}
-
-issues: list of strings describing anything wrong or missing.
 """
+
+def _resolve_prompt(prompt_type: str, default_prompt: str, scenario_key: str = None) -> str:
+    """
+    Resolve prompt based on dynamic overrides found in custom_prompts.json.
+    Falls back to default_prompt if no custom override or scenario exists.
+    If a scenario is detected but no custom prompt exists, triggers dynamic generation.
+    """
+    try:
+        config_dir = WORKSPACE_DIR / '.vibecoding'
+        config_path = config_dir / 'custom_prompts.json'
+        
+        # Auto-detect scenario if not explicitly passed
+        if not scenario_key:
+            indicators = []
+            if (WORKSPACE_DIR / 'package.json').exists():
+                indicators.append('node')
+            if (WORKSPACE_DIR / 'vite.config.js').exists() or (WORKSPACE_DIR / 'vite.config.ts').exists():
+                indicators.append('vite')
+            if (WORKSPACE_DIR / 'requirements.txt').exists():
+                indicators.append('python')
+            if indicators:
+                scenario_key = '_'.join(indicators)
+                
+        if config_path.exists():
+            data = json.loads(config_path.read_text(encoding='utf-8'))
+            if scenario_key and scenario_key in data.get("scenarios", {}):
+                return data["scenarios"][scenario_key].get(prompt_type, default_prompt)
+            
+        # Trigger dynamic creation if scenario detected but template is missing
+        if scenario_key:
+            return _generate_and_save_scenario_prompt(scenario_key, prompt_type, default_prompt)
+            
+    except Exception as e:
+        log(f"⚠️ Failed to load dynamic prompts from registry: {e}")
+    return default_prompt
+
+def _save_custom_prompt(scenario_key: str, prompt_type: str, custom_prompt: str):
+    """
+    Save or update a dynamically generated prompt into custom_prompts.json.
+    """
+    try:
+        config_dir = WORKSPACE_DIR / '.vibecoding'
+        config_dir.mkdir(parents=True, exist_ok=True)
+        config_path = config_dir / 'custom_prompts.json'
+        
+        data = {}
+        if config_path.exists():
+            try:
+                data = json.loads(config_path.read_text(encoding='utf-8'))
+            except:
+                pass
+                
+        if "scenarios" not in data:
+            data["scenarios"] = {}
+        if scenario_key not in data["scenarios"]:
+            data["scenarios"][scenario_key] = {}
+            
+        data["scenarios"][scenario_key][prompt_type] = custom_prompt
+        config_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+        log(f"✅ Saved dynamic custom prompt for category '{scenario_key}' ({prompt_type})")
+    except Exception as e:
+        log(f"⚠️ Failed to save dynamic prompt to registry: {e}")
+
+def _generate_and_save_scenario_prompt(scenario_key: str, prompt_type: str, base_template: str) -> str:
+    """
+    Dynamically generates a custom templated prompt tailored for a specific scenario/stack
+    and saves it to the registry.
+    """
+    try:
+        log(f"🧠 Generating tailored custom system prompt for scenario: {scenario_key} ({prompt_type})...")
+        meta_prompt = (
+            f"You are a prompt engineering expert. We have a base system prompt template for {prompt_type} tasks:\n\n"
+            f"```\n{base_template}\n```\n\n"
+            f"We are operating in the scenario/stack: '{scenario_key}'.\n"
+            "Modify or append instructions to this base prompt to make it highly effective for this specific scenario. "
+            "For example, if it's React/Vite, emphasize SPA routing rules or bundle structure. If it's a specific compile error, add debugging directives. "
+            "CRITICAL:\n"
+            "1. Output ONLY the raw prompt template content. Do not include markdown fences.\n"
+            "2. Preserve all dynamic formatting variables (like {prompt}, {context}, {intent_json}, {has_code}, {files_json}, {file_snippets}) EXACTLY as they appear in the original template, so they can still be parsed at runtime."
+        )
+        
+        # Make a cheap direct AI call to generate the prompt
+        custom_prompt = call_ai([
+            {'role': 'system', 'content': 'You are a prompt engineering bot. Output ONLY the raw custom prompt template.'},
+            {'role': 'user', 'content': meta_prompt},
+        ], temperature=0.2, show_thinking=False)
+        
+        custom_prompt = re.sub(r'^```[a-z]*\n?', '', custom_prompt.strip(), flags=re.MULTILINE)
+        custom_prompt = re.sub(r'\n?```\s*$', '', custom_prompt.strip(), flags=re.MULTILINE)
+        
+        if custom_prompt and len(custom_prompt) > 50:
+            _save_custom_prompt(scenario_key, prompt_type, custom_prompt)
+            return custom_prompt
+    except Exception as ex:
+        log(f"⚠️ Meta prompt generation failed: {ex}")
+    return base_template
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
 
 _SKIP_DIRS  = {"node_modules", ".git", "dist", "build", "__pycache__", ".vibecoding"}
-_SKIP_FILES = {".DS_Store", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "metadata.json"}
+_SKIP_FILES = {".DS_Store", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "metadata.json", ".gitignore"}
 _TEXT_EXTS  = {
     ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte",
     ".py", ".go", ".rs", ".java", ".kt", ".swift", ".c", ".cpp", ".cs",
@@ -229,11 +289,34 @@ class EditEngine:
             "error":            str | None,
         }
         """
+        report(f"Analyzing your request: '{user_prompt[:60]}...'", message_type="thinking")
         intent = self._classify(user_prompt)
-        mode   = intent.get("mode", "ADD_FEATURE")
+        mode   = intent.get("mode", "EDIT_FILE")
 
         log(f"🧭 Intent: {mode} | scope={intent.get('scope')} | confidence={intent.get('confidence', 0):.2f}")
         log(f"   Reason: {intent.get('reasoning', '')}")
+
+        # ── Hard guard: never CREATE_APP on non-empty workspace unless explicit ──
+        existing_files = self._list_files()
+        if mode == "CREATE_APP" and existing_files:
+            p_lower = user_prompt.lower()
+            explicit_reset = bool(re.search(
+                r'\b(start over|rebuild from scratch|create a brand new|completely redo'
+                r'|wipe everything|reset the project)\b',
+                p_lower
+            ))
+            if not explicit_reset:
+                log(
+                    "🛡️  Blocking CREATE_APP on non-empty workspace — "
+                    "user did not explicitly ask to start over. Routing to EDIT_FILE."
+                )
+                mode = "EDIT_FILE"
+                intent["mode"] = "EDIT_FILE"
+                intent["scope"] = intent.get("scope", "moderate")
+                intent["reasoning"] = (
+                    "Overridden: CREATE_APP blocked on existing project. "
+                    "Treating as EDIT_FILE."
+                )
 
         # ── first build → hand back to existing generate_code() ──────────────
         if mode == "CREATE_APP":
@@ -244,6 +327,8 @@ class EditEngine:
                 "plan_summary": "Building app from scratch",
                 "verify_ok": True, "verify_issues": [], "error": None,
             }
+
+        report(f"Detected task: {mode} — {intent.get('reasoning', '')}", message_type="thinking")
 
         # ── explanation only ─────────────────────────────────────────────────
         if mode == "EXPLAIN":
@@ -257,9 +342,31 @@ class EditEngine:
 
         # ── edit / add / fix path ────────────────────────────────────────────
         try:
+            report("Scanning codebase and building context...", message_type="thinking")
             context      = self._build_context(user_prompt, intent)
+            
+            report("Creating surgical implementation plan...", message_type="thinking")
             plan         = self._plan_changes(user_prompt, intent, context)
+            
+            report(f"Applying changes to files: {plan.get('plan_summary', 'Applying edits')}...", message_type="thinking")
             files_changed = self._execute_ops(plan["operations"])
+            
+            # ── FIX: RUN NATIVE SYNTAX VALIDATION HERE ──
+            syntax_errors = syntax_validator.validate_files(files_changed)
+            if syntax_errors:
+                # The AI just wrote broken code! Don't deploy, force an immediate fix.
+                log("❌ Syntax errors detected immediately after edit. Forcing fallback...")
+                return {
+                    "mode": mode, "handled": False,
+                    "requires_redeploy": False, "requires_install": False,
+                    "new_packages": [], "files_changed": files_changed,
+                    "plan_summary": "Syntax error post-edit",
+                    "verify_ok": False,
+                    "verify_issues": [e["error"] for e in syntax_errors],
+                    "error": "Post-edit syntax validation failed"
+                }
+
+            report("Verifying changed files for correctness...", message_type="thinking")
             verify        = self._verify(user_prompt, plan["operations"], files_changed)
 
             return {
@@ -290,70 +397,151 @@ class EditEngine:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _classify(self, prompt: str) -> Dict[str, Any]:
-        """Lightweight AI call → JSON intent.  Fast heuristics tried first."""
+        """
+        AI-first intent classification.
 
-        fast = self._fast_classify(prompt)
-        if fast:
-            return fast
+        Fast path handles only two unambiguous cases:
+          1. Empty workspace → always CREATE_APP
+          2. Explicit 'start over' phrase → CREATE_APP
 
-        tree  = self._list_files()
-        snap  = {
-            "has_code":   len(tree) > 0,
-            "file_count": len(tree),
-            "files_json": json.dumps(tree[:40]),
-            "prompt":     prompt.strip(),
+        Everything else — including vague UI fixes, "it looks off",
+        "change the color", "it's broken" — goes to the AI classifier
+        which receives actual file snippets so it understands context.
+        """
+        tree = self._list_files()
+
+        # ── Fast path 1: empty workspace ─────────────────────────────────────
+        if not tree:
+            return {
+                "mode": "CREATE_APP", "confidence": 0.99,
+                "reasoning": "Workspace is empty — building from scratch",
+                "scope": "broad", "target_files": [], "line_refs": [],
+                "is_line_edit": False, "requires_redeploy": True,
+                "requires_new_deps": True,
+            }
+
+        # ── Fast path 2: unambiguous 'start over' phrases ────────────────────
+        p = prompt.lower().strip()
+        if re.search(
+            r'\b(start over|rebuild from scratch|create a brand new|completely redo'
+            r'|wipe everything|delete everything and|reset the project)\b', p
+        ):
+            return {
+                "mode": "CREATE_APP", "confidence": 0.97,
+                "reasoning": "User explicitly asked to start over",
+                "scope": "broad", "target_files": [], "line_refs": [],
+                "is_line_edit": False, "requires_redeploy": True,
+                "requires_new_deps": True,
+            }
+
+        # ── Fast path 3: explanation-only requests (no code change needed) ───
+        if re.search(
+            r'\b(explain|what is|what does|how does|why does|walk me through'
+            r'|what\'s the difference|tell me about)\b', p
+        ):
+            return {
+                "mode": "EXPLAIN", "confidence": 0.92,
+                "reasoning": "Explanation request — no code change needed",
+                "scope": "surgical", "target_files": [], "line_refs": [],
+                "is_line_edit": False, "requires_redeploy": False,
+                "requires_new_deps": False,
+            }
+
+        # ── AI classification with file content snippets ─────────────────────
+        # Build brief file snippets so the classifier understands what exists.
+        # We read the first 300 chars of the most relevant files.
+        snippets = self._build_classify_snippets(tree)
+
+        snap = {
+            "has_code":      True,
+            "file_count":    len(tree),
+            "files_json":    json.dumps(tree[:40]),
+            "file_snippets": snippets,
+            "prompt":        prompt.strip(),
         }
+
+        classify_tmpl = _resolve_prompt("classify", _OPTIMIZED_CLASSIFY_PROMPT)
         raw = self._call_ai(
             [
-                {"role": "system",  "content": "You are a request classifier. Output only JSON."},
-                {"role": "user",    "content": _CLASSIFY_PROMPT.format(**snap)},
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a request classifier for a code editor. "
+                        "Output ONLY valid JSON. Never return CREATE_APP for "
+                        "an existing project unless the user explicitly says "
+                        "start over or rebuild from scratch."
+                    ),
+                },
+                {"role": "user", "content": classify_tmpl.format(**snap)},
             ],
-            temperature=0.0, show_thinking=False
+            temperature=0.0,
+            show_thinking=False,
         )
-        return self._parse_json(raw, default={"mode": "ADD_FEATURE", "confidence": 0.5,
-                                               "requires_redeploy": True, "target_files": [],
-                                               "line_refs": [], "is_line_edit": False,
-                                               "scope": "moderate", "requires_new_deps": False})
 
+        result = self._parse_json(
+            raw,
+            default={
+                "mode": "EDIT_FILE", "confidence": 0.6,
+                "reasoning": "Defaulted to EDIT_FILE (parse failed)",
+                "requires_redeploy": True, "target_files": [],
+                "line_refs": [], "is_line_edit": False,
+                "scope": "moderate", "requires_new_deps": False,
+            },
+        )
+
+        # ── Safety guard: never silently promote to CREATE_APP on non-empty ws ─
+        if result.get("mode") == "CREATE_APP" and result.get("confidence", 1.0) < 0.92:
+            log(
+                f"⚠️  Classifier returned CREATE_APP with low confidence "
+                f"({result.get('confidence'):.2f}) on non-empty workspace — "
+                f"downgrading to EDIT_FILE"
+            )
+            result["mode"] = "EDIT_FILE"
+            result["reasoning"] = (
+                "Downgraded from CREATE_APP: low confidence on non-empty workspace"
+            )
+            result["scope"] = "moderate"
+
+        return result
+
+    def _build_classify_snippets(self, tree: List[str]) -> str:
+        """
+        Return a short string with the first 300 chars of the most important
+        files in the workspace so the AI classifier understands what exists.
+        Caps at 8 files / 3000 total chars so the classify call stays cheap.
+        """
+        priority = [
+            "src/App.jsx", "src/App.tsx", "src/App.js",
+            "src/main.jsx", "src/main.tsx",
+            "app/page.tsx", "app/layout.tsx",
+            "pages/index.tsx", "pages/index.jsx",
+            "index.html", "main.py", "app.py", "server.py",
+            "src/index.css", "src/App.css", "styles/globals.css",
+        ]
+
+        candidates = [f for f in priority if f in tree]
+        for f in tree:
+            if f not in candidates:
+                candidates.append(f)
+
+        parts: List[str] = []
+        total = 0
+        for rel in candidates[:8]:
+            d = self._read_file(rel)
+            if not d:
+                continue
+            snippet = d["raw"][:300].replace("\n", "↵")
+            parts.append(f"[{rel}]: {snippet}")
+            total += len(snippet)
+            if total >= 3000:
+                break
+
+        return "\n".join(parts) if parts else "(no readable files)"
+
+    # kept for legacy call-sites that may reference it — now a no-op stub
     def _fast_classify(self, prompt: str) -> Optional[Dict[str, Any]]:
-        """Regex heuristics — avoids an AI call when the intent is obvious."""
-        tree = self._list_files()
-        p    = prompt.lower().strip()
+        return None  # classification is now fully handled by _classify()
 
-        if not tree:
-            return {"mode": "CREATE_APP", "confidence": 0.99, "reasoning": "empty workspace",
-                    "scope": "broad", "target_files": [], "line_refs": [],
-                    "is_line_edit": False, "requires_redeploy": True, "requires_new_deps": True}
-
-        # Line-number reference + edit verb → surgical edit
-        line_refs = self._extract_line_numbers(prompt)
-        if line_refs and re.search(r'\b(change|edit|fix|update|replace|modify|set|rename|delete|remove)\b', p):
-            return {"mode": "EDIT_FILE", "confidence": 0.94, "scope": "surgical",
-                    "reasoning": f"Line number(s) {line_refs} with edit verb",
-                    "target_files": self._extract_file_mentions(prompt),
-                    "line_refs": line_refs, "is_line_edit": True,
-                    "requires_redeploy": True, "requires_new_deps": False}
-
-        if re.search(r'\b(start over|rebuild from scratch|create a brand new|completely redo)\b', p):
-            return {"mode": "CREATE_APP", "confidence": 0.96, "scope": "broad",
-                    "reasoning": "User asked to start over",
-                    "target_files": [], "line_refs": [], "is_line_edit": False,
-                    "requires_redeploy": True, "requires_new_deps": True}
-
-        if re.search(r'\b(create a new file|add a new file|new file called)\b', p):
-            return {"mode": "ADD_FILE", "confidence": 0.93, "scope": "surgical",
-                    "reasoning": "Explicit new file request",
-                    "target_files": self._extract_file_mentions(prompt),
-                    "line_refs": [], "is_line_edit": False,
-                    "requires_redeploy": True, "requires_new_deps": False}
-
-        if re.search(r'\b(explain|what is|what does|how does|why does|walk me through)\b', p):
-            return {"mode": "EXPLAIN", "confidence": 0.92, "scope": "surgical",
-                    "reasoning": "Explanation request",
-                    "target_files": [], "line_refs": [], "is_line_edit": False,
-                    "requires_redeploy": False, "requires_new_deps": False}
-
-        return None  # no fast path — fall through to AI
 
     # ─────────────────────────────────────────────────────────────────────────
     # STEP 2 — BUILD CONTEXT
@@ -380,8 +568,30 @@ class EditEngine:
         if scope == "surgical" and candidates:
             pass  # only load what was explicitly named
         else:
+            # Check if prompt is purely backend or frontend oriented
+            is_backend_only = False
+            is_frontend_only = False
+            prompt_lower = prompt.lower()
+            backend_keywords = ["backend", "api", "database", "sqlite", "server", "endpoint", "prisma", "models", "route", "query", "controller"]
+            frontend_keywords = ["frontend", "ui", "button", "style", "page", "component", "css", "color", "layout", "nav", "render", "design", "assets"]
+            
+            if any(kw in prompt_lower for kw in backend_keywords) and not any(kw in prompt_lower for kw in frontend_keywords):
+                is_backend_only = True
+            elif any(kw in prompt_lower for kw in frontend_keywords) and not any(kw in prompt_lower for kw in backend_keywords):
+                is_frontend_only = True
+
             # 3. Heuristic entry-points always useful for broader changes
-            for ep in self._heuristic_entrypoints(tree):
+            eps = self._heuristic_entrypoints(tree)
+            if is_backend_only:
+                frontend_extensions = (".jsx", ".tsx", ".html", ".css")
+                frontend_names = ("App.js", "main.js", "index.js", "App.jsx", "App.tsx")
+                eps = [ep for ep in eps if not (ep.endswith(frontend_extensions) or any(name in ep for name in frontend_names))]
+            elif is_frontend_only:
+                backend_extensions = (".py", ".db", ".sqlite")
+                backend_names = ("server", "models", "database")
+                eps = [ep for ep in eps if not (ep.endswith(backend_extensions) or any(name in ep for name in backend_names))]
+
+            for ep in eps:
                 if ep not in candidates:
                     candidates.append(ep)
 
@@ -442,6 +652,7 @@ class EditEngine:
         """AI produces a JSON plan of operations. No files are touched here."""
         context_str = self._format_context_for_prompt(context)
 
+        plan_tmpl = _resolve_prompt("plan", _OPTIMIZED_PLAN_PROMPT)
         raw = self._call_ai(
             [
                 {
@@ -454,7 +665,7 @@ class EditEngine:
                 },
                 {
                     "role": "user",
-                    "content": _PLAN_PROMPT.format(
+                    "content": plan_tmpl.format(
                         prompt=prompt.strip(),
                         intent_json=json.dumps(intent, indent=2),
                         context=context_str,
@@ -717,12 +928,13 @@ else:
         # Filter ops to only those affecting changed files
         relevant_ops = [op for op in ops if op.get("file") in files_changed]
 
+        verify_tmpl = _resolve_prompt("verify", _OPTIMIZED_VERIFY_PROMPT)
         raw = self._call_ai(
             [
                 {"role": "system", "content": "You are a code-review bot. Output only JSON."},
                 {
                     "role": "user",
-                    "content": _VERIFY_PROMPT.format(
+                    "content": verify_tmpl.format(
                         prompt=prompt.strip(),
                         ops_json=json.dumps(relevant_ops, indent=2),
                         after_context=after_context,
@@ -923,10 +1135,78 @@ else:
 NGINX_ERROR_LOG = '/var/log/nginx/error.log'
 MAILBOX         = Path('/tmp/vibe_prompt')
 
+TOTAL_PROMPT_TOKENS = 0
+TOTAL_COMPLETION_TOKENS = 0
+
+
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 def log(msg: str):
     print(f'🛠️  [Agent] {msg}', flush=True)
+
+def kill_process_listening_on_port(port: int):
+    """
+    Find process listening on TCP port by reading /proc/net/tcp and /proc/net/tcp6
+    and kill it. Completely robust, native Python.
+    """
+    try:
+        port_hex = f'{port:04X}'
+        inodes = set()
+        
+        # 1. Read /proc/net/tcp and /proc/net/tcp6
+        for net_file in ['/proc/net/tcp', '/proc/net/tcp6']:
+            if not os.path.exists(net_file):
+                continue
+            with open(net_file, 'r') as f:
+                lines = f.readlines()
+            for line in lines[1:]:
+                parts = line.strip().split()
+                if len(parts) >= 10:
+                    local_addr = parts[1]
+                    inode = parts[9]
+                    # Format: IP:PORT
+                    if local_addr.endswith(':' + port_hex):
+                        inodes.add(inode)
+        
+        if not inodes:
+            log(f"No active sockets found on port {port}")
+            return
+            
+        log(f"Found socket inodes on port {port}: {inodes}")
+        
+        # 2. Find processes referencing these inodes in /proc/<pid>/fd/
+        killed_any = False
+        for pid_dir in os.listdir('/proc'):
+            if not pid_dir.isdigit():
+                continue
+            pid = int(pid_dir)
+            fd_dir = f'/proc/{pid}/fd'
+            if not os.path.exists(fd_dir):
+                continue
+            try:
+                for fd in os.listdir(fd_dir):
+                    fd_path = os.path.join(fd_dir, fd)
+                    if os.path.islink(fd_path):
+                        target = os.readlink(fd_path)
+                        # Format is usually 'socket:[inode]'
+                        if target.startswith('socket:[') and target.endswith(']'):
+                            inode = target[8:-1]
+                            if inode in inodes:
+                                log(f"👉 Killing process {pid} listening on port {port} (found socket inode {inode})")
+                                subprocess.run(['kill', '-9', str(pid)], capture_output=True)
+                                killed_any = True
+            except Exception:
+                continue
+        if not killed_any:
+            log(f"Could not associate socket inodes on port {port} to any running PID.")
+    except Exception as e:
+        log(f"Error in kill_process_listening_on_port: {e}")
+
+
+# ── Robustness modules (global singletons) ────────────────────────────────────
+# These are initialized once and used throughout the agent lifecycle.
+workspace_git     = WorkspaceGit(str(WORKSPACE_DIR), log_func=log)
+syntax_validator  = SyntaxValidator(str(WORKSPACE_DIR), log_func=log)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -967,17 +1247,23 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
     clean = str(msg).strip()
     print(f'\n💬 {clean}', flush=True)
     
+    global TOTAL_PROMPT_TOKENS, TOTAL_COMPLETION_TOKENS
     # Build metadata
     meta = metadata or {}
     if message_type:
         meta['type'] = message_type
+        
+    meta['token_usage'] = {
+        'prompt_tokens': TOTAL_PROMPT_TOKENS,
+        'completion_tokens': TOTAL_COMPLETION_TOKENS
+    }
 
     # Always mark agent messages so the frontend can group them into ThinkingBlocks
     # even after a page reload (these are never rendered as normal chat messages).
     # EXCEPTION: messages with suggestions are terminal responses ("Great! Your
     # changes are working…") — they must appear as regular chat messages, not be
     # swallowed into the collapsible ThinkingBlock.
-    if not suggestions:
+    if not suggestions and not meta.get('is_final_message'):
         meta['is_background_log'] = True
 
     # Auto-detect message type from emoji if not provided
@@ -1045,7 +1331,7 @@ def report(msg: str, code: str = None, suggestions: list = None, metadata: dict 
     
     # Also broadcast via WebSocket for real-time updates (optional)
     try:
-        ws_url = f'https://dsuite-backend.bourntec.com/vibecoding/api/broadcast/{PROJECT_ID}'
+        ws_url = f'{backend_url}/vibecoding/api/broadcast/{PROJECT_ID}'
         ws_payload = {
             'content': clean,
             'type': meta.get('type'),
@@ -1197,6 +1483,8 @@ Each suggestion should be:
 - Under 50 characters
 - Actionable and specific
 - Written as a complete sentence that could be sent as a prompt
+
+CRITICAL PRIORITY: If the user originally requested database integration, backend features (like Prisma/SQLite/Postgres schemas, seeds, endpoints), or integrations (like Shopify/Stripe payments) but they have NOT been implemented yet (meaning we only deployed the mock-data visual prototype), you MUST prioritize suggesting these database, backend, or payment integration steps (e.g., 'Set up Prisma & SQLite database', 'Integrate Shopify payment API', 'Create backend user endpoints').
 
 Respond with ONLY valid JSON (no markdown fences):
 {{
@@ -1459,21 +1747,101 @@ Your summary:"""
             return f'• Created {len(files_written)} file(s)\n• Built your application structure\n• Ready for deployment'
 
 
+def _generate_commit_message(user_prompt: str, changed_files: list) -> str:
+    """Use AI to generate a clean, professional, single-line Git commit message"""
+    if not user_prompt:
+        return "Deployment successful"
+    try:
+        commit_prompt = f"""Generate a concise, professional Git commit message based on the following change details.
+User Request: "{user_prompt}"
+Changed Files: {', '.join(changed_files[:10]) if changed_files else 'Workspace initialized'}
+
+Rules:
+1. Must be a single line under 80 characters.
+2. Written in present or past tense (e.g. 'Add contact form with validation' or 'Updated color theme to dark mode').
+3. Do not include prefixes like 'Commit:' or quotes.
+4. Keep it highly specific to the features added or modified.
+
+Commit message:"""
+        
+        response = call_ai([
+            {'role': 'system', 'content': 'You are a professional software engineer writing git commit messages.'},
+            {'role': 'user', 'content': commit_prompt}
+        ], temperature=0.3, show_thinking=False)
+        
+        msg = response.strip().strip('"').strip("'").strip()
+        if msg:
+            return msg
+    except Exception as e:
+        log(f"⚠️ Failed to generate AI commit message: {e}")
+    
+    # Fallback to a formatted prompt message
+    clean_prompt = user_prompt.replace('\r', '').replace('\n', ' ').strip()
+    return clean_prompt[:60]
+
+
 # ── Nginx helpers ──────────────────────────────────────────────────────────────
 def nginx_reload() -> bool:
     t = subprocess.run(['/usr/sbin/nginx', '-t'], capture_output=True, text=True)
     if t.returncode != 0:
         log(f'Nginx config error: {t.stderr}')
         return False
-    r = subprocess.run(['/usr/sbin/nginx', '-s', 'reload'], capture_output=True, text=True)
-    if r.returncode != 0:
-        subprocess.run('pkill -9 nginx || true', shell=True, capture_output=True)
-        time.sleep(0.5)
+        
+    # Ensure the directories for the pid files exist
+    Path('/run').mkdir(parents=True, exist_ok=True)
+    Path('/var/run').mkdir(parents=True, exist_ok=True)
+    
+    # Check if Nginx is running
+    pgrep = subprocess.run(['pgrep', '-o', 'nginx'], capture_output=True, text=True)
+    is_running = False
+    if pgrep.returncode == 0:
+        pid = pgrep.stdout.strip()
+        # Verify it's not a zombie process
+        try:
+            status_path = f'/proc/{pid}/status'
+            if os.path.exists(status_path):
+                status_content = Path(status_path).read_text(encoding='utf-8')
+                if 'State:\tZ (zombie)' not in status_content and 'Z (zombie)' not in status_content:
+                    is_running = True
+            else:
+                is_running = True
+        except Exception:
+            is_running = True
+    
+    if is_running:
+        pid = pgrep.stdout.strip()
+        # Try to restore the pid files so Nginx can signal reload successfully
+        for pid_path in ['/run/nginx.pid', '/var/run/nginx.pid']:
+            try:
+                p = Path(pid_path)
+                if not p.exists() or p.read_text().strip() != pid:
+                    p.write_text(pid)
+                    log(f'Restored Nginx PID file {pid_path} with PID {pid}')
+            except Exception as pe:
+                log(f'Warning: failed to restore Nginx PID file {pid_path}: {pe}')
+                
+        r = subprocess.run(['/usr/sbin/nginx', '-s', 'reload'], capture_output=True, text=True)
+        if r.returncode == 0:
+            return True
+        log(f'Nginx reload failed: {r.stderr}. Attempting clean restart...')
+        
+    # If not running or reload failed, stop and start cleanly
+    try:
+        kill_process_listening_on_port(80)
+    except Exception as ke:
+        log(f"Warning: native port 80 kill failed: {ke}")
+    subprocess.run('pkill -9 nginx || true', shell=True, capture_output=True)
+    time.sleep(0.5)  # Let TIME_WAIT settle
+    
+    # Try starting Nginx (up to 3 attempts with brief delays)
+    for attempt in range(3):
         s = subprocess.run(['/usr/sbin/nginx'], capture_output=True, text=True)
-        if s.returncode != 0:
-            log(f'Nginx failed to start: {s.stderr}')
-            return False
-    return True
+        if s.returncode == 0:
+            return True
+        log(f'Nginx start attempt {attempt+1} failed: {s.stderr}')
+        time.sleep(0.5)
+        
+    return False
 
 
 def write_nginx_config(conf: str) -> bool:
@@ -1712,6 +2080,8 @@ def call_ai(messages: list, temperature: float = 0.2, show_thinking: bool = True
     """
     headers = {'Content-Type': 'application/json'}
 
+    global TOTAL_PROMPT_TOKENS, TOTAL_COMPLETION_TOKENS
+
     if AI_PROVIDER == 'bournai':
         parts = []
         for m in messages:
@@ -1719,6 +2089,7 @@ def call_ai(messages: list, temperature: float = 0.2, show_thinking: bool = True
             content = m.get('content', '')
             tag = {'system': '[System]', 'user': '[User]', 'assistant': '[Assistant]'}.get(role, f'[{role}]')
             parts.append(f'{tag}\n{content}')
+        prompt_text = '\n\n'.join(parts)
         payload = {
             'agent_id': API_KEY,
             'model': AI_MODEL or 'BournAI',
@@ -1766,8 +2137,19 @@ def call_ai(messages: list, temperature: float = 0.2, show_thinking: bool = True
         }
         resp = requests.post(API_URL, headers=headers, json=payload, timeout=180)
         resp.raise_for_status()
-        content = resp.json()['choices'][0]['message']['content']
+        resp_json = resp.json()
+        content = resp_json['choices'][0]['message']['content']
         
+        usage = resp_json.get('usage', {})
+        if usage:
+            prompt_tok = usage.get('prompt_tokens') or usage.get('input_tokens') or (len(json.dumps(messages)) // 4)
+            comp_tok = usage.get('completion_tokens') or usage.get('output_tokens') or (len(content) // 4)
+            TOTAL_PROMPT_TOKENS += prompt_tok
+            TOTAL_COMPLETION_TOKENS += comp_tok
+        else:
+            TOTAL_PROMPT_TOKENS += len(json.dumps(messages)) // 4
+            TOTAL_COMPLETION_TOKENS += len(content) // 4
+
         # Extract and show thinking if enabled
         if show_thinking and content:
             _extract_and_show_thinking(content)
@@ -1857,15 +2239,25 @@ def generate_code(user_prompt: str, existing_files: dict = None) -> bool:
             lines.append(f'// FILE: {path}\n{content[:3000]}')
         existing_context = '\n\n'.join(lines)
 
-    system_prompt = """You are an elite full-stack engineer. Generate complete, production-ready application code.
+    username = os.environ.get('USER_NAME', 'anonymous')
+    from datetime import datetime, timedelta, timezone
+    try:
+        tz_offset = int(os.environ.get('TZ_OFFSET_SECONDS', '0'))
+        tz = timezone(timedelta(seconds=tz_offset))
+        now = datetime.now(tz)
+    except Exception:
+        now = datetime.now(timezone.utc)
+    date_label = f"CURRENT DATE & TIME: {now.strftime('%A, %B %d, %Y %H:%M:%S')}\n\n"
+
+    system_prompt = f"""You are an elite full-stack engineer. Generate complete, production-ready application code.
 
 DEPLOYMENT ENVIRONMENT (Docker Ubuntu 22.04):
 - Pre-installed: Python3, pip3, Node.js 18, npm, Nginx, serve, git, curl
 - Nginx listens on port 80 and reverse-proxies to your app's internal port
-- Your app MUST use an internal port (3000, 5000, 8000, etc.) — NEVER port 80
-
+- Your app can use any port internally — but NEVER port 80
+ 
 CRITICAL PORT RULE:
-- Nginx owns port 80. Your app binds to an internal port like 3000 or 5000.
+- Nginx owns port 80. Your app can bind to any port internally.
 - Use process.env.PORT || 3000 for Node/Express
 - Use os.environ.get('PORT', '5000') for Python/Flask
 - NEVER bind to port 80 in your app code
@@ -1892,14 +2284,44 @@ RULES:
 6. For static HTML: just index.html (+ style.css, script.js) — no build tools needed
 7. Keep conversational text to 1-2 sentences max before file markers
 8. NO setup instructions — the platform deploys automatically
+9. SQLite + Prisma limitations: When creating/modifying a Prisma schema (prisma/schema.prisma) with sqlite provider, SQLite does NOT support `enum` types or the `Json` type. You MUST use `String` (with text defaults for enums, e.g., role String @default("USER")) instead of enums, and use `String` instead of `Json` (e.g., shippingAddress String).
+10. NEVER repeat or echo the user's statements, prompt, or questions. Start directly with your response or answer.
+11. The user may choose to ignore the previous suggestions you generated. Do NOT assume the user's input is a reference to the suggestions unless they specifically mention or repeat them.
+TAILWIND CSS — CRITICAL IMPORT RULES (violations cause broken builds):
+12. **TAILWIND IMPORT METHOD — PICK ONE AND BE CONSISTENT:**
+    - **CDN (HTML projects / no build tool):** Use ONLY the official Play CDN script tag:
+      `<script src="https://cdn.tailwindcss.com"></script>`
+      Place it in <head>. Do NOT also add tailwind to package.json. Do NOT use @tailwind directives in CSS files.
+    - **NPM + Vite/Next.js (React projects with build tool):** Install via package.json (`"tailwindcss": "^3.x"`, `"autoprefixer"`, `"postcss"`). Create `tailwind.config.js` with correct `content` globs AND `postcss.config.js`. In your main CSS file use ONLY the three directives:
+      ```
+      @tailwind base;
+      @tailwind components;
+      @tailwind utilities;
+      ```
+      Do NOT use the CDN script tag when using npm/Vite.
+    - **NEVER mix both methods** — CDN + npm together breaks the build every time.
+    - **NEVER write** `@import 'tailwindcss'` or `import 'tailwindcss/tailwind.css'` — these do not exist in Tailwind v3.
+13. **DEFAULT TECH STACK:** By default, always use React with JSX for the frontend and SQLite for the backend database, unless the user has explicitly mentioned a different tech stack or requested not to use SQLite.
+"""
 
-FOR EDITS: Start your response with a brief explanation of what you're changing (1-2 sentences), then output the file markers."""
+    is_handoff = os.environ.get('HANDOFF_SOURCE') == 'dsuite'
+
+    if is_handoff:
+        system_prompt += """
+14. **STRICT REPO STRUCTURE COMPLIANCE (D-Suite handoff):** You MUST place every file at the exact path defined in the "D-Suite Repository & Frontend Structure" section of the user prompt. Do not invent alternative folder names or nest files inside a new project subdirectory. Build directly inside the workspace root.
+15. **JSX IN .JS FILES (Vite configuration):** If the D-Suite repository structure uses the `.js` extension for React entry points or component files containing JSX (e.g., `src/index.js`, `src/App.js`), do not blindly rename them to `.jsx`. Instead, preserve the requested `.js` structure and configure `vite.config.js` to support JSX in `.js` files by adding `esbuild: { loader: 'jsx', include: /src\/.*\.js$/ }`. If you choose to use `.jsx` extensions or if the files are mixed, you must ensure that all entry points (like `index.html`), imports, and exports are completely and consistently aligned across the codebase to avoid broken references.
+16. **FRONTEND PROTOTYPE ONLY (D-Suite handoff):** Even though the full architecture is provided, build ONLY the frontend UI screens at this stage. Use realistic mock/hardcoded data. Do NOT create backend files (server, routes, controllers), database files (Prisma schema, migrations, .db), or backend dependencies. Every screen from the BRD must be present and navigable with mock state."""
+    elif not is_edit:
+        system_prompt += """
+12. **STRICT VISUAL PROTOTYPE RULE FOR INITIAL REQUEST:** Since this is the initial project setup, you MUST focus EXCLUSIVELY on building a stunning, highly polished visual frontend prototype using mock data. Do NOT generate any database models, Prisma schemas (prisma/schema.prisma), database migrations, or active backend APIs. Use mock-based state and dummy data in the React/Next.js/HTML frontend so that the application compiles and runs on Port 80 immediately with zero database errors. Any database or backend integrations will be implemented in subsequent turns."""
+
+    system_prompt += """\n\nFOR EDITS: Start your response with a brief explanation of what you're changing (1-2 sentences), then output the file markers."""
 
     if is_edit:
         user_content = f"""EXISTING PROJECT FILES:
 {existing_context}
 
-USER REQUEST: {user_prompt}
+USER REQUEST: {user_prompt}\nUsername:{username},Current Date&Time:{date_label}
 
 CRITICAL: You MUST use file markers to apply changes:
 - For small changes: Use // PATCH: with <<<SEARCH/<<<REPLACE blocks
@@ -1987,16 +2409,62 @@ Apply the changes now using ONLY these markers."""
             except Exception as e:
                 report(f'Something went wrong. Please try again. (Details: {e})')
                 return False
-        else:
-            # For new projects, try to detect the file type
-            code = response_text.strip()
-            if not code or len(code) < 30:
-                report('The AI didn\'t return any code. Please try rephrasing your request.')
-                return False
             filename = _detect_filename(code)
-            _write_file(WORKSPACE_DIR / filename, code)
+            file_path = WORKSPACE_DIR / filename
+            _write_file(file_path, code)
+            
+            # Syntax validation and self-healing for single file
+            max_heal_attempts = 3
+            for attempt in range(max_heal_attempts):
+                errors = syntax_validator.validate_files([filename])
+                if not errors:
+                    break
+                
+                err = errors[0]
+                err_msg = err['error']
+                line_num = err.get('line', 0)
+                log(f'❌ Syntax error detected in single generated file {filename} at line {line_num} (attempt {attempt+1}/{max_heal_attempts}): {err_msg[:200]}')
+                report(f'⚠️ Syntax error/truncation detected in `{filename}` (line {line_num}). Asking the AI to fix or complete the file...', message_type='warning')
+                
+                current_content = file_path.read_text(encoding='utf-8', errors='replace')
+                
+                heal_prompt = f"""You generated the file `{filename}`, but it has a syntax error or is truncated.
+                
+USER PROMPT: {user_prompt}
+
+FILE PATH: {filename}
+CURRENT FILE CONTENT:
+```
+{current_content}
+```
+
+SYNTAX ERROR DETAILS:
+{err_msg}
+Line: {line_num}
+
+CRITICAL: The file appears to have a syntax error or was cut off/truncated before it could be fully written.
+Please rewrite the COMPLETE, valid file `{filename}` now with the syntax error fixed and any truncated code fully completed. Do NOT truncate the file or use "// ... rest of code".
+Return ONLY the clean, full file content with no explanation, no markdown fences, no formatting other than the code itself."""
+
+                try:
+                    clean_content = call_ai([
+                        {'role': 'system', 'content': 'You are a code repair tool. You must output the complete and syntactically valid file content, fixing any truncation or errors. Output ONLY the raw file content with no markdown tags or explanations.'},
+                        {'role': 'user', 'content': heal_prompt},
+                    ], temperature=0.1, show_thinking=True)
+                    
+                    clean_content = re.sub(r'^```[a-z]*\n?', '', clean_content.strip(), flags=re.MULTILINE)
+                    clean_content = re.sub(r'\n?```\s*$', '', clean_content.strip(), flags=re.MULTILINE)
+                    
+                    if clean_content and len(clean_content) > 10:
+                        _write_file(file_path, clean_content)
+                        log(f'✅ Rewrote single file {filename} with AI self-healing output')
+                    else:
+                        log(f'⚠️ AI self-healing returned empty/short content for {filename}')
+                except Exception as ex:
+                    log(f'⚠️ Error in self-healing call for {filename}: {ex}')
+            
             report(f'✅ Code is ready! Starting the build process...')
-            return True
+            return {'success': True, 'changed_files': [filename], 'user_prompt': user_prompt}
 
     files_written = []
     for i, match in enumerate(matches):
@@ -2017,6 +2485,70 @@ Apply the changes now using ONLY these markers."""
     patches_applied = _apply_patches(response_text, patch_matches)
     log(f'Applied {patches_applied} patches')
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # SELF-HEALING LOOP FOR GENERATED/PATCHED FILES
+    # ═══════════════════════════════════════════════════════════════════════
+    patched_files = [_clean_filename(pm.group(1)) for pm in patch_matches]
+    files_to_validate = list(set(files_written + patched_files))
+    
+    if files_to_validate:
+        log(f'🔍 Running immediate syntax self-healing validation on {len(files_to_validate)} file(s)...')
+        max_heal_attempts = 3
+        for file_to_check in files_to_validate:
+            for attempt in range(max_heal_attempts):
+                errors = syntax_validator.validate_files([file_to_check])
+                if not errors:
+                    break
+                
+                err = errors[0]
+                err_msg = err['error']
+                line_num = err.get('line', 0)
+                log(f'❌ Syntax error detected in generated file {file_to_check} at line {line_num} (attempt {attempt+1}/{max_heal_attempts}): {err_msg[:200]}')
+                report(f'⚠️ Syntax error/truncation detected in `{file_to_check}` (line {line_num}). Asking the AI to fix or complete the file...', message_type='warning')
+                
+                file_path = WORKSPACE_DIR / file_to_check
+                if not file_path.exists():
+                    break
+                
+                current_content = file_path.read_text(encoding='utf-8', errors='replace')
+                
+                # AI repair call
+                heal_prompt = f"""You generated the file `{file_to_check}`, but it has a syntax error or is truncated.
+                
+USER PROMPT: {user_prompt}
+
+FILE PATH: {file_to_check}
+CURRENT FILE CONTENT:
+```
+{current_content}
+```
+
+SYNTAX ERROR DETAILS:
+{err_msg}
+Line: {line_num}
+
+CRITICAL: The file appears to have a syntax error or was cut off/truncated before it could be fully written.
+Please rewrite the COMPLETE, valid file `{file_to_check}` now with the syntax error fixed and any truncated code fully completed. Do NOT truncate the file or use "// ... rest of code".
+Return ONLY the clean, full file content with no explanation, no markdown fences, no formatting other than the code itself."""
+
+                try:
+                    clean_content = call_ai([
+                        {'role': 'system', 'content': 'You are a code repair tool. You must output the complete and syntactically valid file content, fixing any truncation or errors. Output ONLY the raw file content with no markdown tags or explanations.'},
+                        {'role': 'user', 'content': heal_prompt},
+                    ], temperature=0.1, show_thinking=True)
+                    
+                    # Strip fences
+                    clean_content = re.sub(r'^```[a-z]*\n?', '', clean_content.strip(), flags=re.MULTILINE)
+                    clean_content = re.sub(r'\n?```\s*$', '', clean_content.strip(), flags=re.MULTILINE)
+                    
+                    if clean_content and len(clean_content) > 10:
+                        _write_file(file_path, clean_content)
+                        log(f'✅ Rewrote file {file_to_check} with AI self-healing output')
+                    else:
+                        log(f'⚠️ AI self-healing returned empty/short content for {file_to_check}')
+                except Exception as ex:
+                    log(f'⚠️ Error in self-healing call for {file_to_check}: {ex}')
+
     total = len(files_written) + patches_applied
     if total == 0:
         log('⚠️ No files written and no patches applied!')
@@ -2026,18 +2558,19 @@ Apply the changes now using ONLY these markers."""
     # Generate a summary of what was changed
     change_summary = _generate_change_summary(user_prompt, files_written, patches_applied, is_edit)
 
+    # Always return a dict with success=True and list of changed files for deploy validation
+    changed_files = files_written + [_clean_filename(pm.group(1)) for pm in patch_matches]
+    
     if is_edit:
         report(f'Changes applied:\n\n{change_summary}',
                message_type='success',
                summary=f'Updated {total} file(s)')
-        # Store what changed for post-deployment testing
-        changed_files = files_written + [_clean_filename(pm.group(1)) for pm in patch_matches]
-        return {'success': True, 'changed_files': changed_files, 'user_prompt': user_prompt}
     else:
         report(f'App created:\n\n{change_summary}',
                message_type='success',
                summary=f'Created {total} file(s)')
-        return True
+               
+    return {'success': True, 'changed_files': changed_files, 'user_prompt': user_prompt}
 
 
 def _write_file(path: Path, content: str):
@@ -2077,10 +2610,9 @@ def _apply_patches(text: str, patch_matches: list) -> int:
     """
     Apply SEARCH/REPLACE patch hunks to workspace files.
     Also handles git-diff format (@@...@@ / +line / -line) by converting it first.
-    Falls back to rewriting the full file if no hunks match.
+    Falls back to rewriting the full file if no hunks match or application fails.
     """
     applied = 0
-    hunk_re = re.compile(r'<<<SEARCH\n(.*?)\n>>>\n<<<REPLACE\n(.*?)\n>>>', re.DOTALL)
 
     for pm in patch_matches:
         filename = _clean_filename(pm.group(1))
@@ -2091,9 +2623,21 @@ def _apply_patches(text: str, patch_matches: list) -> int:
             continue
 
         file_content = target.read_text(encoding='utf-8')
+        
+        # 1. Extract segment cleanly, preventing leakage from subsequent patch markers
         next_patch = next((p for p in patch_matches if p.start() > pm.start()), None)
         segment_end = next_patch.start() if next_patch else len(text)
         segment = text[pm.end():segment_end]
+        
+        # Split segment into lines to prevent leakage from any missed patch/file markers
+        segment_lines = []
+        for line in segment.splitlines():
+            line_stripped = line.strip()
+            # If we hit a new patch or file marker inside the segment, stop immediately
+            if line_stripped.startswith('// PATCH:') or line_stripped.startswith('// FILE:') or line_stripped.startswith('# FILE:'):
+                break
+            segment_lines.append(line)
+        segment = '\n'.join(segment_lines)
         
         log(f'  Patch segment length: {len(segment)} chars')
 
@@ -2102,45 +2646,125 @@ def _apply_patches(text: str, patch_matches: list) -> int:
             log(f'  Converting git-diff format to SEARCH/REPLACE')
             segment = _git_diff_to_search_replace(segment, file_content)
 
-        hunks = list(hunk_re.finditer(segment))
+        # 2. State-machine based hunk parser (robust against whitespace, CR, line-endings)
+        hunks = []
+        state = 0  # 0: seeking SEARCH, 1: reading SEARCH, 2: seeking REPLACE, 3: reading REPLACE
+        current_search = []
+        current_replace = []
+        
+        for line in segment.splitlines():
+            line_stripped = line.strip()
+            if state == 0:
+                if line_stripped.startswith('<<<SEARCH'):
+                    state = 1
+                    current_search = []
+            elif state == 1:
+                if line_stripped.startswith('>>>'):
+                    state = 2
+                else:
+                    current_search.append(line)
+            elif state == 2:
+                if line_stripped.startswith('<<<REPLACE'):
+                    state = 3
+                    current_replace = []
+                elif line_stripped.startswith('<<<SEARCH'):
+                    state = 1
+                    current_search = []
+            elif state == 3:
+                if line_stripped.startswith('>>>'):
+                    hunks.append({
+                        'search': '\n'.join(current_search),
+                        'replace': '\n'.join(current_replace)
+                    })
+                    state = 0
+                else:
+                    current_replace.append(line)
+
         log(f'  Found {len(hunks)} hunks in patch')
         
-        if not hunks:
-            log(f'  ⚠️ No valid patch hunks found for {filename}')
-            log(f'  Segment preview: {segment[:200]}')
-            continue
+        # 3. Validate and apply hunks individually
+        # Normalize all line endings to '\n' to ensure perfect matching
+        norm_file_content = file_content.replace('\r\n', '\n')
+        temp_content = norm_file_content
+        all_matched = len(hunks) > 0
 
         for idx, hunk in enumerate(hunks):
-            search, replace = hunk.group(1), hunk.group(2)
+            # Normalize hunk line endings to '\n'
+            search = hunk['search'].replace('\r\n', '\n')
+            replace = hunk['replace'].replace('\r\n', '\n')
+            
             log(f'  Hunk {idx+1}: searching for {len(search)} chars, replacing with {len(replace)} chars')
             
-            # Show first and last line of search for debugging
+            # Show first line of search for debugging
             search_lines = search.splitlines()
             if search_lines:
                 log(f'  Search first line: "{search_lines[0][:80]}"')
-                if len(search_lines) > 1:
-                    log(f'  Search last line: "{search_lines[-1][:80]}"')
             
-            if search in file_content:
-                file_content = file_content.replace(search, replace, 1)
-                applied += 1
-                log(f'  ✅ Hunk {idx+1} applied successfully')
+            if search in temp_content:
+                temp_content = temp_content.replace(search, replace, 1)
+                log(f'  ✅ Hunk {idx+1} matched successfully')
             else:
                 log(f'  ⚠️ Hunk {idx+1} not found in {filename}')
-                log(f'  Search text (first 100 chars): {search[:100]}...')
-                
-                # Try to find similar content (for debugging)
-                search_stripped = search.strip()
-                if search_stripped in file_content:
-                    log(f'  ℹ️ Found similar content when ignoring leading/trailing whitespace')
-                else:
-                    # Check if individual lines exist
-                    search_lines = [l.strip() for l in search.splitlines() if l.strip()]
-                    found_lines = sum(1 for l in search_lines if l in file_content)
-                    log(f'  ℹ️ Found {found_lines}/{len(search_lines)} individual lines in file')
+                all_matched = False
+                break
 
-        target.write_text(file_content, encoding='utf-8')
-        log(f'  📄 Updated {filename}')
+        # Check for raw marker leakage in the final result before writing
+        if all_matched and ('<<<SEARCH' in temp_content or '<<<REPLACE' in temp_content):
+            log(f'  ⚠️ Rejecting hunk application for {filename} (contains raw markers)')
+            all_matched = False
+
+        if all_matched:
+            # If the original file had CRLF, preserve it
+            if '\r\n' in file_content:
+                temp_content = temp_content.replace('\n', '\r\n')
+            
+            target.write_text(temp_content, encoding='utf-8')
+            applied += 1
+            log(f'  📄 Updated {filename} (applied {len(hunks)} patch hunks)')
+        else:
+            # 4. Fallback to FULL file rewrite instead of 1-by-1 line replacement or writing half-corrupted file
+            log(f'  ⚠️ Patch application failed for {filename}. Requesting FULL file rewrite fallback...')
+            
+            rewrite_prompt = f"""We tried to apply a SEARCH/REPLACE patch to the file `{filename}`, but it failed to match the file's current content.
+
+FILE PATH: {filename}
+
+CURRENT FILE CONTENT:
+```
+{file_content}
+```
+
+FAILED PATCH SEGMENT:
+```
+{segment}
+```
+
+CRITICAL: Please rewrite the ENTIRE file `{filename}` with the changes from the failed patch segment correctly applied.
+Output the complete, valid file content. Do NOT truncate or use '// ... rest of code'.
+Return ONLY the clean, full file content. No markdown fences, no formatting other than the code itself, and no explanation."""
+
+            try:
+                clean_content = call_ai([
+                    {'role': 'system', 'content': 'You are a code repair tool. You must output the complete and syntactically valid file content. Output ONLY the raw file content with no markdown tags or explanations.'},
+                    {'role': 'user', 'content': rewrite_prompt},
+                ], temperature=0.1, show_thinking=True)
+                
+                # Clean up markdown fences
+                clean_content = re.sub(r'^```[a-z]*\n?', '', clean_content.strip(), flags=re.MULTILINE)
+                clean_content = re.sub(r'\n?```\s*$', '', clean_content.strip(), flags=re.MULTILINE)
+                clean_content = clean_content.strip('`').strip()
+                
+                if clean_content and len(clean_content) > 10 and '<<<SEARCH' not in clean_content and '<<<REPLACE' not in clean_content:
+                    # If the original file had CRLF, preserve it
+                    if '\r\n' in file_content:
+                        clean_content = clean_content.replace('\r\n', '\n').replace('\n', '\r\n')
+                    target.write_text(clean_content, encoding='utf-8')
+                    applied += 1
+                    log(f'  ✅ Successfully recovered and wrote FULL rewrite for {filename}')
+                else:
+                    log(f'  ⚠️ AI returned invalid/empty content or leaked patch markers for rewrite of {filename}')
+            except Exception as e:
+                log(f'  ⚠️ Exception during full rewrite fallback for {filename}: {e}')
 
     return applied
 
@@ -2178,8 +2802,8 @@ def _git_diff_to_search_replace(diff_segment: str, original_content: str) -> str
 
 
 def read_workspace_files() -> dict:
-    skip_dirs  = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next'}
-    skip_files = {'metadata.json'}
+    skip_dirs  = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build', '.next', '.vibecoding'}
+    skip_files = {'metadata.json', '.gitignore', '.DS_Store'}
     files = {}
     if not WORKSPACE_DIR.exists():
         return files
@@ -2266,7 +2890,7 @@ Return ONLY the clean file content with no explanation, no markers, no fences.""
 
 
 # ── Phase 2: Deployment ────────────────────────────────────────────────────────
-def deploy(error_context: dict = None, max_retries: int = 3, test_changes: bool = False, changed_files: list = None, user_prompt: str = None) -> bool:
+def deploy(error_context: dict = None, max_retries: int = 3, test_changes: bool = False, changed_files: list = None, user_prompt: str = None, snapshot_id: str = "") -> bool:
     report('Figuring out the best way to run your app...')
     
     # Show loading page immediately so users see progress
@@ -2274,6 +2898,84 @@ def deploy(error_context: dict = None, max_retries: int = 3, test_changes: bool 
 
     # Scan and fix any corrupted workspace files before attempting deployment
     sanitize_workspace()
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # STEP 0: Pre-deploy syntax validation (catch errors BEFORE build)
+    # ═══════════════════════════════════════════════════════════════════════
+    if changed_files:
+        log('🔍 Running pre-deploy syntax validation...')
+        syntax_errors = syntax_validator.validate_files(changed_files)
+        if syntax_errors:
+            report(f'Found {len(syntax_errors)} syntax error(s) — fixing before deploy...')
+            for err in syntax_errors:
+                # FIX: pass the known file path so _auto_fix_syntax_error
+                # doesn't have to regex-parse it out of the error message.
+                # The truncation error message never contains a file path,
+                # so without this the function always returns fixed=False.
+                fix_result = _auto_fix_syntax_error(
+                    err['error'], {},
+                    hint_file=err.get('file')
+                )
+                if fix_result.get('fixed'):
+                    log(f'✅ Pre-deploy fix applied to {err["file"]}')
+                else:
+                    log(f'⚠️ Could not pre-fix {err["file"]}: {err["error"][:100]}')
+
+
+
+    # FIX: After the pre-deploy fix attempts, re-validate to catch any
+    # files that could not be repaired. Abort deployment (raise) so the
+    # caller can report the failure cleanly instead of letting Next.js/npm
+    # build fail mid-flight with a confusing webpack error.
+    if changed_files:
+        remaining_errors = syntax_validator.validate_files(changed_files)
+        if remaining_errors:
+            unfixed = [e['file'] for e in remaining_errors]
+            log(f'⚠️ {len(remaining_errors)} file(s) still have syntax errors after fix attempts: {unfixed}')
+            log('🛑 Aborting deployment to prevent broken build. Requesting AI re-generation...')
+            # Re-trigger generation for each broken file
+            for err in remaining_errors:
+                broken_path = WORKSPACE_DIR / err['file']
+                if broken_path.exists():
+                    broken_content = broken_path.read_text(encoding='utf-8', errors='replace')
+                    # Try to retrieve dynamic compilation/build errors if available to provide richer context
+                    compile_error = ""
+                    if error_context and error_context.get('build_output'):
+                        compile_error = f"\nDynamic Build/Compile Error:\n{error_context['build_output']}\n"
+                    elif error_context and error_context.get('reason'):
+                        compile_error = f"\nDynamic Build/Compile Failure Reason:\n{error_context['reason']}\n"
+
+                    heal_prompt = (
+                        f"The file `{err['file']}` has a syntax/compile error and could not be auto-fixed.\n"
+                        f"Syntax Error: {err['error']}\n"
+                        f"{compile_error}\n"
+                        f"Current content:\n```\n{broken_content}\n```\n\n"
+                        "Please rewrite the COMPLETE, valid file with all errors fixed. "
+                        "Output ONLY the raw file content with no markdown fences."
+                    )
+                    try:
+                        fixed_content = call_ai([
+                            {'role': 'system', 'content': 'You are a code repair tool. Output ONLY the complete, syntactically valid file content.'},
+                            {'role': 'user', 'content': heal_prompt},
+                        ], temperature=0.1, show_thinking=False)
+                        fixed_content = re.sub(r'^```[a-z]*\n?', '', fixed_content.strip(), flags=re.MULTILINE)
+                        fixed_content = re.sub(r'\n?```\s*$', '', fixed_content.strip(), flags=re.MULTILINE)
+                        if fixed_content and len(fixed_content) > 10:
+                            _write_file(broken_path, fixed_content)
+                            log(f'✅ Emergency re-generation applied to {err["file"]}')
+                    except Exception as ex:
+                        log(f'⚠️ Emergency re-generation failed for {err["file"]}: {ex}')
+            # Final check — if still broken, we must abort
+            final_errors = syntax_validator.validate_files(changed_files)
+            if final_errors:
+                still_broken = [e['file'] for e in final_errors]
+                report(
+                    f'Could not fix syntax errors in: {", ".join(still_broken)}. '
+                    'Please try regenerating the app.',
+                    message_type='error',
+                    suggestions=["Fix and redeploy"]
+                )
+                return  # Abort deployment
 
     tree      = _discover_workspace()
     manifests = _read_manifests()
@@ -2360,6 +3062,15 @@ rm -rf dist build .next out node_modules/.vite
 npm install
 npm run build
 PORT=3000 npx serve -s dist -l 3000 >> /tmp/app.log 2>&1 &
+```
+
+Pattern B2: Next.js app (SSR) with no backend
+```bash
+cd /project/workspace
+rm -rf dist build .next out node_modules/.vite
+npm install
+npm run build
+PORT=3000 nohup npm run start -- -p 3000 >> /tmp/app.log 2>&1 &
 ```
 
 CRITICAL: For serve command, ALWAYS use both PORT env var AND -l flag:
@@ -2470,6 +3181,13 @@ Single-page app (Vite/React):
   npm install
   npm run build
   npx serve -s dist -l 3000 &
+
+Next.js app (Node.js SSR):
+  cd /project/workspace
+  rm -rf dist build .next out node_modules/.vite
+  npm install
+  npm run build
+  PORT=3000 nohup npm run start -- -p 3000 >> /tmp/app.log 2>&1 &
 
 Nested frontend:
   cd /project/workspace/frontend
@@ -2600,7 +3318,9 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
     error_history = []  # Track all errors across attempts for pattern detection
     attempted_strategies = []  # Track deployment strategies to avoid repetition
 
-    for attempt in range(1, max_retries + 1):
+    attempt = 0
+    while attempt < max_retries:
+        attempt += 1
         if attempt > 1:
             report(f'Something didn\'t work as expected. Trying a different approach... (attempt {attempt}/{max_retries})')
 
@@ -2726,7 +3446,25 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
             m = re.search(r'\{.*\}', raw, re.DOTALL)
             if not m:
                 raise ValueError('No JSON in architect response')
-            strategy = json.loads(m.group(0))
+            
+            json_str = m.group(0)
+            try:
+                strategy = json.loads(json_str)
+            except json.JSONDecodeError:
+                # Fallback: AI used single quotes? Or other minor issues.
+                # Try to replace single quotes with double quotes (very basic)
+                # but better: use ast.literal_eval if it looks like a python dict
+                try:
+                    import ast
+                    strategy = ast.literal_eval(json_str)
+                    if not isinstance(strategy, dict):
+                        raise ValueError("Parsed result is not a dict")
+                    log("💡 Architect response recovered using ast.literal_eval")
+                except:
+                    # Last ditch: try to fix common JSON errors
+                    fixed_json = json_str.replace("'", '"')
+                    strategy = json.loads(fixed_json)
+                    log("💡 Architect response recovered using quote replacement")
             
         except Exception as e:
             log(f'Architect failed on attempt {attempt}: {e}')
@@ -2735,7 +3473,7 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
 
         # Kill any running app processes on non-Nginx ports dynamically
         # Find all listening ports except 80 (Nginx) and kill them
-        subprocess.run(
+        subprocess.run( 
             'ss -tlnp | awk \'NR>1 && $4 !~ /:80$/ {match($4, /:([0-9]+)$/, a); if(a[1]) print a[1]}\' '
             '| sort -u | xargs -r -I{} fuser -k {}/tcp 2>/dev/null || true',
             shell=True, capture_output=True
@@ -2745,6 +3483,14 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
         script = strategy.get('deployment_script', '')
         app_port = strategy.get('app_port', None)
         log(f'App will use internal port: {app_port}')
+        
+        if app_port:
+            try:
+                kill_process_listening_on_port(int(app_port))
+                time.sleep(1)
+            except Exception as pe:
+                log(f"Warning: failed to kill process on port {app_port}: {pe}")
+
 
         if script:
             # ═══════════════════════════════════════════════════════════════
@@ -2862,7 +3608,12 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
                     # ═══════════════════════════════════════════════════════════════
                     # AUTO-FIX: Detect and fix syntax errors automatically
                     # ═══════════════════════════════════════════════════════════════
-                    has_syntax_error = 'SyntaxError' in full_error or 'IndentationError' in full_error or 'TabError' in full_error
+                    has_syntax_error = any(kw.lower() in full_error.lower() for kw in [
+                        'SyntaxError', 'IndentationError', 'TabError', 
+                        'RollupError', 'CssSyntaxError', 'Could not resolve',
+                        'error during build', 'Cannot find module', 'Module not found',
+                        'ReferenceError', 'TypeError', 'CompileError', 'failed to compile'
+                    ])
                     log(f'Syntax error detected: {has_syntax_error}')
                     
                     if has_syntax_error:
@@ -2882,12 +3633,15 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
                         log(f'🔧 Syntax error detected - attempting automatic fix (attempt {syntax_fix_attempts}/{MAX_FIX_ATTEMPTS})')
                         report(f'I found a syntax error in the code. Let me fix it... (attempt {syntax_fix_attempts}/{MAX_FIX_ATTEMPTS})')
                         
-                        fix_result = _auto_fix_syntax_error(full_error, tree)
+                        fix_result = _auto_fix_syntax_error(full_error, tree, attempt=syntax_fix_attempts)
                         log(f'Fix result: {fix_result}')
                         
                         if fix_result.get('fixed'):
                             report(f'Fixed syntax error in {fix_result["file"]}. Rebuilding...')
                             log('Retrying deployment after syntax fix')
+                            # Decrement the loop attempt so we repeat the current retry approach step with the fixed code, 
+                            # instead of exhausting the max_retries budget or incrementing it indefinitely.
+                            attempt = max(0, attempt - 1)
                             time.sleep(2)
                             continue  # Retry deployment with fixed code
                         else:
@@ -3051,6 +3805,24 @@ Remember: You're Claude, a highly capable AI. Trust your analysis of the workspa
                    },
                    summary='App deployed successfully')
             
+
+
+            # ═══════════════════════════════════════════════════════════════
+            # GIT: Tag this successful deployment as rollback point
+            # ═══════════════════════════════════════════════════════════════
+            try:
+                commit_desc = _generate_commit_message(user_prompt, files_for_diff)
+
+                workspace_git.commit_after_edit(
+                    snapshot_id, files_for_diff,
+                    commit_desc
+                )
+                workspace_git.tag_deployment(
+                    f'Full deploy: {len(files_for_diff)} files, port {app_port}'
+                )
+            except Exception as git_err:
+                log(f'⚠️ Git commit/tag failed (non-critical): {git_err}')
+
             # If this was an edit with changes, automatically test them
             if test_changes and changed_files and user_prompt:
                 test_result = _test_changes_automatically(changed_files, user_prompt, app_port)
@@ -3205,8 +3977,11 @@ def _detect_error_pattern(error_history: list) -> str:
     if len(error_history) < 2:
         return ''
 
-    # Extract key phrases from each error
-    all_reasons = [str(e.get('reason', '')) for e in error_history]
+    # Extract key phrases from each error by combining reason and build output
+    search_texts = []
+    for e in error_history:
+        combined = f"{e.get('reason', '')} {e.get('build_output', '')}"
+        search_texts.append(combined.lower())
 
     # Check if the same root cause keeps appearing
     patterns = {
@@ -3221,13 +3996,13 @@ def _detect_error_pattern(error_history: list) -> str:
         'connection refused':  'app not binding to the expected port',
         'exit code 1':         'build or start script failing',
         'exit code 2':         'command not found or script error',
+        'exit 1':              'build or start script failing',
     }
 
     matched = []
-    for reason in all_reasons[-3:]:
-        reason_lower = reason.lower()
+    for text in search_texts[-3:]:
         for keyword, description in patterns.items():
-            if keyword in reason_lower and description not in matched:
+            if keyword in text and description not in matched:
                 matched.append(description)
 
     if len(matched) >= 2 or (len(error_history) >= 2 and matched):
@@ -4080,7 +4855,7 @@ def _health_check(app_port: int = None) -> tuple:
     Returns:
         tuple: (healthy: bool, status_message: str, actual_port: int or None)
     """
-    max_retries = 3
+    max_retries = 5
     retry_delay = 15  # seconds between retries
     
     for attempt in range(1, max_retries + 1):
@@ -4339,99 +5114,122 @@ Output ONLY valid JSON, no explanations."""
         log(f'🧪 Testing: {test["method"]} {test["path"]}')
         report(f'Testing: {test["description"]}')
         
-        try:
-            url = f'http://127.0.0.1:{app_port}{test["path"]}'
-            method = test['method'].upper()
-            payload = test.get('payload')
-            expected_status = test.get('expected_status', 200)
-            expected_contains = test.get('expected_response_contains', [])
-            
-            # Execute request
-            if method == 'GET':
-                result = subprocess.run(
-                    ['curl', '-s', '-w', '\\n%{http_code}', '-X', 'GET', url],
-                    capture_output=True, text=True, timeout=10
-                )
-            elif method == 'POST':
-                payload_json = json.dumps(payload) if payload else '{}'
-                result = subprocess.run(
-                    ['curl', '-s', '-w', '\\n%{http_code}', '-X', 'POST', '-H', 'Content-Type: application/json', '-d', payload_json, url],
-                    capture_output=True, text=True, timeout=10
-                )
-            else:
-                log(f'⚠️ Unsupported method: {method}')
+        # Determine ports to try: Nginx (80) first, then app_port, then other active listening ports
+        ports_to_try = [80, app_port]
+        active_ports = _detect_listening_ports()
+        for p in active_ports:
+            if p not in ports_to_try:
+                ports_to_try.append(p)
+                
+        log(f"Ports to try: {ports_to_try}")
+        
+        test_success = False
+        last_reason = ""
+        last_response_body = ""
+        last_status_code = "000"
+        passed_port = None
+        
+        for port in ports_to_try:
+            try:
+                url = f'http://127.0.0.1:{port}{test["path"]}'
+                method = test['method'].upper()
+                payload = test.get('payload')
+                expected_status = test.get('expected_status', 200)
+                expected_contains = test.get('expected_response_contains', [])
+                
+                # Execute request
+                if method == 'GET':
+                    result = subprocess.run(
+                        ['curl', '-s', '-w', '\\n%{http_code}', '-X', 'GET', url],
+                        capture_output=True, text=True, timeout=10
+                    )
+                elif method == 'POST':
+                    payload_json = json.dumps(payload) if payload else '{}'
+                    result = subprocess.run(
+                        ['curl', '-s', '-w', '\\n%{http_code}', '-X', 'POST', '-H', 'Content-Type: application/json', '-d', payload_json, url],
+                        capture_output=True, text=True, timeout=10
+                    )
+                else:
+                    last_reason = f"Unsupported method: {method}"
+                    break
+                
+                if result.returncode != 0:
+                    last_reason = f"Request failed on port {port}: {result.stderr}"
+                    continue
+                
+                # Parse response
+                output = result.stdout.strip()
+                lines = output.split('\n')
+                status_code = lines[-1] if lines else '000'
+                response_body = '\n'.join(lines[:-1]) if len(lines) > 1 else ''
+                
+                # If Nginx returned 502/504 Bad Gateway, it's not ready or bad config, try direct
+                if port == 80 and status_code in ('502', '504'):
+                    log(f"Nginx returned {status_code} on port 80. Trying direct ports...")
+                    last_reason = f"Nginx returned {status_code}"
+                    continue
+                
+                # Verify status code
+                if status_code != str(expected_status):
+                    last_reason = f"Status code mismatch on port {port}: expected {expected_status}, got {status_code}"
+                    last_status_code = status_code
+                    last_response_body = response_body
+                    # If Nginx returned 404, we can try direct ports since routing might be mismatched
+                    if port == 80:
+                        log(f"Nginx returned {status_code} on port 80. Trying direct ports...")
+                        continue
+                    continue
+                
+                # Verify response contains expected keys/values
+                all_found = True
+                for expected in expected_contains:
+                    if expected not in response_body:
+                        all_found = False
+                        last_reason = f"Expected content '{expected}' not found in response on port {port}"
+                
+                if not all_found:
+                    last_status_code = status_code
+                    last_response_body = response_body
+                    continue
+                
+                # If we get here, the test passed on this port!
+                test_success = True
+                last_status_code = status_code
+                last_response_body = response_body
+                passed_port = port
+                break
+                
+            except Exception as e:
+                last_reason = f"Error testing on port {port}: {e}"
                 continue
-            
-            if result.returncode != 0:
-                log(f'❌ Request failed: {result.stderr}')
-                tests_failed += 1
-                test_results.append({
-                    'test': test['description'],
-                    'status': 'failed',
-                    'reason': f'Request failed: {result.stderr}'
-                })
-                continue
-            
-            # Parse response
-            output = result.stdout.strip()
-            lines = output.split('\n')
-            status_code = lines[-1] if lines else '000'
-            response_body = '\n'.join(lines[:-1]) if len(lines) > 1 else ''
-            
-            log(f'Response status: {status_code}')
-            log(f'Response body preview: {response_body[:200]}')
-            
-            # Verify status code
-            if status_code != str(expected_status):
-                log(f'❌ Status code mismatch: expected {expected_status}, got {status_code}')
-                tests_failed += 1
-                test_results.append({
-                    'test': test['description'],
-                    'status': 'failed',
-                    'reason': f'Status code mismatch: expected {expected_status}, got {status_code}',
-                    'response': response_body[:500]
-                })
-                continue
-            
-            # Verify response contains expected keys/values
-            all_found = True
-            for expected in expected_contains:
-                if expected not in response_body:
-                    log(f'❌ Expected "{expected}" not found in response')
-                    all_found = False
-            
-            if not all_found:
-                tests_failed += 1
-                test_results.append({
-                    'test': test['description'],
-                    'status': 'failed',
-                    'reason': f'Expected content not found in response',
-                    'response': response_body[:500]
-                })
-                continue
-            
-            # Test passed!
-            log(f'✅ Test passed: {test["description"]}')
+        
+        if test_success:
+            log(f'✅ Test passed on port {passed_port}: {test["description"]}')
             tests_passed += 1
             test_results.append({
                 'test': test['description'],
                 'status': 'passed',
-                'response': response_body[:200]
+                'port': passed_port,
+                'status_code': last_status_code,
+                'response': f"{last_response_body[:200]}\n[... TRUNCATED FOR LOGGING ...]" if len(last_response_body) > 200 else last_response_body
             })
-            
-        except Exception as e:
-            log(f'❌ Test error: {e}')
+        else:
+            log(f'❌ Test failed: {test["description"]} - {last_reason}')
             tests_failed += 1
             test_results.append({
                 'test': test['description'],
-                'status': 'error',
-                'reason': str(e)
+                'status': 'failed',
+                'reason': last_reason,
+                'response': f"{last_response_body[:500]}\n[... TRUNCATED FOR LOGGING ...]" if len(last_response_body) > 500 else last_response_body
             })
     
     # Report results
     total_tests = tests_passed + tests_failed
     if total_tests == 0:
-        report('No API endpoint tests were needed for this change.')
+        report('No API endpoint tests were needed for this change.',
+               metadata={'is_final_message': True, 'status': 'success'},
+               message_type='success',
+               summary='Deployment complete')
         return {'success': True, 'tests_passed': 0, 'tests_failed': 0, 'test_results': [], 'needs_user_input': False, 'fix_applied': False}
     
     if tests_failed == 0:
@@ -4445,7 +5243,7 @@ Output ONLY valid JSON, no explanations."""
             report(
                 f'Great! Your changes are working. Here are some suggestions for what to do next:',
                 suggestions=next_suggestions,
-                metadata={'type': 'success', 'tests_passed': tests_passed, 'tests_failed': 0, 'show_suggestions': True},
+                metadata={'type': 'success', 'tests_passed': tests_passed, 'tests_failed': 0, 'show_suggestions': True, 'is_final_message': True},
                 summary=summary,
                 message_type='success'
             )
@@ -4600,13 +5398,36 @@ def _detect_available_ports() -> list:
     return available
 
 
-def _auto_fix_syntax_error(error_output: str, workspace_discovery: dict) -> dict:
+def _detect_listening_ports() -> list:
+    """Detect all currently listening TCP ports (excluding Nginx port 80)."""
+    listening = []
+    try:
+        result = subprocess.run(
+            ['ss', '-tlnp'],
+            capture_output=True, text=True, timeout=3
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                # Extract port from lines
+                match = re.search(r':(\d+)\s', line)
+                if match:
+                    port = int(match.group(1))
+                    if port != 80 and port not in listening:
+                        listening.append(port)
+    except Exception as e:
+        log(f'Listening port detection error: {e}')
+    return listening
+
+
+def _auto_fix_syntax_error(error_output: str, workspace_discovery: dict, hint_file: str = None, attempt: int = 1) -> dict:
     """
     Automatically fix syntax errors in code files.
     
     Args:
         error_output: Build error output containing syntax error details
         workspace_discovery: Workspace structure data
+        hint_file: Optional caller-provided filename hint
+        attempt: The current retry attempt (1-indexed)
     
     Returns:
         dict with:
@@ -4622,28 +5443,64 @@ def _auto_fix_syntax_error(error_output: str, workspace_discovery: dict) -> dict
         log(f'Error preview: {cleaned_error[:300]}')
         
         # Extract file path and line number from error
-        # Python: File "/path/to/file.py", line 76
-        # JavaScript: /path/to/file.js:76:10
+        candidates = []
         
-        file_match = re.search(r'File "([^"]+)", line (\d+)', cleaned_error)
-        if not file_match:
-            file_match = re.search(r'([^\s]+\.(?:py|js|jsx|ts|tsx)):(\d+):', cleaned_error)
+        pattern1 = re.compile(
+            r'([\w./\\-]+\.(?:py|js|jsx|ts|tsx|css|json|html|scss|sass|less|config\.js))[:\s(]+(\d+)',
+            re.IGNORECASE
+        )
+        for match in pattern1.finditer(cleaned_error):
+            fp_candidate = match.group(1)
+            line_candidate = int(match.group(2))
+            candidates.append((fp_candidate, line_candidate))
+            
+        pattern2 = re.compile(r'File "([^"]+)", line (\d+)', re.IGNORECASE)
+        for match in pattern2.finditer(cleaned_error):
+            fp_candidate = match.group(1)
+            line_candidate = int(match.group(2))
+            candidates.append((fp_candidate, line_candidate))
+            
+        pattern_file_only = re.compile(
+            r'([\w./\\-]+\.(?:py|js|jsx|ts|tsx|css|json|html|scss|sass|less|config\.js))',
+            re.IGNORECASE
+        )
+        for match in pattern_file_only.finditer(cleaned_error):
+            fp_candidate = match.group(1)
+            candidates.append((fp_candidate, 1)) # Default to line 1
         
-        if not file_match:
-            log('Could not extract file path from error')
-            log(f'Tried to match in: {cleaned_error[:500]}')
-            return {'fixed': False, 'error': 'Could not parse error location'}
+        error_file = None
+        error_line = None
         
-        error_file = file_match.group(1)
-        error_line = int(file_match.group(2))
+        for fp, line in candidates:
+            fp_clean = fp.strip('()[]{} "\'').replace('/project/workspace/', '')
+            if fp_clean.startswith('./'):
+                fp_clean = fp_clean[2:]
+            
+            if 'node_modules' in fp_clean or '.next' in fp_clean:
+                continue
+                
+            resolved_path = WORKSPACE_DIR / fp_clean
+            if resolved_path.exists() and resolved_path.is_file():
+                error_file = fp_clean
+                error_line = line
+                break
         
-        # Convert to relative path
-        if error_file.startswith('/project/workspace/'):
-            error_file = error_file.replace('/project/workspace/', '')
+        if not error_file:
+            if hint_file:
+                resolved = WORKSPACE_DIR / hint_file.lstrip('./')
+                if resolved.exists() and resolved.is_file():
+                    log(f'Using caller-supplied hint_file: {hint_file}')
+                    error_file = hint_file
+                    error_line = 1
+                else:
+                    log(f'hint_file {hint_file} does not exist on disk')
+            if not error_file:
+                log('Could not extract a valid workspace file path from the build error')
+                log(f'Tried parsing candidates from: {cleaned_error[:500]}')
+                return {'fixed': False, 'error': 'Could not parse error location'}
         
         log(f'Syntax error detected in {error_file} at line {error_line}')
         
-        # Read the problematic file
         file_path = WORKSPACE_DIR / error_file
         if not file_path.exists():
             log(f'File not found: {file_path}')
@@ -4652,17 +5509,14 @@ def _auto_fix_syntax_error(error_output: str, workspace_discovery: dict) -> dict
         file_content = file_path.read_text(encoding='utf-8')
         lines = file_content.splitlines()
         
-        # Validate line number
         if error_line > len(lines):
             log(f'Error line {error_line} exceeds file length {len(lines)}')
             error_line = len(lines)
         
-        # Get context around the error (30 lines before and after for better context)
         start_line = max(0, error_line - 30)
         end_line = min(len(lines), error_line + 30)
         context = '\n'.join(lines[start_line:end_line])
         
-        # Extract the specific error type from the output
         error_type = 'SyntaxError'
         if 'IndentationError' in cleaned_error:
             error_type = 'IndentationError'
@@ -4671,105 +5525,12 @@ def _auto_fix_syntax_error(error_output: str, workspace_discovery: dict) -> dict
         
         log(f'Error type: {error_type}')
         log(f'Providing context: lines {start_line+1} to {end_line}')
-        
-        # Ask AI to fix the syntax error
-        fix_prompt = f"""You are a code repair expert. Fix the {error_type} in this code.
 
-ERROR OUTPUT:
-{cleaned_error[:1500]}
-
-FILE: {error_file}
-ERROR LINE: {error_line}
-ERROR TYPE: {error_type}
-
-CODE CONTEXT (lines {start_line+1} to {end_line}):
-```
-{context}
-```
-
-CRITICAL INSTRUCTIONS:
-1. Identify the exact syntax error at or near line {error_line}
-2. Fix it with minimal changes (only fix the error, don't refactor)
-3. PRESERVE EXACT INDENTATION - copy spaces/tabs exactly as shown
-4. PRESERVE EXACT FORMATTING - copy every character exactly
-5. Include 5-10 lines of context before and after the error line
-6. The SEARCH block must match the file EXACTLY (character-by-character including spaces)
-
-COMMON MISTAKES TO AVOID:
-- Missing leading spaces/indentation
-- Missing colons, quotes, or other punctuation
-- Changing variable names or code structure
-- Not including enough context
-
-OUTPUT FORMAT (use EXACTLY this format):
-// PATCH: {error_file}
-<<<SEARCH
-[EXACT lines from the code above, including ALL indentation and 5-10 lines of context]
->>>
-<<<REPLACE
-[Same lines with ONLY the syntax error fixed, preserve everything else]
->>>
-
-Output ONLY the patch, no explanations."""
-
-        log('Calling AI to generate fix...')
-        response = call_ai([
-            {'role': 'system', 'content': 'You are a code repair expert. Fix syntax errors with minimal changes. Always use the PATCH format with SEARCH/REPLACE blocks.'},
-            {'role': 'user', 'content': fix_prompt},
-        ], temperature=0.1, show_thinking=True)
-        
-        log(f'AI response length: {len(response)} chars')
-        log(f'AI response preview: {response[:300]}')
-        
-        # Apply the patch
-        patch_marker_re = re.compile(r'//\s*PATCH:\s*([^\n]+)', re.IGNORECASE)
-        patch_matches = list(patch_marker_re.finditer(response))
-        
-        log(f'Found {len(patch_matches)} PATCH markers')
-        
-        if patch_matches:
-            # First, check if the AI returned identical SEARCH/REPLACE (no actual fix)
-            hunk_re = re.compile(r'<<<SEARCH\n(.*?)\n>>>\n<<<REPLACE\n(.*?)\n>>>', re.DOTALL)
-            hunks = list(hunk_re.finditer(response))
-            
-            if hunks:
-                search_text = hunks[0].group(1)
-                replace_text = hunks[0].group(2)
-                
-                # Check for truncated/corrupted patches
-                search_lines = search_text.splitlines()
-                replace_lines = replace_text.splitlines()
-                
-                # Validation 1: Check for incomplete lines (truncated mid-word)
-                for line in replace_lines:
-                    # Check if line ends with incomplete word (no space, colon, paren, etc.)
-                    stripped = line.rstrip()
-                    if stripped and len(stripped) > 2:
-                        last_chars = stripped[-4:]
-                        # If ends with partial word (letters only, no punctuation)
-                        if last_chars.isalpha() and len(stripped) < 10:
-                            log(f'⚠️ Detected truncated line in REPLACE: "{line}"')
-                            log(f'This looks like an incomplete/corrupted patch')
-                            return {'fixed': False, 'error': 'AI returned truncated/corrupted patch'}
-                
-                # Validation 2: Check if REPLACE is significantly shorter than SEARCH (likely truncated)
-                if len(replace_text) < len(search_text) * 0.5 and len(search_text) > 50:
-                    log(f'⚠️ REPLACE block is much shorter than SEARCH ({len(replace_text)} vs {len(search_text)} chars)')
-                    log(f'This suggests the AI response was truncated')
-                    return {'fixed': False, 'error': 'AI response appears truncated'}
-                
-                # Validation 3: Check for identical blocks
-                if search_text == replace_text:
-                    log('⚠️ AI returned identical SEARCH and REPLACE blocks - no actual fix')
-                    log(f'This means the AI thinks the code is already correct')
-                    log(f'The syntax error might be elsewhere or misidentified')
-                    
-                    # Try to give more context and ask again
-                    log('Attempting second fix with more explicit instructions...')
-                    
-                    retry_prompt = f"""CRITICAL: The previous fix attempt returned identical SEARCH/REPLACE blocks.
-
-The syntax error is REAL and needs to be fixed. Look carefully at line {error_line}.
+        # ── 5. Use FULL_REWRITE for deep corruption (attempt >= 2) ──
+        if attempt >= 2:
+            log(f"Attempt {attempt} >= 2: requesting FULL file rewrite of {error_file}")
+            fix_prompt = f"""You are a code repair expert. Fix the {error_type} in this code by rewriting the entire file cleanly.
+The file has been corrupted or has persistent syntax errors. Please rewrite the ENTIRE file cleanly.
 
 ERROR OUTPUT:
 {cleaned_error[:1500]}
@@ -4783,162 +5544,116 @@ FULL FILE CONTENT:
 {file_content}
 ```
 
-The error is at or near line {error_line}. Find the ACTUAL syntax error and fix it.
-
-Common Python syntax errors:
-- Missing colon after if/def/class/for/while
-- Missing closing parenthesis/bracket/brace
-- Incorrect indentation
-- Missing quotes
+CRITICAL INSTRUCTIONS:
+1. Fix the syntax error at or near line {error_line}.
+2. Rewrite the COMPLETE, valid file `{error_file}`.
+3. Do NOT truncate the file or use '// ... rest of code'.
+4. Do NOT use SEARCH/REPLACE patches.
 
 OUTPUT FORMAT:
-// PATCH: {error_file}
-<<<SEARCH
-[EXACT lines with the error, including context]
->>>
-<<<REPLACE
-[CORRECTED lines]
->>>
+// FILE: {error_file}
+[complete file content here]
 
-The SEARCH and REPLACE blocks MUST be DIFFERENT. Output ONLY the patch."""
+Output ONLY the file marker and complete content, no explanations."""
 
-                    retry_response = call_ai([
-                        {'role': 'system', 'content': 'You are a code repair expert. The SEARCH and REPLACE blocks must be different - you must actually fix something.'},
-                        {'role': 'user', 'content': retry_prompt},
-                    ], temperature=0.2, show_thinking=True)
+            try:
+                response = call_ai([
+                    {'role': 'system', 'content': 'You are a code repair expert. You must output the complete and syntactically valid file content. Output ONLY the raw file content under the // FILE: marker.'},
+                    {'role': 'user', 'content': fix_prompt},
+                ], temperature=0.1, show_thinking=True)
+                
+                # Clean up markdown code fences
+                response = re.sub(r'^```[a-z]*\n?', '', response.strip(), flags=re.MULTILINE)
+                response = re.sub(r'\n?```\s*$', '', response.strip(), flags=re.MULTILINE)
+                
+                file_marker_re = re.compile(
+                    r'(?://\s*FILE:\s*|#\s*FILE:\s*)([^\n]+)\n', re.IGNORECASE
+                )
+                file_matches = list(file_marker_re.finditer(response))
+                if file_matches:
+                    match = file_matches[0]
+                    filename = _clean_filename(match.group(1))
+                    start = match.end()
+                    end = file_matches[1].start() if len(file_matches) > 1 else len(response)
+                    content = response[start:end].strip()
                     
-                    # Try to apply the retry response
-                    retry_patch_matches = list(patch_marker_re.finditer(retry_response))
-                    if retry_patch_matches:
-                        patches_applied = _apply_patches(retry_response, retry_patch_matches)
-                        if patches_applied > 0:
-                            log(f'✅ Applied {patches_applied} patches from retry')
-                            return {'fixed': True, 'file': error_file}
-                    
-                    # If retry also failed, continue to fallback
-                    log('Retry also failed, trying fallback...')
+                    if content and '<<<SEARCH' not in content and '<<<REPLACE' not in content:
+                        _write_file(WORKSPACE_DIR / filename, content)
+                        log(f'✅ Successfully rewrote {filename} (FULL_REWRITE) on attempt {attempt}')
+                        return {'fixed': True, 'file': filename}
+                    else:
+                        log(f'⚠️ AI response contained raw patch markers or was empty in full rewrite')
+                else:
+                    log(f'⚠️ No FILE marker found in AI rewrite response')
+            except Exception as e:
+                log(f'⚠️ Exception during direct FULL_REWRITE auto-fix: {e}')
+                
+            return {'fixed': False, 'error': 'FULL_REWRITE attempt failed'}
+
+        # ── attempt 1: use surgical line-based rewrite ──
+        log(f"Attempt 1: requesting surgical line-based rewrite for {error_file}")
+        
+        # Calculate indices (1-indexed for user-facing prompts)
+        context_start = max(1, error_line - 5)
+        context_end = min(len(lines), error_line + 10)
+        
+        # Extract target lines (0-indexed for slice operations)
+        slice_start = context_start - 1
+        slice_end = context_end
+        target_lines_str = "\n".join(f"{idx+1}: {lines[idx]}" for idx in range(slice_start, slice_end))
+        
+        fix_prompt = f"""You are a code repair expert. Fix the {error_type} in this code by rewriting ONLY the target lines.
+Do NOT rewrite the whole file, and do NOT use SEARCH/REPLACE patch markers.
+
+ERROR OUTPUT:
+{cleaned_error[:1500]}
+
+FILE: {error_file}
+ERROR TYPE: {error_type}
+TARGET LINES (line-numbered):
+```
+{target_lines_str}
+```
+
+CRITICAL INSTRUCTIONS:
+1. Fix the syntax error in the target lines.
+2. Output ONLY the replacement lines for the target range (lines {context_start} to {context_end}).
+3. Do NOT include line numbers (e.g. '70: ') or markdown code fences in your output.
+4. Output EXACTLY the replacement lines and nothing else (no conversational text)."""
+
+        try:
+            log('Calling AI to generate surgical line fix...')
+            response = call_ai([
+                {'role': 'system', 'content': 'You are a code repair expert. Output ONLY the raw corrected line range, with no line numbers or explanations.'},
+                {'role': 'user', 'content': fix_prompt},
+            ], temperature=0.1, show_thinking=True)
             
-            patches_applied = _apply_patches(response, patch_matches)
-            if patches_applied > 0:
-                log(f'✅ Applied {patches_applied} patches to fix syntax error')
+            # Clean up response (strip code fences if any)
+            response = re.sub(r'^```[a-z]*\n?', '', response.strip(), flags=re.MULTILINE)
+            response = re.sub(r'\n?```\s*$', '', response.strip(), flags=re.MULTILINE)
+            
+            fixed_lines = response.splitlines()
+            if fixed_lines and len(fixed_lines) > 0:
+                # Replace the line range programmatically in memory
+                lines[slice_start:slice_end] = fixed_lines
+                new_content = "\n".join(lines) + "\n"
+                
+                # Write back atomically
+                _write_file(file_path, new_content)
+                log(f'✅ Programmatically replaced lines {context_start}-{context_end} in {error_file}')
                 return {'fixed': True, 'file': error_file}
             else:
-                log('⚠️ Patches found but none applied successfully - trying direct fix approach')
-                
-                # FALLBACK: If patch didn't match, try to fix the specific line directly
-                # This handles cases where AI didn't preserve exact formatting
-                try:
-                    # Extract what the AI thinks the fix should be
-                    hunk_re = re.compile(r'<<<SEARCH\n(.*?)\n>>>\n<<<REPLACE\n(.*?)\n>>>', re.DOTALL)
-                    hunks = list(hunk_re.finditer(response))
-                    
-                    if hunks:
-                        search_text = hunks[0].group(1)
-                        replace_text = hunks[0].group(2)
-                        
-                        # Try to identify what changed between search and replace
-                        search_lines = search_text.splitlines()
-                        replace_lines = replace_text.splitlines()
-                        
-                        log(f'Fallback: Analyzing {len(search_lines)} search lines vs {len(replace_lines)} replace lines')
-                        
-                        # Read the actual file
-                        file_content = file_path.read_text(encoding='utf-8')
-                        file_lines = file_content.splitlines()
-                        
-                        # Strategy 1: Find what changed and apply to error line directly
-                        # Compare search vs replace to understand the fix
-                        for i, (s_line, r_line) in enumerate(zip(search_lines, replace_lines)):
-                            if s_line.strip() != r_line.strip():
-                                log(f'Fallback: Found difference at line {i}')
-                                log(f'  Search:  "{s_line.strip()}"')
-                                log(f'  Replace: "{r_line.strip()}"')
-                                
-                                # Python often reports syntax errors on the NEXT line
-                                # So check error_line AND error_line-1
-                                lines_to_check = []
-                                if error_line <= len(file_lines):
-                                    lines_to_check.append((error_line, file_lines[error_line - 1]))
-                                if error_line > 1:
-                                    lines_to_check.append((error_line - 1, file_lines[error_line - 2]))
-                                
-                                for line_num, actual_line in lines_to_check:
-                                    log(f'Fallback: Checking line {line_num}: "{actual_line.strip()}"')
-                                    
-                                    # If the actual line matches the search pattern (stripped), apply the fix
-                                    if actual_line.strip() == s_line.strip():
-                                        log(f'Fallback: Line {line_num} matches search pattern - applying fix')
-                                        original_indent = len(actual_line) - len(actual_line.lstrip())
-                                        fixed_line = ' ' * original_indent + r_line.strip()
-                                        file_lines[line_num - 1] = fixed_line
-                                        
-                                        # Write back
-                                        file_path.write_text('\n'.join(file_lines), encoding='utf-8')
-                                        log(f'✅ Fallback fix applied to line {line_num}')
-                                        return {'fixed': True, 'file': error_file}
-                                
-                                # Strategy 2: Search nearby lines for the pattern
-                                search_start = max(0, error_line - 10)
-                                search_end = min(len(file_lines), error_line + 10)
-                                
-                                log(f'Fallback: Searching lines {search_start+1} to {search_end} for pattern')
-                                for j in range(search_start, search_end):
-                                    if file_lines[j].strip() == s_line.strip():
-                                        log(f'Fallback: Found matching line at file line {j+1}')
-                                        # Preserve the original indentation
-                                        original_indent = len(file_lines[j]) - len(file_lines[j].lstrip())
-                                        fixed_line = ' ' * original_indent + r_line.strip()
-                                        file_lines[j] = fixed_line
-                                        
-                                        # Write back
-                                        file_path.write_text('\n'.join(file_lines), encoding='utf-8')
-                                        log(f'✅ Fallback fix applied to line {j+1}')
-                                        return {'fixed': True, 'file': error_file}
-                                
-                                break  # Only process first difference
-                        
-                        # Strategy 3: If no differences found, maybe it's a simple character addition
-                        # Try to understand what was added/removed
-                        if len(search_lines) == len(replace_lines):
-                            log('Fallback: Trying character-level diff')
-                            for i, (s_line, r_line) in enumerate(zip(search_lines, replace_lines)):
-                                if s_line != r_line:
-                                    # Find what was added
-                                    if r_line.startswith(s_line):
-                                        added = r_line[len(s_line):]
-                                        log(f'Fallback: Detected addition: "{added}"')
-                                    elif s_line in r_line:
-                                        log(f'Fallback: Detected character insertion')
-                                    
-                                    # Apply to error line
-                                    if error_line <= len(file_lines):
-                                        actual_line = file_lines[error_line - 1]
-                                        # Try simple replacement
-                                        if s_line.strip() in actual_line:
-                                            fixed_line = actual_line.replace(s_line.strip(), r_line.strip())
-                                            file_lines[error_line - 1] = fixed_line
-                                            file_path.write_text('\n'.join(file_lines), encoding='utf-8')
-                                            log(f'✅ Fallback fix applied via replacement to line {error_line}')
-                                            return {'fixed': True, 'file': error_file}
-                        
-                        log('⚠️ Fallback: Could not identify the specific line to fix')
-                except Exception as e:
-                    log(f'⚠️ Fallback fix failed: {e}')
-                
-                return {'fixed': False, 'error': 'Patch did not match file content and fallback failed'}
-        
-        log('⚠️ AI did not return valid patch markers')
-        log(f'Response was: {response[:500]}')
-        return {'fixed': False, 'error': 'No valid patch returned'}
-        
+                log('⚠️ AI response for line surgery was empty')
+        except Exception as surgery_err:
+            log(f'⚠️ Line surgery auto-fix failed: {surgery_err}')
+            
+        # If surgery failed, fall back directly to full rewrite
+        log('Surgical line fix failed, falling back to full rewrite...')
+        return _auto_fix_syntax_error(error_output, workspace_discovery, hint_file, attempt=2)
+
     except Exception as e:
-        log(f'Auto-fix syntax error failed: {e}')
-        import traceback
-        log(f'Traceback: {traceback.format_exc()}')
+        log(f'⚠️ Exception in _auto_fix_syntax_error: {e}')
         return {'fixed': False, 'error': str(e)}
-
-
-
 
 # ── Agent orchestrator ─────────────────────────────────────────────────────────
 class Agent:
@@ -5010,6 +5725,8 @@ class Agent:
                     self._busy = False
                     self._last_busy_time = time.time()  # ✅ Track when we finished
                 self._queue.task_done()
+                if self._queue.empty():
+                    report('💤 VibeCoding Agent is now idle. Send me another request when you are ready!', message_type='success', metadata={'is_final_message': True})
 
     def _handle(self, prompt: str):
         """
@@ -5024,6 +5741,19 @@ class Agent:
         # Check if this is a D-Suite handoff trigger
         if prompt.strip().lower() == "start building based on the brd requirements":
             self._handle_dsuite_handoff()
+            return
+            
+        # Check if this is a system command to restore a git snapshot
+        if prompt.startswith("__SYS_CMD_RESTORE__:"):
+            version_id = prompt.split(":", 1)[1].strip()
+            log(f"🔄 Received system command to restore snapshot: {version_id}")
+            report(f"Rolling back to version {version_id[:8]}...", message_type="thinking")
+            success = workspace_git.rollback_to(version_id)
+            if success:
+                deploy()
+                report(f"Successfully restored to version {version_id[:8]}.", message_type="success")
+            else:
+                report(f"Failed to restore to version {version_id[:8]}.", message_type="error")
             return
         
         existing = read_workspace_files()
@@ -5049,18 +5779,10 @@ class Agent:
             deploy(error_context={'reason': prompt})
             return
         
-        # Detect if this is a large/complex requirement
-        is_large_requirement = self._is_large_requirement(prompt)
-        
-        if is_large_requirement and is_empty:
-            # Generate task plan for large new projects
-            self._handle_task_planning(prompt)
-        elif not is_empty and len(existing) > 0:
-            # Existing project - use incremental task-based approach
-            self._handle_incremental_development(prompt, existing)
-        else:
-            # Simple request - use legacy direct generation
-            self._handle_direct_generation(prompt, existing, is_empty)
+        # Route all requests directly to the visual-first code generation and deployment engine.
+        # This completely avoids creating any complex task plans or checklist cards,
+        # yielding a clean, premium, and distraction-free user experience.
+        self._handle_direct_generation(prompt, existing, is_empty)
     
     def _handle_dsuite_handoff(self):
         """
@@ -5088,7 +5810,9 @@ class Agent:
             # The VibeCoding backend should be accessible from the container
             # Try multiple possible backend URLs
 
+            backend_url = os.environ.get('BACKEND_URL', 'http://host.docker.internal:8001')
             backend_urls = [
+                f"{backend_url}/vibecoding/api/projects/{project_id}/brd-context",
                 f"https://dsuite-backend.bourntec.com/vibecoding/api/projects/{project_id}/brd-context",  # VibeCoding on 8001
                 f"http://host.docker.internal:8001/vibecoding/api/projects/{project_id}/brd-context"
             ]
@@ -5128,9 +5852,18 @@ class Agent:
             analysis_data = brd_data.get('analysis_data', {})
             prerequisites = brd_data.get('prerequisites', [])
             custom_rules = brd_data.get('custom_rules', '')
+            agent_analysis = brd_data.get('agent_analysis', '')
+            handoff_source = brd_data.get('handoff_source', '')
+
+            if handoff_source == 'dsuite':
+                os.environ['HANDOFF_SOURCE'] = 'dsuite'
             
             # Construct comprehensive prompt
             full_prompt = f"""# Project: {project_name}
+
+## Technical Architecture & Repo Structure (DSuite Analysis)
+
+{agent_analysis if agent_analysis else 'No agent analysis / architecture diagrams specified.'}
 
 ## Business Requirements Document (BRD)
 
@@ -5152,10 +5885,12 @@ class Agent:
 
 Please analyze the BRD above and create a complete, production-ready application that fulfills all the requirements."""
 
-            report(f'**BRD Loaded Successfully!**\n\n**Project**: {project_name}\n\nAnalyzing requirements and creating task plan...', message_type='success')
+            report(f'**BRD Loaded Successfully!**\n\n**Project**: {project_name}\n\nAnalyzing requirements and building your application...', message_type='success')
             
-            # Process as a large requirement to trigger task planning
-            self._handle_task_planning(full_prompt)
+            # Route directly to direct visual-first generation loop
+            existing_files = read_workspace_files()
+            is_empty = len(existing_files) == 0
+            self._handle_direct_generation(full_prompt, existing_files, is_empty)
             
         except requests.exceptions.RequestException as e:
             log(f'Failed to fetch BRD context: {e}')
@@ -5199,48 +5934,72 @@ Please analyze the BRD above and create a complete, production-ready application
             self._handle_direct_generation(prompt, {}, True)
     
     def _present_task_plan(self, plan: Dict[str, Any]):
-        """Present task breakdown to user and automatically start execution"""
+        """Present task breakdown and execute ONLY the baseline visual prototype"""
         summary = plan.get('project_summary', '')
-        tasks = plan.get('tasks', [])
         
-        # Build user-friendly task list for display
-        task_list = []
-        for i, task in enumerate(tasks, 1):
-            task_dict = task if isinstance(task, dict) else task.to_dict()
-            priority_emoji = {'high': '🔴', 'medium': '🟡', 'low': '🟢'}.get(task_dict['priority'], '⚪')
-            task_list.append(
-                f"{i}. {priority_emoji} **{task_dict['title']}**\n"
-                f"   {task_dict['description'][:100]}...\n"
-                f"   Files: {len(task_dict['files_to_create'])} to create, "
-                f"{len(task_dict['files_to_modify'])} to modify"
-            )
-        
-        message = f"""📋 **Task Breakdown Complete!**
+        message = f"""📋 **Project Blueprint Designed!**
 
 {summary}
-
-I've broken this down into **{len(tasks)} tasks**. Starting execution automatically...
 """
-        
-        # Send task plan with metadata for UI rendering
+        # Send task plan with metadata for UI rendering (OMIT task_plan to avoid UI clutter)
         report(
             message, 
             message_type='status',
             metadata={
-                'task_plan': plan,
-                'awaiting_task_selection': False,  # Changed to False since we auto-execute
+                'awaiting_task_selection': False,
                 'type': 'task_breakdown',
-                'loading_complete': True  # Signal to stop loader
+                'loading_complete': True
             },
-            summary='Task breakdown ready'
+            summary='Visual prototype plan ready'
         )
         
         # Automatically start task execution after a brief delay
-        # This gives the UI time to render the task breakdown
         time.sleep(1)
-        log('🚀 Auto-starting task execution...')
-        self._execute_tasks_sequentially()
-    
+        if self.task_planner.tasks:
+            first_task = self.task_planner.tasks[0]
+            log(f'🚀 Auto-starting Visual Prototype: {first_task.title}')
+            self._execute_single_task(first_task)
+            
+            # Run deploy pipeline on the prototype if Task 1 succeeded
+            if first_task.status == 'completed':
+                deploy(changed_files=first_task.files_to_create)
+                
+            self._propose_next_task_suggestions()
+
+    def _propose_next_task_suggestions(self):
+        """Construct custom chat suggestion buttons for the next pending tasks"""
+        tasks = self.task_planner.tasks
+        pending_tasks = [t for t in tasks if t.status == 'pending']
+        
+        progress = self.task_planner.get_progress_summary()
+        if progress['completed'] == progress['total_tasks']:
+            report(
+                f"🎉 **All features completed successfully!**\n\nYour application is fully built and deployed. Let me know if you would like to run any custom tweaks or styling updates!",
+                message_type='success',
+                summary='All features complete'
+            )
+            return
+            
+        suggestions = []
+        # Get tasks with met dependencies
+        executable = self.task_planner.get_executable_tasks()
+        display_list = executable if executable else pending_tasks
+        
+        for t in display_list[:3]:
+            suggestions.append({
+                'text': f"Integrate {t.title}",
+                'action': 'custom',
+                'icon': '👉',
+                'prompt': f"TASK:EXECUTE:{t.task_id.replace('task_', '')}"
+            })
+            
+        report(
+            f"🎨 **Visual Prototype Deployed & Live!**\n\nThe preview screen has been updated. Select which component or feature you would like to build and integrate next:",
+            message_type='success',
+            suggestions=suggestions,
+            summary=f"Visual prototype ready"
+        )
+
     def _handle_task_command(self, prompt: str):
         """Handle task-related commands"""
         command = prompt[5:].strip().upper()  # Remove 'TASK:' prefix
@@ -5324,8 +6083,10 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
             
             # Continue to next iteration to get newly executable tasks
     
+
+    
     def _execute_specific_tasks(self, task_ids: List[str]):
-        """Execute specific tasks by ID"""
+        """Execute specific tasks by ID, deploy them, and propose suggestions"""
         for task_id_str in task_ids:
             task_id = f"task_{task_id_str.strip().zfill(3)}"
             task = self.task_planner.get_task_by_id(task_id)
@@ -5349,7 +6110,13 @@ I've broken this down into **{len(tasks)} tasks**. Starting execution automatica
                 continue
             
             self._execute_single_task(task)
-    
+            
+            # Run deploy pipeline if the task succeeded
+            if task.status == 'completed':
+                deploy(changed_files=task.files_to_create + task.files_to_modify)
+                
+            self._propose_next_task_suggestions()
+
     def _execute_single_task(self, task: Task):
         """Execute a single task with full context"""
         # Mark task as in progress - send ONLY status update, not full task plan
@@ -5499,32 +6266,26 @@ Use `TASK:START` to continue execution.
             self._handle_direct_generation(prompt, existing_files, False)
     
     def _handle_direct_generation(self, prompt: str, existing_files: dict, is_empty: bool):
-        """Direct code generation with EditEngine integration"""
-        
-        # Check if this is a deployment-only fix
-        deploy_only_keywords = [
-            '502', 'fix deployment', 'fix the deployment', 'restart', 'redeploy',
-            'not loading', 'broken', 'fix nginx', 'server error'
-        ]
-        is_deploy_fix = (
-            not is_empty and
-            any(kw in prompt.lower() for kw in deploy_only_keywords)
-        )
+        """Direct code generation with EditEngine integration + Git backup"""
 
         changed_files = []
         user_prompt = prompt
         
-        # Skip code generation for deployment-only fixes
-        if is_deploy_fix:
-            deploy_result = deploy(
-                error_context={'reason': prompt},
-                test_changes=False,
-                changed_files=[],
-                user_prompt=prompt
-            )
-            return
+        # ═══════════════════════════════════════════════════════════════════
+        # GIT: Create pre-edit snapshot (rollback point)
+        # ═══════════════════════════════════════════════════════════════════
+        snapshot_id = ''
+        if not is_empty:
+            try:
+                workspace_git.ensure_repo()
+                snapshot_id = workspace_git.snapshot_before_edit(
+                    f"Before: {prompt[:80]}"
+                )
+                log(f'📸 Pre-edit snapshot: {snapshot_id[:8] if snapshot_id else "none"}')
+            except Exception as git_err:
+                log(f'⚠️ Git snapshot failed (non-blocking): {git_err}')
         
-        # ✅ NEW: Route through EditEngine first
+        # ✅ Route through EditEngine first
         try:
             log('🔀 Routing request through EditEngine...')
             edit_result = self.edit_engine.route(prompt)
@@ -5532,9 +6293,12 @@ Use `TASK:START` to continue execution.
             log(f'EditEngine result: mode={edit_result["mode"]}, handled={edit_result["handled"]}')
             
             if edit_result["mode"] == "CREATE_APP" and not edit_result["handled"]:
-                # New app creation - use legacy generate_code()
-                log('📝 CREATE_APP mode - using legacy generate_code()')
-                result = generate_code(prompt, existing_files=None)
+                # EditEngine deferred to legacy generate_code.
+                # Always pass existing_files — even for "CREATE_APP" the generate_code
+                # function will use PATCH format when existing_files is non-empty,
+                # preventing a full overwrite of a working project.
+                log('📝 CREATE_APP deferred — calling generate_code() with existing context')
+                result = generate_code(prompt, existing_files=existing_files or None)
                 
                 if not result:
                     return
@@ -5551,9 +6315,38 @@ Use `TASK:START` to continue execution.
                 changed_files = edit_result["files_changed"]
                 user_prompt = prompt
                 
+                # ═══════════════════════════════════════════════════════════
+                # VALIDATE: Syntax-check all changed files before proceeding
+                # ═══════════════════════════════════════════════════════════
+                if changed_files:
+                    validation_errors = syntax_validator.validate_files(changed_files)
+                    if validation_errors:
+                        log(f'❌ Post-edit validation found {len(validation_errors)} error(s)')
+                        
+                        # Attempt auto-fix for each error
+                        all_fixed = True
+                        for err in validation_errors:
+                            fix_result = _auto_fix_syntax_error(err['error'], {}, hint_file=err.get('file'))
+                            if not fix_result.get('fixed'):
+                                all_fixed = False
+                                log(f'⚠️ Could not fix {err["file"]}: {err["error"][:80]}')
+                        
+                        if not all_fixed and snapshot_id:
+                            # Rollback to pre-edit state
+                            log(f'⏪ Rolling back to pre-edit snapshot {snapshot_id[:8]}')
+                            workspace_git.rollback_to(snapshot_id)
+                            report(
+                                'The edit introduced syntax errors that couldn\'t be auto-fixed. '
+                                'I\'ve rolled back to the previous working state. '
+                                'Please try rephrasing your request.',
+                                message_type='warning',
+                                summary='Edit rolled back due to syntax errors'
+                            )
+                            return
+                
                 # Format file attachments for clean UI display
                 file_attachments = {
-                    "files": [os.path.basename(f) for f in changed_files[:50]]  # Only filenames, cap at 50
+                    "files": [os.path.basename(f) for f in changed_files[:50]]
                 } if changed_files else None
                 
                 # Report to user
@@ -5600,7 +6393,8 @@ Use `TASK:START` to continue execution.
             error_context=None,
             test_changes=bool(changed_files),
             changed_files=changed_files,
-            user_prompt=user_prompt
+            user_prompt=user_prompt,
+            snapshot_id=snapshot_id
         )
 
 
@@ -5820,6 +6614,9 @@ if __name__ == '__main__':
 
     agent = Agent()
 
+    # Check if there's a previous deployment we can restore (do this BEFORE overwriting Nginx config in apply_baseline_gateway!)
+    prev_deployment = _detect_previous_deployment()
+
     report('👋 VibeCoding Agent is online and ready!')
 
     # Serve a friendly loading page immediately
@@ -5830,9 +6627,6 @@ if __name__ == '__main__':
     if existing:
         file_count = len(existing)
         log(f'Container restart detected - workspace has {file_count} files')
-        
-        # Check if there's a previous deployment we can restore
-        prev_deployment = _detect_previous_deployment()
         
         if prev_deployment['has_deployment']:
             # Previous deployment detected - try to restore it
@@ -5846,7 +6640,9 @@ if __name__ == '__main__':
             if app_port:
                 healthy, msg, _ = _health_check(app_port=app_port)
                 if healthy:
-                    report('Your app is already running and healthy!')
+                    report('Your app is already running and healthy!',
+                           metadata={'is_final_message': True, 'status': 'success'},
+                           message_type='success')
                     # Skip redeployment, go straight to watchdog
                     watchdog(agent)
                     # watchdog runs forever, so we never reach here
@@ -5862,11 +6658,17 @@ if __name__ == '__main__':
         try:
             success = deploy(error_context=None, max_retries=3)
             if success:
-                report('Your app is back online!')
+                report('Your app is back online!',
+                       metadata={'is_final_message': True, 'status': 'success'},
+                       message_type='success')
             else:
-                report('Had trouble restarting the app. You can send me a message to fix it, or I\'ll keep trying automatically.')
+                report('Had trouble restarting the app. You can send me a message to fix it, or I\'ll keep trying automatically.',
+                       metadata={'is_final_message': True, 'status': 'warning'},
+                       message_type='warning')
         except Exception as e:
             log(f'Auto-redeploy on restart failed: {e}')
-            report('Had trouble restarting the app. Send me a message if you need help!')
+            report('Had trouble restarting the app. Send me a message if you need help!',
+                   metadata={'is_final_message': True, 'status': 'error'},
+                   message_type='error')
 
     watchdog(agent)

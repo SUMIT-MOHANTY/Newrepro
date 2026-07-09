@@ -67,14 +67,15 @@ class Task:
 class TaskPlanner:
     """Manages task planning and execution for incremental development"""
     
-    TASK_PLANNING_PROMPT = """You are an expert software architect breaking down a large requirement into manageable development tasks.
+    TASK_PLANNING_PROMPT = """You are an expert software architect breaking down a user requirement into a modular, review-driven development sequence.
 
-CRITICAL RULES:
-1. Each task should be small enough to fit within 10,000 tokens of code generation
-2. Tasks must be ordered by dependencies (foundation → features → integration)
-3. Each task must specify EXACTLY which files it will create or modify
-4. Provide detailed implementation instructions for each task
-5. Consider the token limit - break large features into multiple tasks
+CRITICAL DEVELOPMENT RULES:
+1. **Frontend-First Prototype:** Task 1 MUST focus EXCLUSIVELY on building a stunning, highly polished "Visual Frontend Prototype" using mock data. This must include everything required for a premium, beautiful layout (landing views, page layouts, global styling, Tailwind configurations, navigation, and interactive catalog components).
+2. **Prioritize Visibility and Aesthetics:** If both frontend and backend are requested, Task 1 must still focus on building the visual frontend first, compiling it, and deploying it to make it visible and live on Port 80 with zero syntax errors. It must look premium, modern, and beautiful, with complete Tailwind styling, gorgeous color schemes, and robust responsive structure.
+3. **No Database or API Blockers in Task 1:** Do NOT configure active databases (Prisma schemas, SQLite migrations), OAuth setups, or complex backend APIs in Task 1. Keep all data mock-based initially so the frontend compiles and deploys immediately.
+4. **No Arbitrary File Limits / 10k Token Budget Safety:** There is NO limit on the number of files a task can create or modify. You should plan all files necessary to make a gorgeous, fully working mockup (e.g., including global CSS, Tailwind config, layouts, and components). However, remember that the **LLM output generation window is limited to 10,000 tokens**. To stay safely under this 10k-token limit while delivering a complete and stunning frontend, write elegant, dense, and clean files, avoid bloated or highly repetitive code, and focus on high-fidelity features without using large empty spaces.
+5. **Incremental Roadmap:** Segment subsequent backend or integration features (databases, Prisma schemas, active APIs, Shopify payment gateways) into separate modular tasks. These will be offered as interactive roadmap suggestions after Task 1 completes.
+6. Provide highly detailed execution steps in each task description.
 
 USER REQUIREMENT:
 {requirement}
@@ -83,51 +84,43 @@ EXISTING PROJECT CONTEXT:
 {context}
 
 Generate a task breakdown in this EXACT JSON format:
-{{
+{
   "project_summary": "Brief overview of what will be built",
-  "total_estimated_files": 50,
+  "total_estimated_files": 15,
   "tasks": [
-    {{
+    {
       "task_id": "task_001",
-      "title": "Setup Project Foundation",
-      "description": "Detailed description of what this task accomplishes and HOW to implement it. Include specific technical details, file structures, and implementation approach.",
+      "title": "Setup Project Foundation & Stunning Visual Prototype",
+      "description": "Initialize the project, configure tailwind.config.js, global styles, page layouts, and a stunning e-commerce landing page with inline visual elements, product grids, navigation, and shopping cart drawers using mock data, making it compile and deploy to Port 80 instantly with complete CSS styles.",
       "files_to_create": [
         "package.json",
-        "vite.config.js",
-        "index.html",
-        "src/main.jsx"
+        "tailwind.config.js",
+        "app/layout.tsx",
+        "app/page.tsx",
+        "app/globals.css"
       ],
       "files_to_modify": [],
       "dependencies": [],
       "priority": "high",
-      "estimated_tokens": 2000
-    }},
-    {{
+      "estimated_tokens": 6000
+    },
+    {
       "task_id": "task_002",
-      "title": "Create Authentication Module",
-      "description": "Implement user authentication with login, register, and password reset. Use JWT tokens, bcrypt for passwords, and create AuthContext for state management.",
+      "title": "Prisma Schema & SQLite Database Integration",
+      "description": "Set up Prisma schema, configure local SQLite database, write models for products and categories, run the database migrations, and seed the database with initial catalog records.",
       "files_to_create": [
-        "src/contexts/AuthContext.jsx",
-        "src/pages/auth/Login.jsx",
-        "src/pages/auth/Register.jsx",
-        "src/pages/auth/ForgotPassword.jsx"
+        "prisma/schema.prisma",
+        "prisma/seed.ts"
       ],
       "files_to_modify": [
-        "src/App.jsx"
+        "package.json"
       ],
       "dependencies": ["task_001"],
-      "priority": "high",
-      "estimated_tokens": 8000
-    }}
+      "priority": "medium",
+      "estimated_tokens": 3000
+    }
   ]
-}}
-
-IMPORTANT:
-- Break down the requirement into 5-15 tasks
-- Each task should be independently testable
-- Specify ALL files that will be created or modified
-- Provide implementation details in the description
-- Order tasks by logical dependencies
+}
 """
     
     def __init__(self, workspace_dir: str, ai_caller):

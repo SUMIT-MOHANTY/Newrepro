@@ -377,6 +377,8 @@ class BournAIProvider(BaseProvider):
             "platform_id": self.platform_id,
             "stream": kwargs.get("stream", self.stream),
             "prompt": prompt_content,
+            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+            "temperature": kwargs.get("temperature", self.temperature),
         }
         if system_text:
             payload["system"] = system_text

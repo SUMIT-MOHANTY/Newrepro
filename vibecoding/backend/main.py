@@ -23,7 +23,7 @@ from ai_config import ai_config
 from project_manager import project_manager
 from web_tools import make_request_with_tools
 from git_manager import git_manager
-from auth import SignupRequest, LoginRequest, signup_user, login_user, get_current_user, ForgotPasswordRequest, ResetPasswordRequest, forgot_password, reset_password
+from auth import SignupRequest, LoginRequest, signup_user, login_user, get_current_user, ForgotPasswordRequest, ResetPasswordRequest, forgot_password, reset_password, log_user_feasibility, log_enduser_action
 from dual_agent_handler import get_dual_agent_handler
 from prompts import MAIN_SYSTEM_PROMPT, APP_NAME
 
@@ -454,6 +454,7 @@ class GitRequest(BaseModel):
     token: Optional[str] = None
     chat_version: Optional[int] = None
     version_id: Optional[str] = None
+    restore: Optional[bool] = False
 
 async def summarize_content(content: str, code: str = None) -> str:
     """Helper to generate a professional CXO summary for a message."""
@@ -825,6 +826,7 @@ async def trigger_handoff_execution(
     4. Returns immediately while agent processes in background
     """
     try:
+        log_enduser_action(user["username"], project_id, "trigger_handoff", "Triggered automated execution from handoff")
         project_info = project_manager.get_project_info(project_id)
         if not project_info:
             raise HTTPException(status_code=404, detail="Project not found")
@@ -1009,6 +1011,8 @@ async def get_brd_context(project_id: str):
             "custom_rules": project_info.get("custom_rules", ""),
             "governance_context": project_info.get("governance_context", {}),
             "handoff_timestamp": project_info.get("handoff_timestamp", ""),
+            "agent_analysis": project_info.get("brd_context", {}).get("agent_analysis", ""),
+            "handoff_source": project_info.get("handoff_source", ""),
         }
         
     except HTTPException:
@@ -1191,7 +1195,7 @@ async def save_project_message(project_id: str, request: MessagePersistenceReque
                (id, project_id, container_id, role, content, code, version_id, timestamp, suggestions, tool_calls, image_paths, metadata, summary)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (request.id, project_id, container_id, request.role, request.content, request.code, 
-             request.version_id, request.timestamp, 
+             request.version_id, datetime.now().astimezone().isoformat(), 
              json.dumps(request.suggestions) if request.suggestions else None,
              json.dumps(request.tool_calls) if request.tool_calls else None,
              json.dumps(request.images) if request.images else None,
@@ -1228,12 +1232,68 @@ async def save_agent_message(request: AgentMessageRequest):
         import uuid
         import time
         
-        conn = get_db()
+        # Always capture the current Git HEAD as version_id for every agent message.
+        # This ensures the restore functionality can always find a valid checkpoint
+        # from any preceding message in the chat history.
+        version_id = None
+        try:
+            hash_res = git_manager._run_git_command(request.project_id, ["rev-parse", "HEAD"])
+            if hash_res.get("status") == "success" and hash_res.get("stdout", "").strip():
+                version_id = hash_res["stdout"].strip()
+                logger.info(f"Captured current commit hash {version_id} for project {request.project_id}")
+        except Exception:
+            pass  # Git not initialized yet — leave version_id as None
         
-        # Generate unique message ID
+        # 2. Insert message into database with the version_id (commit hash)
+        conn = get_db()
         message_id = f'agent_{int(time.time())}_{uuid.uuid4().hex[:4]}'
         
-        # Insert message into database
+        # Extract token usage and feasibility
+        token_usage = request.metadata.get("token_usage") if request.metadata else None
+        prompt_tokens = 0
+        completion_tokens = 0
+        if token_usage:
+            prompt_tokens = token_usage.get("prompt_tokens") or token_usage.get("input_tokens") or 0
+            completion_tokens = token_usage.get("completion_tokens") or token_usage.get("output_tokens") or 0
+            
+        content_lower = (request.content or "").lower()
+        is_success = False
+        is_failure = False
+        reason = None
+        
+        if "could not fix syntax errors" in content_lower or "please try regenerating" in content_lower:
+            is_failure = True
+            reason = "Syntax errors could not be resolved."
+        elif "your app is live" in content_lower or "successfully" in content_lower or (request.metadata and request.metadata.get("type") == "success"):
+            is_success = True
+            reason = "Application successfully built and deployed."
+            
+        if is_success or is_failure:
+            feasibility = "Feasible" if is_success else "Infeasible - Syntax Errors"
+            
+            # Fetch last user prompt
+            last_prompt = ""
+            try:
+                last_user_msg = conn.execute(
+                    "SELECT content FROM messages WHERE project_id = ? AND role = 'user' ORDER BY rowid DESC LIMIT 1",
+                    (request.project_id,)
+                ).fetchone()
+                if last_user_msg:
+                    last_prompt = last_user_msg["content"]
+            except Exception:
+                pass
+                
+            log_user_feasibility(
+                project_id=request.project_id,
+                username="user",
+                prompt=last_prompt,
+                response=request.content,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                feasibility=feasibility,
+                feasibility_reason=reason
+            )
+
         conn.execute(
             """INSERT INTO messages
                (id, project_id, container_id, role, content, code, version_id,
@@ -1246,8 +1306,8 @@ async def save_agent_message(request: AgentMessageRequest):
                 request.role,
                 request.content,
                 request.code,
-                None,  # version_id
-                datetime.now().isoformat(),
+                version_id,
+                datetime.now().astimezone().isoformat(),
                 json.dumps(request.suggestions) if request.suggestions else None,
                 None,  # tool_calls
                 None,  # image_paths
@@ -1258,7 +1318,8 @@ async def save_agent_message(request: AgentMessageRequest):
         conn.commit()
         conn.close()
         
-        logger.info(f"✅ Agent message saved: {message_id} for project {request.project_id}")
+        logger.info(f"✅ Agent message saved: {message_id} with version_id {version_id} for project {request.project_id}")
+
         
         return {
             "success": True,
@@ -1275,7 +1336,11 @@ async def save_agent_message(request: AgentMessageRequest):
 
 
 @app.post("/vibecoding/api/generate", response_model=GenerateResponse)
-async def generate_code(request: GenerateRequest, background_tasks: BackgroundTasks):
+async def generate_code(request: GenerateRequest, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
+    # Strip whitespace from the user prompt immediately
+    if request.prompt:
+        request.prompt = request.prompt.strip()
+
     # Get or create project ID at the start
     project_id = request.project_id or project_manager.generate_project_id()
     
@@ -1298,9 +1363,11 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
     import time
     from datetime import datetime
     
+    username = user["username"] if user else "anonymous"
+
     # Guaranteed User Message Persistence (Atomic)
     user_msg_id = f"msg_{int(time.time())}_{uuid.uuid4().hex[:4]}"
-    user_timestamp = datetime.now().isoformat()
+    user_timestamp = datetime.now().astimezone().isoformat()
     try:
         conn = get_db()
         # Use INSERT OR IGNORE to prevent duplicate messages with same ID
@@ -1328,14 +1395,16 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
             
             now = datetime.now()
             date_label = f"CURRENT DATE & TIME: {now.strftime('%A, %B %d, %Y %H:%M:%S')}\n\n"
+            user_context = f"CURRENT USER: {username}\n\n"
             
-            messages = [{"role": "system", "content": date_label + CHAT_SYSTEM_PROMPT}]
+            messages = [{"role": "system", "content": date_label + user_context + CHAT_SYSTEM_PROMPT}]
             for msg in request.history:
-                messages.append({"role": msg.role, "content": msg.content})
+                messages.append({"role": msg.role, "content": msg.content.strip() if msg.content else ""})
             messages.append(build_vision_message(request.prompt, request.images))
 
             response = await ai_config.make_async_request(messages)
             ai_response = response["choices"][0]["message"].get("content", "") if "choices" in response else ""
+            ai_response = ai_response.strip()
             
             # Log the discuss mode interaction
             log_ai_interaction(request.prompt, ai_response, "discuss_mode")
@@ -1349,13 +1418,38 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
             project_info = project_manager.get_project_info(project_id)
             container_id = project_info.get("container_id") if project_info else None
             
+            # Log feasibility
+            prompt_tok = len(request.prompt) // 4
+            comp_tok = len(ai_response) // 4
+            if response and "usage" in response:
+                usage = response["usage"]
+                prompt_tok = usage.get("prompt_tokens") or usage.get("input_tokens") or prompt_tok
+                comp_tok = usage.get("completion_tokens") or usage.get("output_tokens") or comp_tok
+            log_user_feasibility(
+                project_id=project_id,
+                username=username,
+                prompt=request.prompt,
+                response=ai_response,
+                prompt_tokens=prompt_tok,
+                completion_tokens=comp_tok,
+                feasibility="Feasible",
+                feasibility_reason="Successfully replied in discuss mode."
+            )
+            # Log action
+            log_enduser_action(
+                username=username,
+                project_id=project_id,
+                action="chat_discuss",
+                details=f"Prompt: {request.prompt[:100]}"
+            )
+
             conn = get_db()
             conn.execute(
                 """INSERT INTO messages 
                     (id, project_id, container_id, role, content, code, version_id, timestamp, suggestions, tool_calls, image_paths, metadata, summary)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (msg_id, project_id, container_id, "assistant", ai_response, None, None,
-                    datetime.now().isoformat(), 
+                    datetime.now().astimezone().isoformat(), 
                     json.dumps(suggestions) if suggestions else None,
                     None, None, None, agent_summary)
             )
@@ -1373,6 +1467,14 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
                 summary=agent_summary,
                 message_id=msg_id
             )
+
+        # Log action for autonomous flow
+        log_enduser_action(
+            username=username,
+            project_id=project_id,
+            action="chat_generate",
+            details=f"Prompt: {request.prompt[:100]}"
+        )
 
         # ── Autonomous Flow: Delegating to Container-Side Resident Agent ──────
         logger.info(f"🦾 Triggering Autonomous Orchestrator for Project: {project_id}")
@@ -1392,7 +1494,8 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
         agent_url = project_manager.start_agent_container(
             api_key=ai_config.api_key,
             project_path=str(workspace_dir),
-            project_id=project_id
+            project_id=project_id,
+            username=username
         )
 
         if not agent_url:
@@ -1411,12 +1514,15 @@ async def generate_code(request: GenerateRequest, background_tasks: BackgroundTa
 
         # 4. Hand off task to the agent mailbox
         # Only include actual user messages as context (skip the agent's own acknowledgements)
-        handoff_prompt = request.prompt
+        now = datetime.now()
+        date_label = f"CURRENT DATE & TIME: {now.strftime('%A, %B %d, %Y %H:%M:%S')}\n\n"
+        user_context_str = f"USER: {username}\n{date_label}"
+        handoff_prompt = f"{user_context_str}CURRENT REQUEST: {request.prompt}"
         if request.history:
             user_turns = [m for m in request.history if m.role == "user"]
             if user_turns:
-                history_summary = "\n".join([f"User: {m.content[:200]}" for m in user_turns[-3:]])
-                handoff_prompt = f"CONTEXT (previous turns):\n{history_summary}\n\nCURRENT REQUEST: {request.prompt}"
+                history_summary = "\n".join([f"User: {m.content.strip()[:200]}" for m in user_turns[-3:]])
+                handoff_prompt = f"{user_context_str}CONTEXT (previous turns):\n{history_summary}\n\nCURRENT REQUEST: {request.prompt}"
 
         logger.info(f"📤 Sending prompt to container for project {project_id}: {handoff_prompt[:100]}...")
         result = project_manager.send_request(handoff_prompt, project_id=project_id)
@@ -1622,6 +1728,9 @@ async def create_project(request: ProjectCreateRequest, user: dict = Depends(get
             "owner_id": user_id
         })
         
+        # Log action
+        log_enduser_action(user["username"], project_id, "create_project", f"Name: {request.name}")
+        
         project_info = project_manager.get_project_info(project_id)
         return ProjectResponse(**project_info)
     except HTTPException:
@@ -1664,6 +1773,7 @@ async def start_project_container(project_id: str, background_tasks: BackgroundT
     No-op if the container is already running.
     """
     try:
+        log_enduser_action(user["username"], project_id, "start_container", "Woke up/started agent container")
         project_info = project_manager.get_project_info(project_id)
         if not project_info:
             raise HTTPException(status_code=404, detail="Project not found")
@@ -1674,7 +1784,7 @@ async def start_project_container(project_id: str, background_tasks: BackgroundT
         workspace_dir = project_manager.artifacts_dir / project_id / "workspace"
         has_files = workspace_dir.exists() and any(
             f for f in workspace_dir.rglob("*")
-            if f.is_file() and f.name != "metadata.json" and ".git" not in f.parts
+            if f.is_file() and f.name not in ("metadata.json", ".gitignore") and ".git" not in f.parts
         )
 
         preview_url = project_manager.get_preview_url(project_id)
@@ -1859,8 +1969,9 @@ async def stop_preview(project_id: str, version_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/vibecoding/api/projects/{project_id}/download")
-async def download_project(project_id: str):
+async def download_project(project_id: str, user: dict = Depends(get_current_user)):
     try:
+        log_enduser_action(user["username"], project_id, "download_project", "Downloaded complete project ZIP")
         zip_path = project_manager.create_project_zip(project_id)
         if not zip_path:
             raise HTTPException(status_code=404, detail="Project not found")
@@ -1926,7 +2037,50 @@ async def git_status(request: GitRequest):
 @app.post("/vibecoding/api/git/init")
 async def git_init(request: GitRequest):
     try:
-        result = git_manager.init_repo(request.project_id)
+        # If remote_url is provided, we clone instead of just init
+        if request.remote_url:
+            if not request.token:
+                return {"status": "error", "message": "Personal Access Token (PAT) is required."}
+            
+            # 1. Validate connection first
+            if "dev.azure.com" in request.remote_url.lower() or "visualstudio.com" in request.remote_url.lower():
+                val_res = await git_manager.validate_azure_devops_connection(request.remote_url, request.token)
+            else:
+                val_res = await git_manager.validate_github_connection(request.remote_url, request.token)
+                
+            if val_res["status"] == "error":
+                return val_res
+            
+            # 2. Clone the repo
+            result = git_manager.clone_repo(request.project_id, request.remote_url, request.token)
+            
+            # 3. If clone successful, initialize project workspace metadata
+            if result["status"] == "success":
+                workspace_dir = project_manager.artifacts_dir / request.project_id / "workspace"
+                project_manager._ensure_workspace_metadata(request.project_id, workspace_dir, "initial_clone")
+                # Also notify the manager to sync or prepare for code serving
+                await project_manager.switch_to_workspace(request.project_id)
+            
+            return result
+        else:
+            # Default behavior: git init
+            result = git_manager.init_repo(request.project_id)
+            return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/vibecoding/api/git/validate")
+async def git_validate(request: GitRequest):
+    try:
+        if not request.remote_url:
+            raise HTTPException(status_code=400, detail="Remote URL is required")
+        if not request.token:
+            return {"status": "error", "message": "Personal Access Token (PAT) is required."}
+            
+        if "dev.azure.com" in request.remote_url.lower() or "visualstudio.com" in request.remote_url.lower():
+            result = await git_manager.validate_azure_devops_connection(request.remote_url, request.token)
+        else:
+            result = await git_manager.validate_github_connection(request.remote_url, request.token)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1940,8 +2094,9 @@ async def git_add(request: GitRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/vibecoding/api/git/commit")
-async def git_commit(request: GitRequest):
+async def git_commit(request: GitRequest, user: dict = Depends(get_current_user)):
     try:
+        log_enduser_action(user["username"], request.project_id, "git_commit", f"Message: {request.message}")
         if not request.message:
             raise HTTPException(status_code=400, detail="Commit message is required")
         result = git_manager.commit(request.project_id, request.message)
@@ -2143,6 +2298,8 @@ def _group_log_messages(raw_messages: list) -> list:
         if msg.get('role') != 'assistant':
             return False
         meta = msg.get('metadata') or {}
+        if meta.get('is_final_message') or meta.get('type') == 'success' or meta.get('status') == 'success':
+            return True
         if meta.get('type') in TERMINAL_TYPES:
             return True
         if meta.get('task_plan') or meta.get('type') == 'task_breakdown':
@@ -2153,7 +2310,7 @@ def _group_log_messages(raw_messages: list) -> list:
         if msg.get('code'):
             return True
         content = msg.get('content', '')
-        if '[AGENT] VERIFICATION' in content or 'Your app is live' in content:
+        if '[AGENT] VERIFICATION' in content or 'Your app is live' in content or 'No API endpoint tests' in content or 'API endpoint tests' in content:
             return True
         return False
 
@@ -2281,6 +2438,64 @@ async def get_project_messages(project_id: str, background_tasks: BackgroundTask
         conn.close()
 
 
+@app.delete("/vibecoding/api/projects/{project_id}/messages")
+async def delete_project_messages(
+    project_id: str,
+    after_index: Optional[int] = None,
+    after_message_id: Optional[str] = None,
+    user: dict = Depends(get_current_user)
+):
+    """Delete messages after a certain index or message ID to sync conversation history with Git restore"""
+    log_enduser_action(user["username"], project_id, "delete_messages", f"After index: {after_index}, after message: {after_message_id}")
+    from auth import get_db
+    conn = get_db()
+    try:
+        if after_message_id:
+            # Find the rowid of the message with after_message_id
+            row = conn.execute(
+                "SELECT rowid FROM messages WHERE project_id = ? AND id = ?",
+                (project_id, after_message_id)
+            ).fetchone()
+            if row:
+                target_rowid = row[0]
+                conn.execute(
+                    "DELETE FROM messages WHERE project_id = ? AND rowid >= ?",
+                    (project_id, target_rowid)
+                )
+                conn.commit()
+                logger.info(f"🗑️ Deleted messages starting from message ID {after_message_id} (rowid >= {target_rowid}) for project {project_id}")
+                return {"status": "success", "deleted_by": "message_id"}
+            else:
+                return {"status": "error", "message": f"Message ID {after_message_id} not found"}
+        
+        elif after_index is not None:
+            # Retrieve rowids in insertion order (rowid ASC)
+            rows = conn.execute(
+                "SELECT rowid FROM messages WHERE project_id = ? ORDER BY rowid ASC",
+                (project_id,)
+            ).fetchall()
+            
+            rowids = [row[0] for row in rows]
+            
+            # If after_index is within range, delete all messages with rowid greater than the rowid at after_index
+            if 0 <= after_index < len(rowids):
+                target_rowid = rowids[after_index]
+                conn.execute(
+                    "DELETE FROM messages WHERE project_id = ? AND rowid > ?",
+                    (project_id, target_rowid)
+                )
+                conn.commit()
+                logger.info(f"🗑️ Deleted messages after index {after_index} (rowid > {target_rowid}) for project {project_id}")
+                return {"status": "success", "deleted_count": len(rowids) - 1 - after_index}
+            
+        return {"status": "success", "message": "No deletion parameters matched, no messages deleted"}
+    except Exception as e:
+        logger.error(f"❌ Failed to delete messages: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
 @app.get("/vibecoding/api/projects/{project_id}/tasks")
 async def get_project_tasks(project_id: str):
     """Get tasks from the .vibecoding_tasks.json file in the workspace"""
@@ -2386,8 +2601,15 @@ async def git_checkpoint(request: GitRequest):
                 git_manager._run_git_command(project_id, ["reset", "--hard"])
                 git_manager._run_git_command(project_id, ["clean", "-fd"])
             
-        # Checkout the commit
-        checkout_res = git_manager.checkout_commit(project_id, version_id)
+        # Checkout or Restore the commit
+        if request.restore:
+            logger.info(f"🔄 Performing Git Restore (hard reset) to: {version_id} via container")
+            res = project_manager.send_request(f"__SYS_CMD_RESTORE__:{version_id}", project_id=project_id)
+            if not res.get("success"):
+                raise HTTPException(status_code=500, detail="Failed to send restore command to container")
+            return {"status": "success", "message": "Restore command queued to container"}
+        else:
+            checkout_res = git_manager.checkout_commit(project_id, version_id)
         
         if checkout_res["status"] == "success":
             # Tell the supervisor to switch the container to the workspace

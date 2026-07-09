@@ -1,1260 +1,1030 @@
-import { useRef, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import gsap from 'gsap';
-import { ScrollTrigger } from 'gsap/ScrollTrigger';
-import {
-    ArrowRight, Zap, CheckCircle, Shield, Workflow,
-    FileText, FileCode, FileSpreadsheet, FileJson, File,
-    Database, Server, Layout, Code, Terminal, Cpu, Sparkles, Bot,
-    Sun, Moon
-} from 'lucide-react';
-import Logo from '../assets/logo.png';
-import BourntecLogo from '../assets/bourntec_logo.png';
-import masterLogo from '../assets/logo1.png';
-import nModLogo from '../assets/N-Mod-icon.png';
-import kaktoxLogo from '../assets/Kaktox.png';
-import spxLogo from '../assets/spx-logo 3.png';
-import Login from './Login';
-import Signup from './Signup';
+import { useEffect, useState, useCallback } from 'react';
 
-gsap.registerPlugin(ScrollTrigger);
-
-const MarqueeRow = ({ reverse = false, duration = 40, iconColor = "text-app-text-light" }) => {
-    // Icons set
-    const icons = [FileText, FileCode, FileSpreadsheet, FileJson, File, Database, Server, Layout, Code, Terminal, Cpu];
-
-    // Duplicate for seamless loop - enough width for wide screens
-    // 11 icons * 3 = 33 icons total which ensures enough coverage
-    const items = [...icons, ...icons, ...icons];
-
-    const animationStyle = {
-        animation: reverse
-            ? `marquee-reverse ${duration}s linear infinite`
-            : `marquee ${duration}s linear infinite`,
-        willChange: 'transform',
-        backfaceVisibility: 'hidden',
-    };
-
-    return (
-        <div className="overflow-hidden whitespace-nowrap w-full pointer-events-none select-none">
-            <div className="flex w-max" style={animationStyle}>
-                <div className="flex gap-8 px-4 w-max shrink-0">
-                    {items.map((Icon, idx) => (
-                        <div key={`a-${idx}`} className={`flex items-center justify-center h-16 w-16 bg-app-bg-card rounded-xl border border-app-border/50 shadow-sm ${iconColor}`}>
-                            <Icon className="h-8 w-8 opacity-80" strokeWidth={1.5} />
-                        </div>
-                    ))}
-                </div>
-                <div className="flex gap-8 px-4 w-max shrink-0">
-                    {items.map((Icon, idx) => (
-                        <div key={`b-${idx}`} className={`flex items-center justify-center h-16 w-16 bg-app-bg-card rounded-xl border border-app-border/50 shadow-sm ${iconColor}`}>
-                            <Icon className="h-8 w-8 opacity-80" strokeWidth={1.5} />
-                        </div>
-                    ))}
-                </div>
-            </div>
-        </div>
-    );
-};
-
-const BackgroundMarquee = () => {
-    return (
-        <div className="fixed inset-0 z-0 overflow-hidden bg-app-bg-page pointer-events-none" style={{ transform: "translateZ(0)" }}>
-            <div className="absolute inset-0 flex flex-col gap-12 -rotate-12 scale-150 origin-center justify-center opacity-20" style={{ willChange: "transform" }}>
-                <MarqueeRow duration={55} iconColor="text-blue-400/50" />
-                <MarqueeRow duration={65} reverse iconColor="text-app-text-light/50" />
-                <MarqueeRow duration={50} iconColor="text-indigo-400/50" />
-                <MarqueeRow duration={70} reverse iconColor="text-app-text-light/50" />
-            </div>
-            <div className="absolute inset-0 bg-gradient-to-br from-app-bg-card/95 via-app-bg-card/60 to-app-bg-card/95"></div>
-        </div>
-    );
-};
-
-const HeroInteractiveImage = () => {
-    const containerRef = useRef(null);
-
-    const handleMouseMove = (e) => {
-        if (!containerRef.current) return;
-        const rect = containerRef.current.getBoundingClientRect();
-        const x = e.clientX - rect.left - rect.width / 2;
-        const y = e.clientY - rect.top - rect.height / 2;
-
-        // Calculate rotation amounts - very subtle tilt
-        const xRotation = (-y / (rect.height / 2)) * 6;
-        const yRotation = (x / (rect.width / 2)) * 6;
-
-        containerRef.current.style.transform = `perspective(1000px) rotateX(${xRotation}deg) rotateY(${yRotation}deg) scale3d(1.02, 1.02, 1.02)`;
-    };
-
-    const handleMouseLeave = () => {
-        if (!containerRef.current) return;
-        containerRef.current.style.transform = `perspective(1000px) rotateX(0deg) rotateY(0deg) scale3d(1, 1, 1)`;
-    };
-
-    return (
-        <div
-            className="relative w-full aspect-square sm:aspect-[4/3] lg:aspect-square flex items-center justify-center p-4 sm:p-8 shrink-0 z-10"
-            onMouseMove={handleMouseMove}
-            onMouseLeave={handleMouseLeave}
-            style={{ perspective: "1000px" }}
-        >
-            <div
-                ref={containerRef}
-                className="relative w-full h-full transition-transform duration-200 ease-out will-change-transform"
-                style={{ transformStyle: "preserve-3d" }}
-            >
-                {/* Background Window - Technical Breakdown */}
-                <div className="absolute inset-0 bg-app-bg-card/95 border border-app-bg-card/5 rounded-2xl shadow-xl overflow-hidden flex flex-col" style={{ transform: "translateZ(0px)" }}>
-                    <div className="h-10 border-b border-app-border-light flex items-center px-4 gap-2 bg-app-bg-page/80 shrink-0">
-                        <div className="w-3 h-3 rounded-full bg-red-400"></div>
-                        <div className="w-3 h-3 rounded-full bg-yellow-400"></div>
-                        <div className="w-3 h-3 rounded-full bg-green-400"></div>
-                        <div className="flex-1 text-center text-xs text-app-text-muted font-mono tracking-widest">system_architecture.json</div>
-                    </div>
-                    <div className="p-6 space-y-5 flex-1 overflow-hidden bg-[linear-gradient(rgba(0,0,0,.02)_1px,transparent_1px),linear-gradient(90deg,rgba(0,0,0,.02)_1px,transparent_1px)] bg-[size:20px_20px]">
-                        <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-3">
-                                <div className="w-10 h-10 rounded-full bg-app-primary/10 flex items-center justify-center border border-app-primary/20">
-                                    <Cpu className="w-5 h-5 text-app-primary" />
-                                </div>
-                                <div>
-                                    <h3 className="text-sm font-semibold text-app-text-main">Analysis Complete</h3>
-                                    <p className="text-xs text-app-text-muted">9 entities extracted</p>
-                                </div>
-                            </div>
-                            <span className="px-2 py-1 rounded-md bg-app-status-success/10 text-app-status-success text-[10px] sm:text-xs font-mono font-semibold border border-app-status-success/20">200 OK</span>
-                        </div>
-
-                        <div className="space-y-3">
-                            <div className="flex justify-between items-center bg-app-bg-page/50 p-3 rounded-xl border border-app-border shadow-sm">
-                                <div className="flex items-center gap-3">
-                                    <Database className="w-4 h-4 text-app-primary" />
-                                    <span className="text-sm text-app-text-main font-medium">PostgreSQL Schema</span>
-                                </div>
-                                <span className="text-[10px] uppercase text-app-primary bg-app-primary/10 px-2 py-1 rounded font-bold tracking-wider">Ready</span>
-                            </div>
-                            <div className="flex justify-between items-center bg-app-bg-page/50 p-3 rounded-xl border border-app-border shadow-sm">
-                                <div className="flex items-center gap-3">
-                                    <Server className="w-4 h-4 text-purple-500" />
-                                    <span className="text-sm text-app-text-main font-medium">REST API Routes</span>
-                                </div>
-                                <span className="text-[10px] uppercase text-purple-500 bg-purple-500/10 px-2 py-1 rounded font-bold tracking-wider">Ready</span>
-                            </div>
-                            <div className="flex justify-between items-center bg-app-bg-page/50 p-3 rounded-xl border border-app-border shadow-sm opacity-60">
-                                <div className="flex items-center gap-3">
-                                    <Layout className="w-4 h-4 text-pink-500" />
-                                    <span className="text-sm text-app-text-main font-medium">React Components</span>
-                                </div>
-                                <span className="text-[10px] uppercase text-app-text-muted bg-app-bg-hover px-2 py-1 rounded font-bold tracking-wider">Pending</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                {/* Floating Foreground Card - Document input */}
-                <div
-                    className="absolute -right-2 sm:-right-4 bottom-4 sm:bottom-8 w-56 sm:w-64 bg-app-bg-page/95 border border-app-border-light p-4 sm:p-5 rounded-2xl shadow-2xl"
-                    style={{ transform: "translateZ(60px)" }}
-                >
-                    <div className="flex items-center gap-3 border-b border-app-border-light pb-3 mb-3 shrink-0">
-                        <div className="p-2 sm:p-2.5 bg-app-primary/10 rounded-xl border border-app-primary/20 shrink-0">
-                            <FileText className="w-5 h-5 text-app-primary" />
-                        </div>
-                        <div className="overflow-hidden">
-                            <div className="text-sm font-bold text-app-text-main truncate">Project_Alpha_BRD.pdf</div>
-                            <div className="text-xs text-app-primary font-semibold mt-0.5">Processing... 84%</div>
-                        </div>
-                    </div>
-                    <div className="space-y-3">
-                        <div className="h-1.5 w-full bg-app-bg-hover rounded-full overflow-hidden">
-                            <div className="h-full bg-gradient-to-r from-app-primary to-cyan-400 w-[84%] rounded-full relative">
-                                <div className="absolute inset-0 w-full animate-pulse bg-app-bg-card/30"></div>
-                            </div>
-                        </div>
-                        <p className="text-xs text-app-text-muted truncate">Extracting logic constraints...</p>
-                    </div>
-                </div>
-
-                {/* Floating API Endpoint */}
-                <div
-                    className="absolute -left-2 sm:-left-8 top-12 bg-app-bg-card border border-app-border-light p-3 rounded-xl shadow-xl font-mono text-[10px] sm:text-xs flex flex-col gap-1.5"
-                    style={{ transform: "translateZ(30px)" }}
-                >
-                    <div className="text-app-text-main flex items-center gap-2">
-                        <span className="text-app-status-success font-bold bg-app-status-success/10 px-1.5 py-0.5 rounded">POST</span>
-                        /api/v1/auth
-                    </div>
-                    <div className="text-app-text-muted pl-4 border-l border-app-border-light ml-2 mt-1 py-1">
-                        {'{ "role": "admin" }'}
-                    </div>
-                </div>
-            </div>
-        </div>
-    );
-};
-
-const Interactive3DScroll = () => {
-    const wrapperRef = useRef(null);
-
-    const steps = [
-        {
-            title: "DSuite Master Analysis",
-            desc: "Document is uploaded into DSuite. The platform analyzes requirements, validates architecture direction, and prepares an execution-ready blueprint.",
-            logo: null,
-            logoText: "DSuite",
-            color: "from-app-primary to-cyan-400"
-        },
-        {
-            title: "Nxdune Orchestration",
-            desc: "The DSuite blueprint is routed to Nxdune. Nxdune creates the workspace and automatically distributes Dev, Test, and Deploy tasks to agents.",
-            logo: masterLogo,
-            color: "from-app-primary to-purple-400"
-        },
-        {
-            title: "Dev Agent Execution",
-            desc: "Dev Agent works through N-Mod EXT to build the solution, implementing code and creating the necessary components.",
-            logo: nModLogo,
-            color: "from-pink-500 to-rose-400"
-        },
-        {
-            title: "Test Agent Execution",
-            desc: "Test Agent runs Kaktox validations and confirms quality before release, ensuring the solution meets all requirements.",
-            logo: kaktoxLogo,
-            color: "from-purple-500 to-pink-400"
-        },
-        {
-            title: "Deploy Agent -> CloudSpx",
-            desc: "After approval, Deploy Agent pushes the validated build through CloudSpx pipelines while execution traceability stays visible in Nxdune.",
-            logo: spxLogo,
-            color: "from-app-status-success to-emerald-400"
-        }
-    ];
+export default function LandingPage() {
+    const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
+    const [showReleaseNotes, setShowReleaseNotes] = useState(false);
 
     useEffect(() => {
-        const ctx = gsap.context(() => {
-            const panels = gsap.utils.toArray('.panel-3d');
-
-            const tl = gsap.timeline({
-                scrollTrigger: {
-                    trigger: wrapperRef.current,
-                    pin: true,
-                    start: "top top",
-                    end: `+=${panels.length * 70}%`,
-                    scrub: 0.35,
-                }
-            });
-
-            gsap.set(panels, {
-                z: i => i === 0 ? 0 : -1200,
-                autoAlpha: i => i === 0 ? 1 : 0,
-                rotationX: i => i === 0 ? 0 : 24,
-                scale: i => i === 0 ? 1 : 0.72
-            });
-
-            panels.forEach((panel, i) => {
-                if (i < panels.length - 1) {
-                    const nextPanel = panels[i + 1];
-
-                    tl.to(panel, {
-                        z: 900,
-                        autoAlpha: 0,
-                        scale: 1.18,
-                        rotationX: -20,
-                        duration: 0.65,
-                        ease: "power1.out"
-                    }, i);
-
-                    tl.to(nextPanel, {
-                        z: 0,
-                        autoAlpha: 1,
-                        scale: 1,
-                        rotationX: 0,
-                        duration: 0.65,
-                        ease: "power1.out"
-                    }, i);
-                }
-            });
-
-            gsap.to('.float-shape', {
-                y: "-=8",
-                duration: 1.8,
-                repeat: -1,
-                yoyo: true,
-                ease: "sine.inOut",
-                stagger: {
-                    amount: 0.8,
-                    from: "random"
-                }
-            });
-
-        }, wrapperRef);
-        return () => ctx.revert();
-    }, []);
-
-    return (
-        <div ref={wrapperRef} className="relative w-full h-screen overflow-hidden bg-app-bg-page border-y border-app-border-light" style={{ perspective: "1200px" }}>
-            {/* Background Atmosphere */}
-            <div className="absolute inset-0 z-0 opacity-20 bg-[linear-gradient(rgba(255,255,255,.05)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.05)_1px,transparent_1px)] bg-[size:50px_50px] [transform:rotateX(60deg)_translateY(-100px)_translateZ(-200px)] pointer-events-none"></div>
-
-            <div className="absolute inset-0 z-0 flex items-center justify-center pointer-events-none">
-                <div className="w-[600px] h-[600px] bg-app-primary/5 rounded-full absolute mix-blend-screen" style={{ transform: "translateZ(0)" }}></div>
-                <div className="w-[500px] h-[500px] bg-app-primary/5 rounded-full absolute mix-blend-screen -mt-40" style={{ transform: "translateZ(0)" }}></div>
-            </div>
-
-            {/* Panels Container */}
-            <div className="absolute inset-0 flex flex-col items-center justify-center" style={{ transformStyle: "preserve-3d" }}>
-                {steps.map((step, i) => (
-                    <div
-                        key={i}
-                        className="panel-3d absolute w-full max-w-6xl px-6 sm:px-12 flex flex-col md:flex-row items-center gap-12 lg:gap-24"
-                        style={{ transformStyle: "preserve-3d", willChange: "transform, opacity" }}
-                    >
-                        {/* 3D Visual Object */}
-                        <div className="flex-1 w-full flex justify-center" style={{ perspective: "1000px" }}>
-                            <div className="relative w-72 h-72 sm:w-96 sm:h-96 float-shape shadow-xl" style={{ transformStyle: "preserve-3d", willChange: "transform" }}>
-                                <div className={`absolute inset-0 rounded-[2rem] bg-gradient-to-br ${step.color} opacity-20`} style={{ transform: 'translateZ(-48px)' }}></div>
-                                <div className="absolute inset-0 rounded-[2rem] bg-app-bg-card/95 border border-app-bg-card/10 shadow-xl flex items-center justify-center" style={{ transformStyle: "preserve-3d" }}>
-                                    <div className={`absolute inset-0 bg-gradient-to-br ${step.color} opacity-10 rounded-[2rem]`}></div>
-                                    <div className="float-shape shadow-lg bg-app-bg-page/95 rounded-3xl border border-app-border flex items-center justify-center overflow-hidden" style={{ willChange: "transform", width: 'calc(100% - 2rem)', height: 'calc(100% - 2rem)', padding: '2rem' }}>
-                                        {step.logoText ? (
-                                            <div className="text-6xl sm:text-7xl font-extrabold text-app-text-main tracking-tight" style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}>
-                                                {step.logoText}
-                                            </div>
-                                        ) : step.logo ? (
-                                            <img src={step.logo} alt={step.title} className="w-full h-full object-contain" />
-                                        ) : (
-                                            step.icon
-                                        )}
-                                    </div>
-                                    {/* Decorative 3D elements */}
-                                    <div className="float-shape absolute top-6 left-6 w-16 h-16 rounded-2xl bg-gradient-to-tr from-app-bg-card/10 to-transparent border border-app-bg-card/10" style={{ transform: 'translateZ(-40px) translateX(20px)', willChange: "transform" }}></div>
-                                    <div className="float-shape absolute bottom-8 right-8 w-20 h-20 rounded-full bg-gradient-to-bl from-app-bg-card/10 to-transparent border border-app-bg-card/10" style={{ transform: 'translateZ(50px) translateY(-20px)', willChange: "transform" }}></div>
-                                    <div className="float-shape absolute top-1/2 -right-12 w-12 h-12 rounded-lg bg-gradient-to-br from-app-bg-card/10 to-transparent border border-app-bg-card/10" style={{ transform: 'translateZ(20px) rotate(45deg)', willChange: "transform" }}></div>
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Text Content */}
-                        <div className="flex-1 space-y-6 text-center md:text-left z-10 bg-app-bg-page/50 md:bg-transparent p-6 rounded-3xl" style={{ transform: 'translateZ(50px)' }}>
-                            <div className="inline-flex items-center gap-2 px-4 py-2 bg-app-bg-hover rounded-full border border-app-border text-app-text-main text-sm font-bold tracking-widest shadow-sm">
-                                <span>STEP 0{i + 1}</span>
-                                <div className={`h-2.5 w-2.5 rounded-full bg-gradient-to-r ${step.color} shadow-[0_0_10px_rgba(255,255,255,0.5)]`}></div>
-                            </div>
-                            <h2 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold text-white tracking-tight leading-tight drop-shadow-lg">
-                                {step.title}
-                            </h2>
-                            <p className="text-xl sm:text-2xl text-app-text-label leading-relaxed drop-shadow-md font-light">
-                                {step.desc}
-                            </p>
-                        </div>
-                    </div>
-                ))}
-            </div>
-
-            {/* Scroll Indicator */}
-            <div className="absolute bottom-10 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 opacity-70 animate-bounce">
-                <span className="text-xs uppercase tracking-widest text-app-text-label font-semibold">Scroll</span>
-                <div className="w-5 h-8 rounded-full border-2 border-app-text-label flex justify-center pt-1.5">
-                    <div className="w-1.5 h-1.5 rounded-full bg-app-text-label"></div>
-                </div>
-            </div>
-        </div>
-    );
-};
-
-const EfficiencySection = () => {
-    return (
-        <section className="py-20 relative z-10 bg-app-bg-page overflow-hidden border-t border-app-border-light">
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_rgba(56,189,248,0.05)_0%,_transparent_70%)] pointer-events-none" />
-            <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 relative">
-                <div className="flex flex-col lg:flex-row items-center gap-8 lg:gap-14">
-                    <div className="flex-1 space-y-6">
-                        <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-app-primary-light border border-app-primary-ring rounded-full text-app-primary text-xs font-bold tracking-widest uppercase">
-                            <Zap className="h-3.5 w-3.5" />
-                            Pre-IDE Acceleration
-                        </div>
-                        <h2 className="text-3xl sm:text-4xl lg:text-5xl font-extrabold text-app-text-main leading-tight">
-                            <span className="text-transparent bg-clip-text bg-gradient-to-r from-app-primary to-app-primary shrink-0">80% of the work.</span><br />
-                            Done before you even open your IDE.
-                        </h2>
-                        <p className="text-lg text-app-text-label leading-relaxed">
-                            Stop wasting engineering hours on boilerplate, initial scaffolding, and basic architectural setups.
-                            DSuite Agents handle the heavy lifting straight from your requirements.
-                        </p>
-                        <div className="space-y-3">
-                            {[
-                                { title: 'Architecture & DB Schema Generation', icon: <Database className="w-4 h-4" /> },
-                                { title: 'API scaffolding & Routing', icon: <Server className="w-4 h-4" /> },
-                                { title: 'Base UI components setup', icon: <Layout className="w-4 h-4" /> },
-                            ].map((item, idx) => (
-                                <div key={idx} className="flex items-center gap-3 bg-app-bg-card p-3 rounded-2xl border border-app-border-light shadow-sm">
-                                    <div className="h-8 w-8 bg-app-primary-light rounded-xl flex items-center justify-center text-app-primary shrink-0">
-                                        {item.icon}
-                                    </div>
-                                    <span className="font-semibold text-app-text-main text-base">{item.title}</span>
-                                    <CheckCircle className="w-5 h-5 text-app-status-success ml-auto" />
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-
-                    <div className="flex-1 w-full relative">
-                        <div className="relative bg-app-bg-card rounded-[2rem] border border-app-border-light shadow-2xl p-6 sm:p-8 flex flex-col justify-center overflow-hidden">
-                            <div className="absolute top-0 right-0 w-56 h-56 bg-blue-400/20 rounded-full blur-[80px]" />
-                            <div className="absolute bottom-0 left-0 w-56 h-56 bg-indigo-400/20 rounded-full blur-[80px]" />
-
-                            <h3 className="text-xl font-bold text-app-text-main mb-8 text-center relative z-10">Traditional vs Agentic Workflow</h3>
-
-                            <div className="space-y-6 relative z-10 w-full max-w-sm mx-auto">
-                                {/* Traditional */}
-                                <div>
-                                    <div className="flex justify-between text-xs font-semibold mb-2">
-                                        <span className="text-app-text-muted">Human Effort</span>
-                                        <span className="text-app-text-muted">100% Manual</span>
-                                    </div>
-                                    <div className="h-3 w-full bg-app-bg-muted rounded-full overflow-hidden flex border border-app-border">
-                                        <div className="h-full bg-app-border w-[10%]"></div>
-                                        <div className="h-full bg-app-text-light w-[80%]"></div>
-                                        <div className="h-full bg-app-text-muted w-[10%]"></div>
-                                    </div>
-                                    <div className="flex text-[9px] sm:text-[10px] font-bold text-app-text-muted mt-2 uppercase tracking-wide">
-                                        <span className="w-[10%] text-center">Plan</span>
-                                        <span className="w-[80%] text-center">Manual Coding</span>
-                                        <span className="w-[10%] text-center">Deploy</span>
-                                    </div>
-                                </div>
-
-                                {/* Agentic */}
-                                <div className="p-4 bg-app-primary-light/50 rounded-2xl border border-app-primary-light/50 mt-6">
-                                    <div className="flex justify-between text-xs font-semibold mb-2">
-                                        <span className="text-app-text-main">With DSuite Agents</span>
-                                        <span className="text-app-primary">80% Automated</span>
-                                    </div>
-                                    <div className="h-8 w-full bg-app-bg-page rounded-xl overflow-hidden flex shadow-inner border border-app-border">
-                                        <div className="h-full bg-gradient-to-r from-app-primary to-app-primary w-[80%] flex items-center justify-center relative shadow-[inset_0_2px_10px_rgba(0,0,0,0.1)]">
-                                            <div className="absolute inset-0 opacity-20 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMCIgaGVpZ2h0PSIyMCI+CjxyZWN0IHdpZHRoPSIyMCIgaGVpZ2h0PSIyMCIgZmlsbD0ibm9uZSIvPgo8bGluZSB4MT0iMCIgeTE9IjIwIiB4Mj0iMjAiIHkyPSIwIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjUiLz4KPC9zdmc+')]"></div>
-                                            <span className="text-[10px] sm:text-xs font-bold text-white relative z-10 flex items-center gap-1.5 drop-shadow-md">
-                                                <Zap className="w-3.5 h-3.5 fill-white" />
-                                                80% Agentic Pre-Work
-                                            </span>
-                                        </div>
-                                        <div className="h-full bg-app-bg-card w-[20%] flex items-center justify-center border-l-2 border-blue-400">
-                                            <span className="text-[9px] sm:text-[10px] font-bold text-app-primary">20% IDE</span>
-                                        </div>
-                                    </div>
-                                    <div className="flex justify-between mt-2 text-[10px]">
-                                        <span className="text-app-primary font-bold max-w-[70%] text-left leading-tight">Scaffold, APIs, UI, Schemas, Tests, Deploy</span>
-                                        <span className="text-app-primary font-bold flex-1 text-right">Human Polish</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </section>
-    );
-};
-
-const LandingPage = () => {
-    const heroRef = useRef(null);
-    const ctaRef = useRef(null);
-    const [isLoginOpen, setIsLoginOpen] = useState(false);
-    const [isSignupOpen, setIsSignupOpen] = useState(false);
-    const [activeModeKey, setActiveModeKey] = useState('developer');
-
-    const projectUseCases = [
-        {
-            key: 'greenfield',
-            title: 'Greenfield Development',
-            subtitle: 'Build from scratch',
-            icon: <Zap className="h-5 w-5 text-white" />,
-            color: 'bg-app-status-success',
-            ring: 'border-emerald-200',
-            bg: 'bg-app-status-successBg/70',
-            useCase: [
-                'No existing system or legacy constraints',
-                'New architecture and new tech stack',
-                'Complete freedom in design and implementation',
-                'Example: Building a new SaaS product from zero'
-            ],
-            solution: [
-                'DSuite extracts architecture-ready requirements from BRD',
-                'Defines module boundaries and implementation flow early',
-                'Generates a build-ready roadmap before coding starts'
-            ],
-            comparison: {
-                existing: 'No',
-                freedom: 'High',
-                risk: 'Medium',
-                typical: 'New product'
+        // Apply theme to document element
+        const applyTheme = (t) => {
+            if (t === 'dark') {
+                document.documentElement.classList.add('dark');
+                document.documentElement.setAttribute('data-theme', 'dark');
+            } else {
+                document.documentElement.classList.remove('dark');
+                document.documentElement.setAttribute('data-theme', 'light');
             }
-        },
-        {
-            key: 'brownfield',
-            title: 'Brownfield Development',
-            subtitle: 'Enhancement of existing systems',
-            icon: <Workflow className="h-5 w-5 text-white" />,
-            color: 'bg-app-status-warning',
-            ring: 'border-amber-200',
-            bg: 'bg-app-status-warningBg/70',
-            useCase: [
-                'Existing application already in place',
-                'Adds features, integrations, or modules',
-                'Works within current architecture and constraints',
-                'May require selective refactoring'
-            ],
-            solution: [
-                'Maps new requirements against current system boundaries',
-                'Flags integration risks and dependency impacts upfront',
-                'Prioritizes change-safe rollout plans and task sequencing'
-            ],
-            note: 'Most enterprise projects fall into this category.',
-            comparison: {
-                existing: 'Yes',
-                freedom: 'Limited',
-                risk: 'Medium-High',
-                typical: 'Feature enhancements'
-            }
-        },
-        {
-            key: 'modernization',
-            title: 'Modernization / Re-engineering',
-            subtitle: 'Legacy transformation',
-            icon: <Cpu className="h-5 w-5 text-white" />,
-            color: 'bg-sky-600',
-            ring: 'border-sky-200',
-            bg: 'bg-sky-50/70',
-            useCase: [
-                'Rebuild or significantly transform legacy applications',
-                'Technology migration, architecture migration, and cloud migration',
-                'UI modernization from legacy desktop to modern web',
-                'Focus on scalability, maintainability, and performance'
-            ],
-            solution: [
-                'Supports phased strategies: rehost, replatform, refactor, rebuild, replace',
-                'Builds migration-ready dependency and risk views from BRD inputs',
-                'Creates execution plans aligned to modernization milestones'
-            ],
-            comparison: {
-                existing: 'Yes (Legacy)',
-                freedom: 'Partial',
-                risk: 'High',
-                typical: 'Digital transformation'
-            }
-        }
-    ];
-
-    const platformModes = [
-        {
-            key: 'developer',
-            title: 'Developer Only',
-            subtitle: 'Human-Led Development',
-            icon: <Code className="h-5 w-5 text-white" />,
-            color: 'from-app-primary to-cyan-500',
-            description: <>In this model, all work is performed manually by developers. <Sparkles className="inline h-4 w-4 mx-1 text-app-primary" />AI is only used as a reference tool.</>,
-            brief: 'Teams follow a fully human-led delivery path where architecture decisions, coding standards, and validation gates are handled directly by engineers. This model minimizes automation risk and gives leadership complete visibility into every change before release. It is effective when accuracy, accountability, and auditability are more important than delivery speed.',
-            executiveView: [
-                'Maximum human control',
-                'Lower automation',
-                'Slower but highly controlled execution',
-                'Suitable for sensitive or regulated environments'
-            ],
-            bestForPoints: [
-                'Mission-critical systems',
-                'Compliance-heavy industries',
-                'Deep innovation work'
-            ]
-        },
-        {
-            key: 'auto-complete',
-            title: <><Sparkles className="inline h-5 w-5 mr-1.5 text-app-primary" />AI Assist Mode</>,
-            subtitle: 'AI-Assisted Productivity',
-            icon: <Terminal className="h-5 w-5 text-white" />,
-            color: 'from-app-primary to-violet-500',
-            description: <><Sparkles className="inline h-4 w-4 mx-1 text-app-primary" />AI acts as a smart assistant, suggesting improvements and accelerating routine tasks while humans remain in full control.</>,
-            brief: 'This mode improves day-to-day engineering throughput by automating routine drafting, code suggestions, and repetitive refinement work. Developers still make final decisions and keep ownership of quality, security, and release readiness. It provides quick productivity gains without requiring major process or governance changes.',
-            executiveView: [
-                'Improves productivity without reducing oversight',
-                'Low risk',
-                'Quick return on investment',
-                'Minimal process disruption'
-            ],
-            bestForPoints: [
-                'Organizations seeking incremental productivity gains',
-                'Teams that want minimal process disruption',
-                'Enterprises avoiding structural change in delivery'
-            ]
-        },
-        {
-            key: 'vibe',
-            title: 'Vibe Coding Mode',
-            subtitle: 'Intent-Driven Development',
-            icon: <FileCode className="h-5 w-5 text-white" />,
-            color: 'from-fuchsia-600 to-pink-500',
-            description: <>Teams describe desired outcomes, and <Sparkles className="inline h-4 w-4 mx-1 text-fuchsia-600" />AI generates structured outputs rapidly. Humans refine and validate.</>,
-            brief: <>Vibe Coding is intent-first: teams define business outcomes and <Sparkles className="inline h-4 w-4 mx-1 text-fuchsia-600" />AI translates them into draft implementation paths quickly. This allows rapid concept testing, faster prototyping cycles, and accelerated early-stage feature development. Human review remains essential to align outputs with architecture standards and governance expectations.</>,
-            executiveView: [
-                'Rapid prototyping',
-                'Faster product launches',
-                'Encourages experimentation',
-                'Requires governance oversight'
-            ],
-            bestForPoints: [
-                'Innovation labs',
-                'MVP delivery',
-                'Digital product acceleration'
-            ]
-        },
-        {
-            key: 'coexistence',
-            title: 'Co-Existence Mode',
-            subtitle: 'Human + AI Collaboration Model',
-            icon: <CheckCircle className="h-5 w-5 text-white" />,
-            color: 'from-app-status-success to-teal-500',
-            description: <>Humans and <Sparkles className="inline h-4 w-4 mx-1 text-app-status-success" />AI actively collaborate. AI handles repetitive and analytical tasks while humans focus on strategy, architecture, and decision-making.</>,
-            brief: <>Co-Existence combines human judgment with <Sparkles className="inline h-4 w-4 mx-1 text-app-status-success" />AI execution in a shared workflow. AI accelerates analysis, drafting, and repetitive implementation tasks while people guide architecture, prioritization, and final sign-off decisions. This balance supports sustainable scale in enterprise engineering without sacrificing control or quality.</>,
-            executiveView: [
-                'Balanced automation',
-                'Higher productivity',
-                'Preserves strategic human oversight',
-                'Sustainable long-term model'
-            ],
-            bestForPoints: [
-                'Scaling technology organizations',
-                'Programs requiring both speed and control',
-                'Quality-focused multi-team engineering'
-            ],
-            note: 'This is currently the most practical enterprise model.'
-        },
-        {
-            key: 'sandbox',
-            title: <><Bot className="inline h-5 w-5 mr-1.5 text-sky-600" />AI First Mode</>,
-            subtitle: 'Fully Autonomous AI Environment',
-            icon: <Shield className="h-5 w-5 text-white" />,
-            color: 'from-sky-600 to-cyan-500',
-            description: <><Sparkles className="inline h-4 w-4 mx-1 text-sky-600" />AI independently builds, tests, and iterates with minimal human involvement.</>,
-            brief: <>Sandbox mode runs autonomous <Sparkles className="inline h-4 w-4 mx-1 text-sky-600" />AI workflows inside a separate, isolated environment to reduce impact on core systems. It enables rapid experimentation, repeated test cycles, and controlled iteration at high speed. This is suited for internal innovation tracks where strong monitoring and clear boundaries are already in place.</>,
-            executiveView: [
-                'Maximum speed',
-                'High experimentation potential',
-                'Elevated risk without guardrails',
-                'Requires strong monitoring systems'
-            ],
-            bestForPoints: [
-                'Internal tools',
-                'R&D environments',
-                'Innovation pilots'
-            ]
-        }
-    ];
-
-    const activeMode = platformModes.find((mode) => mode.key === activeModeKey) || platformModes[0];
-    const modeRoleBlueprints = {
-        developer: [
-            {
-                role: 'Project Lead',
-                persona: 'Tech Lead, Senior Developer, or Engineering Manager',
-                icon: <Workflow className="h-4 w-4 text-white" />,
-                responsibilities: [
-                    'Breaks tickets into manual implementation plans',
-                    'Reviews design and architecture decisions before coding',
-                    'Coordinates handoffs and review milestones'
-                ],
-                authority: 'Final technical approval before implementation',
-                mapsTo: 'Tech Lead, Scrum Master (technical), Senior Engineer'
-            },
-            {
-                role: 'Developers',
-                persona: 'Individual Contributors',
-                icon: <Code className="h-4 w-4 text-white" />,
-                responsibilities: [
-                    'Implement code manually and validate correctness',
-                    'Own quality, edge-case handling, and optimization',
-                    'Write and execute tests, then deploy'
-                ],
-                authority: 'Approve/reject implementation quality',
-                mapsTo: 'Software Engineers (all levels)'
-            },
-            {
-                role: 'Product Manager (Optional)',
-                persona: 'Recommended for complex features',
-                icon: <FileText className="h-4 w-4 text-white" />,
-                responsibilities: [
-                    'Validates implementation against business requirements',
-                    'Ensures acceptance criteria are testable and complete',
-                    'Confirms scope before release'
-                ],
-                authority: 'Business logic approval before release',
-                mapsTo: 'Product Owner or Product Manager'
-            }
-        ],
-        'auto-complete': [
-            {
-                role: 'Project Lead',
-                persona: 'Tech Lead, Senior Developer, or Engineering Manager',
-                icon: <Workflow className="h-4 w-4 text-white" />,
-                responsibilities: [
-                    'Creates guided prompts from tickets and user stories',
-                    <><Sparkles className="inline h-3.5 w-3.5 mr-1 text-app-primary" />Reviews AI suggestions for architecture fit</>,
-                    <><Sparkles className="inline h-3.5 w-3.5 mr-1 text-app-primary" />Controls where AI assistance is allowed</>
-                ],
-                authority: 'Final approval on assisted outputs before merge',
-                mapsTo: 'Tech Lead, Scrum Master (technical), Senior Engineer'
-            },
-            {
-                role: 'Developers',
-                persona: 'Individual Contributors',
-                icon: <Code className="h-4 w-4 text-white" />,
-                responsibilities: [
-                    <><Sparkles className="inline h-3.5 w-3.5 mr-1 text-app-primary" />Use AI suggestions and manually validate every change</>,
-                    'Handle final refinement and reliability hardening',
-                    'Write tests and ship production-ready code'
-                ],
-                authority: <><Sparkles className="inline h-3.5 w-3.5 mr-1 text-app-primary" />Approve/reject AI-assisted code</>,
-                mapsTo: 'Software Engineers (all levels)'
-            },
-            {
-                role: 'Product Manager (Optional)',
-                persona: 'Recommended for complex features',
-                icon: <FileText className="h-4 w-4 text-white" />,
-                responsibilities: [
-                    'Checks feature intent against business value',
-                    'Validates acceptance criteria in proposed output',
-                    'Flags scope drift early'
-                ],
-                authority: 'Business logic approval before finalization',
-                mapsTo: 'Product Owner or Product Manager'
-            }
-        ],
-        vibe: [
-            {
-                role: 'Project Lead',
-                persona: 'Tech Lead, Senior Developer, or Engineering Manager',
-                icon: <Workflow className="h-4 w-4 text-white" />,
-                responsibilities: [
-                    'Creates outcome-focused prompts from tickets and stories',
-                    'Reviews generated AAPs for technical accuracy',
-                    'Coordinates generation rounds and handoffs'
-                ],
-                authority: 'Final approval on AAP before code generation',
-                mapsTo: 'Tech Lead, Scrum Master (technical), Senior Engineer'
-            },
-            {
-                role: 'Developers',
-                persona: 'Individual Contributors',
-                icon: <Code className="h-4 w-4 text-white" />,
-                responsibilities: [
-                    'Review generated code for quality and correctness',
-                    'Handle final 20% refinement (edge cases, optimizations)',
-                    'Write additional tests and deploy'
-                ],
-                authority: 'Approve/reject generated code and request regeneration',
-                mapsTo: 'Software Engineers (all levels)'
-            },
-            {
-                role: 'Product Manager (Optional)',
-                persona: 'Recommended for complex features',
-                icon: <FileText className="h-4 w-4 text-white" />,
-                responsibilities: [
-                    'Validates that AAPs align with business requirements',
-                    'Ensures acceptance criteria are met in the plan',
-                    'Confirms outcome quality before execution'
-                ],
-                authority: 'Business logic approval before code generation',
-                mapsTo: 'Product Owner or Product Manager'
-            }
-        ],
-        coexistence: [
-            {
-                role: 'Project Lead',
-                persona: 'Tech Lead, Senior Developer, or Engineering Manager',
-                icon: <Workflow className="h-4 w-4 text-white" />,
-                responsibilities: [
-                    'Creates prompts from tickets and user stories',
-                    'Reviews and approves AAPs for technical accuracy',
-                    'Coordinates the generation process and handoffs'
-                ],
-                authority: 'Final approval on AAP before code generation',
-                mapsTo: 'Tech Lead, Scrum Master (technical), Senior Engineer'
-            },
-            {
-                role: 'Developers',
-                persona: 'Individual Contributors',
-                icon: <Code className="h-4 w-4 text-white" />,
-                responsibilities: [
-                    'Review generated code for quality and correctness',
-                    'Handle final 20% refinement (edge cases, optimizations)',
-                    'Write additional tests as needed and deploy'
-                ],
-                authority: 'Approve/reject generated code and request regeneration',
-                mapsTo: 'Software Engineers (all levels)'
-            },
-            {
-                role: 'Product Manager (Optional)',
-                persona: 'Recommended for complex features',
-                icon: <FileText className="h-4 w-4 text-white" />,
-                responsibilities: [
-                    'Validates that AAPs align with business requirements',
-                    'Ensures acceptance criteria are met in the plan',
-                    'Confirms scope and intent before generation'
-                ],
-                authority: 'Business logic approval before code generation',
-                mapsTo: 'Product Owner or Product Manager'
-            }
-        ],
-        sandbox: [
-            {
-                role: 'Project Lead',
-                persona: 'Tech Lead, Senior Developer, or Engineering Manager',
-                icon: <Workflow className="h-4 w-4 text-app-bg-card" />,
-                responsibilities: [
-                    'Defines guardrails and boundaries for autonomous runs',
-                    'Approves autonomy scope and safety checkpoints',
-                    'Reviews experiment outcomes and escalation events'
-                ],
-                authority: 'Controls autonomy level and production promotion',
-                mapsTo: 'Tech Lead, Engineering Manager'
-            },
-            {
-                role: 'Developers',
-                persona: 'Individual Contributors',
-                icon: <Code className="h-4 w-4 text-app-bg-card" />,
-                responsibilities: [
-                    <><Sparkles className="inline h-3.5 w-3.5 mr-1 text-sky-500" />Audit AI-generated code and test artifacts</>,
-                    'Fix reliability/security issues before promotion',
-                    'Own production deployment decisions'
-                ],
-                authority: 'Approve/reject sandbox output for production',
-                mapsTo: 'Software Engineers (all levels)'
-            },
-            {
-                role: 'Product Manager (Optional)',
-                persona: 'Recommended for complex features',
-                icon: <FileText className="h-4 w-4 text-app-bg-card" />,
-                responsibilities: [
-                    'Checks feature fit against roadmap priorities',
-                    'Validates expected user value from generated output',
-                    'Approves experiment-to-product transitions'
-                ],
-                authority: 'Business approval before production rollout',
-                mapsTo: 'Product Owner or Product Manager'
-            }
-        ],
-    };
-    const activeModeRoles = modeRoleBlueprints[activeMode.key] || modeRoleBlueprints.coexistence;
-    const toSentence = (items = []) => {
-        if (items.length === 0) return '';
-        if (items.length === 1) return items[0];
-        if (items.length === 2) return `${items[0]} and ${items[1]}`;
-        return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
-    };
-
-    const openLogin = () => {
-        setIsSignupOpen(false);
-        setIsLoginOpen(true);
-    };
-
-    const openSignup = () => {
-        setIsLoginOpen(false);
-        setIsSignupOpen(true);
-    };
-
-    const closeModals = () => {
-        setIsLoginOpen(false);
-        setIsSignupOpen(false);
-    };
-
-    // Keep body scroll lock in sync with auth modals
-    useEffect(() => {
-        const ctx = gsap.context(() => {
-            // Hero Animations
-            gsap.from('.hero-content > *', {
-                y: 30,
-                opacity: 0,
-                duration: 0.8,
-                stagger: 0.1,
-                ease: 'power2.out',
-                clearProps: 'all'
-            });
-
-            gsap.from('.hero-image', {
-                x: 30,
-                opacity: 0,
-                duration: 1,
-                delay: 0.3,
-                ease: 'power2.out',
-                clearProps: 'all'
-            });
-
-        });
-
-        return () => ctx.revert();
-    }, []);
-
-    // Prevent body scroll when modal is open
-    useEffect(() => {
-        if (isLoginOpen || isSignupOpen) {
-            document.body.style.overflow = 'hidden';
-        } else {
-            document.body.style.overflow = 'auto';
-        }
-        return () => {
-            document.body.style.overflow = 'auto';
         };
-    }, [isLoginOpen, isSignupOpen]);
 
-    // Local theme state for public pages, synced with <html class="dark"> and localStorage
-    const [isDarkMode, setIsDarkMode] = useState(() => {
-        return typeof window !== 'undefined' && localStorage.getItem('theme') === 'dark';
-    });
+        applyTheme(theme);
 
-    useEffect(() => {
-        if (typeof document === 'undefined') return;
-        if (isDarkMode) {
-            document.documentElement.classList.add('dark');
-            localStorage.setItem('theme', 'dark');
-        } else {
-            document.documentElement.classList.remove('dark');
-            localStorage.setItem('theme', 'light');
-        }
-    }, [isDarkMode]);
+        const handleThemeChange = () => {
+            const currentTheme = localStorage.getItem('theme') || 'dark';
+            setTheme(currentTheme);
+            applyTheme(currentTheme);
+        };
+
+        window.addEventListener('theme-changed', handleThemeChange);
+        
+        // Listen for release notes open event from navbar button
+        const handleOpenReleaseNotes = () => setShowReleaseNotes(true);
+        window.addEventListener('open-release-notes', handleOpenReleaseNotes);
+
+        // 1. Inject the new landing page stylesheet
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = '/assets/index-DZGiql0S.css';
+        link.id = 'landing-page-css';
+        document.head.appendChild(link);
+
+        // 2. Inject the new landing page JS bundle
+        const script = document.createElement('script');
+        script.type = 'module';
+        script.src = '/assets/index-DabgM5Gx.js';
+        script.id = 'landing-page-js';
+        document.body.appendChild(script);
+
+        // 3. Dynamic Navbar Button Injections (Docs, Flyer, Release Notes & Theme Toggle)
+        const injectNavbarButtons = () => {
+            const existingDocsBtn = document.getElementById('docs-nav-button');
+            const existingFlyerBtn = document.getElementById('flyer-nav-button');
+            const existingReleaseBtn = document.getElementById('release-notes-nav-button');
+            const existingThemeBtn = document.getElementById('theme-nav-button');
+            
+            if (existingDocsBtn && existingFlyerBtn && existingReleaseBtn && existingThemeBtn) return; // Already injected
+            
+            const allElements = Array.from(document.querySelectorAll('a, button, div, span'));
+            const workflowElement = allElements.find(el => el.textContent?.trim() === 'Workflow');
+            const featuresElement = allElements.find(el => el.textContent?.trim() === 'Features');
+            const anchorElement = workflowElement || featuresElement;
+            
+            if (anchorElement) {
+                const parent = anchorElement.parentNode;
+                
+                // Create Docs Button if not existing
+                if (!existingDocsBtn) {
+                    const docsButton = anchorElement.cloneNode(true);
+                    docsButton.id = 'docs-nav-button';
+                    docsButton.textContent = 'Docs';
+                    docsButton.innerHTML = 'Docs';
+                    
+                    if (docsButton.tagName === 'A') {
+                        docsButton.href = '/docs';
+                    } else {
+                        docsButton.style.cursor = 'pointer';
+                        docsButton.onclick = (e) => {
+                            e.preventDefault();
+                            window.location.href = '/docs';
+                        };
+                    }
+                    
+                    if (anchorElement.nextSibling) {
+                        parent.insertBefore(docsButton, anchorElement.nextSibling);
+                    } else {
+                        parent.appendChild(docsButton);
+                    }
+                }
+
+                // Create Flyer Button if not existing
+                if (!existingFlyerBtn) {
+                    const docsBtnRef = document.getElementById('docs-nav-button') || anchorElement;
+                    const flyerButton = anchorElement.cloneNode(true);
+                    flyerButton.id = 'flyer-nav-button';
+                    flyerButton.textContent = 'Brochure';
+                    flyerButton.innerHTML = 'Brochure';
+                    
+                    if (flyerButton.tagName === 'A') {
+                        flyerButton.href = '/Dsuite_Brochure.pdf';
+                        flyerButton.download = 'Dsuite_Brochure.pdf';
+                    } else {
+                        flyerButton.style.cursor = 'pointer';
+                        flyerButton.onclick = (e) => {
+                            e.preventDefault();
+                            const link = document.createElement('a');
+                            link.href = '/Dsuite_Brochure.pdf';
+                            link.download = 'Dsuite_Brochure.pdf';
+                            document.body.appendChild(link);
+                            link.click();
+                            document.body.removeChild(link);
+                        };
+                    }
+                    
+                    if (docsBtnRef.nextSibling) {
+                        parent.insertBefore(flyerButton, docsBtnRef.nextSibling);
+                    } else {
+                        parent.appendChild(flyerButton);
+                    }
+                }
+
+                // Create Release Notes Button if not existing
+                if (!existingReleaseBtn) {
+                    const flyerBtnRef = document.getElementById('flyer-nav-button') || document.getElementById('docs-nav-button') || anchorElement;
+                    const releaseButton = anchorElement.cloneNode(true);
+                    releaseButton.id = 'release-notes-nav-button';
+                    releaseButton.textContent = 'Release Notes';
+                    releaseButton.innerHTML = 'Release Notes';
+                    releaseButton.style.cursor = 'pointer';
+                    releaseButton.onclick = (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        window.dispatchEvent(new Event('open-release-notes'));
+                    };
+                    if (flyerBtnRef.nextSibling) {
+                        parent.insertBefore(releaseButton, flyerBtnRef.nextSibling);
+                    } else {
+                        parent.appendChild(releaseButton);
+                    }
+                }
+
+                // Create Theme Toggle Button if not existing
+                const currentFlyerBtn = document.getElementById('release-notes-nav-button') || document.getElementById('flyer-nav-button') || document.getElementById('docs-nav-button') || anchorElement;
+                if (!existingThemeBtn) {
+                    const themeButton = document.createElement('button');
+                    themeButton.id = 'theme-nav-button';
+                    
+                    // Match landing page link classes and styles
+                    themeButton.className = 'bourntec-nav-link';
+                    themeButton.style.cursor = 'pointer';
+                    themeButton.style.display = 'inline-flex';
+                    themeButton.style.alignItems = 'center';
+                    themeButton.style.justifyContent = 'center';
+                    themeButton.style.padding = '4px 8px';
+                    themeButton.style.marginLeft = '12px';
+                    themeButton.style.border = 'none';
+                    themeButton.style.backgroundColor = 'transparent';
+                    
+                    // Render sun/moon path dynamically based on theme
+                    const currentTheme = localStorage.getItem('theme') || 'dark';
+                    const isDark = currentTheme === 'dark';
+                    themeButton.innerHTML = isDark 
+                        ? `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-sun"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>`
+                        : `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-moon"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>`;
+                    
+                    themeButton.onclick = (e) => {
+                        e.preventDefault();
+                        const t = localStorage.getItem('theme') || 'dark';
+                        const newTheme = t === 'dark' ? 'light' : 'dark';
+                        localStorage.setItem('theme', newTheme);
+                        applyTheme(newTheme);
+                        setTheme(newTheme);
+                        
+                        // Update button icon
+                        themeButton.innerHTML = newTheme === 'dark'
+                            ? `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-sun"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>`
+                            : `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-moon"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>`;
+                        
+                        // Broadcast change to other pages
+                        window.dispatchEvent(new Event('theme-changed'));
+ 
+                        // Update Bourntec logo for new theme
+                        setTimeout(() => {
+                            const logo = document.getElementById('bourntec-landing-logo');
+                            if (logo) {
+                                logo.src = newTheme === 'dark' ? '/assets/docs/bourntec_logo.png' : '/assets/docs/bourntec_logo_l.png';
+                            }
+                        }, 50);
+                    };
+                    
+                    if (currentFlyerBtn.nextSibling) {
+                        parent.insertBefore(themeButton, currentFlyerBtn.nextSibling);
+                    } else {
+                        parent.appendChild(themeButton);
+                    }
+                }
+            }
+        };
+
+        // 3b. Replace DSuite branding with Bourntec logo
+        const rebrandLandingLogos = () => {
+            const currentTheme = localStorage.getItem('theme') || 'dark';
+            const isDark = currentTheme === 'dark';
+            const logoSrc = isDark ? '/assets/docs/bourntec_logo.png' : '/assets/docs/bourntec_logo_l.png';
+
+            // Replace sparkles icon + "DSuite" gradient text in desktop-menu navbar
+            const gradientTextEls = document.querySelectorAll('.gradient-text');
+            gradientTextEls.forEach(el => {
+                if (el.textContent.trim() === 'DSuite') {
+                    // Skip if this is the label we already created or is inside our wrapper
+                    if (el.id === 'bourntec-landing-label' || el.closest('#bourntec-landing-logo-wrapper')) {
+                        return;
+                    }
+                    const parent = el.parentNode;
+                    // Remove the sparkles icon box (previous sibling div with gradient bg)
+                    const iconBox = parent.querySelector('div[style*="gradient"]');
+                    if (iconBox && iconBox !== el) {
+                        iconBox.remove();
+                    }
+                    // Create wrapper with logo image + text
+                    const wrapper = document.createElement('div');
+                    wrapper.style.display = 'flex';
+                    wrapper.style.alignItems = 'center';
+                    wrapper.style.gap = '8px';
+                    wrapper.id = 'bourntec-landing-logo-wrapper';
+
+                    const img = document.createElement('img');
+                    img.src = logoSrc;
+                    img.alt = 'DSuite';
+                    img.style.height = '24px';
+                    img.style.width = 'auto';
+                    img.style.display = 'block';
+                    img.id = 'bourntec-landing-logo';
+                    img.style.transform = 'translateY(-2px)';
+
+                    const label = document.createElement('span');
+                    label.textContent = 'DSuite';
+                    label.className = 'gradient-text';
+                    label.id = 'bourntec-landing-label';
+                    label.style.lineHeight = '1';
+                    label.style.alignSelf = 'center';
+                    label.style.transform = 'translateY(1px)';
+                    label.style.display = 'inline-block';
+                    label.style.background = 'linear-gradient(to right, #8b5cf6, #ec4899)';
+                    label.style.webkitBackgroundClip = 'text';
+                    label.style.webkitTextFillColor = 'transparent';
+
+                    wrapper.appendChild(img);
+                    wrapper.appendChild(label);
+                    el.replaceWith(wrapper);
+                }
+            });
+
+            // Also update existing logo if theme changed
+            const existingLogo = document.getElementById('bourntec-landing-logo');
+            if (existingLogo) {
+                existingLogo.src = logoSrc;
+            }
+        };
+
+        const updateVibeCodingButton = () => {
+            const spans = Array.from(document.querySelectorAll('span, button, a'));
+            const badge = spans.find(el => {
+                const txt = (el.textContent || '').trim();
+                const isBadge = el.style.borderRadius === '9999px' || el.style.display === 'inline-flex' || el.style.padding === '4px 12px';
+                return (txt === 'Vibe Coding Mode' || txt === 'Launch Vibe Coding \u2197') && isBadge;
+            });
+            if (badge) {
+                badge.style.cursor = 'pointer';
+                badge.style.userSelect = 'none';
+                badge.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    window.open('https://sandbox1-dsuite.bourntec.com/vibecoding/', '_blank');
+                };
+                badge.textContent = 'Launch Vibe Coding \u2197';
+                badge.style.background = 'linear-gradient(90deg, #ec4899, #db2777)';
+                badge.style.color = '#ffffff';
+                badge.style.textDecoration = 'none';
+                badge.style.transition = 'all 0.2s ease';
+                badge.style.boxShadow = '0 0 12px rgba(236, 72, 153, 0.4)';
+                badge.onmouseenter = () => {
+                    badge.style.opacity = '0.9';
+                    badge.style.transform = 'scale(1.05)';
+                    badge.style.textDecoration = 'underline';
+                    badge.style.boxShadow = '0 0 16px rgba(236, 72, 153, 0.6)';
+                };
+                badge.onmouseleave = () => {
+                    badge.style.opacity = '1';
+                    badge.style.transform = 'scale(1)';
+                    badge.style.textDecoration = 'none';
+                    badge.style.boxShadow = '0 0 12px rgba(236, 72, 153, 0.4)';
+                };
+            }
+            // Revert any accidental modifications to non-badge subtitle text
+            spans.forEach(el => {
+                const txt = (el.textContent || '').trim();
+                const isBadge = el.style.borderRadius === '9999px' || el.style.display === 'inline-flex' || el.style.padding === '4px 12px';
+                if (txt === 'Launch Vibe Coding \u2197' && !isBadge) {
+                    el.textContent = 'Vibe Coding Mode';
+                    el.style.cursor = '';
+                    el.onclick = null;
+                }
+            });
+        };
+
+        // Try to inject multiple times to account for compiled script rendering delays
+        const delays = [100, 300, 500, 1000, 1500, 2000, 3000];
+        const timeouts = delays.map(delay => setTimeout(() => {
+            injectNavbarButtons();
+            rebrandLandingLogos();
+            updateVibeCodingButton();
+        }, delay));
+
+        // 4. Intercept click events on CTA buttons
+        const handleGlobalClick = (e) => {
+            // Update button when anything is clicked (mode switch)
+            setTimeout(updateVibeCodingButton, 50);
+
+            const target = e.target.closest('button, a');
+            if (!target) return;
+            
+            const text = (target.textContent || '').trim().toLowerCase();
+            
+            if (
+                text === 'get started' || 
+                text === 'get started free' || 
+                text === 'launch compiled application' || 
+                text === 'schedule demo'
+            ) {
+                e.preventDefault();
+                e.stopPropagation();
+                window.location.href = '/login';
+            }
+            
+            if (
+                text.includes('documentation') ||
+                text.includes('learn more') ||
+                text.includes('docs') ||
+                text.includes('user guide')
+            ) {
+                e.preventDefault();
+                e.stopPropagation();
+                window.location.href = '/docs';
+            }
+        };
+
+        document.addEventListener('click', handleGlobalClick, true);
+
+        return () => {
+            timeouts.forEach(clearTimeout);
+            window.removeEventListener('theme-changed', handleThemeChange);
+            window.removeEventListener('open-release-notes', handleOpenReleaseNotes);
+            
+            const existingLink = document.getElementById('landing-page-css');
+            if (existingLink) existingLink.remove();
+
+            const existingScript = document.getElementById('landing-page-js');
+            if (existingScript) existingScript.remove();
+            
+            const docsBtn = document.getElementById('docs-nav-button');
+            if (docsBtn) docsBtn.remove();
+
+            const flyerBtn = document.getElementById('flyer-nav-button');
+            if (flyerBtn) flyerBtn.remove();
+            
+            const releaseBtn = document.getElementById('release-notes-nav-button');
+            if (releaseBtn) releaseBtn.remove();
+            
+            const themeBtn = document.getElementById('theme-nav-button');
+            if (themeBtn) themeBtn.remove();
+
+            document.removeEventListener('click', handleGlobalClick, true);
+        };
+    }, []);
 
     return (
-        <div className="min-h-screen text-app-text-main font-sans overflow-x-hidden relative">
-            <BackgroundMarquee />
+        <>
+            <div id="landing-root"></div>
+            
+            {/* Scoped CSS overrides for the landing page light theme inline styles */}
+            <style dangerouslySetInnerHTML={{__html: `
+                /* Hide AI-Powered Development Platform badge */
+                .hero-badge {
+                    display: none !important;
+                }
 
-            {/* Navigation */}
-            <nav className="fixed w-full bg-app-bg-card/95 z-50 border-b border-app-border-light transition-all duration-300" style={{ transform: "translateZ(0)" }}>
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                    <div className="flex justify-between items-center h-16">
-                        <div className="flex items-center gap-3">
-                            <img
-                                src={isDarkMode ? BourntecLogo : Logo}
-                                alt="DSuite"
-                                className="h-10 w-auto"
-                            />
-                            <div className="h-6 w-px bg-app-bg-hover"></div>
-                            <span className="text-xl font-bold tracking-tight text-app-text-main">DSuite</span>
-                        </div>
-                        <div className="flex items-center gap-4">
-                            <button
-                                type="button"
-                                onClick={() => setIsDarkMode((prev) => !prev)}
-                                className="p-2 rounded-md text-app-text-label hover:text-app-text-main hover:bg-app-bg-page border border-transparent hover:border-app-border-light transition-colors cursor-pointer"
-                                aria-label="Toggle theme"
-                            >
-                                {isDarkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-                            </button>
-                            <button
-                                onClick={openLogin}
-                                className="text-app-text-label hover:text-app-text-main font-medium transition-colors cursor-pointer bg-transparent border-0"
-                            >
-                                Log in
-                            </button>
-                            <button
-                                onClick={openSignup}
-                                className="hidden sm:inline-flex bg-app-primary hover:bg-app-primary-hover text-white px-5 py-2.5 rounded-lg font-semibold transition-transform hover:scale-105 shadow-md shadow-app-primary/20 cursor-pointer border-0"
-                            >
-                                Get Started
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </nav>
+                /* Add top gap to hero title since badge is hidden */
+                .hero-title {
+                    margin-top: 2rem !important;
+                }
 
-            {/* Hero Section */}
-            <section ref={heroRef} className="pt-24 pb-6 lg:pt-32 lg:pb-12 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto relative z-10">
-                <div className="grid lg:grid-cols-2 gap-12 lg:gap-16 items-center">
-                    <div className="hero-content space-y-6 lg:space-y-8 text-center lg:text-left">
-                        <h1 className="text-4xl sm:text-5xl lg:text-7xl font-extrabold tracking-tight leading-tight text-app-text-main">
-                            Transform <span className="text-transparent bg-clip-text bg-gradient-to-r from-app-primary to-app-primary">Ideas</span> with Intelligence
-                        </h1>
-                        <p className="text-lg sm:text-xl text-app-text-label leading-relaxed max-w-lg mx-auto lg:mx-0">
-                            Instantly analyze concepts, ideas, and Business Requirement Documents (BRDs) with advanced <Sparkles className="inline h-4 w-4 mx-1 text-app-primary" />AI. Get feasibility checks and technical blueprints in seconds.
-                        </p>
-                        <div className="flex flex-col sm:flex-row gap-4 pt-4 justify-center lg:justify-start">
-                            <button
-                                onClick={openSignup}
-                                className="inline-flex justify-center items-center px-8 py-4 text-base font-bold text-white bg-app-primary rounded-xl hover:bg-app-primary-hover transition-all shadow-lg hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0 cursor-pointer border-0"
-                            >
-                                Start Analysis
-                                <ArrowRight className="ml-2 h-5 w-5" />
-                            </button>
-                            <Link
-                                to="/how-it-works"
-                                className="inline-flex justify-center items-center px-8 py-4 text-base font-bold text-app-text-label bg-app-bg-card border border-app-border rounded-xl hover:bg-app-bg-page transition-colors"
-                            >
-                                How it works
-                            </Link>
-                        </div>
-                        <div className="flex flex-wrap justify-center lg:justify-start gap-4 pt-4 text-sm text-app-text-muted">
-                            <div className="flex items-center gap-1">
-                                <CheckCircle className="h-4 w-4 text-app-status-success shrink-0" />
-                                <span>Professional-grade analysis</span>
-                            </div>
-                            <div className="flex items-center gap-1">
-                                <CheckCircle className="h-4 w-4 text-app-status-success shrink-0" />
-                                <span>Enterprise-grade security</span>
-                            </div>
-                        </div>
-                    </div>
+                /* Tour Viewport Height Alignment Override (Globally for both Dark & Light themes) */
+                .tour-viewport {
+                    min-height: 550px !important;
+                    max-height: 550px !important;
+                }
+                
+                [data-theme=light] .bourntec-landing {
+                    background: #fafbfc !important;
+                    color: #18181b !important;
+                }
+                [data-theme=light] .bourntec-landing:before {
+                    background: radial-gradient(circle at 50% 30%, rgba(124, 58, 237, 0.08) 0%, rgba(99, 102, 241, 0.03) 50%, transparent 100%) !important;
+                }
+                [data-theme=light] .bourntec-nav {
+                    background: rgba(250, 251, 252, 0.8) !important;
+                    border-bottom: 1px solid #e4e4e7 !important;
+                }
+                [data-theme=light] .bourntec-nav-link {
+                    color: #52525b !important;
+                }
+                [data-theme=light] .bourntec-nav-link:hover {
+                    color: #18181b !important;
+                }
+                [data-theme=light] .bourntec-footer {
+                    background: #fafbfc !important;
+                    border-top: 1px solid #e4e4e7 !important;
+                }
+                [data-theme=light] .bourntec-hero-title span {
+                    background: linear-gradient(135deg, #7c3aed 0%, #db2777 100%) !important;
+                    -webkit-text-fill-color: transparent !important;
+                    -webkit-background-clip: text !important;
+                }
+                [data-theme=light] .bourntec-hero-desc {
+                    color: #52525b !important;
+                }
+                
+                /* Multi-agent Loop Panel Showcase (first screenshot) */
+                [data-theme=light] #landing-root div[style*="height: 700px"] {
+                    background: #ffffff !important;
+                    border: 1px solid #e4e4e7 !important;
+                    box-shadow: 0 25px 50px rgba(0, 0, 0, 0.04) !important;
+                }
+                [data-theme=light] #landing-root div[style*="height: 700px"] h3 {
+                    color: #18181b !important;
+                }
+                [data-theme=light] #landing-root div[style*="height: 700px"] p {
+                    color: #52525b !important;
+                }
+                [data-theme=light] #landing-root div[style*="background: rgba(10, 10, 15, 0.9)"],
+                [data-theme=light] #landing-root div[style*="rgba(10,10,15,0.9)"] {
+                    background: #ffffff !important;
+                    border: 1px solid #e2e8f0 !important;
+                    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05) !important;
+                }
+                [data-theme=light] #landing-root div[style*="rgba(10,10,15,0.9)"] p {
+                    color: #334155 !important;
+                }
+                [data-theme=light] #landing-root div[style*="rgba(10,10,15,0.9)"] span {
+                    color: #64748b !important;
+                }
+                [data-theme=light] #landing-root div[style*="rgba(10,10,15,0.9)"] div {
+                    background: #f8fafc !important;
+                    border: 1px solid #e2e8f0 !important;
+                    color: #1e293b !important;
+                }
+                [data-theme=light] #landing-root div[style*="background: rgba(100, 100, 120, 0.8)"],
+                [data-theme=light] #landing-root div[style*="rgba(100,100,120,0.8)"] {
+                    background: #f1f5f9 !important;
+                    border: 1px solid #cbd5e1 !important;
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.03) !important;
+                }
+                [data-theme=light] #landing-root div[style*="rgba(100,100,120,0.8)"] button {
+                    color: #475569 !important;
+                }
+                
+                /* Explore Steps Tour (second screenshot) */
+                [data-theme=light] section[id="tour"] {
+                    background: #f8fafc !important;
+                }
+                [data-theme=light] .tour-step-btn {
+                    color: #52525b !important;
+                }
+                [data-theme=light] .tour-step-btn:hover {
+                    background: #f4f4f5 !important;
+                    border-color: #e4e4e7 !important;
+                }
+                [data-theme=light] .tour-step-btn.active {
+                    background: #ffffff !important;
+                    border-color: rgba(124, 58, 237, 0.15) !important;
+                    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.04) !important;
+                }
+                [data-theme=light] .tour-step-title {
+                    color: #52525b !important;
+                }
+                [data-theme=light] .tour-step-btn.active .tour-step-title {
+                    color: #18181b !important;
+                }
+                [data-theme=light] .tour-step-icon-wrapper {
+                    background: #f4f4f5 !important;
+                    border: 1px solid #e4e4e7 !important;
+                    color: #71717a !important;
+                }
+                [data-theme=light] .tour-step-icon-wrapper.active {
+                    background: linear-gradient(135deg, #7c3aed 0%, #db2777 100%) !important;
+                    color: #ffffff !important;
+                }
+                [data-theme=light] .viewport-address {
+                    background: #f4f4f5 !important;
+                    border: 1px solid #e4e4e7 !important;
+                    color: #71717a !important;
+                }
+                [data-theme=light] .autoplay-control-bar {
+                    background: #f8fafc !important;
+                    border: 1px solid #e4e4e7 !important;
+                }
+                [data-theme=light] .autoplay-control-bar button[style*="background: rgba(255, 255, 255, 0.05)"] {
+                    background: #ffffff !important;
+                    border-color: #cbd5e1 !important;
+                    color: #64748b !important;
+                }
+                [data-theme=light] .autoplay-control-bar span {
+                    color: #475569 !important;
+                }
+                
+                /* Tour Viewport Container Styles */
+                [data-theme=light] .tour-viewport {
+                    background: #ffffff !important;
+                    border: 1px solid #e4e4e7 !important;
+                    box-shadow: 0 20px 45px rgba(0,0,0,0.04) !important;
+                }
+                [data-theme=light] .viewport-header {
+                    background: #f8fafc !important;
+                    border-bottom: 1px solid #e4e4e7 !important;
+                }
+                [data-theme=light] .tour-viewport div[style*="border-right"] {
+                    border-right-color: #e4e4e7 !important;
+                }
+                [data-theme=light] .tour-viewport div[style*="borderRight"] {
+                    border-right-color: #e4e4e7 !important;
+                }
+                [data-theme=light] .dropzone-mock {
+                    background: #f8fafc !important;
+                    border: 2px dashed #cbd5e1 !important;
+                    color: #1e293b !important;
+                }
+                [data-theme=light] .dropzone-mock div {
+                    color: #475569 !important;
+                }
+                [data-theme=light] .dropzone-mock div[style*="var(--text-tertiary)"] {
+                    color: #64748b !important;
+                }
+                [data-theme=light] .dropzone-mock svg {
+                    color: #7c3aed !important;
+                }
+                
+                /* Viewport Case Flow Diagram SVG overrides (light mode colors) */
+                [data-theme=light] .tour-viewport div[style*="background: rgba(9, 9, 11"],
+                [data-theme=light] .tour-viewport div[style*="background:rgba(9,9,11"] {
+                    background: #ffffff !important;
+                    border: 1px solid #e2e8f0 !important;
+                }
+                [data-theme=light] .tour-viewport svg rect[fill*="indigoGrad"] {
+                    fill: #f1f5f9 !important;
+                    stroke: #7c3aed !important;
+                }
+                [data-theme=light] .tour-viewport svg rect[fill*="amberGrad"] {
+                    fill: #fef3c7 !important;
+                    stroke: #d97706 !important;
+                }
+                [data-theme=light] .tour-viewport svg rect[fill*="emeraldGrad"] {
+                    fill: #d1fae5 !important;
+                    stroke: #059669 !important;
+                }
+                [data-theme=light] .tour-viewport svg rect[fill="rgba(255, 255, 255, 0.02)"] {
+                    fill: #f8fafc !important;
+                    stroke: #cbd5e1 !important;
+                }
+                [data-theme=light] .tour-viewport svg rect[fill="rgba(59, 130, 246, 0.1)"] {
+                    fill: #eff6ff !important;
+                    stroke: #3b82f6 !important;
+                }
+                [data-theme=light] .tour-viewport svg text[fill="#f8fafc"] {
+                    fill: #18181b !important;
+                }
+                [data-theme=light] .tour-viewport svg text[fill="#e2e8f0"] {
+                    fill: #334155 !important;
+                }
+                [data-theme=light] .tour-viewport svg text[fill="#94a3b8"] {
+                    fill: #64748b !important;
+                }
+                [data-theme=light] .tour-viewport svg text[fill="#fbbf24"] {
+                    fill: #b45309 !important;
+                }
+                [data-theme=light] .tour-viewport svg text[fill="#93c5fd"] {
+                    fill: #2563eb !important;
+                }
+                [data-theme=light] .tour-viewport svg text[fill="#c7d2fe"] {
+                    fill: #4f46e5 !important;
+                }
+                [data-theme=light] .tour-viewport svg text[fill="#c084fc"] {
+                    fill: #7e22ce !important;
+                }
+                [data-theme=light] .tour-viewport svg path[stroke="#475569"] {
+                    stroke: #cbd5e1 !important;
+                }
+                [data-theme=light] .tour-viewport svg marker polygon[fill="#475569"] {
+                    fill: #cbd5e1 !important;
+                }
+                [data-theme=light] .tour-viewport svg marker polygon[fill="#09090b"] {
+                    fill: #ffffff !important;
+                }
+                [data-theme=light] .tour-viewport svg circle[fill="#09090b"] {
+                    fill: #ffffff !important;
+                }
+                [data-theme=light] .tour-viewport svg marker[id="arrowhead"] polygon {
+                    fill: #94a3b8 !important;
+                }
+                
+                /* Case 3 & 4 Progress Bars and Git Consoles */
+                [data-theme=light] .cortex-agent-progress-card {
+                    background: #f8fafc !important;
+                    border: 1px solid #e2e8f0 !important;
+                }
+                [data-theme=light] .cortex-agent-progress-card span {
+                    color: #334155 !important;
+                }
+                [data-theme=light] .cortex-agent-progress-card div {
+                    color: #475569 !important;
+                }
+                [data-theme=light] .cortex-agent-progress-card div[style*="background: rgba(255, 255, 255, 0.03)"] {
+                    background: #e2e8f0 !important;
+                }
+                
+                /* Support hex, rgb and element level overrides for console box */
+                [data-theme=light] #landing-root div[style*="background: #09090d"],
+                [data-theme=light] #landing-root div[style*="background:#09090d"],
+                [data-theme=light] #landing-root div[style*="rgb(9, 9, 13)"],
+                [data-theme=light] #landing-root div[style*="rgb(9,9,13)"],
+                [data-theme=light] .tour-viewport .tour-content-panel div[style*="border-radius: 10px"],
+                [data-theme=light] .tour-viewport .tour-content-panel div[style*="borderRadius: 10px"] {
+                    background: #f8fafc !important;
+                    border: 1px solid #cbd5e1 !important;
+                    color: #1e293b !important;
+                    box-shadow: none !important;
+                }
+                [data-theme=light] #landing-root div[style*="rgb(9, 9, 13)"] div,
+                [data-theme=light] #landing-root div[style*="rgb(9,9,13)"] div,
+                [data-theme=light] .tour-viewport .tour-content-panel div[style*="border-radius: 10px"] div {
+                    color: #334155 !important;
+                }
+                [data-theme=light] #landing-root div[style*="rgb(9, 9, 13)"] div[style*="color: var(--primary-light)"],
+                [data-theme=light] #landing-root div[style*="rgb(9,9,13)"] div[style*="color: var(--primary-light)"],
+                [data-theme=light] .tour-viewport .tour-content-panel div[style*="border-radius: 10px"] div[style*="color: var(--primary-light)"] {
+                    color: #7c3aed !important;
+                }
+                [data-theme=light] #landing-root div[style*="rgb(9, 9, 13)"] div[style*="color: var(--success)"],
+                [data-theme=light] #landing-root div[style*="rgb(9,9,13)"] div[style*="color: var(--success)"],
+                [data-theme=light] .tour-viewport .tour-content-panel div[style*="border-radius: 10px"] div[style*="color: var(--success)"] {
+                    color: #16a34a !important;
+                }
+                [data-theme=light] #landing-root div[style*="rgb(9, 9, 13)"] div[style*="color: var(--text-tertiary)"],
+                [data-theme=light] #landing-root div[style*="rgb(9,9,13)"] div[style*="color: var(--text-tertiary)"],
+                [data-theme=light] .tour-viewport .tour-content-panel div[style*="border-radius: 10px"] div[style*="color: var(--text-tertiary)"] {
+                    color: #64748b !important;
+                }
+                
+                /* Live Sandbox (Interactive Dashboard Panel overrides) */
+                [data-theme=light] .bourntec-showcase-panel {
+                    background: #ffffff !important;
+                    border: 1px solid #e4e4e7 !important;
+                    box-shadow: 0 20px 45px rgba(0, 0, 0, 0.04) !important;
+                }
+                [data-theme=light] .bourntec-showcase-header {
+                    background: #f8fafc !important;
+                    border-bottom: 1px solid #e4e4e7 !important;
+                }
+                [data-theme=light] .bourntec-showcase-header span[style*="color"] {
+                    color: #475569 !important;
+                }
+                [data-theme=light] .bourntec-showcase-tasks {
+                    border-right: 1px solid #e4e4e7 !important;
+                }
+                [data-theme=light] .bourntec-showcase-task-card {
+                    background: #f8fafc !important;
+                    border: 1px solid #e4e4e7 !important;
+                }
+                [data-theme=light] .bourntec-showcase-task-card:hover {
+                    background: #f1f5f9 !important;
+                    border-color: #cbd5e1 !important;
+                }
+                [data-theme=light] .bourntec-showcase-task-card.active {
+                    background: #f3e8ff !important;
+                    border-color: #c084fc !important;
+                }
+                [data-theme=light] .bourntec-showcase-task-card.active span[style*="color"] {
+                    color: #6b21a8 !important;
+                }
+                [data-theme=light] .bourntec-showcase-task-card p {
+                    color: #64748b !important;
+                }
+                [data-theme=light] .bourntec-showcase-details {
+                    background: #ffffff !important;
+                }
+                [data-theme=light] .bourntec-showcase-details div[style*="borderBottom"],
+                [data-theme=light] .bourntec-showcase-details div[style*="border-bottom"] {
+                    border-bottom-color: #e4e4e7 !important;
+                }
+                [data-theme=light] .bourntec-showcase-details div[style*="borderBottom"] span,
+                [data-theme=light] .bourntec-showcase-details div[style*="border-bottom"] span {
+                    color: #475569 !important;
+                }
+                
+                /* Code Editor Preview & Log terminal in Sandbox details */
+                [data-theme=light] .bourntec-showcase-details pre[style*="background: rgba(0, 0, 0, 0.3)"],
+                [data-theme=light] .bourntec-showcase-details pre[style*="background:rgba(0,0,0,0.3)"] {
+                    background: #f8fafc !important;
+                    border: 1px solid #cbd5e1 !important;
+                    color: #0f172a !important;
+                }
+                [data-theme=light] .bourntec-showcase-details pre[style*="background: #000"],
+                [data-theme=light] .bourntec-showcase-details pre[style*="background:#000"] {
+                    background: #f8fafc !important;
+                    border: 1px solid #cbd5e1 !important;
+                    color: #16a34a !important;
+                }
 
-                    <div className="hero-image relative mt-8 lg:mt-0 w-full">
-                        <div className="absolute -inset-4 bg-gradient-to-r from-app-primary/20 to-app-primary/20 rounded-full blur-3xl opacity-50"></div>
-                        <HeroInteractiveImage />
-                    </div>
-                </div>
-            </section>
+                /* Platform Features and Metrics Section overrides */
+                [data-theme=light] .bourntec-features-section {
+                    background: #ffffff !important;
+                }
+                [data-theme=light] .bourntec-features-title {
+                    color: #18181b !important;
+                }
+                [data-theme=light] .bourntec-feature-card {
+                    background: #ffffff !important;
+                    border: 1px solid #e4e4e7 !important;
+                    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.02) !important;
+                }
+                [data-theme=light] .bourntec-feature-card:hover {
+                    background: #ffffff !important;
+                    border-color: #c084fc !important;
+                    box-shadow: 0 15px 35px rgba(124, 58, 237, 0.06) !important;
+                    transform: translateY(-5px) !important;
+                }
+                [data-theme=light] .bourntec-feature-card h4 {
+                    color: #18181b !important;
+                }
+                [data-theme=light] .bourntec-feature-card p {
+                    color: #52525b !important;
+                }
+                [data-theme=light] .bourntec-feature-icon {
+                    background: #f3e8ff !important;
+                    border: 1px solid #e9d5ff !important;
+                    color: #7c3aed !important;
+                }
+                [data-theme=light] .bourntec-metrics-section {
+                    background: #fafbfc !important;
+                }
+                [data-theme=light] .bourntec-metric-card {
+                    background: #ffffff !important;
+                    border: 1px solid #e4e4e7 !important;
+                    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.02) !important;
+                }
+                [data-theme=light] .bourntec-metric-card:hover {
+                    border-color: #cbd5e1 !important;
+                }
+                [data-theme=light] .bourntec-metric-value {
+                    background: linear-gradient(135deg, #7c3aed 0%, #db2777 100%) !important;
+                    -webkit-text-fill-color: transparent !important;
+                    -webkit-background-clip: text !important;
+                }
+                [data-theme=light] .bourntec-metric-label {
+                    color: #52525b !important;
+                }
 
-            {/* Performance/Efficiency Section */}
-            <EfficiencySection />
+                /* Cortex card and tabs columns (third screenshot) */
+                [data-theme=light] .cortex-card {
+                    background: #ffffffcc !important;
+                    border: 1px solid #e4e4e7 !important;
+                    box-shadow: 0 10px 30px rgba(0,0,0,0.02) !important;
+                }
+                [data-theme=light] .cortex-card:hover {
+                    background: #ffffffdd !important;
+                    border-color: #cbd5e1 !important;
+                    box-shadow: 0 15px 35px rgba(0,0,0,0.05) !important;
+                }
+                [data-theme=light] .cortex-panel-sub-card {
+                    background: #f8fafc !important;
+                    border: 1px solid #e2e8f0 !important;
+                }
+                [data-theme=light] .cortex-panel-sub-card:hover {
+                    background: #f1f5f9 !important;
+                    border-color: #cbd5e1 !important;
+                }
+                [data-theme=light] .project-tab-btn {
+                    background: #f1f5f9 !important;
+                    border: 1px solid #e2e8f0 !important;
+                    color: #475569 !important;
+                }
+                [data-theme=light] .project-tab-btn.active {
+                    background: linear-gradient(135deg, #7c3aed 0%, #db2777 100%) !important;
+                    color: #ffffff !important;
+                }
+                [data-theme=light] .checklist-item-mock {
+                    background: #f8fafc !important;
+                    border: 1px solid #e2e8f0 !important;
+                    color: #334155 !important;
+                }
+                [data-theme=light] .checklist-item-mock:hover {
+                    background: #f1f5f9 !important;
+                    border-color: #cbd5e1 !important;
+                }
+                [data-theme=light] .cortex-terminal-wrapper {
+                    background: #f8fafc !important;
+                    border-color: #e2e8f0 !important;
+                }
+                [data-theme=light] .cortex-terminal-wrapper > div:first-child {
+                    background: #f1f5f9 !important;
+                    border-bottom-color: #e2e8f0 !important;
+                }
+                [data-theme=light] .cortex-terminal-wrapper div[style*="#22d3ee"],
+                [data-theme=light] .cortex-terminal-wrapper div[style*="rgb(34, 211, 238)"] {
+                    color: #0891b2 !important;
+                }
+                [data-theme=light] .cortex-terminal-wrapper div[style*="#a78bfa"],
+                [data-theme=light] .cortex-terminal-wrapper div[style*="rgb(167, 139, 245)"],
+                [data-theme=light] .cortex-terminal-wrapper div[style*="rgb(167, 139, 250)"] {
+                    color: #7c3aed !important;
+                }
+                [data-theme=light] .cortex-terminal-wrapper div[style*="var(--text-secondary)"] {
+                    color: #475569 !important;
+                }
+                [data-theme=light] .card-step-title {
+                    color: #18181b !important;
+                }
+                [data-theme=light] .card-step-desc {
+                    color: #52525b !important;
+                }
+                [data-theme=light] .tour-step-desc-active {
+                    color: #52525b !important;
+                }
+            `}} />
 
-            {/* Interactive 3D Scroll Section */}
-            <Interactive3DScroll />
-
-            {/* Use Cases Section */}
-            <section className="py-14 bg-app-bg-page/90 relative z-10 border-t border-app-border-light">
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                    <div className="text-center max-w-4xl mx-auto mb-10">
-                        <h2 className="text-3xl font-bold tracking-tight text-app-text-main sm:text-4xl mb-4">
-                            Enterprise Project Use Cases and Our Solution
-                        </h2>
-                        <p className="text-lg text-app-text-label">
-                            In application development, projects are typically categorized as Greenfield, Brownfield, or Modernization.
-                            This is the standard classification used in enterprise documentation, proposals, and RFP responses.
-                        </p>
-                    </div>
-
-                    <div className="grid lg:grid-cols-3 gap-6">
-                        {projectUseCases.map((item) => (
-                            <article key={item.key} className={`rounded-2xl border ${item.ring} bg-app-bg-card shadow-sm overflow-hidden`}>
-                                <div className={`px-5 py-4 border-b border-app-border-light ${item.bg}`}>
-                                    <div className="flex items-center gap-3">
-                                        <div className={`h-10 w-10 ${item.color} rounded-xl flex items-center justify-center shadow-sm`}>
-                                            {item.icon}
-                                        </div>
-                                        <div>
-                                            <h3 className="text-lg font-bold text-app-text-main">{item.title}</h3>
-                                            <p className="text-sm text-app-text-label">{item.subtitle}</p>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div className="p-5 space-y-5">
-                                    <div>
-                                        <p className="text-xs font-bold tracking-widest uppercase text-app-text-light mb-3">Use Case</p>
-                                        <ul className="space-y-2">
-                                            {item.useCase.map((point, idx) => (
-                                                <li key={idx} className="flex items-start gap-2 text-sm text-app-text-label leading-relaxed">
-                                                    <CheckCircle className="h-4 w-4 text-app-status-success mt-0.5 shrink-0" />
-                                                    <span>{point}</span>
-                                                </li>
-                                            ))}
-                                        </ul>
-                                    </div>
-
-                                    <div className="rounded-xl border border-app-border bg-app-bg-page p-4">
-                                        <p className="text-xs font-bold tracking-widest uppercase text-app-text-light mb-3">Our Solution</p>
-                                        <ul className="space-y-2">
-                                            {item.solution.map((point, idx) => (
-                                                <li key={idx} className="flex items-start gap-2 text-sm text-app-text-label leading-relaxed">
-                                                    <ArrowRight className="h-4 w-4 text-app-primary mt-0.5 shrink-0" />
-                                                    <span>{point}</span>
-                                                </li>
-                                            ))}
-                                        </ul>
-                                    </div>
-
-                                    {item.note && (
-                                        <p className="text-sm font-medium text-app-status-warning bg-app-status-warningBg border border-amber-200 rounded-lg px-3 py-2">
-                                            {item.note}
-                                        </p>
-                                    )}
-                                </div>
-                            </article>
-                        ))}
-                    </div>
-
-                </div>
-            </section>
-
-            {/* Working Modes Section */}
-            <section className="py-14 bg-app-bg-card/90 relative z-10 border-t border-app-border-light">
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                    <div className="text-center max-w-4xl mx-auto mb-10">
-                        <h2 className="text-3xl font-bold tracking-tight text-app-text-main sm:text-4xl mb-4">
-                            <Sparkles className="inline h-6 w-6 mr-2 text-app-primary" />AI Collaboration Models in Software Development
-                        </h2>
-                        <p className="text-lg text-app-text-label">
-                            Executive Overview: As organizations adopt <Sparkles className="inline h-4 w-4 mx-1 text-app-primary" />AI in engineering, each operating model balances control, speed, risk, and automation differently.
-                        </p>
-                    </div>
-
-                    <div className="grid md:grid-cols-[280px_1fr] lg:grid-cols-[320px_1fr] gap-6 items-stretch">
-                        <div className="rounded-2xl border border-app-border-light bg-app-bg-card overflow-hidden shadow-sm h-full">
-                            {platformModes.map((mode, idx) => {
-                                const isActive = mode.key === activeMode.key;
-                                const isLast = idx === platformModes.length - 1;
-
-                                return (
-                                    <button
-                                        key={mode.key}
-                                        type="button"
-                                        onClick={() => setActiveModeKey(mode.key)}
-                                        aria-pressed={isActive}
-                                        className={`w-full text-left px-5 py-4 transition-colors ${isLast ? '' : 'border-b border-app-border-light'} ${isActive ? 'bg-app-bg-page border-l-4 border-l-app-primary pl-4' : 'hover:bg-app-bg-page/70'}`}
-                                    >
-                                        <div className="flex items-center justify-between gap-3">
-                                            <div>
-                                                <p className={`font-semibold ${isActive ? 'text-app-text-main' : 'text-app-text-label'}`}>{mode.title}</p>
-                                                <p className="text-xs text-app-text-light mt-1">{mode.subtitle}</p>
-                                            </div>
-                                            <div className={`h-8 w-8 rounded-lg bg-gradient-to-br ${mode.color} flex items-center justify-center shrink-0 shadow-sm`}>
-                                                {mode.icon}
-                                            </div>
-                                        </div>
-                                    </button>
-                                );
-                            })}
-                        </div>
-
-                        <article className="rounded-2xl border border-app-border-light bg-app-bg-card shadow-sm p-6 lg:p-7 h-full flex flex-col">
-                            <div className="flex flex-wrap items-center gap-4 mb-4">
-                                <div className={`h-11 w-11 rounded-xl bg-gradient-to-br ${activeMode.color} flex items-center justify-center shadow-md`}>
-                                    {activeMode.icon}
-                                </div>
-                                <div>
-                                    <h3 className="text-2xl font-bold text-app-text-main">{activeMode.title}</h3>
-                                    <p className="text-sm text-app-text-light">{activeMode.subtitle}</p>
-                                </div>
-                            </div>
-
-                            <p className="text-app-text-label leading-relaxed mb-4">
-                                {activeMode.description}
-                            </p>
-
-                            <div className="rounded-xl border border-app-border bg-app-bg-page p-4 flex-1 flex flex-col justify-between gap-4">
-                                <p className="text-sm text-app-text-label leading-relaxed">
-                                    {activeMode.brief}
-                                </p>
-                                <p className="text-sm text-app-text-label leading-relaxed">
-                                    <span className="font-semibold text-app-text-main">Executive perspective:</span> {toSentence(activeMode.executiveView)}.
-                                </p>
-                                <p className="text-sm text-app-text-label leading-relaxed">
-                                    <span className="font-semibold text-app-text-main">Where it fits:</span> {toSentence(activeMode.bestForPoints)}.
-                                </p>
-                                {activeMode.note && (
-                                    <p className="text-sm font-semibold text-app-text-main leading-relaxed">
-                                        {activeMode.note}
-                                    </p>
-                                )}
-                            </div>
-                        </article>
-                    </div>
-
-                    <div key={`who-${activeMode.key}`} className="mt-8 rounded-2xl border border-app-border-light bg-app-bg-card shadow-sm p-5 md:p-6 animate-fade-in-up">
-                        <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
-                            <div>
-                                <h3 className="text-2xl font-bold text-app-text-main">Who Does What</h3>
-                                <p className="text-sm text-app-text-light mt-1">
-                                    During the Blitzy process, roles shift by mode. Current view: <span className="font-semibold text-app-text-main">{activeMode.title}</span>
-                                </p>
-                            </div>
-                            <span className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold text-app-bg-card bg-gradient-to-r ${activeMode.color}`}>
-                                {activeMode.title}
-                            </span>
-                        </div>
-
-                        <div className="grid md:grid-cols-3 gap-4">
-                            {activeModeRoles.map((item) => (
-                                <article
-                                    key={`${activeMode.key}-${item.role}`}
-                                    className="rounded-xl border border-app-border-light bg-app-bg-page p-4 hover:shadow-md transition-all duration-300 hover:-translate-y-0.5"
-                                >
-                                    <div className="flex items-start justify-between gap-3 mb-3">
-                                        <div>
-                                            <h4 className="text-base font-bold text-app-text-main">{item.role}</h4>
-                                            <p className="text-xs text-app-text-light mt-0.5">{item.persona}</p>
-                                        </div>
-                                        <div className={`h-8 w-8 rounded-lg bg-gradient-to-br ${activeMode.color} flex items-center justify-center shrink-0`}>
-                                            {item.icon}
-                                        </div>
-                                    </div>
-
-                                    <p className="text-[10px] font-bold tracking-widest uppercase text-app-text-light mb-2">Responsibilities</p>
-                                    <ul className="space-y-1.5 mb-3">
-                                        {item.responsibilities.map((point, idx) => (
-                                            <li key={idx} className="flex items-start gap-2 text-xs text-app-text-label leading-relaxed">
-                                                <CheckCircle className="h-3.5 w-3.5 text-app-status-success mt-0.5 shrink-0" />
-                                                <span>{typeof point === 'string' ? point : point}</span>
-                                            </li>
-                                        ))}
-                                    </ul>
-
-                                    <div className="rounded-lg border border-app-border-light bg-app-bg-card p-2.5 space-y-2">
-                                        <p className="text-xs text-app-text-label leading-relaxed">
-                                            <span className="font-semibold text-app-text-main">Decision Authority:</span> {typeof item.authority === 'string' ? item.authority : item.authority}
-                                        </p>
-                                        <p className="text-xs text-app-text-label leading-relaxed">
-                                            <span className="font-semibold text-app-text-main">Maps to:</span> {item.mapsTo}
-                                        </p>
-                                    </div>
-                                </article>
-                            ))}
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            {/* CTA Section */}
-            <section className="py-20 px-4 sm:px-6 lg:px-8 relative z-10">
-                <div ref={ctaRef} className="max-w-5xl mx-auto bg-app-sidebar-bg rounded-3xl overflow-hidden relative shadow-2xl border border-slate-800">
-                    <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-10 mix-blend-overlay"></div>
-                    <div className="absolute -top-24 -right-24 w-96 h-96 bg-app-primary/30 rounded-full blur-3xl"></div>
-                    <div className="absolute -bottom-24 -left-24 w-96 h-96 bg-purple-600/30 rounded-full blur-3xl"></div>
-
-                    <div className="relative px-6 py-12 md:px-12 md:py-16 text-center">
-                        <h2 className="text-2xl md:text-4xl font-bold text-white mb-4 tracking-tight">
-                            Watch the agents work.
-                        </h2>
-                        <p className="text-slate-400 text-base md:text-lg max-w-xl mx-auto mb-8">
-                            Upload a document into DSuite today and let the ecosystem plan, code, test, and deploy for you.
-                        </p>
-                        <button
-                            onClick={openSignup}
-                            className="inline-flex justify-center items-center px-8 py-3.5 text-base font-bold text-white bg-app-primary rounded-xl hover:bg-app-primary-hover transition-colors shadow-lg active:scale-95 cursor-pointer border-0"
-                        >
-                            Get Started
-                            <ArrowRight className="ml-2 h-5 w-5" />
-                        </button>
-                    </div>
-                </div>
-            </section>
-
-            {/* Footer */}
-            <footer className="bg-app-bg-card border-t border-app-border-light py-8 relative z-10">
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center text-app-text-light text-sm">
-                    <p>© 2026 DSuite. All rights reserved.</p>
-                </div>
-            </footer>
-
-            {/* Modals */}
-            {(isLoginOpen || isSignupOpen) && (
-                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+            {/* Release Notes Modal */}
+            {showReleaseNotes && (() => {
+                const isLight = theme === 'light';
+                const roadmapItems = [
+                    {
+                        version: 'v1.0 · Foundation',
+                        date: 'Jan 2026',
+                        title: 'Foundation: Core Orchestration',
+                        status: 'done',
+                        items: [
+                            'BRD Intelligence Layer & Go/No-Go Governance Engine',
+                            'Unified Interface Layer (SSO, Navigation)',
+                            'Preview Sandbox / Vibe Coding',
+                        ],
+                    },
+                    {
+                        version: 'v1.1 · Intelligence Layer',
+                        date: 'Q2 2026',
+                        title: 'Intelligence Layer',
+                        status: 'done',
+                        items: [
+                            'Agentic Workflow Engine (Subagents, Custom Skills, CLAUDE.md)',
+                            'CDevSecOps Integration (GHAS, SonarQube, Azure Pipelines, Blue-Green Deployment)',
+                            'Azure DevOps board integration',
+                            'BYOT (Bring Your Own Tool) Framework',
+                        ],
+                    },
+                    {
+                        version: 'v2.0',
+                        date: '',
+                        title: 'The Bridge',
+                        status: 'done',
+                        items: [
+                            'Agent-Native SDLC',
+                            'CI/CD',
+                            'Coordinated Multi-Agent Ecosystem across all SDLC functions',
+                        ],
+                    },
+                    {
+                        version: 'Future',
+                        date: '',
+                        title: 'Autonomous Ecosystem',
+                        status: 'future',
+                        items: [
+                            'Citizen Development Platform',
+                            'Greenfield Agentic SDLC',
+                            'Brownfield Modernization Engine',
+                            'Full Lifecycle Observability & Traceability',
+                            'Cross-Platform Data Fabric',
+                        ],
+                    },
+                ];
+                return (
                     <div
-                        className="absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity opacity-100"
-                        onClick={closeModals}
-                    ></div>
-                    <div className="relative z-10 w-full max-w-md bg-transparent">
-                        {isLoginOpen && <Login isModal onClose={closeModals} onSwitch={openSignup} />}
-                        {isSignupOpen && <Signup isModal onClose={closeModals} onSwitch={openLogin} />}
-                    </div>
-                </div>
-            )}
-        </div>
-    );
-};
+                        onClick={() => setShowReleaseNotes(false)}
+                        style={{
+                            position: 'fixed', inset: 0, zIndex: 99999,
+                            background: 'rgba(0,0,0,0.6)',
+                            backdropFilter: 'blur(4px)',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            padding: '24px',
+                            fontFamily: 'system-ui, -apple-system, sans-serif',
+                        }}
+                    >
+                        <div
+                            onClick={e => e.stopPropagation()}
+                            style={{
+                                width: '100%', maxWidth: '560px',
+                                maxHeight: '80vh',
+                                overflowY: 'auto',
+                                borderRadius: '16px',
+                                background: isLight ? '#ffffff' : '#0f0f1a',
+                                border: isLight ? '1px solid #e4e4e7' : '1px solid rgba(139,92,246,0.2)',
+                                boxShadow: '0 25px 60px rgba(0,0,0,0.4)',
+                                padding: '28px 28px 24px',
+                            }}
+                        >
+                            {/* Header */}
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
+                                <div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                                        <div style={{ width: '28px', height: '2px', background: 'linear-gradient(90deg,#38bdf8,#818cf8)' }} />
+                                        <span style={{ fontSize: '11px', fontWeight: '700', letterSpacing: '0.12em', textTransform: 'uppercase', color: '#38bdf8' }}>Strategic Roadmap</span>
+                                    </div>
+                                    <h2 style={{ margin: 0, fontSize: '20px', fontWeight: '800', color: isLight ? '#18181b' : '#f1f5f9' }}>Release Notes</h2>
+                                </div>
+                                <button
+                                    onClick={() => setShowReleaseNotes(false)}
+                                    style={{
+                                        background: 'none', border: 'none', cursor: 'pointer',
+                                        color: isLight ? '#71717a' : '#94a3b8',
+                                        fontSize: '20px', lineHeight: 1, padding: '4px',
+                                        borderRadius: '6px',
+                                    }}
+                                >✕</button>
+                            </div>
 
-export default LandingPage;
+                            {/* Timeline */}
+                            <div style={{ position: 'relative', paddingLeft: '32px' }}>
+                                {/* Vertical line */}
+                                <div style={{
+                                    position: 'absolute', left: '6px', top: '8px', bottom: '8px',
+                                    width: '2px',
+                                    background: isLight
+                                        ? 'linear-gradient(180deg,#818cf8 0%,#c084fc 60%,#e2e8f0 100%)'
+                                        : 'linear-gradient(180deg,#818cf8 0%,#c084fc 60%,#334155 100%)',
+                                }} />
+
+                                {roadmapItems.map((item, idx) => {
+                                    const isDone = item.status === 'done';
+                                    const isFuture = item.status === 'future';
+                                    return (
+                                                        <div key={idx} style={{ marginBottom: idx < roadmapItems.length - 1 ? '28px' : 0, position: 'relative' }}>
+                                            {/* Dot — aligned with version text */}
+                                            <div style={{
+                                                position: 'absolute', left: '-32px', top: '2px',
+                                                width: '14px', height: '14px', borderRadius: '50%',
+                                                background: isFuture
+                                                    ? 'transparent'
+                                                    : 'linear-gradient(135deg,#818cf8,#c084fc)',
+                                                border: isFuture
+                                                    ? '2px solid #a855f7'
+                                                    : '2px solid transparent',
+                                                boxShadow: isDone ? '0 0 0 3px rgba(129,140,248,0.15)' : 'none',
+                                            }} />
+
+                                            {/* Version / date */}
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                                                <span style={{
+                                                    fontSize: '11px', fontWeight: '700',
+                                                    color: isFuture
+                                                        ? (isLight ? '#94a3b8' : '#64748b')
+                                                        : '#818cf8',
+                                                    letterSpacing: '0.04em',
+                                                }}>{item.version}</span>
+                                                {item.date && (
+                                                    <span style={{
+                                                        fontSize: '10px', fontWeight: '600',
+                                                        color: isLight ? '#a1a1aa' : '#64748b',
+                                                        background: isLight ? '#f4f4f5' : 'rgba(255,255,255,0.05)',
+                                                        borderRadius: '4px', padding: '1px 6px',
+                                                    }}>{item.date}</span>
+                                                )}
+                                                {isDone && (
+                                                    <span style={{
+                                                        fontSize: '10px', fontWeight: '700',
+                                                        color: '#22c55e',
+                                                        background: 'rgba(34,197,94,0.1)',
+                                                        borderRadius: '4px', padding: '1px 6px',
+                                                        letterSpacing: '0.04em',
+                                                    }}>✓ Done</span>
+                                                )}
+                                                {isFuture && (
+                                                    <span style={{
+                                                        fontSize: '10px', fontWeight: '700',
+                                                        color: '#f59e0b',
+                                                        background: 'rgba(245,158,11,0.1)',
+                                                        borderRadius: '4px', padding: '1px 6px',
+                                                        letterSpacing: '0.04em',
+                                                    }}>⏳ Planned</span>
+                                                )}
+                                            </div>
+
+                                            {/* Title */}
+                                            <div style={{
+                                                fontSize: '15px', fontWeight: '700',
+                                                color: isFuture
+                                                    ? (isLight ? '#71717a' : '#64748b')
+                                                    : (isLight ? '#18181b' : '#f1f5f9'),
+                                                marginBottom: '8px',
+                                            }}>{item.title}</div>
+
+                                            {/* Items */}
+                                            <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                                                {item.items.map((feat, fi) => (
+                                                    <li key={fi} style={{
+                                                        fontSize: '13px',
+                                                        color: isFuture
+                                                            ? (isLight ? '#a1a1aa' : '#64748b')
+                                                            : (isLight ? '#52525b' : '#94a3b8'),
+                                                        display: 'flex', alignItems: 'flex-start', gap: '6px',
+                                                    }}>
+                                                        <span style={{ color: isFuture ? (isLight ? '#cbd5e1' : '#475569') : '#818cf8', marginTop: '2px', flexShrink: 0 }}>›</span>
+                                                        {feat}
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
+        </>
+    );
+}

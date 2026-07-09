@@ -5,6 +5,8 @@ from typing import List, Dict, Optional, Any
 import logging
 import shutil
 import re
+import httpx
+import asyncio
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -16,9 +18,101 @@ class GitManager:
     def _get_project_dir(self, project_id: str) -> Path:
         return self.artifacts_dir / project_id
 
+    def _get_workspace_path_raw(self, project_id: str) -> Path:
+        """Get the workspace path without any initialization logic."""
+        return self._get_project_dir(project_id) / "workspace"
+
     def _get_workspace_dir(self, project_id: str) -> Path:
-        workspace_dir = self._get_project_dir(project_id) / "workspace"
+        workspace_dir = self._get_workspace_path_raw(project_id)
         workspace_dir.mkdir(parents=True, exist_ok=True)
+
+        # ALWAYS ensure .gitignore exists, even if repo is already initialized.
+        # This prevents massive directories like node_modules from freezing git operations.
+        gitignore_path = workspace_dir / ".gitignore"
+        gitignore_content = """# VibeCoding agent managed
+
+# General
+.DS_Store
+Thumbs.db
+*.log
+.env
+.cache/
+metadata.json
+
+# VibeCoding Specific
+.vibecoding/deploy_cache.json
+
+# Node.js / Frontend
+node_modules/
+dist/
+build/
+.next/
+out/
+.vite/
+.nuxt/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+env.bak/
+venv.bak/
+
+# .NET / C#
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Java
+target/
+*.class
+.idea/
+*.iml
+.gradle/
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Rust
+target/
+**/*.rs.bk
+
+# C / C++
+*.o
+*.obj
+*.out
+*.app
+"""
+        if not gitignore_path.exists():
+            try:
+                gitignore_path.write_text(gitignore_content)
+                logger.info(f"Created robust .gitignore for project: {project_id}")
+            except Exception as e:
+                logger.warning(f"Failed to write .gitignore: {e}")
+
+        # Ensure git is initialized locally even if no remote is connected
+        if not (workspace_dir / ".git").exists():
+            # Use _run_git_command_raw to avoid recursion
+            logger.info(f"Initializing local git repository for project: {project_id}")
+            self._run_git_command_raw(workspace_dir, ["init"])
+            self._run_git_command_raw(workspace_dir, ["config", "user.email", "vibe@engineer.com"])
+            self._run_git_command_raw(workspace_dir, ["config", "user.name", "Vibe Engineer"])
+            
         return workspace_dir
 
     def _run_git_command(self, project_id: str, args: List[str]) -> Dict[str, Any]:
@@ -28,7 +122,7 @@ class GitManager:
             env["GIT_TERMINAL_PROMPT"] = "0"
             
             result = subprocess.run(
-                ["git"] + args,
+                [git_exe] + args,
                 cwd=workspace_dir,
                 capture_output=True,
                 text=True,
@@ -42,8 +136,12 @@ class GitManager:
                 "returncode": result.returncode
             }
         except Exception as e:
-            logger.error(f"Git command failed: {e}")
+            logger.error(f"Git command raw failed: {e}")
             return {"status": "error", "message": str(e)}
+
+    def _run_git_command(self, project_id: str, args: List[str]) -> Dict[str, Any]:
+        workspace_dir = self._get_workspace_dir(project_id)
+        return self._run_git_command_raw(workspace_dir, args)
 
     def sync_workspace(self, project_id: str, version_dir: Path):
         """Sync files from a version directory to the workspace directory."""
@@ -77,6 +175,164 @@ class GitManager:
 
     def init_repo(self, project_id: str) -> Dict[str, Any]:
         return self._run_git_command(project_id, ["init"])
+
+    async def validate_github_connection(self, repo_url: str, pat: Optional[str] = None) -> Dict[str, Any]:
+        """Validate GitHub repository URL and PAT using GitHub API."""
+        if not pat:
+            return {"status": "error", "message": "Personal Access Token (PAT) is required."}
+            
+        repo_url = repo_url.strip()
+        pat = pat.strip()
+        
+        if not repo_url.startswith("https://github.com/"):
+            return {"status": "error", "message": "Invalid GitHub URL. Must start with https://github.com/"}
+        
+        # Extract owner/repo from URL
+        parts = repo_url.replace("https://github.com/", "").replace(".git", "").strip("/").split("/")
+        if len(parts) < 2:
+            return {"status": "error", "message": "Invalid GitHub URL format. Expected: https://github.com/owner/repo"}
+        
+        owner, repo = parts[0], parts[1]
+        
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    f"https://api.github.com/repos/{owner}/{repo}",
+                    headers={"Authorization": f"token {pat}"}
+                )
+                
+                if response.status_code == 200:
+                    return {
+                        "status": "success",
+                        "valid": True,
+                        "normalized_url": f"https://github.com/{owner}/{repo}.git",
+                        "provider": "github",
+                        "owner": owner,
+                        "repo": repo,
+                        "pat_valid": True,
+                        "repo_accessible": True,
+                        "message": f"Connection successful! Repository '{owner}/{repo}' is accessible."
+                    }
+                elif response.status_code == 401:
+                    return {"status": "error", "message": "Invalid GitHub token. Please check your Personal Access Token."}
+                elif response.status_code == 404:
+                    return {"status": "error", "message": f"Repository '{owner}/{repo}' not found or not accessible with this token."}
+                else:
+                    return {"status": "error", "message": f"GitHub API error: {response.text[:200]}"}
+        except httpx.TimeoutException:
+            return {"status": "error", "message": "GitHub API request timed out. Please try again."}
+        except Exception as e:
+            return {"status": "error", "message": f"Connection failed: {str(e)}"}
+
+    async def validate_azure_devops_connection(self, repo_url: str, pat: Optional[str] = None) -> Dict[str, Any]:
+        """Validate Azure DevOps repository URL and PAT using Azure DevOps API."""
+        if not pat:
+            return {"status": "error", "message": "Personal Access Token (PAT) is required."}
+            
+        repo_url = repo_url.strip()
+        pat = pat.strip()
+        
+        try:
+            # Import azure_devops_service dynamically from backend packge
+            try:
+                from backend import azure_devops_service
+            except ImportError:
+                import sys
+                sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+                from backend import azure_devops_service
+                
+            parsed = azure_devops_service.parse_azure_repo_url(repo_url)
+            normalized_url = parsed["url"]
+            organization = parsed["organization"]
+            project = parsed["project"]
+            repo = parsed["repo"]
+            
+            try:
+                repos = await azure_devops_service.list_project_repositories(
+                    organization=organization,
+                    project=project,
+                    pat=pat
+                )
+                
+                repo_found = any(r.get("name") == repo for r in repos)
+                
+                if repo_found:
+                    return {
+                        "status": "success",
+                        "valid": True,
+                        "normalized_url": normalized_url,
+                        "provider": "azure-devops",
+                        "organization": organization,
+                        "project": project,
+                        "repo": repo,
+                        "pat_valid": True,
+                        "repo_accessible": True,
+                        "message": f"Connection successful! Repository '{repo}' is accessible."
+                    }
+                else:
+                    return {
+                        "status": "error",
+                        "message": f"Repository '{repo}' not found in project '{project}'."
+                    }
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 401:
+                    return {"status": "error", "message": "Invalid PAT. Please check your Personal Access Token has 'Code (Read & Write)' permissions."}
+                elif e.response.status_code == 404:
+                    return {"status": "error", "message": f"Project '{project}' not found in organization '{organization}'. Please verify the URL."}
+                else:
+                    return {"status": "error", "message": f"Azure DevOps API error: {e.response.text[:200]}"}
+            except Exception as e:
+                return {"status": "error", "message": f"Failed to validate Azure DevOps connection: {str(e)[:200]}"}
+                
+        except ValueError as e:
+            return {"status": "error", "message": f"Invalid Azure DevOps URL: {str(e)}"}
+        except Exception as e:
+            return {"status": "error", "message": f"Validation failed: {str(e)[:200]}"}
+
+    def clone_repo(self, project_id: str, repo_url: str, pat: Optional[str] = None) -> Dict[str, Any]:
+        """Clone a remote repository into the project workspace."""
+        if not pat:
+            return {"status": "error", "message": "Personal Access Token (PAT) is required."}
+            
+        workspace_dir = self._get_workspace_dir(project_id)
+        
+        # Clear workspace if it exists (except .git if somehow there)
+        if workspace_dir.exists():
+            for item in workspace_dir.iterdir():
+                if item.is_dir():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink()
+        
+        # Prepare URL with PAT
+        clean_url = re.sub(r"^https://[^@]+@", "https://", repo_url.strip())
+        if "dev.azure.com" in clean_url.lower() or "visualstudio.com" in clean_url.lower():
+            clone_url = clean_url.replace("https://", f"https://:{pat}@")
+        else:
+            clone_url = clean_url.replace("https://", f"https://{pat}@")
+            
+        # Run clone command
+        # Since workspace_dir already exists, we clone INTO it using "."
+        # Git clone requires the directory to be empty or doesn't exist
+        # Alternative: clone to a temp dir and move, or just run git clone url .
+        try:
+            git_exe = "/usr/bin/git" if os.name != "nt" else "git"
+            result = subprocess.run(
+                [git_exe, "clone", clone_url, "."],
+                cwd=workspace_dir,
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            
+            if result.returncode == 0:
+                # Add the remote url without PAT to the local config for future use
+                self._run_git_command(project_id, ["remote", "set-url", "origin", repo_url])
+                return {"status": "success", "message": "Repository cloned successfully"}
+            else:
+                return {"status": "error", "message": result.stderr or "Clone failed"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
     def get_status(self, project_id: str) -> Dict[str, Any]:
         workspace_dir = self._get_workspace_dir(project_id)
@@ -140,27 +396,29 @@ class GitManager:
         if not (workspace_dir / ".git").exists():
             return {"status": "not_initialized"}
             
-        # 1. Fetch from all remotes to update remote-tracking branches
-        remotes_res = self._run_git_command(project_id, ["remote"])
-        if remotes_res["status"] == "success":
-            remotes = remotes_res["stdout"].split()
-            for remote in remotes:
-                url_res = self._run_git_command(project_id, ["remote", "get-url", remote])
-                if url_res["status"] == "success":
-                    url = url_res["stdout"].strip()
-                    fetch_command = ["fetch", remote, "--prune", "--tags"]
-                    
-                    if token and url.startswith("https://"):
-                        # Inject credentials for the fetch session
-                        clean_url = re.sub(r"https://[^@]+@", "https://", url)
-                        user_part = f"{username}:" if username else ""
-                        auth_url = clean_url.replace("https://", f"https://{user_part}{token}@")
-                        # Use the authenticated URL directly for the fetch
-                        fetch_command = ["fetch", auth_url, f"+refs/heads/*:refs/remotes/{remote}/*", "--prune"]
-                    
-                    fetch_res = self._run_git_command(project_id, fetch_command)
-                    if fetch_res["status"] != "success":
-                        logger.error(f"Fetch failed for {remote}: {fetch_res.get('stderr')}")
+        # 1. Fetch from all remotes to update remote-tracking branches ONLY if token is provided
+        if token:
+            remotes_res = self._run_git_command(project_id, ["remote"])
+            if remotes_res["status"] == "success":
+                remotes = remotes_res["stdout"].split()
+                for remote in remotes:
+                    url_res = self._run_git_command(project_id, ["remote", "get-url", remote])
+                    if url_res["status"] == "success":
+                        url = url_res["stdout"].strip()
+                        
+                        if url.startswith("https://"):
+                            # Inject credentials for the fetch session
+                            clean_url = re.sub(r"https://[^@]+@", "https://", url)
+                            if "dev.azure.com" in clean_url.lower() or "visualstudio.com" in clean_url.lower():
+                                auth_url = clean_url.replace("https://", f"https://:{token}@", 1)
+                            else:
+                                user_part = f"{username}:" if username else ""
+                                auth_url = clean_url.replace("https://", f"https://{user_part}{token}@")
+                            # Use the authenticated URL directly for the fetch
+                            fetch_command = ["fetch", auth_url, f"+refs/heads/*:refs/remotes/{remote}/*", "--prune"]
+                            fetch_res = self._run_git_command(project_id, fetch_command)
+                            if fetch_res["status"] != "success":
+                                logger.error(f"Fetch failed for {remote}: {fetch_res.get('stderr')}")
 
         # 2. Get current branch (reliable method)
         status_res = self.get_status(project_id)
@@ -235,6 +493,22 @@ class GitManager:
         self.add_files(project_id)
         return self.commit(project_id, f"[{version_id}] {message}")
 
+    def auto_commit(self, project_id: str, message: str) -> Dict[str, Any]:
+        """Automatically stage all changes and commit with a message."""
+        self.add_files(project_id)
+        return self.commit(project_id, message)
+
+    def reset_to_commit(self, project_id: str, commit_hash: str) -> Dict[str, Any]:
+        """Hard reset the current branch to a specific commit and clean untracked files."""
+        # 1. Reset hard to the commit
+        reset_res = self._run_git_command(project_id, ["reset", "--hard", commit_hash])
+        if reset_res["status"] != "success":
+            return reset_res
+            
+        # 2. Clean untracked files and directories
+        clean_res = self._run_git_command(project_id, ["clean", "-fd"])
+        return clean_res
+
     def get_commit_history(self, project_id: str) -> Dict[str, Any]:
         """Get commit history for current branch."""
         # Get current branch
@@ -292,35 +566,38 @@ class GitManager:
         return res
 
     def push(self, project_id: str, remote_name: str = "origin", branch_name: str = "main", username: str = None, token: str = None) -> Dict[str, Any]:
+        if not token:
+            return {"status": "error", "message": "Personal Access Token (PAT) is required."}
+            
         workspace_dir = self._get_workspace_dir(project_id)
         
-        # If token is provided, we need to inject it into the remote URL
-        if token:
-            remote_res = self._run_git_command(project_id, ["remote", "get-url", remote_name])
-            if remote_res["status"] == "success":
-                url = remote_res["stdout"].strip()
-                
-                # Clean up the URL - remove trailing slashes and ensure .git extension
-                url = url.rstrip('/')
-                if not url.endswith('.git'):
+        remote_res = self._run_git_command(project_id, ["remote", "get-url", remote_name])
+        if remote_res["status"] == "success":
+            url = remote_res["stdout"].strip()
+            
+            url = url.rstrip('/')
+            if not url.endswith('.git'):
+                if any(host in url for host in ['github.com', 'gitlab.com', 'bitbucket.org']):
                     url = url + '.git'
+            
+            if url.startswith("https://"):
+                import re
+                clean_url = re.sub(r"^https://[^@]+@", "https://", url)
                 
-                if url.startswith("https://"):
-                    # Inject token: https://token@github.com/...
-                    # Or https://username:token@github.com/...
-                    import re
-                    new_url = ""
+                if "dev.azure.com" in clean_url.lower() or "visualstudio.com" in clean_url.lower():
+                    new_url = re.sub(r"https://", f"https://:{token}@", clean_url)
+                else:
                     if username:
-                        new_url = re.sub(r"https://", f"https://{username}:{token}@", url)
+                        new_url = re.sub(r"https://", f"https://{username}:{token}@", clean_url)
                     else:
-                        new_url = re.sub(r"https://", f"https://{token}@", url)
-                    
-                    # Add temporary remote with credentials, push, then remove it
-                    self._run_git_command(project_id, ["remote", "add", "temp_push", new_url])
-                    push_res = self._run_git_command(project_id, ["push", "temp_push", branch_name])
-                    self._run_git_command(project_id, ["remote", "remove", "temp_push"])
-                    return push_res
+                        new_url = re.sub(r"https://", f"https://{token}@", clean_url)
+                
+                # Add temporary remote with credentials, push, then remove it
+                self._run_git_command(project_id, ["remote", "add", "temp_push", new_url])
+                push_res = self._run_git_command(project_id, ["push", "temp_push", branch_name])
+                self._run_git_command(project_id, ["remote", "remove", "temp_push"])
+                return push_res
 
-        return self._run_git_command(project_id, ["push", remote_name, branch_name])
+        return {"status": "error", "message": f"Could not retrieve remote URL for '{remote_name}'."}
 
 git_manager = GitManager()

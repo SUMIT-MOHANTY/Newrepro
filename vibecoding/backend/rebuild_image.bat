@@ -12,8 +12,8 @@ if %ERRORLEVEL% EQU 0 (
     echo.
     echo ⚠️  Note: Existing containers are still running the old image.
     echo To use the new image, you need to:
-    echo 1. Stop old containers: docker stop $(docker ps -q --filter name=vibecoding_)
-    echo 2. Remove old containers: docker rm $(docker ps -aq --filter name=vibecoding_)
+    echo 1. Stop old containers: docker stop $(docker ps -q --filter name=vibecoding_^)
+    echo 2. Remove old containers: docker rm $(docker ps -aq --filter name=vibecoding_^)
     echo 3. The next code generation will create a new container with the updated image
 ) else (
     echo ❌ Image build failed!

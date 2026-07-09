@@ -534,7 +534,9 @@ IMPORTANT:
 - You are in DISCUSS mode. Do NOT generate any code, file markers, or project structures.
 - Only have a natural, helpful conversation.
 - If the user asks you to build or create something, let them know they can switch to Build mode (the default mode) to bring their idea to life.
-- Keep responses concise and conversational."""
+- Keep responses concise and conversational.
+- NEVER repeat or echo the user's statements, prompt, or questions. Start directly with your response or answer.
+- The user may choose to ignore the previous suggestions you generated. Do NOT assume the user's input is a reference to the suggestions unless they specifically mention or repeat them."""
 def get_dynamic_system_prompt(
     mode="generate",
     frozen_files="",
@@ -619,8 +621,7 @@ def get_dynamic_system_prompt(
         governance_block += "\n⚠️ ADHERE TO THESE GOVERNANCE RULES STRICTLY.\n"
         prompt += governance_block
 
-    # 6. Inject Premium Design Directives (Dynamic Strengthening)
-    if extra_directives:
-        prompt += f"\n\n🚀 ADDITIONAL DIRECTIVES:\n{extra_directives}\n"
+    # 7. Ensure statements are not repeated and suggestions are ignored unless specified
+    prompt += "\n\n⚠️ IMPORTANT RULE:\n- NEVER repeat or echo the user's statements, prompt, or questions. Start directly with the response or answer.\n- The user may choose to ignore the previous suggestions you generated. Do NOT assume the user's input is a reference to the suggestions unless they specifically mention or repeat them.\n"
 
     return prompt

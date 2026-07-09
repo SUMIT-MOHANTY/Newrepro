@@ -185,6 +185,7 @@ class ProjectManager:
         api_key: str,
         project_path: str,
         project_id: str = None,
+        username: str = "anonymous",
     ) -> Optional[str]:
         """
         Start or reuse the unified container for a specific project.
@@ -258,13 +259,24 @@ class ProjectManager:
             "PORT":                "80",
             "PYTHONUNBUFFERED":    "1",
             "INITIAL_VERSION":     "workspace",
+            
+            # Username context
+            "USER_NAME":           username,
+            
+            # Timezone offset
+            "TZ_OFFSET_SECONDS":   str(-time.timezone if time.daylight == 0 else -time.altzone),
         }
+
+        # Inject handoff source environment variable if applicable
+        project_info = self.get_project_info(pid)
+        if project_info and project_info.get("handoff_source") == "dsuite":
+            env_vars["HANDOFF_SOURCE"] = "dsuite"
 
         volumes = {str(project_dir.absolute()): {'bind': '/project', 'mode': 'rw'}}
 
         try:
             container = self.docker_client.containers.run(
-                "vibecoding-agent-runtime:latest",
+                self.DEFAULT_IMAGE,
                 name=cname,
                 detach=True,
                 remove=False,
@@ -288,44 +300,44 @@ class ProjectManager:
             logger.error(f"❌ No port binding for {cname}")
             return None
 
-        # Start log streaming in a separate thread
+        # Start log streaming in a single thread (file + console) to avoid duplicates
         log_dir = Path("ai_logs")
         log_dir.mkdir(exist_ok=True)
         log_file_path = log_dir / f"{pid}.txt"
-        
+ 
         def stream_logs():
             try:
                 with open(log_file_path, "a") as log_file:
                     log_file.write(f"\n--- SESSION START: {datetime.now().isoformat()} ---\n")
                     for line in container.logs(stream=True, follow=True):
-                        log_file.write(line.decode('utf-8'))
-                        log_file.flush()
+                        try:
+                            decoded_line = line.decode('utf-8').strip()
+                            if decoded_line:
+                                log_file.write(decoded_line + '\n')
+                                log_file.flush()
+                                logger.info(f"[{cname}] {decoded_line}")
+                        except Exception as e:
+                            logger.debug(f"Error decoding log line: {e}")
             except Exception as e:
                 logger.error(f"Error streaming logs for {pid}: {e}")
-        threading.Thread(target=stream_logs, daemon=True).start()
-
+ 
+        log_thread = threading.Thread(target=stream_logs, daemon=True)
+        log_thread.start()
+        self.log_threads[cname] = log_thread
+ 
         url = f"http://localhost:{host_port}"
         proj["container"] = container
         proj["url"]       = url
         self.agent_container = container   # backward compat
         self.agent_url       = url
         self.running_containers[cname] = container
-
+ 
         # ── 4. Wait for Nginx baseline gateway ───────────────────────────────
         if self._wait_for_nginx(url, timeout=30):
             logger.info(f"✅ {cname} ONLINE at {url}")
         else:
             logger.warning(f"⚠️ {cname} not yet responding — returning URL anyway")
-
-        # Start log streaming in a separate thread
-        log_thread = threading.Thread(
-            target=self._stream_container_logs,
-            args=(container, cname),
-            daemon=True
-        )
-        log_thread.start()
-        self.log_threads[cname] = log_thread
-
+ 
         return url
     
     def send_request(self, message: str, project_id: str = None) -> dict:
@@ -873,7 +885,7 @@ class ProjectManager:
         has_pkg = any(workspace_dir.rglob('package.json'))
         metadata = {
             "runtime": "multi-stack" if (has_py and has_pkg) else ("python" if has_py else "node" if has_pkg else "universal"),
-            "docker_image": "vibecoding-agent-runtime:latest",
+            "docker_image": self.DEFAULT_IMAGE,
             "port": 80,
             "additional_ports": [],
             "created_at": datetime.now().isoformat(),
@@ -1494,7 +1506,7 @@ class ProjectManager:
         # This is needed for create_container_for_code to work
         metadata = {
             "runtime": "universal",
-            "docker_image": "vibecoding-agent-runtime:latest",
+            "docker_image": self.DEFAULT_IMAGE,
             "port": 80,
             "additional_ports": [],
             "created_at": datetime.now().isoformat(),
@@ -1692,7 +1704,7 @@ except Exception as e:
                 metadata = json.load(f)
             
             runtime = metadata.get('runtime', 'static-html')
-            docker_image = metadata.get('docker_image', 'vibecoding-agent-runtime:latest')
+            docker_image = metadata.get('docker_image', self.DEFAULT_IMAGE)
             
             # Support multiple ports
             primary_port = metadata.get('port', 80)
@@ -1748,10 +1760,7 @@ except Exception as e:
                 
                 if success:
                     logger.info(f"✅ Switched to version {version_id}")
-                    # Trigger container restart to ensure web server picks up injected editor scripts
-                    logger.info(f"🔄 Triggering container restart to reload HTML files")
-                    self._trigger_container_restart(project_id)
-                    await asyncio.sleep(2)  # Wait for restart to complete
+                    # Switch command triggers version activation/restart inside container supervisor automatically
                     container = existing_container
                 else:
                     logger.warning(f"⚠️ Failed to switch version, recreating container")
