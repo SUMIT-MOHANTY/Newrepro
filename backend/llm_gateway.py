@@ -149,8 +149,11 @@ def _build_openai_payload(
         "model": model_name,
         "messages": messages,
         "stream": stream,
-        "chat_template_kwargs": {"thinking": False},
     }
+    # Only add chat_template_kwargs for DeepSeek models to avoid 400 Bad Request on standard endpoints like Gemini
+    if "deepseek" in model_name.lower():
+        payload["chat_template_kwargs"] = {"thinking": False}
+
     if "temperature" in extra:
         payload["temperature"] = extra["temperature"]
     if "response_format" in extra:
@@ -179,8 +182,16 @@ def is_brn_llama_enabled() -> bool:
 def resolve_url(api_url: Optional[str] = None) -> str:
     """Resolve the correct AI endpoint URL."""
     if api_url:
-        return api_url
-    return settings.brn_llama_url if is_brn_llama_enabled() else settings.ai_api_url
+        url = api_url.strip()
+    else:
+        url = settings.brn_llama_url if is_brn_llama_enabled() else settings.ai_api_url
+
+    # Normalize OpenAI-compatible URLs (non-BRN) to make sure they end with chat/completions
+    if not is_brn_llama_enabled() and url != settings.brn_llama_url:
+        if url and not url.endswith("/chat/completions"):
+            url = url.rstrip("/") + "/chat/completions"
+            
+    return url
 
 
 def resolve_model(model: Optional[str] = None) -> str:

@@ -1,4 +1,11 @@
 import os
+# Disable Hugging Face symlinks on Windows to prevent WinError 1314 permission crash
+os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
+
+import warnings
+# Silence Pydantic warnings about protected namespaces from third-party libraries
+warnings.filterwarnings("ignore", category=UserWarning, message='.*protected namespace "model_".*')
+
 import requests
 import asyncio
 import logging
