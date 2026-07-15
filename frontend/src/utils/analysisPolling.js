@@ -135,15 +135,13 @@ export async function pollUntilComplete(
     throw new Error('Analysis timed out - maximum polling attempts reached');
 }
 
-/**
- * Start analysis and poll until complete (convenience function)
- */
 export async function startAndPollAnalysis(
     payload,
     token,
     onProgress = null,
     pollInterval = 30000,
-    maxAttempts = 300
+    maxAttempts = 300,
+    projectKey = null
 ) {
     // Start the job
     const { jobId, isJob, result } = await startAnalysisJob(payload, token);
@@ -153,6 +151,27 @@ export async function startAndPollAnalysis(
         return result;
     }
 
-    // Poll until complete
-    return await pollUntilComplete(jobId, token, onProgress, pollInterval, maxAttempts);
+    // Store active job in localStorage for resume support
+    if (jobId) {
+        localStorage.setItem('active_analysis_job_id', jobId);
+        if (projectKey) {
+            localStorage.setItem('active_analysis_project_key', projectKey);
+        }
+    }
+
+    try {
+        // Poll until complete
+        const finalResult = await pollUntilComplete(jobId, token, onProgress, pollInterval, maxAttempts);
+        
+        // Clean up on success
+        localStorage.removeItem('active_analysis_job_id');
+        localStorage.removeItem('active_analysis_project_key');
+        
+        return finalResult;
+    } catch (err) {
+        // Clean up on failure
+        localStorage.removeItem('active_analysis_job_id');
+        localStorage.removeItem('active_analysis_project_key');
+        throw err;
+    }
 }

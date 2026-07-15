@@ -620,6 +620,7 @@ export default function AgentAnalysis({
     // Cache results by project key to prevent data loss when switching projects
     const resultCacheRef = useRef({});
     const lastLoadedProjectRef = useRef(null);
+    const activeJobIdRef = useRef(null);
 
     const selectedProject = projects.find((p) => p.key === selectedProjectKey) || null;
     const hasGovernanceAssessment = Boolean(selectedProject?.governanceResultId || governanceContext?.result_id);
@@ -782,8 +783,9 @@ export default function AgentAnalysis({
                         setCompletedStages(stages);
                     }
                 },
-                30000, // Poll every 30 seconds
-                120    // Max 60 minutes (120 * 30s = 3600s)
+                5000, // Poll every 5 seconds
+                720,   // Max 60 minutes (720 * 5s = 3600s)
+                selectedProjectKey
             );
 
             // For targeted updates, the backend returns metrics/questions/architecture directly
@@ -874,6 +876,132 @@ export default function AgentAnalysis({
             setAnalysisInProgress(false);  // Ensure flag is cleared
         }
     }, [governanceContext, repoContext, userAnswers, userFeedback, result, selectedProjectKey, saveToHistory]);
+
+    const resumeAnalysisPolling = useCallback(async (jobId, initialResult, options = {}) => {
+        if (activeJobIdRef.current === jobId) {
+            console.log('Already polling this job, skipping duplicate invocation');
+            return;
+        }
+        activeJobIdRef.current = jobId;
+
+        if (!token) {
+            setError('You are not logged in. Please login again.');
+            activeJobIdRef.current = null;
+            return;
+        }
+
+        setAnalysisInProgress(true);
+        setProcessing(true);
+        setLoading(false);
+        setError('');
+        setProgress(70);
+        setProgressMessage('Resuming background Agent Analysis...');
+        
+        if (initialResult) {
+            setResult(initialResult);
+        }
+
+        try {
+            const { pollUntilComplete } = await import('../utils/analysisPolling');
+            const data = await pollUntilComplete(
+                jobId,
+                token,
+                (progress, message, stages) => {
+                    setProgress(progress);
+                    setProgressMessage(message);
+                    if (stages && Object.keys(stages).length > 0) {
+                        setCompletedStages(stages);
+                    }
+                },
+                5000, // Poll every 5 seconds
+                720   // Max 60 minutes (720 * 5s = 3600s)
+            );
+
+            const isTargetedUpdate = Boolean(data.update_type || data.change_summary);
+            const existingAnalysis = (initialResult || result)?.analysis || {};
+            const effectiveRepoContext = options.repoContext || repoContext || null;
+
+            const { report: parsedReport, questions: parsedQuestions, metrics: parsedMetrics,
+                title, prerequisites: parsedPrereqs, architecture: parsedArch } = parseAIResponse(data.analysis || '', effectiveRepoContext);
+
+            const report = parsedReport;
+            const questions = isTargetedUpdate
+                ? (data.questions?.length > 0 ? data.questions : (parsedQuestions.length > 0 ? parsedQuestions : existingAnalysis.questions || []))
+                : parsedQuestions;
+            const metrics = isTargetedUpdate
+                ? (Object.keys(data.metrics || {}).length > 0 ? data.metrics : (parsedMetrics || existingAnalysis.metrics))
+                : parsedMetrics;
+            const prerequisites = isTargetedUpdate
+                ? (data.prerequisites?.length > 0 ? data.prerequisites : (parsedPrereqs.length > 0 ? parsedPrereqs : existingAnalysis.prerequisites || []))
+                : parsedPrereqs;
+            const architecture = isTargetedUpdate
+                ? (data.architecture && Object.keys(data.architecture).length > 0 ? data.architecture : (parsedArch || existingAnalysis.architecture))
+                : parsedArch;
+
+            if (questions.length > 0) setAiQuestions(questions);
+
+            const finalResult = {
+                ...(initialResult || result),
+                filename: title || (initialResult || result)?.filename,
+                analysis: {
+                    ...existingAnalysis,
+                    ...data,
+                    analysis: report,
+                    questions: questions,
+                    metrics: metrics,
+                    prerequisites: prerequisites,
+                    architecture: architecture,
+                    userAnswers: userAnswers,
+                    userFeedback: userFeedback,
+                    governanceContext: options.governanceContext || governanceContext || null,
+                    repoContextMeta: buildRepoContextMeta(effectiveRepoContext),
+                    change_summary: data.change_summary || null,
+                    affected_sections: data.affected_sections || [],
+                    stages: isTargetedUpdate && data.stages
+                        ? { ...(existingAnalysis.stages || {}), ...data.stages }
+                        : (data.stages || existingAnalysis.stages || {}),
+                }
+            };
+
+            const pt = metrics?.project_type || data.project_type || existingAnalysis.metrics?.project_type;
+            if (pt && selectedProjectKey) {
+                const normalizedPt = String(pt).toLowerCase();
+                localStorage.setItem(`project_type_${selectedProjectKey}`, normalizedPt);
+                fetch(`${API_BASE_URL}/api/agent/projects/${selectedProjectKey}/project-type`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ project_type: normalizedPt })
+                }).catch(err => console.error("Failed to save project type from analysis:", err));
+            }
+
+            setResult(finalResult);
+            setProgress(100);
+            setProgressMessage('Analysis complete!');
+            await saveToHistory(finalResult, selectedProjectKey, effectiveRepoContext);
+            
+            // Clean up localStorage keys
+            localStorage.removeItem('active_analysis_job_id');
+            localStorage.removeItem('active_analysis_project_key');
+        } catch (err) {
+            console.error('Resumed analysis polling error:', err);
+            const userFriendlyError = formatAnalysisError(err);
+            setError(`Analysis Error: ${userFriendlyError}`);
+            setProgress(0);
+            setProgressMessage('');
+            setCompletedStages({});
+            
+            // Clean up localStorage keys on error
+            localStorage.removeItem('active_analysis_job_id');
+            localStorage.removeItem('active_analysis_project_key');
+        } finally {
+            setProcessing(false);
+            setAnalysisInProgress(false);
+            activeJobIdRef.current = null;
+        }
+    }, [token, result, repoContext, governanceContext, userAnswers, userFeedback, selectedProjectKey, saveToHistory]);
 
     const streamAnalysis = useCallback(async (
         payload,
@@ -1025,8 +1153,10 @@ export default function AgentAnalysis({
 
     const fetchAnalysisRef = useRef(fetchAnalysis);
     const streamAnalysisRef = useRef(streamAnalysis);
+    const resumeAnalysisPollingRef = useRef(resumeAnalysisPolling);
     fetchAnalysisRef.current = fetchAnalysis;
     streamAnalysisRef.current = streamAnalysis;
+    resumeAnalysisPollingRef.current = resumeAnalysisPolling;
 
     const handleRepositoryOnlyAnalysis = useCallback(async () => {
         if (!token) {
@@ -1240,6 +1370,27 @@ export default function AgentAnalysis({
         }
 
         const loadAnalysis = async () => {
+            const storedJobId = localStorage.getItem('active_analysis_job_id');
+            const storedProjectKey = localStorage.getItem('active_analysis_project_key');
+            if (storedJobId && storedProjectKey === selectedProjectKey) {
+                console.log('Found running analysis job in localStorage, resuming polling:', storedJobId);
+                const latestDocument = selectedProject.latestDocument;
+                const initialResult = {
+                    id: latestDocument?.id,
+                    filename: latestDocument?.filename || 'BRD',
+                    extraction: {
+                        markdown: latestDocument?.full_content || '',
+                        html: '',
+                        num_pages: null,
+                    },
+                    analysis: { analysis: '', reasoning: '' },
+                    revisionNumber: selectedProject.documents?.length || 1,
+                };
+                
+                resumeAnalysisPollingRef.current(storedJobId, initialResult);
+                return;
+            }
+
             setLoading(true);
             setError('');
 
