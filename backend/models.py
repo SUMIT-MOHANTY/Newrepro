@@ -274,6 +274,7 @@ class Document(Base):
     content_preview = Column(String, nullable=True) # First few chars of extraction
     full_content = Column(String, nullable=True)    # Full markdown content
     analysis_result = Column(String, nullable=True) # JSON string of analysis
+    file_path = Column(String, nullable=True)       # Path/unique name of the uploaded document on disk
     owner_id = Column(Integer, ForeignKey("users.id"))
 
     owner = relationship("User", back_populates="documents")

@@ -2909,6 +2909,7 @@ async def upload_document(
     total_size = 0
     
     processed_files = []
+    processed_file_paths = []
     combined_markdown = ""
     combined_html = ""
     total_pages = 0
@@ -2941,6 +2942,10 @@ async def upload_document(
                 combined_markdown += file_markdown
                 combined_html += f"<div class='document-separator'><h2>Document: {file.filename}</h2></div><pre style='white-space: pre-wrap; font-family: inherit;'>{text_content}</pre>"
                 total_pages += 1
+                
+                # Save plain text/markdown to disk for viewing/download as well
+                file_path = ingestion.save_uploaded_file(content, file.filename)
+                processed_file_paths.append(os.path.basename(file_path))
                 processed_files.append(file.filename)
             else:
                 print(f"Warning: Text file {file.filename} was empty.")
@@ -2951,11 +2956,13 @@ async def upload_document(
         # Process with Docling
         result = ingestion.process_document(file_path)
         
-        # Cleanup the uploaded file
-        ingestion.cleanup_file(file_path)
+        # Keep the file on disk! Do not cleanup.
+        # ingestion.cleanup_file(file_path)
         
         if result["status"] == "error":
             print(f"Error processing {file.filename}: {result['error']}")
+            # Cleanup only failed files to prevent orphan corrupted files
+            ingestion.cleanup_file(file_path)
             continue
 
         # Aggregate results
@@ -2968,6 +2975,7 @@ async def upload_document(
         total_pages += result.get("num_pages", 0) or 0
         all_images.extend(result.get("images", []))
         
+        processed_file_paths.append(os.path.basename(file_path))
         processed_files.append(file.filename)
 
     if not processed_files:
@@ -2980,11 +2988,61 @@ async def upload_document(
         "markdown": combined_markdown,
         "html": combined_html if combined_html else None,
         "num_pages": total_pages,
-        "images": all_images
+        "images": all_images,
+        "file_path": ",".join(processed_file_paths)
     }
     
     print(f"DEBUG: API Response keys: {list(response.keys())}")
     return response
+
+
+@app.get("/documents/download/{filename}")
+async def download_document_file(
+    filename: str,
+    token: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Download or view the original uploaded document by its unique filename.
+    Requires token either in Authorization header or token query parameter.
+    """
+    import os
+    from jose import jwt
+    from config import settings
+    from fastapi.responses import FileResponse
+    
+    # 1. Resolve token
+    resolved_token = None
+    if authorization and authorization.startswith("Bearer "):
+        resolved_token = authorization.split(" ")[1]
+    elif token:
+        resolved_token = token
+
+    if not resolved_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # 2. Verify token
+    try:
+        payload = jwt.decode(resolved_token, settings.secret_key, algorithms=[settings.algorithm])
+        email = payload.get("sub")
+        if not email:
+            raise HTTPException(status_code=401, detail="Invalid token")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    # 3. Serve file
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.normpath(os.path.join(base_dir, "uploads", filename))
+    
+    # Security check: ensure path is inside the uploads folder
+    uploads_dir = os.path.normpath(os.path.join(base_dir, "uploads"))
+    if not file_path.startswith(uploads_dir):
+        raise HTTPException(status_code=403, detail="Access denied")
+        
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+        
+    return FileResponse(file_path)
 
 
 @app.post("/documents/extract-from-url")
@@ -3117,6 +3175,7 @@ def update_document_history(
     db_doc.content_preview = payload.get("content_preview")
     db_doc.full_content = payload.get("full_content")
     db_doc.analysis_result = payload.get("analysis_result")
+    db_doc.file_path = payload.get("file_path")
 
     db.add(db_doc)
     db.commit()
@@ -7815,11 +7874,11 @@ def _startup_init() -> None:
     img_res = agent_service._ensure_agent_runtime_image()
     if img_res.get("success"):
         if img_res.get("built"):
-            print("✅ Docker image built successfully.")
+            print("[OK] Docker image built successfully.")
         else:
-            print("✅ Docker image verified (already exists).")
+            print("[OK] Docker image verified (already exists).")
     else:
-        print(f"❌ Docker initialization failed: {img_res.get('error')}")
+        print(f"[ERROR] Docker initialization failed: {img_res.get('error')}")
 
     agent_service.seed_sample_tasks()
     db = SessionLocal()

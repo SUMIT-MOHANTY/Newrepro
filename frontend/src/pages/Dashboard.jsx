@@ -549,6 +549,10 @@ const Dashboard = ({
     const [showSkillsViewer, setShowSkillsViewer] = useState(false);
     const [selectedSkillContent, setSelectedSkillContent] = useState('');
     const [selectedSkillName, setSelectedSkillName] = useState('');
+    
+    // -- Document Preview Modal State --
+    const [previewDoc, setPreviewDoc] = useState(null);
+    const [previewMode, setPreviewMode] = useState('original');
 
     const getProjectState = (key) => {
         const state = projectStates[key] || {
@@ -1148,6 +1152,7 @@ const Dashboard = ({
         sections = [],
         taskKey = selectedProjectKey,
         repoContextState = repoContext,
+        file_path = null,
     }) => {
         if (!filename || !markdown) return null;
 
@@ -1177,6 +1182,7 @@ const Dashboard = ({
                 content_preview: `${String(markdown).substring(0, 200)}...`,
                 full_content: markdown,
                 analysis_result: JSON.stringify(pendingAnalysis),
+                file_path,
             });
 
             if (!savedDoc) return null;
@@ -1232,7 +1238,8 @@ const Dashboard = ({
                 filename: newResult.filename,
                 content_preview: `${newResult.extraction?.markdown?.substring(0, 200) || ''}...`,
                 full_content: newResult.extraction?.markdown,
-                analysis_result: JSON.stringify(storedAnalysis)
+                analysis_result: JSON.stringify(storedAnalysis),
+                file_path: newResult.file_path || newResult.extraction?.file_path || null,
             }, newResult?.id || null);
 
             if (savedDoc) {
@@ -1924,6 +1931,7 @@ const Dashboard = ({
             let combinedHtml = '';
             let filename = '';
             const contentSections = [];
+            let uploadedFilePathsList = [];
 
             setProjectState(taskKey, { progress: 10, progressMessage: `Preparing content for ${selectedProject.name}...` });
 
@@ -1947,6 +1955,9 @@ const Dashboard = ({
 
                 if (uploadResponse.ok) {
                     const uploadData = await uploadResponse.json();
+                    if (uploadData.file_path) {
+                        uploadedFilePathsList.push(uploadData.file_path);
+                    }
                     // Create individual sections for each uploaded file
                     if (uploadData.filenames && Array.isArray(uploadData.filenames)) {
                         uploadData.filenames.forEach(fname => {
@@ -1984,6 +1995,9 @@ const Dashboard = ({
 
                 if (uploadResponse.ok) {
                     const uploadData = await uploadResponse.json();
+                    if (uploadData.file_path) {
+                        uploadedFilePathsList.push(uploadData.file_path);
+                    }
                     // Create individual sections for each linked file
                     if (uploadData.filenames && Array.isArray(uploadData.filenames)) {
                         uploadData.filenames.forEach(fname => {
@@ -2056,6 +2070,9 @@ const Dashboard = ({
 
                 if (uploadResponse.ok) {
                     const uploadData = await uploadResponse.json();
+                    if (uploadData.file_path) {
+                        uploadedFilePathsList.push(uploadData.file_path);
+                    }
                     // Create individual sections for each skill file
                     if (uploadData.filenames && Array.isArray(uploadData.filenames)) {
                         uploadData.filenames.forEach(fname => {
@@ -2216,6 +2233,7 @@ const Dashboard = ({
                     sections: finalSectionsForDisplay,
                     taskKey,
                     repoContextState: repoContext,
+                    file_path: uploadedFilePathsList.filter(Boolean).join(','),
                 });
 
                 setProjectState(taskKey, {
@@ -2233,6 +2251,7 @@ const Dashboard = ({
             // Set initial result with structured content (all sections including repo)
             const initialResult = {
                 filename: filename,
+                file_path: uploadedFilePathsList.filter(Boolean).join(','),
                 extraction: {
                     markdown: combinedMarkdown,
                     html: combinedHtml,
@@ -3128,6 +3147,44 @@ const Dashboard = ({
                                             <span className="flex items-center justify-center w-8 h-8 rounded-full bg-app-primary-light text-app-primary mr-3 text-sm font-bold">1</span>
                                             Project Document Upload
                                         </h2>
+                                        
+                                        {/* Uploaded Documents List for Visibility in Screening Step */}
+                                        {selectedProject && selectedProject.documents && selectedProject.documents.length > 0 && (
+                                            <div className="mb-6 p-4 bg-app-bg-page/70 border border-app-border rounded-xl text-left">
+                                                <div className="flex items-center gap-2 mb-3">
+                                                    <FileText className="w-4 h-4 text-app-primary" />
+                                                    <h3 className="text-xs font-bold text-app-text-main uppercase tracking-wider">Uploaded Requirement Documents</h3>
+                                                </div>
+                                                <div className="space-y-2">
+                                                    {selectedProject.documents.map((doc, idx) => {
+                                                        const parsedDoc = parseStoredDocumentAnalysis(doc);
+                                                        const revNum = parsedDoc?.projectMeta?.revision_number || (selectedProject.documents.length - idx);
+                                                        return (
+                                                            <div key={doc.id} className="flex items-center justify-between p-3 bg-app-bg-card border border-app-border-light rounded-lg hover:border-app-primary/30 transition-all shadow-sm">
+                                                                <div className="flex items-center gap-3 min-w-0">
+                                                                    <div className="w-7 h-7 rounded-full bg-app-primary/10 text-app-primary flex items-center justify-center font-bold text-[11px] flex-shrink-0">
+                                                                        R{revNum}
+                                                                    </div>
+                                                                    <div className="min-w-0">
+                                                                        <p className="text-sm font-semibold text-app-text-main truncate" title={doc.filename}>{doc.filename}</p>
+                                                                        <p className="text-[10px] text-app-text-muted mt-0.5">
+                                                                            Uploaded {doc.upload_date ? new Date(doc.upload_date).toLocaleDateString() : '—'}
+                                                                        </p>
+                                                                    </div>
+                                                                </div>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setPreviewDoc(doc)}
+                                                                    className="px-3 py-1.5 bg-app-bg-page hover:bg-app-bg-hover border border-app-border text-xs font-bold text-app-text-main rounded-md transition-colors shadow-sm"
+                                                                >
+                                                                    View Document
+                                                                </button>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
+                                        )}
 
                                         <form onSubmit={handleUpload} className="space-y-4">
 
@@ -3872,15 +3929,22 @@ const Dashboard = ({
                                                                             </p>
                                                                         </div>
                                                                     </div>
-                                                                    <div className="flex items-center gap-1 flex-shrink-0 ml-1">
+                                                                    <div className="flex items-center gap-2 flex-shrink-0 ml-1">
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={e => { e.stopPropagation(); setPreviewDoc(doc); }}
+                                                                            className="text-[10px] font-semibold text-app-primary hover:underline cursor-pointer"
+                                                                        >
+                                                                            View Content
+                                                                        </button>
                                                                         {isCompleted && (
                                                                             <span
                                                                                 role="button"
                                                                                 tabIndex={0}
                                                                                 onClick={e => { e.stopPropagation(); navigate('/agent-analysis'); }}
                                                                                 onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); navigate('/agent-analysis'); } }}
-                                                                                className="text-[10px] font-semibold text-app-primary hover:underline cursor-pointer"
-                                                                            >View</span>
+                                                                                className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer"
+                                                                            >Analysis</span>
                                                                         )}
                                                                         <svg className={`w-3 h-3 text-app-text-muted transition-transform ${isExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
                                                                     </div>
@@ -4227,6 +4291,168 @@ const Dashboard = ({
                     </div>
                 </div>
             )}
+
+            {/* ── DOCUMENT PREVIEW MODAL ── */}
+            {previewDoc && (() => {
+                const filesToView = previewDoc.file_path ? previewDoc.file_path.split(',') : [];
+                const hasFilePath = filesToView.length > 0;
+                const activeMode = hasFilePath ? previewMode : 'parsed';
+                
+                return (
+                    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[9999] p-4">
+                        <div className="bg-app-bg-card rounded-2xl shadow-2xl border border-app-border max-w-4xl w-full max-h-[85vh] flex flex-col">
+                            {/* Modal Header */}
+                            <div className="flex items-center justify-between p-6 border-b border-app-border">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-10 h-10 rounded-xl bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center">
+                                        <FileText className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-lg font-bold text-app-text-main text-left">{previewDoc.filename}</h3>
+                                        <p className="text-xs text-app-text-muted text-left">Uploaded Requirement Document Content</p>
+                                    </div>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => setPreviewDoc(null)}
+                                    className="w-8 h-8 rounded-lg hover:bg-app-bg-hover flex items-center justify-center transition-colors"
+                                >
+                                    <span className="text-xl text-app-text-muted">×</span>
+                                </button>
+                            </div>
+                            
+                            {/* Toggle Tabs if file path exists */}
+                            {hasFilePath && (
+                                <div className="flex border-b border-app-border px-6 bg-app-bg-page/50">
+                                    <button
+                                        type="button"
+                                        onClick={() => setPreviewMode('original')}
+                                        className={`py-3 px-4 text-sm font-semibold border-b-2 transition-all flex items-center gap-2 ${
+                                            previewMode === 'original'
+                                                ? 'border-blue-600 text-blue-600 dark:text-blue-400 dark:border-blue-400'
+                                                : 'border-transparent text-app-text-muted hover:text-app-text-main'
+                                        }`}
+                                    >
+                                        <span className="text-base">📄</span> Original Document
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setPreviewMode('parsed')}
+                                        className={`py-3 px-4 text-sm font-semibold border-b-2 transition-all flex items-center gap-2 ${
+                                            previewMode === 'parsed'
+                                                ? 'border-blue-600 text-blue-600 dark:text-blue-400 dark:border-blue-400'
+                                                : 'border-transparent text-app-text-muted hover:text-app-text-main'
+                                        }`}
+                                    >
+                                        <span className="text-base">📝</span> AI Parsed Text
+                                    </button>
+                                </div>
+                            )}
+
+                            {/* Modal Content */}
+                            <div className="flex-1 overflow-y-auto p-6 text-left">
+                                {activeMode === 'original' ? (
+                                    <div className="flex flex-col gap-4">
+                                        {filesToView.map((fname, idx) => {
+                                            const fileExt = fname.split('.').pop().toLowerCase();
+                                            const fileUrl = `${API_BASE_URL}/documents/download/${encodeURIComponent(fname)}?token=${localStorage.getItem('token')}`;
+                                            
+                                            return (
+                                                <div key={fname} className="flex flex-col gap-2">
+                                                    {filesToView.length > 1 && (
+                                                        <h4 className="text-sm font-bold text-app-text-main">
+                                                            Document {idx + 1}: {previewDoc.filename.split(',')[idx] || fname}
+                                                        </h4>
+                                                    )}
+                                                    
+                                                    {fileExt === 'pdf' ? (
+                                                        <iframe
+                                                            src={fileUrl}
+                                                            className="w-full h-[55vh] rounded-xl border border-app-border bg-white"
+                                                            title={fname}
+                                                        />
+                                                    ) : ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(fileExt) ? (
+                                                        <div className="flex justify-center items-center p-4 bg-app-bg-page rounded-xl border border-app-border max-h-[55vh] overflow-auto">
+                                                            <img
+                                                                src={fileUrl}
+                                                                alt={fname}
+                                                                className="max-w-full max-h-[50vh] object-contain rounded-lg shadow-md"
+                                                            />
+                                                        </div>
+                                                    ) : (
+                                                        <div className="p-8 bg-app-bg-page rounded-xl border border-app-border text-center flex flex-col items-center gap-4">
+                                                            <div className="w-16 h-16 rounded-2xl bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center text-3xl">
+                                                                📂
+                                                            </div>
+                                                            <div>
+                                                                <h4 className="text-base font-bold text-app-text-main mb-1">
+                                                                    No Direct Browser Preview
+                                                                </h4>
+                                                                <p className="text-xs text-app-text-muted max-w-md mx-auto">
+                                                                    Files of type <code>.{fileExt}</code> (like Word or PowerPoint documents) cannot be previewed natively in the browser. You can download the file directly, or switch to the <strong>AI Parsed Text</strong> tab to view the extracted contents.
+                                                                </p>
+                                                            </div>
+                                                            <a
+                                                                href={fileUrl}
+                                                                download
+                                                                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold flex items-center gap-2 shadow-sm transition-colors"
+                                                            >
+                                                                📥 Download Original File
+                                                            </a>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div className="mb-5 p-4 bg-blue-50/50 dark:bg-blue-950/20 border border-blue-200/60 dark:border-blue-900/30 rounded-xl text-xs leading-relaxed text-blue-800 dark:text-blue-300 flex gap-3 shadow-sm">
+                                            <span className="text-base select-none">💡</span>
+                                            <div>
+                                                <p className="font-bold mb-1 text-blue-950 dark:text-blue-200">AI-Parsed Document Representation</p>
+                                                <p className="mb-2">
+                                                    This view shows the raw text extracted from your PDF via layout analysis and OCR. This is the exact representation that the AI reads. 
+                                                </p>
+                                                <p>
+                                                    Non-textual components (like icons, borders, page footers, or background graphics) are automatically parsed by the document extraction engine. This can sometimes result in garbled character patterns (e.g., <code>s14.IaL...</code>) or HTML comments (like <code>&lt;!-- image --&gt;</code>) which is normal behavior.
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <div className="prose prose-sm dark:prose-invert max-w-none text-app-text-main font-sans">
+                                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                                {previewDoc.full_content || previewDoc.content_preview || 'No content parsed or found in this document.'}
+                                            </ReactMarkdown>
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                            
+                            {/* Modal Footer */}
+                            <div className="flex items-center justify-between p-6 border-t border-app-border">
+                                {hasFilePath ? (
+                                    <div className="text-xs text-app-text-muted text-left">
+                                        Source: <span className="font-semibold">{filesToView.length} file(s) on server</span>
+                                    </div>
+                                ) : (
+                                    <div className="text-xs text-app-text-muted text-left">
+                                        Source: <span className="font-semibold">Text Input / URL</span>
+                                    </div>
+                                )}
+                                <div className="flex items-center gap-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => setPreviewDoc(null)}
+                                        className="px-4 py-2.5 text-sm font-semibold text-app-text-main bg-app-bg-page border border-app-border rounded-lg hover:bg-app-bg-hover transition-colors"
+                                    >
+                                        Close
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
         </>
     );
 };
