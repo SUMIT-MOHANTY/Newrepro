@@ -792,6 +792,84 @@ async def assistant_chat_stream(
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
+
+class BRDChatRequest(BaseModel):
+    project_token: str
+    message: str
+    conversation_history: list = []
+
+@app.post("/api/agent/brd-chat")
+async def brd_chat(
+    payload: BRDChatRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Conversational chat endpoint for project BRD and analysis.
+    """
+    import llm_gateway
+    import json
+    from config import settings
+
+    # Fetch document/BRD content
+    token_pattern = f'%"project_token": "{payload.project_token}"%'
+    doc = db.query(models.Document).filter(
+        models.Document.owner_id == current_user.id,
+        models.Document.analysis_result.like(token_pattern)
+    ).order_by(models.Document.upload_date.desc()).first()
+
+    brd_content = doc.full_content if doc else ""
+    analysis_report = ""
+    if doc and doc.analysis_result:
+        try:
+            analysis_data = json.loads(doc.analysis_result)
+            if isinstance(analysis_data, dict):
+                analysis_report = analysis_data.get("analysis", "")
+        except:
+            pass
+
+    system_prompt = f"""You are a senior BRD Refinement Assistant and requirements engineer.
+You are helping the user analyze, clarify, and plan improvements to their Business Requirement Document (BRD) and its generated AI Action Plan/Analysis report.
+
+Your goal is to have a back-and-forth planning conversation with the user. Answer their questions, identify potential edge cases, help them flesh out business logic, and refine requirement details.
+
+CRITICAL RULES:
+1. Do NOT write that the document has been updated or changed. You cannot modify the document yourself in this conversational mode.
+2. If the user wants to apply or write the discussed changes to the BRD, instruct them to type "now update the plan in brd" or click the "Apply to BRD" button.
+3. Be clear, professional, and SDLC-focused.
+
+CONTEXT INFO:
+"""
+    if brd_content:
+        system_prompt += f"\n--- Raw BRD Content snippet ---\n{brd_content[:10000]}\n"
+    if analysis_report:
+        system_prompt += f"\n--- Current AI Analysis Report snippet ---\n{analysis_report[:10000]}\n"
+
+    # Build messages list
+    messages = [{"role": "system", "content": system_prompt}]
+    for msg in payload.conversation_history:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if role in ("user", "assistant"):
+            messages.append({"role": role, "content": content})
+
+    # Add current message
+    messages.append({"role": "user", "content": payload.message})
+
+    try:
+        reply = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=settings.ai_api_url,
+            api_key=settings.ai_api_key,
+            model=settings.ai_model,
+            timeout=120.0
+        )
+        return {"response": reply}
+    except Exception as e:
+        logger.error(f"Error in BRD chat: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
+
+
 # --- Auth Endpoints ---
 @app.post("/token", response_model=schemas.Token)
 async def login_for_access_token(
@@ -6149,14 +6227,15 @@ def parse_markdown_techniques(content: str) -> List[Dict[str, str]]:
 @app.get("/api/projects/{project_token}/elicitation-techniques")
 async def get_elicitation_techniques(
     project_token: str,
+    only_skills: bool = False,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
 ):
     """
     Get elicitation techniques for a project.
     
-    If the project has skills/methods markdown files uploaded, asks the AI to generate 
-    techniques based on the contents of those uploaded files.
+    If the project has skills/methods markdown files uploaded, parses them directly.
+    If only_skills is True and no files exist, returns empty response.
     Otherwise, dynamically asks the AI to generate 5 SDLC-aligned elicitation techniques.
     """
     import re
@@ -6170,7 +6249,31 @@ async def get_elicitation_techniques(
     )
     governance = query.filter(models.GovernanceResponse.project_token == project_token).first()
     
-    # 2. Check if skills/methods files are uploaded
+    # 2. Direct fallback/parsing if skills files exist
+    if governance and governance.skills_md_files:
+        try:
+            uploaded_techniques = []
+            for file_obj in governance.skills_md_files:
+                file_content = file_obj.get("content", "")
+                if file_content:
+                    parsed = parse_markdown_techniques(file_content)
+                    uploaded_techniques.extend(parsed)
+            if uploaded_techniques:
+                return {
+                    "source": "uploaded",
+                    "techniques": uploaded_techniques[:5]
+                }
+        except Exception as parse_err:
+            logger.error(f"Failed to parse uploaded skills files: {parse_err}")
+
+    # If only_skills is True and we got no uploaded skills, return empty response immediately
+    if only_skills:
+        return {
+            "source": "none",
+            "techniques": []
+        }
+
+    # 3. Check if skills/methods files are uploaded (for prompt context fallback)
     skills_content = ""
     if governance and governance.skills_md_files:
         skills_contents = [f.get("content", "") for f in governance.skills_md_files if f.get("content")]
@@ -6188,7 +6291,17 @@ async def get_elicitation_techniques(
     if doc and doc.full_content:
         brd_content = doc.full_content
 
-    # 3. Build AI prompt based on whether skills are uploaded or not
+    # Extract the finalized AI Analysis/Action Plan report from the document
+    analysis_report = ""
+    if doc and doc.analysis_result:
+        try:
+            analysis_data = json.loads(doc.analysis_result)
+            if isinstance(analysis_data, dict):
+                analysis_report = analysis_data.get("analysis", "")
+        except Exception as json_err:
+            logger.error(f"Failed to parse analysis_result JSON in techniques generator: {json_err}")
+
+    # 4. Build AI prompt based on whether skills are uploaded or not
     system_content = "You are an expert BRD analyst and SDLC process architect."
     
     if skills_content:
@@ -6206,8 +6319,11 @@ Uploaded Methodology Content:
 {skills_content[:20000]}"""
     else:
         logger.info(f"No skills files found for project {project_token}. Dynamically generating SDLC-aligned techniques using AI...")
-        if brd_content:
-            user_content = f"""Based on the following BRD document content, generate exactly 5 tailored requirements elicitation techniques that can improve the BRD quality, aligned with the SDLC lifecycle.
+        context_to_use = analysis_report if analysis_report else brd_content
+        context_label = "AI Analysis/Action Plan Report" if analysis_report else "BRD Document Content"
+        
+        if context_to_use:
+            user_content = f"""Based on the following {context_label}, generate exactly 5 tailored requirements elicitation techniques that can improve the BRD quality, aligned with the SDLC lifecycle.
 Each technique MUST have:
 1. Technique Name
 2. Short Description
@@ -6215,8 +6331,8 @@ Each technique MUST have:
 
 You MUST return the output in a JSON list of objects containing fields 'name', 'description', and 'purpose'. Do not output any markdown fences, thoughts, or explanations. Only return a raw valid JSON array.
 
-BRD Content snippet:
-{brd_content[:15000]}"""
+{context_label}:
+{context_to_use[:15000]}"""
         else:
             user_content = """Generate exactly 5 high-quality, highly practical requirements elicitation techniques that can improve BRD quality, aligned with the SDLC lifecycle.
 Each technique MUST have:

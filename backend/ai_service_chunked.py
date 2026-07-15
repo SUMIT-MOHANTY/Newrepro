@@ -216,6 +216,7 @@ Focus on WHAT users do and HOW the system helps them achieve business goals.
 6. Use ASCII characters only
 7. Every edge node must exist
 8. Use architecture JSON as source-of-truth
+9. Node IDs MUST NOT contain spaces or special characters (use underscores or camelCase, e.g. API_GW or APIGW instead of API GW)
 
 ### 4. Architecture JSON (User Flow Structure)
 Provide structured user flow data:
@@ -760,7 +761,7 @@ async def analyze_document_chunked(
         
         stage5_messages = [
             {"role": "system", "content": STAGE_5_SYNTHESIS_PROMPT},
-            {"role": "user", "content": f"Synthesize comprehensive BRD Analysis Report from:\n\n{json.dumps(synthesis_context, indent=2)[:6000]}"}
+            {"role": "user", "content": f"Synthesize comprehensive BRD Analysis Report from:\n\n{json.dumps(synthesis_context, indent=2)[:80000]}"}
         ]
         
         stage5_result = await llm_gateway.call_llm_and_extract(
