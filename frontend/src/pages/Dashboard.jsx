@@ -3386,14 +3386,14 @@ const Dashboard = ({
                                                     </div>
 
                                                     {/* Info box explaining how they work */}
-                                                    <div className="bg-gradient-to-r from-emerald-50/70 to-teal-50/70 dark:from-emerald-950/20 dark:to-teal-950/20 border border-emerald-200/50 dark:border-emerald-900/30 rounded-xl p-4 flex gap-3 text-xs leading-relaxed text-emerald-800 dark:text-emerald-300">
-                                                        <span className="text-lg">💡</span>
+                                                    <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 flex gap-3 text-xs leading-relaxed">
+                                                        <span className="text-base shrink-0">💡</span>
                                                         <div className="text-left">
-                                                            <p className="font-bold mb-1 text-emerald-950 dark:text-emerald-200">Interactive Requirements Elicitation Techniques</p>
-                                                            <p className="mb-2">
-                                                                Uploading a <code>skills.md</code> or <code>methods.md</code> file containing custom elicitation techniques (e.g., <em>Brainstorming</em>, <em>What-If Analysis</em>) automatically parses those techniques and displays them as selectable interactive options in the <strong>BRD Chat</strong> sidebar.
+                                                            <p className="font-bold mb-1 text-emerald-900">Interactive Requirements Elicitation Techniques</p>
+                                                            <p className="mb-2 text-emerald-800">
+                                                                Uploading a <code className="bg-emerald-100 px-1 py-0.5 rounded text-emerald-900 font-mono text-[11px]">skills.md</code> or <code className="bg-emerald-100 px-1 py-0.5 rounded text-emerald-900 font-mono text-[11px]">methods.md</code> file containing custom elicitation techniques (e.g., <em>Brainstorming</em>, <em>What-If Analysis</em>) automatically parses those techniques and displays them as selectable interactive options in the <strong className="text-emerald-900">BRD Chat</strong> sidebar.
                                                             </p>
-                                                            <p>
+                                                            <p className="text-emerald-800">
                                                                 If no file is uploaded, the AI automatically suggests 5 customized, SDLC-aligned elicitation techniques. You can click on any of these cards inside the BRD Chat to surgically apply the technique and discover robust, edge-case requirements!
                                                             </p>
                                                         </div>
