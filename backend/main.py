@@ -2364,6 +2364,129 @@ def list_org_users(
         ))
     return response
 
+@app.get("/organization/billing-logs")
+def get_org_billing_and_logs(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db),
+):
+    organization_name = _require_org_admin(current_user)
+    
+    # 1. Get all users in the organization
+    org_users = db.query(models.User).filter(
+        func.lower(models.User.organization_name) == organization_name.lower()
+    ).all()
+    org_user_ids = [u.id for u in org_users]
+    org_user_map = {u.id: u for u in org_users}
+    
+    # 2. Query AI usage metrics for these users
+    ai_logs = db.query(models.AIUsageLog).filter(
+        models.AIUsageLog.user_id.in_(org_user_ids)
+    ).all()
+    
+    # Aggregate AI stats
+    total_cost = 0.0
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    cost_by_model = {}
+    cost_by_user = {} # user_email -> cost
+    
+    for log in ai_logs:
+        total_cost += log.cost or 0.0
+        total_prompt_tokens += log.prompt_tokens or 0
+        total_completion_tokens += log.completion_tokens or 0
+        
+        model = log.model or "unknown"
+        cost_by_model[model] = cost_by_model.get(model, 0.0) + (log.cost or 0.0)
+        
+        user = org_user_map.get(log.user_id)
+        if user:
+            cost_by_user[user.email] = cost_by_user.get(user.email, 0.0) + (log.cost or 0.0)
+            
+    # Round float values
+    total_cost = round(total_cost, 4)
+    cost_by_model = {k: round(v, 4) for k, v in cost_by_model.items()}
+    cost_by_user = {k: round(v, 4) for k, v in cost_by_user.items()}
+    
+    # 3. Calculate session durations based on activity logs
+    activity_logs = db.query(models.UserActivityLog).filter(
+        models.UserActivityLog.user_id.in_(org_user_ids)
+    ).order_by(models.UserActivityLog.user_id, models.UserActivityLog.created_at).all()
+    
+    user_durations = {} # user_id -> seconds
+    user_last_time = {} # user_id -> datetime
+    
+    for log in activity_logs:
+        uid = log.user_id
+        log_time = log.created_at
+        if not log_time:
+            continue
+        if uid not in user_durations:
+            user_durations[uid] = 0
+            user_last_time[uid] = log_time
+            continue
+            
+        last_time = user_last_time[uid]
+        diff_sec = (log_time - last_time).total_seconds()
+        
+        # If the gap is less than 30 minutes, accumulate it
+        if 0 < diff_sec < 1800:
+            user_durations[uid] += diff_sec
+            
+        user_last_time[uid] = log_time
+
+    # 4. Enrich user statistics list
+    user_stats = []
+    for u in org_users:
+        duration_sec = user_durations.get(u.id, 0)
+        user_cost = cost_by_user.get(u.email, 0.0)
+        
+        # Count projects created by this user
+        proj_count = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.owner_id == u.id
+        ).count()
+        
+        user_stats.append({
+            "id": u.id,
+            "email": u.email,
+            "name": f"{u.first_name or ''} {u.last_name or ''}".strip() or u.email.split('@')[0],
+            "is_org_admin": u.is_org_admin,
+            "total_duration_hours": round(duration_sec / 3600, 2),
+            "total_cost": user_cost,
+            "projects_count": proj_count,
+            "last_login": u.last_login.isoformat() if u.last_login else None
+        })
+        
+    # 5. Fetch recent activity logs for presentation
+    recent_activities = []
+    recent_logs = db.query(models.UserActivityLog).filter(
+        models.UserActivityLog.user_id.in_(org_user_ids)
+    ).order_by(models.UserActivityLog.created_at.desc()).limit(100).all()
+    
+    for l in recent_logs:
+        user = org_user_map.get(l.user_id)
+        email = user.email if user else "Unknown"
+        recent_activities.append({
+            "id": l.id,
+            "user_email": email,
+            "action": l.action,
+            "method": l.method,
+            "path": l.path,
+            "ip_address": l.ip_address,
+            "created_at": l.created_at.isoformat() if l.created_at else None
+        })
+
+    return {
+        "organization_name": organization_name,
+        "summary": {
+            "total_cost": total_cost,
+            "total_prompt_tokens": total_prompt_tokens,
+            "total_completion_tokens": total_completion_tokens,
+            "cost_by_model": cost_by_model,
+        },
+        "user_stats": user_stats,
+        "recent_activities": recent_activities
+    }
+
 @app.get("/organization/invites/preview", response_model=schemas.OrganizationInvitePreviewResponse)
 def preview_org_invite(
     token: str,
