@@ -14827,3 +14827,84 @@ async def route_proxy(token: str, request: Request, path: str = ""):
     forward_path = "/" + path if path else "/"
     proxy_prefix = f"/app/{token}"
     return proxy_request(target, request, forward_path, proxy_prefix=proxy_prefix)
+
+class BournAIMetricsRequest(BaseModel):
+    salt_key: str
+    date: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+
+@app.post("/api/public/metrics/bournai")
+def get_public_bournai_metrics(
+    req: BournAIMetricsRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Public API endpoint to query BournAI model token usage and cost metrics.
+    Requires salt_key validation in the JSON payload body.
+    """
+    import datetime
+    
+    expected_salt = settings.metrics_api_salt
+    if not req.salt_key or req.salt_key != expected_salt:
+        raise HTTPException(status_code=401, detail="Unauthorized: Invalid salt_key")
+        
+    start_dt = None
+    end_dt = None
+    
+    # 1. Parse date parameters
+    if req.date:
+        try:
+            start_dt = datetime.datetime.strptime(req.date, "%Y-%m-%d")
+            end_dt = start_dt + datetime.timedelta(days=1) - datetime.timedelta(microseconds=1)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Expected YYYY-MM-DD")
+    else:
+        if req.start_date:
+            try:
+                start_dt = datetime.datetime.strptime(req.start_date, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid start_date format. Expected YYYY-MM-DD")
+        if req.end_date:
+            try:
+                end_dt = datetime.datetime.strptime(req.end_date, "%Y-%m-%d") + datetime.timedelta(days=1) - datetime.timedelta(microseconds=1)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid end_date format. Expected YYYY-MM-DD")
+                
+    # 2. Query logs
+    query = db.query(models.AIUsageLog).filter(
+        func.lower(models.AIUsageLog.model) == "bournai"
+    )
+    if start_dt:
+        query = query.filter(models.AIUsageLog.created_at >= start_dt)
+    if end_dt:
+        query = query.filter(models.AIUsageLog.created_at <= end_dt)
+        
+    logs = query.all()
+    
+    # 3. Sum up values
+    total_prompt = 0
+    total_completion = 0
+    total_cost = 0.0
+    request_count = len(logs)
+    
+    for l in logs:
+        total_prompt += (l.prompt_tokens or 0)
+        total_completion += (l.completion_tokens or 0)
+        total_cost += (l.cost or 0.0)
+        
+    return {
+        "model": "BournAI",
+        "query_parameters": {
+            "date": req.date,
+            "start_date": req.start_date,
+            "end_date": req.end_date
+        },
+        "metrics": {
+            "request_count": request_count,
+            "total_prompt_tokens": total_prompt,
+            "total_completion_tokens": total_completion,
+            "total_tokens": total_prompt + total_completion,
+            "total_cost_usd": round(total_cost, 6)
+        }
+    }
