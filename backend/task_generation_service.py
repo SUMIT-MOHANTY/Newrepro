@@ -5,7 +5,7 @@ Uses Agent Action Plan to generate structured tasks with multiple sprints and mi
 import json
 import logging
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from sqlalchemy.orm import Session
 from models import Task, Document, GovernanceResponse
 import llm_gateway
@@ -414,6 +414,48 @@ Sprint 4 tasks → linked_tasks: ["TASK-00", relevant Sprint 2/3 tasks]
 """
 
 
+def _deduplicate_tasks(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Remove duplicate tasks from the list based on title and description keywords.
+    Preserves the first occurrence and removes subsequent near-duplicates.
+    """
+    if not tasks:
+        return tasks
+
+    seen_titles: Set[str] = set()
+    seen_task_ids: Set[str] = set()
+    deduped: List[Dict[str, Any]] = []
+
+    for task in tasks:
+        task_id = str(task.get("task_id", "")).strip()
+        title = str(task.get("taskName", "") or task.get("title", "")).strip().lower()
+        # Normalize: remove punctuation, collapse whitespace
+        import re
+        normalized = re.sub(r"[^a-z0-9\\s]", "", title)
+        normalized = re.sub(r"\\s+", " ", normalized).strip()
+
+        # Skip if we've already seen this task_id
+        if task_id and task_id in seen_task_ids:
+            logger.info(f"[DEDUP] Skipping duplicate task_id: {task_id}")
+            continue
+
+        # Skip if we've already seen a very similar title
+        if normalized and normalized in seen_titles:
+            logger.info(f"[DEDUP] Skipping duplicate title: {title} (task_id: {task_id})")
+            continue
+
+        if task_id:
+            seen_task_ids.add(task_id)
+        if normalized:
+            seen_titles.add(normalized)
+        deduped.append(task)
+
+    if len(deduped) < len(tasks):
+        logger.info(f"[DEDUP] Removed {len(tasks) - len(deduped)} duplicate tasks, {len(deduped)} remaining")
+
+    return deduped
+
+
 def _generate_sprints_and_milestones(
     project_start: datetime,
     project_deadline: datetime,
@@ -640,17 +682,37 @@ def _validate_task_structure(task: Dict[str, Any]) -> bool:
             logger.warning(f"Task missing critical field: {field}")
             return False
     
-    valid_types = ["EPIC", "FEATURE", "STORY", "TASK", "BUG"]
-    if task.get("task_type") not in valid_types:
-        logger.warning(f"Invalid task_type: {task.get('task_type')}")
+    normalized_type = str(task.get("task_type", "")).upper().strip()
+    valid_types = [
+        "EPIC", "FEATURE", "STORY", "TASK", "BUG",
+        "FRONTEND", "BACKEND", "INFRASTRUCTURE", "INTEGRATION",
+        "DEVOPS", "QA", "TESTING", "DOCUMENTATION", "SECURITY",
+        "PERFORMANCE", "ANALYSIS", "DATABASE", "UI", "API",
+        "CONFIG", "ENHANCEMENT", "DESIGN", "ARCHITECTURE",
+        "MIGRATION", "SETUP", "TOOLING", "FIX", "REFACTOR",
+        "FEATURE", "DEV", "OPS", "TASK", "STORY",
+        "QUALITY", "DEPLOYMENT",
+    ]
+    if normalized_type not in valid_types:
+        logger.warning(f"Invalid task_type: {task.get('task_type')} (normalized: '{normalized_type}')")
         return False
     
     # Auto-fix task_wallet if missing
     wallet = task.get("task_wallet", None)
     if wallet is None:
         task_type = task.get("task_type", "TASK")
-        defaults = {"EPIC": 9, "FEATURE": 5, "STORY": 3, "TASK": 1, "BUG": 2}
-        task["task_wallet"] = defaults.get(task_type, 1)
+        task_type_upper = str(task_type).upper().strip()
+        defaults = {
+            "EPIC": 9, "FEATURE": 5, "STORY": 3, "TASK": 1, "BUG": 2,
+            "FRONTEND": 5, "BACKEND": 5, "INFRASTRUCTURE": 8, "INTEGRATION": 3,
+            "DEVOPS": 8, "QA": 5, "TESTING": 5, "DOCUMENTATION": 2, "SECURITY": 5,
+            "PERFORMANCE": 3, "ANALYSIS": 3, "DATABASE": 5, "UI": 5, "API": 5,
+            "CONFIG": 2, "ENHANCEMENT": 3, "DESIGN": 3, "ARCHITECTURE": 8,
+            "MIGRATION": 5, "SETUP": 2, "TOOLING": 2, "FIX": 2, "REFACTOR": 3,
+            "DEV": 5, "OPS": 5,
+            "QUALITY": 5, "DEPLOYMENT": 5,
+        }
+        task["task_wallet"] = defaults.get(task_type_upper, 3)
         logger.info(f"Auto-fixed missing task_wallet → {task['task_wallet']} for {task.get('task_id')}")
     
     return True
@@ -1092,6 +1154,72 @@ def _build_project_context(
 # Each sprint gets its own focused prompt so the LLM output stays small,
 # never hits max_tokens, and never produces truncated JSON.
 # ─────────────────────────────────────────────────────────────────────────────
+
+ALL_SPRINTS_SINGLE_CALL_PROMPT = """You are generating ALL tasks for the entire project in ONE response.
+
+Unlike the previous approach where tasks were split across 4 separate LLM calls (one per sprint),
+this prompt asks you to generate EVERYTHING at once — all 4 sprints, all tasks — in a single JSON array.
+
+## WHY THIS MATTERS
+- Single call eliminates duplicate tasks (the #1 problem with multi-call generation)
+- You can see the full picture and create proper dependencies between sprints
+- You can ensure no two tasks overlap in file ownership
+- You can number tasks correctly from the start (TASK-00 through TASK-NN)
+
+## SPRINT STRUCTURE (generate ALL 4 sprints)
+
+### Sprint 1 → Foundation, Navigation Shell & Fully-Linked Frontend Prototype
+- TASK-00 (mandatory first task, index 0, task_id exactly "TASK-00", linked_tasks: [], task_wallet: 8)
+  Creates: repo scaffold, React Router + ALL routes, AppLayout (collapsible sidebar + navbar),
+  design tokens (tokens.css), global mockData.ts, shared UI component kit, backend health endpoint ONLY
+- After TASK-00: one task per major screen/feature area
+- NO backend code in Sprint 1 except entry-point skeleton
+- Every Sprint 1 screen task uses the STORY-FIRST description format
+- All Sprint 1 tasks (except TASK-00) have linked_tasks: ["TASK-00"]
+
+### Sprint 2 → Backend Services, Database Setup & Core Configurations
+- SQLAlchemy DB schemas, models, JWT auth, API routes, third-party integrations
+- linked_tasks: ["TASK-00"] at minimum
+- If a Sprint 2 task depends on a specific Sprint 1 frontend task, include it too
+
+### Sprint 3 → Frontend-Backend Integration & Database Connectivity
+- Replace mockData with React Query hooks / real API calls
+- One integration task per major frontend-backend connection
+- Each Sprint 3 task links to TASK-00 + its Sprint 1 source + its Sprint 2 backend task
+
+### Sprint 4 → Testing, Polish & Production Deployment
+- Frontend tests (Vitest), backend tests (Pytest), E2E tests
+- Production deployment config (Docker, nginx, CI/CD)
+- linked_tasks: TASK-00 + relevant Sprint 2/3 tasks
+
+## CRITICAL: PROPER DEPENDENCY RESOLUTION
+- linked_tasks MUST be SPECIFIC, not just ["TASK-00"] for everything
+- Example correct dependencies:
+  TASK-00 (Bootstrap) → linked_tasks: []
+  TASK-01 (Auth UI) → linked_tasks: ["TASK-00"]
+  TASK-02 (Dashboard) → linked_tasks: ["TASK-00"]
+  TASK-03 (Auth Backend) → linked_tasks: ["TASK-00", "TASK-01"]
+  TASK-04 (Dashboard Integration) → linked_tasks: ["TASK-00", "TASK-02", "TASK-03"]
+  TASK-05 (Tests) → linked_tasks: ["TASK-00", "TASK-04"]
+
+## DUPLICATE PREVENTION RULES
+- NEVER create two tasks with the same or very similar title
+- NEVER create two tasks that own the same files
+- NEVER create two tasks with the same taskName
+- If Sprint 1 creates "Auth UI" (login page), Sprint 2 creates "Auth Backend" (API endpoints),
+  Sprint 3 creates "Auth Integration" (connecting them) — NOT another "Auth UI"
+- Every task must have a UNIQUE purpose and UNIQUE file ownership
+
+## OUTPUT RULES
+- Return ONLY a valid JSON array — no markdown, no preamble, no explanation
+- First element MUST be TASK-00 (task_id exactly "TASK-00", linked_tasks: [])
+- Task IDs: TASK-00, TASK-01, TASK-02, ... sequential
+- Every task must have: task_id, taskName, description, task_type, priority, task_wallet, sprint, milestone, linked_tasks, checklist, assignedTo, reported_by
+- DESCRIPTIONS: Sprint 1 frontend tasks use the STORY-FIRST format. Sprint 2-4 tasks use concise ownership format.
+- Use the repository structure and available sprints/milestones provided in the context.
+- Generate all tasks for all 4 sprints in this single response.
+"""
+
 
 SPRINT1_GENERATION_PROMPT = """You are generating ONLY Sprint 1 tasks for a multi-sprint project plan.
 
@@ -1646,7 +1774,7 @@ async def generate_tasks_locally(
         for m in milestones
     ])
 
-    # ── 4. Shared BRD context block (injected into every sprint call) ──────────
+    # ── 4. Shared BRD context block (injected into the single LLM call) ────────
     brd_block = f"""
 AVAILABLE SPRINTS (with dates):
 ================================
@@ -1670,144 +1798,105 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
 ===================================================================
 """
 
-    # ── 5. PHASED GENERATION — one LLM call per sprint ────────────────────────
+    # ── 5. SINGLE-CALL GENERATION (replaces old 4-phase approach) ─────────────
+    # NEW: Generate ALL tasks for all 4 sprints in one LLM call to prevent
+    # duplicate tasks and ensure proper cross-sprint dependency resolution.
+    logger.info(f"[{project_token}] Single-call generation — generating all sprints at once")
+
+    messages = [
+        {"role": "system", "content": INTELLIGENT_TASK_GENERATION_PROMPT},
+        {"role": "user", "content": brd_block + "\n\n" + ALL_SPRINTS_SINGLE_CALL_PROMPT},
+    ]
+
     all_tasks: List[Dict[str, Any]] = []
 
-    # ── Phase 1: Sprint 1 (TASK-00 + frontend screens) ────────────────────────
-    logger.info(f"[{project_token}] Phase 1/4 — Sprint 1 (bootstrap + frontend prototype)")
-    sprint1_tasks = await _generate_sprint_phase(
-        sprint_number=1,
-        sprint_prompt_template=SPRINT1_GENERATION_PROMPT,
-        prompt_context=brd_block,
-        api_url=api_url,
-        api_key=api_key,
-        model=model,
-        project_token=project_token,
-    )
-    task_00 = next((t for t in sprint1_tasks if t.get("task_id") == "TASK-00"), None)
-    if task_00:
-        # Ensure TASK-00 is not split, but guarantee dependencies for other tasks
-        for t in sprint1_tasks:
-            if t.get("task_id") != "TASK-00":
-                linked = t.setdefault("linked_tasks", [])
-                if "TASK-00" not in linked:
-                    linked.insert(0, "TASK-00")
-    else:
-        # Renumber starting at 1 (TASK-00 stays TASK-00)
-        sprint1_tasks = _renumber_task_ids(sprint1_tasks, start_index=1)
-        
-    # Sprint 1 tasks get sprint[0] as default
-    for t in sprint1_tasks:
-        t.setdefault("sprint",     sprints[0]["name"])
-        t.setdefault("milestone",  milestones[0]["name"])
-    all_tasks.extend(sprint1_tasks)
+    try:
+        response_content = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            timeout=240.0,  # Longer timeout for single big call
+        )
 
-    next_index = max(
-        (int(t["task_id"].replace("TASK-", "")) for t in sprint1_tasks if t.get("task_id", "").startswith("TASK-") and not t["task_id"].startswith("TASK-00")),
-        default=0
-    ) + 1
+        all_tasks = _parse_task_json(response_content)
+        logger.info(f"[{project_token}] Single-call generation produced {len(all_tasks)} raw tasks")
 
-    # ── Phase 2: Sprint 2 (backend services) ──────────────────────────────────
-    sprint1_summary = _build_tasks_summary(sprint1_tasks)
-    logger.info(f"[{project_token}] Phase 2/4 — Sprint 2 (backend services) — next task index: TASK-{next_index:02d}")
-    sprint2_prompt = SPRINT2_GENERATION_PROMPT.replace(
-        "{start_index}", f"{next_index:02d}"
-    ).replace(
-        "{sprint1_summary}", sprint1_summary
-    )
-    sprint2_tasks = await _generate_sprint_phase(
-        sprint_number=2,
-        sprint_prompt_template=sprint2_prompt,
-        prompt_context=brd_block,
-        api_url=api_url,
-        api_key=api_key,
-        model=model,
-        project_token=project_token,
-    )
-    sprint2_tasks = _renumber_task_ids(sprint2_tasks, start_index=next_index)
-    for t in sprint2_tasks:
-        t.setdefault("sprint",    sprints[1]["name"])
-        t.setdefault("milestone", milestones[1]["name"])
-        # Guarantee TASK-00 is always in linked_tasks
-        linked = t.setdefault("linked_tasks", [])
-        if "TASK-00" not in linked:
-            linked.insert(0, "TASK-00")
-        t["linked_tasks"] = linked
-    all_tasks.extend(sprint2_tasks)
+    except Exception as e:
+        logger.error(f"[{project_token}] Single-call task generation failed: {e}")
+        # Fallback to empty list — caller can handle
+        all_tasks = []
 
-    next_index = max(
-        (int(t["task_id"].replace("TASK-", "")) for t in sprint2_tasks if t.get("task_id", "").startswith("TASK-") and not t["task_id"].startswith("TASK-00")),
-        default=next_index - 1
-    ) + 1
-
-    # ── Phase 3: Sprint 3 (integration) ───────────────────────────────────────
-    sprint2_summary = _build_tasks_summary(sprint2_tasks)
-    logger.info(f"[{project_token}] Phase 3/4 — Sprint 3 (integration) — next task index: TASK-{next_index:02d}")
-    sprint3_prompt = SPRINT3_GENERATION_PROMPT.replace(
-        "{start_index}", f"{next_index:02d}"
-    ).replace(
-        "{sprint1_summary}", sprint1_summary
-    ).replace(
-        "{sprint2_summary}", sprint2_summary
-    )
-    sprint3_tasks = await _generate_sprint_phase(
-        sprint_number=3,
-        sprint_prompt_template=sprint3_prompt,
-        prompt_context=brd_block,
-        api_url=api_url,
-        api_key=api_key,
-        model=model,
-        project_token=project_token,
-    )
-    sprint3_tasks = _renumber_task_ids(sprint3_tasks, start_index=next_index)
-    for t in sprint3_tasks:
-        t.setdefault("sprint",    sprints[2]["name"])
-        t.setdefault("milestone", milestones[2]["name"])
-        # Guarantee TASK-00 is always in linked_tasks
-        linked = t.setdefault("linked_tasks", [])
-        if "TASK-00" not in linked:
-            linked.insert(0, "TASK-00")
-        t["linked_tasks"] = linked
-    all_tasks.extend(sprint3_tasks)
-
-    next_index = max(
-        (int(t["task_id"].replace("TASK-", "")) for t in sprint3_tasks if t.get("task_id", "").startswith("TASK-") and not t["task_id"].startswith("TASK-00")),
-        default=next_index - 1
-    ) + 1
-
-    # ── Phase 4: Sprint 4 (testing & deployment) ──────────────────────────────
-    all_previous_summary = _build_tasks_summary(sprint1_tasks + sprint2_tasks + sprint3_tasks)
-    logger.info(f"[{project_token}] Phase 4/4 — Sprint 4 (testing & deployment) — next task index: TASK-{next_index:02d}")
-    sprint4_prompt = SPRINT4_GENERATION_PROMPT.replace(
-        "{start_index}", f"{next_index:02d}"
-    ).replace(
-        "{all_previous_summary}", all_previous_summary
-    )
-    sprint4_tasks = await _generate_sprint_phase(
-        sprint_number=4,
-        sprint_prompt_template=sprint4_prompt,
-        prompt_context=brd_block,
-        api_url=api_url,
-        api_key=api_key,
-        model=model,
-        project_token=project_token,
-    )
-    sprint4_tasks = _renumber_task_ids(sprint4_tasks, start_index=next_index)
-    for t in sprint4_tasks:
-        t.setdefault("sprint",    sprints[3]["name"])
-        t.setdefault("milestone", milestones[3]["name"])
-        # Guarantee TASK-00 is always in linked_tasks
-        linked = t.setdefault("linked_tasks", [])
-        if "TASK-00" not in linked:
-            linked.insert(0, "TASK-00")
-        t["linked_tasks"] = linked
-    all_tasks.extend(sprint4_tasks)
-
-    logger.info(f"[{project_token}] All phases complete — {len(all_tasks)} total tasks before validation")
-
+    # ── 5b. Validate and ensure TASK-00 exists ─────────────────────────────────
     if not all_tasks:
-        logger.error("No tasks generated across any sprint phase")
+        logger.error(f"[{project_token}] No tasks generated from single-call")
         return []
+
+    # Ensure TASK-00 is the first element
+    task_00 = next((t for t in all_tasks if t.get("task_id") == "TASK-00"), None)
+    if not task_00:
+        logger.warning(f"[{project_token}] TASK-00 not found in single-call output — renumbering from 1")
+        all_tasks = _renumber_task_ids(all_tasks, start_index=1)
+        # Insert a minimal TASK-00 if truly missing
+        if not any(t.get("task_id") == "TASK-00" for t in all_tasks):
+            logger.warning(f"[{project_token}] No TASK-00 at all — adding scaffold task")
+            scaffold = {
+                "task_id": "TASK-00",
+                "taskName": "Project Bootstrap & Shared Foundation",
+                "description": "Project bootstrap: repository scaffold, navigation shell, design tokens, mock data store, and shared UI components.\nThis agent owns: all config files, src/components/layout/, src/components/ui/, src/styles/, src/mocks/",
+                "task_type": "TASK",
+                "priority": "high",
+                "task_wallet": 8,
+                "sprint": sprints[0]["name"],
+                "milestone": milestones[0]["name"],
+                "assignedTo": [],
+                "linked_tasks": [],
+                "reported_by": "system",
+                "checklist": [{"text": "Scaffold repository structure", "completed": False}]
+            }
+            all_tasks.insert(0, scaffold)
+
+    # ── 5c. DEDUPLICATE FIRST (before renumbering to keep IDs clean) ────────────
+    before_dedup = len(all_tasks)
+    all_tasks = _deduplicate_tasks(all_tasks)
+    if len(all_tasks) < before_dedup:
+        logger.info(f"[{project_token}] Dedup removed {before_dedup - len(all_tasks)} tasks")
+
+    # ── 5d. Renumber tasks sequentially (AFTER dedup, so IDs have no gaps) ─────
+    all_tasks = _renumber_task_ids(all_tasks, start_index=1)
+    sprint_map = {}
+    for s in sprints:
+        sprint_map[s["name"]] = s["name"]
+    milestone_map = {}
+    for m in milestones:
+        milestone_map[m["name"]] = m["name"]
+
+    for t in all_tasks:
+        task_sprint = t.get("sprint", "")
+        if task_sprint and task_sprint in sprint_map:
+            pass  # Keep the LLM-assigned sprint
+        else:
+            # Infer sprint from task description keywords
+            desc = str(t.get("description", "")).lower()
+            if any(kw in desc for kw in ["test", "deploy", "production", "docker"]):
+                t["sprint"] = sprints[3]["name"] if len(sprints) > 3 else sprints[-1]["name"]
+            elif any(kw in desc for kw in ["integrat", "connect", "wire", "api call"]):
+                t["sprint"] = sprints[2]["name"] if len(sprints) > 2 else sprints[-1]["name"]
+            elif any(kw in desc for kw in ["backend", "api ", "database", "model", "schema"]):
+                t["sprint"] = sprints[1]["name"] if len(sprints) > 1 else sprints[-1]["name"]
+            else:
+                t["sprint"] = sprints[0]["name"]
+        t.setdefault("milestone", milestones[0]["name"])
+
+    # ── 5f. Ensure every task has TASK-00 in linked_tasks (except TASK-00 itself) ─
+    for t in all_tasks:
+        if t.get("task_id") != "TASK-00":
+            linked = t.setdefault("linked_tasks", [])
+            if "TASK-00" not in linked:
+                linked.insert(0, "TASK-00")
+            t["linked_tasks"] = linked
+
+    logger.info(f"[{project_token}] Single-call generation complete — {len(all_tasks)} tasks after dedup")
 
     # ── 6. Validate, enrich, inject repo structure ─────────────────────────────
     valid_tasks: List[Dict[str, Any]] = []

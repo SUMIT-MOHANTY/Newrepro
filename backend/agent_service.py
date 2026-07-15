@@ -27,6 +27,7 @@ from bootstrap_persistence import (
     guard_canonical_regeneration, get_immutable_canonical_artifacts, save_bootstrap_canonical_artifacts,
 )
 from agent_communication_hooks import broadcast_task_started, broadcast_task_completed, broadcast_task_failed, broadcast_bootstrap_waiting
+from agent_controlled_executor import call_ai_for_code_with_controlled
 import logging
 import llm_gateway
 from agent_bash_ai_integration import get_ai_bash_interface, cleanup_bash_executor
@@ -19509,6 +19510,15 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
 
     # Set agent to running (or idle if no task in continuous mode)
     if task:
+        # Broadcast task started via communication hooks (Phase 4)
+        try:
+            await broadcast_task_started(
+                project_token=project_token or "",
+                agent_id=agent_id,
+                task=task or {},
+            )
+        except Exception:
+            pass  # Non-critical
         agent["status"] = "running"
     else:
         # Continuous mode with no initial task — check if bootstrap is pending
@@ -21037,7 +21047,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 )
                 task_description_with_checklist = error_context_text + task_description_with_checklist
 
-            generated_code, thought = await _call_ai_for_code(
+            generated_code, thought = await call_ai_for_code_with_controlled(
                 canonical_files_prefix + task_description_with_checklist, agent["type"],
                 code_context=jit_context,
                 system_prompt_override=dynamic_system_prompt,
@@ -21200,7 +21210,7 @@ echo "Created X files"
 NOW GENERATE THE COMPLETE SCRIPT:"""
 
                 try:
-                    generated_code, thought = await _call_ai_for_code(
+                    generated_code, thought = await call_ai_for_code_with_controlled(
                         retry_prompt, agent["type"],
                         code_context=jit_context,
                         system_prompt_override=dynamic_system_prompt,
@@ -21678,7 +21688,7 @@ set -e
 cd {project_root}
 """
                                 
-                                fix_code, fix_thought = await _call_ai_for_code(
+                                fix_code, fix_thought = await call_ai_for_code_with_controlled(
                                     fix_prompt,
                                     agent["type"],
                                     tech_spec=task.get("_tech_spec", ""),
@@ -21841,6 +21851,16 @@ Agent {agent_id} will proceed to next available task.
                                 # DO NOT mark agent as blocked - allow it to continue with next task
                                 agent["status"] = "idle"
                                 agent["progress"] = 0
+                                # Broadcast task failure (Phase 4)
+                                try:
+                                    await broadcast_task_failed(
+                                        project_token=project_token or "",
+                                        agent_id=agent_id,
+                                        task=task or {},
+                                        error="Task failed after max self-healing attempts",
+                                    )
+                                except Exception:
+                                    pass  # Non-critical
                                 agent["current_task"] = None
                                 
                                 logger.info(f"[{agent_id}] Task handed over to master agent. Agent will pick next task.")
@@ -21888,6 +21908,16 @@ Agent {agent_id} will proceed to next available task.
                     })
                     
                     # DO NOT mark agent as blocked - allow it to continue with next task
+                    # Broadcast task failure (Phase 4)
+                    try:
+                        await broadcast_task_failed(
+                            project_token=project_token or "",
+                            agent_id=agent_id,
+                            task=task or {},
+                            error="Self-review did not pass after max fix iterations",
+                        )
+                    except Exception:
+                        pass  # Non-critical
                     agent["status"] = "idle"
                     agent["progress"] = 0
                     agent["current_task"] = None
@@ -22088,7 +22118,7 @@ Agent {agent_id} will proceed to next available task.
 
                     # Generate and execute code
                     lt_checklist_items = linked_task.get("checklist") or []
-                    lt_code, thought = await _call_ai_for_code(
+                    lt_code, thought = await call_ai_for_code_with_controlled(
                         linked_task.get("description", lt_title), 
                         agent["type"], 
                         code_context=lt_jit_context,
@@ -22867,11 +22897,22 @@ Be extremely specific. Every field name must be exact. This is the single source
 
             # ═══ CRITICAL FIX: Clear current_task and resume_pending_task IMMEDIATELY after completion ═══
             # This prevents the agent from re-executing the same task
+            _completed_task_branch = agent.get("current_task", {}).get("_local_branch", "") if agent.get("current_task") else ""
             agent["current_task"] = None
             agent["resume_pending_task"] = False
             agent["status"] = "idle"  # Set to idle so it can pick up next task
             agent["progress"] = 100
             agent["progress_message"] = "Task completed"
+            # Broadcast task completion via communication hooks (Phase 4)
+            try:
+                await broadcast_task_completed(
+                    project_token=project_token or "",
+                    agent_id=agent_id,
+                    task=task or {},
+                    result={"files_created": [], "branch": _completed_task_branch},
+                )
+            except Exception:
+                pass  # Non-critical
 
             # Always set progress to 100% and complete task when build succeeds
             # Git push failures won't prevent task completion

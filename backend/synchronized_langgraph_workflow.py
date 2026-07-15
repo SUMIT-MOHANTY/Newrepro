@@ -346,8 +346,8 @@ async def _run_agent_with_coordination(
         }
     )
     
-    # Post-execution coordination
-    await _post_execution_coordination(agent_id, result, state)
+    # Post-execution coordination — pass the original assigned_task for sync point tracking
+    await _post_execution_coordination(agent_id, result, state, assigned_task=assigned_task)
     
     if isinstance(result, dict):
         result.setdefault("agent_id", agent_id)
@@ -378,9 +378,53 @@ def _determine_sync_requirements(task: Dict[str, Any]) -> List[str]:
     return sync_reqs
 
 def _extract_file_intents(task: Dict[str, Any]) -> List[str]:
-    """Extract which files this task intends to modify"""
-    # Implementation would parse task description for file paths
-    return []
+    """Extract which files this task intends to modify by parsing the description"""
+    import re
+
+    file_intents = set()
+
+    # Get task description and title
+    description = str(task.get("description") or task.get("taskDescription") or "")
+    title = str(task.get("title") or task.get("taskName") or "")
+    combined = title + " " + description
+
+    # 1. Parse explicit file paths from description (e.g. "/src/app.js", "backend/api.py")
+    file_paths = re.findall(
+        r'(?:^|[\s,;:])(/[\w/.-]+\.[a-zA-Z]+|[\w/.-]+\.[a-zA-Z]{2,4})',
+        combined
+    )
+    for fp in file_paths:
+        fp = fp.strip().strip(",;.")
+        if fp and len(fp) > 3:
+            file_intents.add(fp)
+
+    # 2. Parse checklist items that reference files
+    checklist = task.get("checklist", [])
+    if isinstance(checklist, list):
+        for item in checklist:
+            text = str(item.get("text", item)) if isinstance(item, dict) else str(item)
+            paths_in_checklist = re.findall(
+                r'(?:^|[\s,;:])(/[\w/.-]+\.[a-zA-Z]+|[\w/.-]+\.[a-zA-Z]{2,4})',
+                text
+            )
+            for fp in paths_in_checklist:
+                fp = fp.strip().strip(",;.")
+                if fp and len(fp) > 3:
+                    file_intents.add(fp)
+
+    # 3. Extract from linked_files or planned_files if present
+    for key in ("planned_files", "linked_files", "files"):
+        files_list = task.get(key, [])
+        if isinstance(files_list, list):
+            for f in files_list:
+                if isinstance(f, str) and f.strip():
+                    file_intents.add(f.strip())
+
+    result = sorted(file_intents)
+    if result:
+        logger.debug(f"Extracted file intents from task '{title[:40]}': {result}")
+
+    return result
 
 def _requires_sync_point(assignment: Dict[str, Any], sync_point_name: str) -> bool:
     """Check if assignment requires specific sync point"""
@@ -403,53 +447,508 @@ async def _update_agent_status(state: SynchronizedAgentState, agent_id: str, sta
 
 async def _pre_execution_coordination(agent_id: str, task: Dict[str, Any], state: SynchronizedAgentState):
     """Coordination checks before agent execution"""
-    # Check dependencies
-    # Request file locks
-    # Wait for sync points if needed
-    pass
+    project_token = state.get("project_token")
+    if not project_token:
+        return
 
-async def _post_execution_coordination(agent_id: str, result: Dict[str, Any], state: SynchronizedAgentState):
+    try:
+        from agent_coordination_service import coordination_service
+
+        # 1. Check task dependencies via agent_service task_ledger
+        import agent_service
+        state_data = agent_service._ensure_project_state(project_token)
+        ledger = state_data.get("task_ledger", {})
+        dag = state_data.get("task_dag", {})
+        task_id = str(task.get("id") or task.get("task_id") or "")
+        if task_id and task_id in dag:
+            deps = dag[task_id]
+            for dep_id in deps:
+                dep_entry = ledger.get(dep_id)
+                if dep_entry and dep_entry.status not in ("done", "completed"):
+                    logger.info(f"[{agent_id}] Waiting for dependency {dep_id} before starting {task_id}")
+                    # Wait up to 30s for dep to complete
+                    for _ in range(30):
+                        dep_entry = ledger.get(dep_id)
+                        if dep_entry and dep_entry.status in ("done", "completed"):
+                            break
+                        await asyncio.sleep(1)
+
+        # 2. Request file locks for files this task intends to modify
+        file_intents = _extract_file_intents(task)
+        for file_path in file_intents:
+            lock_result = await coordination_service.request_file_lock(
+                project_token, agent_id, file_path, "write"
+            )
+            if not lock_result.get("success"):
+                logger.warning(f"[{agent_id}] Could not lock {file_path}: {lock_result.get('error')}")
+
+        # 3. Wait for required sync points
+        sync_reqs = _determine_sync_requirements(task)
+        for sync_name in sync_reqs:
+            result = await coordination_service.request_sync_point(
+                project_token, agent_id, sync_name, {"status": "ready"}
+            )
+            if result.get("sync_completed"):
+                logger.info(f"[{agent_id}] Sync point {sync_name} already completed")
+            elif not result.get("success"):
+                logger.warning(f"[{agent_id}] Sync point {sync_name} not available")
+
+        # 4. Update agent status to working
+        await coordination_service.update_agent_status(
+            project_token, agent_id, "working", {"task": task}
+        )
+
+        # 5. Log in communication log
+        comm_log = state.get("communication_log", [])
+        comm_log.append({
+            "timestamp": datetime.utcnow().isoformat(),
+            "type": "pre_execution",
+            "agent_id": agent_id,
+            "task_id": task_id,
+            "message": f"Agent {agent_id} starting task {task_id}"
+        })
+
+    except Exception as e:
+        logger.error(f"Pre-execution coordination failed for {agent_id}: {e}")
+
+
+async def _post_execution_coordination(agent_id: str, result: Dict[str, Any], state: SynchronizedAgentState, assigned_task: Optional[Dict[str, Any]] = None):
     """Coordination updates after agent execution"""
-    # Release file locks
-    # Update shared context
-    # Signal sync point completion
-    pass
+    project_token = state.get("project_token")
+    if not project_token:
+        return
+
+    try:
+        from agent_coordination_service import coordination_service
+
+        # 1. Release all file locks held by this agent
+        agent_state = coordination_service.coordination_state.get(project_token, {})
+        agent_info = agent_state.get("agents", {}).get(agent_id, {})
+        for file_path in list(agent_info.get("file_locks", [])):
+            await coordination_service.release_file_lock(project_token, agent_id, file_path)
+            logger.info(f"[{agent_id}] Released lock on {file_path}")
+
+        # 2. Update shared context with agent results
+        if isinstance(result, dict):
+            context_updates = {
+                f"agent_results/{agent_id}": {
+                    "success": result.get("success", False),
+                    "files_created": result.get("files_written", []),
+                    "branch": result.get("branch_name", ""),
+                    "completed_at": datetime.utcnow().isoformat()
+                }
+            }
+            await coordination_service.update_shared_context(
+                project_token, agent_id, context_updates
+            )
+
+        # 3. Signal sync point completion for this agent
+        # Use assigned_task if provided (more reliable than extracting from result)
+        task_for_sync = assigned_task or result.get("assigned_task", {})
+        sync_reqs = _determine_sync_requirements(task_for_sync)
+        for sync_name in sync_reqs:
+            await coordination_service.request_sync_point(
+                project_token, agent_id, sync_name, {
+                    "status": "completed",
+                    "result": result.get("success", False)
+                }
+            )
+
+        # 4. Update agent status
+        final_status = "completed" if result.get("success") else "failed"
+        await coordination_service.update_agent_status(
+            project_token, agent_id, final_status
+        )
+
+        # 5. Log in communication log
+        comm_log = state.get("communication_log", [])
+        comm_log.append({
+            "timestamp": datetime.utcnow().isoformat(),
+            "type": "post_execution",
+            "agent_id": agent_id,
+            "success": result.get("success", False),
+            "message": f"Agent {agent_id} completed with status {final_status}"
+        })
+
+    except Exception as e:
+        logger.error(f"Post-execution coordination failed for {agent_id}: {e}")
+
 
 async def _check_sync_points(state: SynchronizedAgentState):
     """Check and manage synchronization points"""
-    pass
+    project_token = state.get("project_token")
+    if not project_token:
+        return
+
+    try:
+        from agent_coordination_service import coordination_service
+
+        coord_state = coordination_service.coordination_state.get(project_token)
+        if not coord_state:
+            return
+
+        sync_points = coord_state.get("sync_points", {})
+        task_progress = state.get("task_progress", {})
+
+        for sync_name, sync_info in sync_points.items():
+            if sync_info.get("status") == "completed":
+                continue  # Already done
+
+            required = set(sync_info.get("required_agents", []))
+            completed = set(sync_info.get("completed_agents", []))
+
+            if required and required.issubset(completed):
+                sync_info["status"] = "completed"
+                logger.info(f"Sync point {sync_name} COMPLETED - all agents synchronized")
+
+                # Also update state's sync_points list
+                for sp in state.get("sync_points", []):
+                    if sp["name"] == sync_name:
+                        sp["completed"] = True
+                        break
+
+        # Log current sync point status
+        active_syncs = [s for s in sync_points.values() if s.get("status") != "completed"]
+        if active_syncs:
+            for s in active_syncs:
+                waiting = set(s.get("required_agents", [])) - set(s.get("completed_agents", []))
+                if waiting:
+                    logger.debug(f"Sync '{s}' waiting for agents: {waiting}")
+
+    except Exception as e:
+        logger.error(f"Sync point check failed: {e}")
+
 
 async def _resolve_file_conflicts(state: SynchronizedAgentState):
     """Resolve file access conflicts between agents"""
-    pass
+    project_token = state.get("project_token")
+    if not project_token:
+        return
+
+    try:
+        from agent_coordination_service import coordination_service
+
+        coord_state = coordination_service.coordination_state.get(project_token)
+        if not coord_state:
+            return
+
+        file_locks = coord_state.get("file_locks", {})
+
+        # Track which files have multiple agents waiting
+        file_access_counts: Dict[str, int] = {}
+        for agent_id, agent_info in coord_state.get("agents", {}).items():
+            for f in agent_info.get("file_locks", []):
+                file_access_counts[f] = file_access_counts.get(f, 0) + 1
+
+        # Detect conflicts: files locked by one agent while another agent also has interests
+        comm_log = state.get("communication_log", [])
+        for file_path, lock_info in file_locks.items():
+            lock_holder = lock_info.get("agent_id")
+            if not lock_holder:
+                continue
+
+            # Check if any other agent has this file in their intent list
+            for agent_id, agent_info in coord_state.get("agents", {}).items():
+                if agent_id == lock_holder:
+                    continue
+                if file_path in agent_info.get("file_locks", []):
+                    logger.warning(f"File conflict detected: {file_path} locked by {lock_holder}, needed by {agent_id}")
+                    comm_log.append({
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "type": "file_conflict",
+                        "file_path": file_path,
+                        "locked_by": lock_holder,
+                        "requested_by": agent_id,
+                        "resolved": False
+                    })
+
+        # Log summary
+        if file_access_counts:
+            multi_access = {f: c for f, c in file_access_counts.items() if c > 1}
+            if multi_access:
+                logger.info(f"Files with multi-agent access: {multi_access}")
+
+    except Exception as e:
+        logger.error(f"File conflict resolution failed: {e}")
+
 
 async def _update_shared_context(state: SynchronizedAgentState):
     """Update shared context with latest information"""
-    pass
+    project_token = state.get("project_token")
+    if not project_token:
+        return
+
+    try:
+        # Get latest from agent_service in-memory state
+        import agent_service
+        state_data = agent_service._ensure_project_state(project_token)
+
+        shared_context = state.get("shared_context", {})
+
+        # Pull task progress (task_ledger) into shared context
+        ledger = state_data.get("task_ledger", {})
+        task_progress_summary = {}
+        for task_id, entry in ledger.items():
+            task_progress_summary[task_id] = {
+                "status": entry.status,
+                "agent_id": entry.agent_id,
+                "title": entry.task_title,
+                "files": entry.files_written[:5],
+                "branch": entry.branch_name
+            }
+        shared_context["task_progress_summary"] = task_progress_summary
+
+        # Pull DAG info
+        dag = state_data.get("task_dag", {})
+        shared_context["dependency_graph"] = {k: list(v) for k, v in dag.items()}
+
+        # Pull agent statuses
+        agent_statuses = {}
+        for aid, astate in state_data.get("agent_states", {}).items():
+            agent_statuses[aid] = {
+                "status": astate.get("status", "unknown"),
+                "current_task": str(astate.get("current_task", {}).get("id", "")),
+                "progress": astate.get("progress", 0)
+            }
+        shared_context["agent_statuses"] = agent_statuses
+
+        # Update timestamp
+        shared_context["last_updated"] = datetime.utcnow().isoformat()
+
+        # Also sync into coordination_service if available
+        try:
+            from agent_coordination_service import coordination_service
+            coord_state = coordination_service.coordination_state.get(project_token)
+            if coord_state:
+                coord_state["shared_context"].update(shared_context)
+        except Exception:
+            pass
+
+    except Exception as e:
+        logger.error(f"Shared context update failed: {e}")
+
 
 async def _resolve_blocked_agents(state: SynchronizedAgentState):
     """Identify and resolve blocked agents"""
-    pass
+    project_token = state.get("project_token")
+    if not project_token:
+        return
+
+    try:
+        import agent_service
+        state_data = agent_service._ensure_project_state(project_token)
+        ledger = state_data.get("task_ledger", {})
+        dag = state_data.get("task_dag", {})
+
+        comm_log = state.get("communication_log", [])
+
+        # Check each agent - are they stuck waiting for deps that are now met?
+        for agent_id, agent_state_data in state_data.get("agent_states", {}).items():
+            current_task = agent_state_data.get("current_task")
+            if not current_task:
+                continue
+
+            task_id = str(current_task.get("id") or current_task.get("task_id") or "")
+            if not task_id or task_id not in dag:
+                continue
+
+            deps = dag[task_id]
+            if not deps:
+                continue  # No dependencies, can't be blocked on deps
+
+            # Check if all deps are done
+            all_deps_met = True
+            for dep_id in deps:
+                dep_entry = ledger.get(dep_id)
+                if not dep_entry or dep_entry.status not in ("done", "completed"):
+                    all_deps_met = False
+                    break
+
+            if all_deps_met:
+                # This agent's dependencies are met - unblock if blocked
+                if agent_state_data.get("status") == "blocked":
+                    logger.info(f"Unblocking agent {agent_id} - all dependencies for {task_id} are met")
+                    agent_state_data["status"] = "idle"
+                    agent_state_data["error"] = ""
+                    comm_log.append({
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "type": "agent_unblocked",
+                        "agent_id": agent_id,
+                        "task_id": task_id,
+                        "message": f"Agent {agent_id} unblocked - dependencies met"
+                    })
+
+        # Also check coordination_service for blocked agents
+        try:
+            from agent_coordination_service import coordination_service
+            coord_state = coordination_service.coordination_state.get(project_token)
+            if coord_state:
+                for agent_id, agent_info in coord_state.get("agents", {}).items():
+                    waiting = agent_info.get("dependencies_waiting", [])
+                    if waiting:
+                        still_waiting = []
+                        for dep_id in waiting:
+                            dep_entry = ledger.get(dep_id)
+                            if not dep_entry or dep_entry.status not in ("done", "completed"):
+                                still_waiting.append(dep_id)
+                            else:
+                                logger.info(f"Dependency {dep_id} resolved for agent {agent_id}")
+                        if len(still_waiting) < len(waiting):
+                            agent_info["dependencies_waiting"] = still_waiting
+        except Exception:
+            pass
+
+    except Exception as e:
+        logger.error(f"Blocked agent resolution failed: {e}")
+
 
 async def _manage_phase_gates(state: SynchronizedAgentState):
     """Manage project phase transitions"""
-    pass
+    project_token = state.get("project_token")
+    if not project_token:
+        return
+
+    try:
+        from agent_coordination_service import coordination_service
+
+        coord_state = coordination_service.coordination_state.get(project_token)
+        if not coord_state:
+            return
+
+        phase_order = ["planning", "development", "integration", "testing", "deployment"]
+        current_phase = coord_state.get("current_phase", "planning")
+        phase_gates = coord_state.get("phase_gates", {})
+
+        # Map phases to sync points
+        phase_sync_map = {
+            "planning": [],
+            "development": ["architecture_review"],
+            "integration": ["integration_checkpoint"],
+            "testing": ["testing_gate"],
+            "deployment": ["deployment_ready"]
+        }
+
+        sync_points = coord_state.get("sync_points", {})
+
+        # Check if current phase gates are met
+        required_syncs = phase_sync_map.get(current_phase, [])
+        phase_ready = True
+        for sync_name in required_syncs:
+            sync_info = sync_points.get(sync_name, {})
+            if sync_info.get("status") != "completed":
+                phase_ready = False
+                break
+
+        if phase_ready and not phase_gates.get(current_phase, False):
+            # Mark current phase as completed
+            phase_gates[current_phase] = True
+            logger.info(f"Phase gate PASSED: {current_phase}")
+
+            # Advance to next phase
+            current_idx = phase_order.index(current_phase) if current_phase in phase_order else -1
+            if current_idx >= 0 and current_idx < len(phase_order) - 1:
+                next_phase = phase_order[current_idx + 1]
+                coord_state["current_phase"] = next_phase
+                logger.info(f"Advancing to phase: {next_phase}")
+
+                # Log in communication
+                comm_log = state.get("communication_log", [])
+                comm_log.append({
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "type": "phase_transition",
+                    "from_phase": current_phase,
+                    "to_phase": next_phase,
+                    "message": f"Phase transition: {current_phase} -> {next_phase}"
+                })
+
+        # Also sync state's phase_gates
+        phase_gates_state = state.get("phase_gates", {})
+        phase_gates_state.update(phase_gates)
+
+    except Exception as e:
+        logger.error(f"Phase gate management failed: {e}")
+
 
 def _handle_file_access(agent_id: str, file_path: str, state: SynchronizedAgentState):
-    """Handle file access coordination"""
-    pass
+    """Handle file access coordination - check if file is locked by another agent"""
+    file_locks = state.get("file_locks", {})
+    lock_info = file_locks.get(file_path)
+
+    if lock_info and lock_info.get("agent_id") != agent_id:
+        # File is locked by another agent
+        logger.warning(f"File {file_path} is locked by {lock_info['agent_id']}, {agent_id} must wait")
+        return {"granted": False, "locked_by": lock_info["agent_id"]}
+
+    # Grant access
+    file_locks[file_path] = {
+        "agent_id": agent_id,
+        "acquired_at": datetime.utcnow().isoformat()
+    }
+    return {"granted": True}
+
 
 def _handle_progress_update(agent_id: str, progress: Dict[str, Any], state: SynchronizedAgentState):
     """Handle agent progress updates"""
-    pass
+    task_progress = state.get("task_progress", {})
+    task_id = progress.get("task_id", f"agent_{agent_id}_task")
+
+    # Update task progress
+    task_progress[task_id] = {
+        "agent_id": agent_id,
+        "progress": progress.get("progress", 0),
+        "status": progress.get("status", "in_progress"),
+        "message": progress.get("message", ""),
+        "last_update": datetime.utcnow().isoformat()
+    }
+
+    # Log status change for monitoring
+    logger.debug(f"Progress update from {agent_id}: {progress.get('progress', 0)}% - {progress.get('message', '')[:50]}")
+
 
 def _handle_sync_request(agent_id: str, sync_type: str, state: SynchronizedAgentState):
     """Handle agent synchronization requests"""
-    pass
+    sync_points = state.get("sync_points", [])
+
+    for sp in sync_points:
+        if sp["name"] == sync_type:
+            # Ensure agent is tracked as having reached this sync point
+            if "reached_agents" not in sp:
+                sp["reached_agents"] = []
+            if agent_id not in sp["reached_agents"]:
+                sp["reached_agents"].append(agent_id)
+
+            logger.info(f"Agent {agent_id} reached sync point: {sync_type}")
+
+            # Check if all required agents have reached this point
+            required = sp.get("required_agents", [])
+            reached = sp.get("reached_agents", [])
+            if required and set(required).issubset(set(reached)):
+                sp["completed"] = True
+                logger.info(f"Sync point {sync_type} COMPLETED by all agents")
+            return True
+
+    logger.warning(f"Unknown sync point requested: {sync_type} by agent {agent_id}")
+    return False
+
 
 def _handle_agent_communication(agent_id: str, message: Dict[str, Any], state: SynchronizedAgentState):
     """Handle inter-agent communication"""
-    pass
+    comm_log = state.get("communication_log", [])
+
+    entry = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "from_agent": agent_id,
+        "message": message.get("text", str(message)),
+        "msg_type": message.get("type", "general")
+    }
+
+    comm_log.append(entry)
+
+    # Limit log size
+    if len(comm_log) > 1000:
+        state["communication_log"] = comm_log[-1000:]
+
+    logger.info(f"Communication from {agent_id}: {entry['msg_type']} - {entry['message'][:80]}")
 
 
 # Rest of the workflow functions (finalize, etc.) remain similar but use SynchronizedAgentState
