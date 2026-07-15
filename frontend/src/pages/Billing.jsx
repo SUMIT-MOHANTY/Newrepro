@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { API_BASE_URL } from '../config';
 import { getCachedTaskToken } from '../utils/tokenCache';
+import { jsPDF } from 'jspdf';
 
 export default function Billing({ selectedProjectKey, projects = [], user }) {
     const [billingData, setBillingData] = useState(null);
@@ -81,6 +82,275 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
         } finally {
             setLoading(false);
             setRefreshing(false);
+        }
+    };
+
+    const handleDownloadReport = () => {
+        if (!orgBillingData) return;
+        
+        try {
+            const doc = new jsPDF({
+                orientation: 'p',
+                unit: 'mm',
+                format: 'a4'
+            });
+            
+            // Page dimension metrics
+            const pageWidth = 210;
+            const pageHeight = 297;
+            const margin = 15;
+            const contentWidth = pageWidth - (margin * 2);
+            let cursorY = 20;
+            
+            const checkSpace = (heightNeeded) => {
+                if (cursorY + heightNeeded > pageHeight - 15) {
+                    doc.addPage();
+                    cursorY = 20;
+                    drawHeader();
+                }
+            };
+            
+            const drawHeader = () => {
+                // Draw small top page band
+                doc.setFillColor(30, 58, 138); // primary dark blue
+                doc.rect(margin, cursorY, contentWidth, 8, 'F');
+                doc.setFont('helvetica', 'bold');
+                doc.setFontSize(9);
+                doc.setTextColor(255, 255, 255);
+                doc.text("DSuite Organization Billing & Utilization Report", margin + 3, cursorY + 5.5);
+                
+                doc.setFont('helvetica', 'normal');
+                doc.setFontSize(8);
+                doc.setTextColor(100, 116, 139); // Slate-500
+                const dateStr = `Generated: ${new Date().toLocaleDateString()}`;
+                doc.text(dateStr, pageWidth - margin - doc.getTextWidth(dateStr), cursorY + 5.5);
+                
+                cursorY += 12;
+            };
+            
+            // COVER PAGE OR HEADER
+            doc.setFillColor(30, 58, 138);
+            doc.rect(0, 0, pageWidth, 50, 'F');
+            
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(20);
+            doc.setTextColor(255, 255, 255);
+            doc.text("Organization Utilization Report", margin, 24);
+            
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(11);
+            doc.setTextColor(226, 232, 240);
+            doc.text(`Organization: ${orgBillingData.organization_name || 'Biourntec'}`, margin, 34);
+            
+            doc.setFontSize(9);
+            doc.text(`Exported By: ${user?.email || 'Admin'}`, margin, 42);
+            
+            cursorY = 60;
+            
+            // SECTION 1: SUMMARY KPIs
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(12);
+            doc.setTextColor(15, 23, 42); // Slate-900
+            doc.text("1. Executive Summary KPIs", margin, cursorY);
+            cursorY += 6;
+            
+            // Draw KPI Boxes
+            const kpiWidth = (contentWidth - 6) / 3;
+            const kpiHeight = 18;
+            
+            // Total cost box
+            doc.setFillColor(248, 250, 252); // Slate-50
+            doc.setDrawColor(226, 232, 240); // Slate-200
+            doc.roundedRect(margin, cursorY, kpiWidth, kpiHeight, 1, 1, 'FD');
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(8);
+            doc.setTextColor(100, 116, 139);
+            doc.text("TOTAL COST (USD)", margin + 3, cursorY + 5);
+            doc.setFontSize(12);
+            doc.setTextColor(16, 185, 129); // Emerald-500
+            doc.text(`$${orgBillingData.summary?.total_cost?.toFixed(2)}`, margin + 3, cursorY + 12);
+            
+            // Prompt tokens box
+            doc.setFillColor(248, 250, 252);
+            doc.roundedRect(margin + kpiWidth + 3, cursorY, kpiWidth, kpiHeight, 1, 1, 'FD');
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(8);
+            doc.setTextColor(100, 116, 139);
+            doc.text("PROMPT TOKENS", margin + kpiWidth + 6, cursorY + 5);
+            doc.setFontSize(12);
+            doc.setTextColor(59, 130, 246); // Blue-500
+            doc.text(orgBillingData.summary?.total_prompt_tokens?.toLocaleString() || "0", margin + kpiWidth + 6, cursorY + 12);
+            
+            // Completion tokens box
+            doc.setFillColor(248, 250, 252);
+            doc.roundedRect(margin + (kpiWidth * 2) + 6, cursorY, kpiWidth, kpiHeight, 1, 1, 'FD');
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(8);
+            doc.setTextColor(100, 116, 139);
+            doc.text("COMPLETION TOKENS", margin + (kpiWidth * 2) + 9, cursorY + 5);
+            doc.setFontSize(12);
+            doc.setTextColor(168, 85, 247); // Purple-500
+            doc.text(orgBillingData.summary?.total_completion_tokens?.toLocaleString() || "0", margin + (kpiWidth * 2) + 9, cursorY + 12);
+            
+            cursorY += kpiHeight + 10;
+            
+            // Model breakdown
+            if (orgBillingData.summary?.cost_by_model && Object.keys(orgBillingData.summary.cost_by_model).length > 0) {
+                doc.setFont('helvetica', 'bold');
+                doc.setFontSize(10);
+                doc.setTextColor(15, 23, 42);
+                doc.text("Model Utilization Breakdown", margin, cursorY);
+                cursorY += 5;
+                
+                doc.setFont('helvetica', 'normal');
+                doc.setFontSize(8.5);
+                doc.setTextColor(71, 85, 105);
+                
+                Object.entries(orgBillingData.summary.cost_by_model).forEach(([model, cost]) => {
+                    checkSpace(6);
+                    doc.text(`• ${model}:`, margin + 3, cursorY);
+                    doc.setFont('helvetica', 'bold');
+                    doc.text(`$${cost.toFixed(4)}`, margin + 85, cursorY);
+                    doc.setFont('helvetica', 'normal');
+                    cursorY += 5.5;
+                });
+                cursorY += 4;
+            }
+            
+            // SECTION 2: USER ENGAGEMENT TABLE
+            checkSpace(30);
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(12);
+            doc.setTextColor(15, 23, 42);
+            doc.text("2. User Engagement & Spend Stats", margin, cursorY);
+            cursorY += 6;
+            
+            // Draw table header
+            doc.setFillColor(30, 58, 138);
+            doc.rect(margin, cursorY, contentWidth, 7, 'F');
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(8);
+            doc.setTextColor(255, 255, 255);
+            
+            doc.text("Name / Email", margin + 3, cursorY + 5);
+            doc.text("Status", margin + 55, cursorY + 5);
+            doc.text("Projects", margin + 78, cursorY + 5);
+            doc.text("Sessions", margin + 98, cursorY + 5);
+            doc.text("Total Time", margin + 118, cursorY + 5);
+            doc.text("AI Tokens", margin + 140, cursorY + 5);
+            doc.text("AI Cost", margin + 165, cursorY + 5);
+            
+            cursorY += 7;
+            
+            // Populate user rows
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(7.5);
+            doc.setTextColor(51, 65, 85);
+            
+            (orgBillingData.user_stats || []).forEach((u, i) => {
+                checkSpace(11);
+                if (i % 2 === 1) {
+                    doc.setFillColor(248, 250, 252);
+                    doc.rect(margin, cursorY, contentWidth, 9, 'F');
+                }
+                
+                doc.setFont('helvetica', 'bold');
+                doc.setTextColor(15, 23, 42);
+                doc.text(u.name || u.email.split('@')[0], margin + 3, cursorY + 4);
+                doc.setFont('helvetica', 'normal');
+                doc.setTextColor(100, 116, 139);
+                doc.text(u.email, margin + 3, cursorY + 7.5);
+                
+                doc.setTextColor(51, 65, 85);
+                doc.text(u.is_active ? "Active" : "Inactive", margin + 55, cursorY + 5.5);
+                doc.text(String(u.projects_count), margin + 78, cursorY + 5.5);
+                doc.text(String(u.session_count || 0), margin + 98, cursorY + 5.5);
+                doc.text(`${u.total_duration_hours} hrs`, margin + 118, cursorY + 5.5);
+                doc.text(u.ai_tokens?.toLocaleString() || "0", margin + 140, cursorY + 5.5);
+                doc.text(`$${u.total_cost?.toFixed(4)}`, margin + 165, cursorY + 5.5);
+                
+                // Draw bottom row border
+                doc.setDrawColor(241, 245, 249);
+                doc.line(margin, cursorY + 9, pageWidth - margin, cursorY + 9);
+                
+                cursorY += 9.5;
+            });
+            
+            cursorY += 5;
+            
+            // SECTION 3: PROJECTS HUB
+            checkSpace(35);
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(12);
+            doc.setTextColor(15, 23, 42);
+            doc.text("3. Projects Hub Status", margin, cursorY);
+            cursorY += 6;
+            
+            // Draw Projects Table Header
+            doc.setFillColor(30, 58, 138);
+            doc.rect(margin, cursorY, contentWidth, 7, 'F');
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(8);
+            doc.setTextColor(255, 255, 255);
+            
+            doc.text("Project Name", margin + 3, cursorY + 5);
+            doc.text("Owner", margin + 50, cursorY + 5);
+            doc.text("Classification", margin + 100, cursorY + 5);
+            doc.text("Runs", margin + 130, cursorY + 5);
+            doc.text("Build Status", margin + 148, cursorY + 5);
+            doc.text("Submission Date", margin + 168, cursorY + 5);
+            
+            cursorY += 7;
+            
+            // Projects Rows
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(7.5);
+            doc.setTextColor(51, 65, 85);
+            
+            (orgBillingData.projects_list || []).forEach((p, i) => {
+                checkSpace(11);
+                if (i % 2 === 1) {
+                    doc.setFillColor(248, 250, 252);
+                    doc.rect(margin, cursorY, contentWidth, 10, 'F');
+                }
+                
+                doc.setFont('helvetica', 'bold');
+                doc.setTextColor(15, 23, 42);
+                doc.text(p.project_name.slice(0, 28), margin + 3, cursorY + 4);
+                doc.setFont('helvetica', 'normal');
+                doc.setTextColor(100, 116, 139);
+                doc.text(p.project_token.slice(0, 24) + "...", margin + 3, cursorY + 7.5);
+                
+                doc.setTextColor(51, 65, 85);
+                doc.text(p.owner_email, margin + 50, cursorY + 5.5);
+                doc.text(p.classification, margin + 100, cursorY + 5.5);
+                doc.text(String(p.total_runs), margin + 130, cursorY + 5.5);
+                doc.text(p.run_status, margin + 148, cursorY + 5.5);
+                
+                const subDate = p.submission_date ? new Date(p.submission_date).toLocaleDateString() : "—";
+                doc.text(subDate, margin + 168, cursorY + 5.5);
+                
+                doc.setDrawColor(241, 245, 249);
+                doc.line(margin, cursorY + 10, pageWidth - margin, cursorY + 10);
+                cursorY += 10.5;
+            });
+            
+            // Draw footer indicators
+            const totalPages = doc.getNumberOfPages();
+            for (let page = 1; page <= totalPages; page += 1) {
+                doc.setPage(page);
+                doc.setFont('helvetica', 'normal');
+                doc.setFontSize(7.5);
+                doc.setTextColor(148, 163, 184); // Slate-400
+                const pageLabel = `Page ${page} of ${totalPages}`;
+                doc.text(pageLabel, pageWidth - margin - doc.getTextWidth(pageLabel), pageHeight - 8);
+                doc.text("Confidential • Internal Organization Analytics", margin, pageHeight - 8);
+            }
+            
+            doc.save(`${(orgBillingData.organization_name || 'Organization').replace(/\s+/g, '_')}_utilization_report.pdf`);
+        } catch (pdfErr) {
+            console.error('Failed to generate PDF:', pdfErr);
+            alert('Failed to generate PDF: ' + pdfErr.message);
         }
     };
 
@@ -212,6 +482,23 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
 
         return (
             <div className="flex-1 overflow-y-auto h-full bg-app-bg-page custom-scrollbar">
+                <style dangerouslySetInnerHTML={{__html: `
+                    @media print {
+                        aside, nav, .no-print, button, input, select {
+                            display: none !important;
+                        }
+                        body, html, #root {
+                            background: white !important;
+                            color: black !important;
+                        }
+                        .flex-1, main {
+                            overflow: visible !important;
+                            height: auto !important;
+                            padding: 0 !important;
+                            margin: 0 !important;
+                        }
+                    }
+                `}} />
                 <div className="max-w-6xl mx-auto px-4 py-8">
                     {/* Header */}
                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-6">
@@ -226,18 +513,27 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                                 Centralized tracking of costs, usage, and operations generated inside the <strong className="text-app-text-main">{organization_name}</strong> organization.
                             </p>
                         </div>
-                        <button
-                            onClick={() => fetchBillingData(true)}
-                            disabled={refreshing}
-                            className="self-start md:self-auto px-4 py-2 border border-app-border bg-app-bg-card text-app-text-label hover:bg-app-bg-hover rounded-lg transition-all text-xs font-semibold flex items-center gap-2 disabled:opacity-50 shadow-sm cursor-pointer"
-                        >
-                            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-                            {refreshing ? 'Refreshing...' : 'Refresh Logs'}
-                        </button>
+                        <div className="flex gap-3 self-start md:self-auto no-print">
+                            <button
+                                onClick={handleDownloadReport}
+                                className="px-4 py-2 border border-app-border bg-app-bg-card text-app-text-label hover:bg-app-bg-hover rounded-lg transition-all text-xs font-semibold flex items-center gap-2 shadow-sm cursor-pointer"
+                            >
+                                <ExternalLink className="w-3.5 h-3.5" />
+                                Download Report
+                            </button>
+                            <button
+                                onClick={() => fetchBillingData(true)}
+                                disabled={refreshing}
+                                className="px-4 py-2 border border-app-border bg-app-bg-card text-app-text-label hover:bg-app-bg-hover rounded-lg transition-all text-xs font-semibold flex items-center gap-2 disabled:opacity-50 shadow-sm cursor-pointer"
+                            >
+                                <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+                                {refreshing ? 'Refreshing...' : 'Refresh Logs'}
+                            </button>
+                        </div>
                     </div>
 
                     {/* Navigation Tabs */}
-                    <div className="flex gap-2 mb-8 bg-app-bg-muted p-1.5 rounded-xl border border-app-border w-fit">
+                    <div className="flex gap-2 mb-8 bg-app-bg-muted p-1.5 rounded-xl border border-app-border w-fit no-print">
                         <button 
                             className={`px-5 py-2 rounded-lg text-sm font-semibold transition-all ${activeTab === 'overview' ? 'bg-app-primary text-white shadow-md' : 'text-app-text-label hover:bg-app-bg-hover dark:text-app-text-muted dark:hover:bg-app-bg-card'}`}
                             onClick={() => { setActiveTab('overview'); setSearchTerm(''); }}
@@ -372,7 +668,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                                 <h3 className="text-base font-bold text-app-text-main flex items-center gap-2">
                                     <Users className="w-4 h-4 text-app-primary" /> User Engagement Stats
                                 </h3>
-                                <div className="relative">
+                                <div className="relative no-print">
                                     <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 transform -translate-y-1/2 text-app-text-light" />
                                     <input
                                         type="text"
@@ -479,7 +775,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                                 <h3 className="text-base font-bold text-app-text-main flex items-center gap-2">
                                     <Globe className="w-4 h-4 text-app-primary" /> Projects Hub
                                 </h3>
-                                <div className="relative">
+                                <div className="relative no-print">
                                     <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 transform -translate-y-1/2 text-app-text-light" />
                                     <input
                                         type="text"

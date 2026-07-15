@@ -2572,6 +2572,218 @@ def get_org_billing_and_logs(
         "projects_list": projects_list
     }
 
+@app.get("/organization/download-billing-report")
+def download_org_billing_report(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db),
+):
+    import io
+    import json
+    from interactive_dashboard_server import DASHBOARD_HTML_TEMPLATE
+    
+    organization_name = _require_org_admin(current_user)
+    
+    # 1. Get all users in the organization
+    org_users = db.query(models.User).filter(
+        func.lower(models.User.organization_name) == organization_name.lower()
+    ).all()
+    org_user_ids = [u.id for u in org_users]
+    org_user_map = {u.id: u for u in org_users}
+    
+    # 2. Get all projects in the organization
+    org_projects = db.query(models.GovernanceResponse).filter(
+        (models.GovernanceResponse.owner_id.in_(org_user_ids)) |
+        (func.lower(models.GovernanceResponse.organization_name) == organization_name.lower())
+    ).all()
+    
+    # Aggregate AI stats
+    ai_logs = db.query(models.AIUsageLog).filter(
+        models.AIUsageLog.user_id.in_(org_user_ids)
+    ).all()
+    
+    total_cost = 0.0
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    cost_by_model = {}
+    cost_by_user = {}
+    tokens_by_user = {}
+    
+    for log in ai_logs:
+        total_cost += log.cost or 0.0
+        total_prompt_tokens += log.prompt_tokens or 0
+        total_completion_tokens += log.completion_tokens or 0
+        
+        model = log.model or "unknown"
+        cost_by_model[model] = cost_by_model.get(model, 0.0) + (log.cost or 0.0)
+        
+        uid = log.user_id
+        if uid:
+            cost_by_user[uid] = cost_by_user.get(uid, 0.0) + (log.cost or 0.0)
+            tokens_by_user[uid] = tokens_by_user.get(uid, 0) + (log.prompt_tokens or 0) + (log.completion_tokens or 0)
+            
+    total_cost = round(total_cost, 4)
+    cost_by_model = {k: round(v, 4) for k, v in cost_by_model.items()}
+    
+    # Calculate session durations based on activity logs
+    activity_logs = db.query(models.UserActivityLog).filter(
+        models.UserActivityLog.user_id.in_(org_user_ids)
+    ).order_by(models.UserActivityLog.user_id, models.UserActivityLog.created_at).all()
+    
+    user_durations = {}
+    user_last_time = {}
+    user_session_count = {}
+    
+    for log in activity_logs:
+        uid = log.user_id
+        log_time = log.created_at
+        if not log_time:
+            continue
+        if uid not in user_durations:
+            user_durations[uid] = 0
+            user_last_time[uid] = log_time
+            user_session_count[uid] = 1
+            continue
+            
+        last_time = user_last_time[uid]
+        diff_sec = (log_time - last_time).total_seconds()
+        
+        if 0 < diff_sec < 1800:
+            user_durations[uid] += diff_sec
+        elif diff_sec >= 1800:
+            user_session_count[uid] = user_session_count.get(uid, 0) + 1
+            
+        user_last_time[uid] = log_time
+
+    # Enrich user statistics list
+    user_stats = []
+    user_details_cache = {}
+    for u in org_users:
+        duration_sec = user_durations.get(u.id, 0)
+        user_cost = cost_by_user.get(u.id, 0.0)
+        user_tokens = tokens_by_user.get(u.id, 0)
+        session_count = user_session_count.get(u.id, 0)
+        
+        proj_count = sum(1 for p in org_projects if p.owner_id == u.id)
+        
+        user_ai_logs = [log for log in ai_logs if log.user_id == u.id]
+        ai_usage_by_model = {}
+        for log in user_ai_logs:
+            m = log.model or "unknown"
+            if m not in ai_usage_by_model:
+                ai_usage_by_model[m] = {"model": m, "requests": 0, "prompt": 0, "completion": 0, "cost": 0.0}
+            ai_usage_by_model[m]["requests"] += 1
+            ai_usage_by_model[m]["prompt"] += log.prompt_tokens or 0
+            ai_usage_by_model[m]["completion"] += log.completion_tokens or 0
+            ai_usage_by_model[m]["cost"] += log.cost or 0.0
+            
+        ai_usage_list = []
+        for m, stats in ai_usage_by_model.items():
+            stats["cost"] = round(stats["cost"], 4)
+            ai_usage_list.append(stats)
+            
+        user_projects_list = []
+        for p in org_projects:
+            if p.owner_id == u.id:
+                b_state = db.query(models.BootstrapState).filter(
+                    models.BootstrapState.project_token == p.project_token
+                ).first()
+                user_projects_list.append({
+                    "project_name": p.project_name or p.project_token,
+                    "classification": p.classification or "SANDBOX",
+                    "status": b_state.status if b_state else "pending"
+                })
+                
+        recent_sessions_list = []
+        user_activities = [l for l in activity_logs if l.user_id == u.id][-10:]
+        user_activities.reverse()
+        for act in user_activities:
+            recent_sessions_list.append({
+                "created_at": act.created_at.isoformat() if act.created_at else None,
+                "action": act.action,
+                "method": act.method,
+                "path": act.path,
+                "ip_address": act.ip_address or "—",
+                "user_agent": act.user_agent or "—"
+            })
+            
+        permissions_paths = db.query(models.UserOrganizationRole).filter(
+            models.UserOrganizationRole.user_id == u.id,
+            func.lower(models.UserOrganizationRole.organization_name) == organization_name.lower()
+        ).all()
+        paths_set = set()
+        for uor in permissions_paths:
+            perms = db.query(models.OrganizationRolePermission).filter(
+                models.OrganizationRolePermission.role_id == uor.role_id
+            ).all()
+            for p_perm in perms:
+                paths_set.add(p_perm.path)
+
+        u_stat = {
+            "id": u.id,
+            "email": u.email,
+            "name": f"{u.first_name or ''} {u.last_name or ''}".strip() or u.email.split('@')[0],
+            "is_active": u.is_active,
+            "is_org_admin": u.is_org_admin,
+            "total_duration_hours": round(duration_sec / 3600, 2),
+            "total_cost": round(user_cost, 4),
+            "ai_tokens": user_tokens,
+            "projects_count": proj_count,
+            "session_count": session_count,
+            "last_login": u.last_login.isoformat() if u.last_login else None,
+            "github_username": u.github_username or "—",
+            "azure_devops_username": u.azure_devops_username or "—"
+        }
+        user_stats.append(u_stat)
+        
+        user_details_cache[str(u.id)] = {
+            "projects": user_projects_list,
+            "sessions": recent_sessions_list,
+            "permissions": sorted(list(paths_set)),
+            "ai_usage": ai_usage_list
+        }
+        
+    projects_list = []
+    for p in org_projects:
+        owner = org_user_map.get(p.owner_id)
+        owner_email = owner.email if owner else "—"
+        
+        b_states = db.query(models.BootstrapState).filter(
+            models.BootstrapState.project_token == p.project_token
+        ).all()
+        run_status = b_states[-1].status if b_states else "pending"
+        total_runs = len(b_states)
+        
+        projects_list.append({
+            "project_token": p.project_token,
+            "project_name": p.project_name or p.project_token,
+            "owner_email": owner_email,
+            "classification": p.classification or "SANDBOX",
+            "total_runs": total_runs,
+            "run_status": run_status,
+            "submission_date": p.submission_date.isoformat() if p.submission_date else None
+        })
+
+    summary_data = {
+        "total_cost": total_cost,
+        "total_prompt_tokens": total_prompt_tokens,
+        "total_completion_tokens": total_completion_tokens,
+        "cost_by_model": cost_by_model,
+    }
+    
+    html = DASHBOARD_HTML_TEMPLATE
+    html = html.replace("/*USERS_DATA_JSON_PLACEHOLDER*/ []", json.dumps(user_stats))
+    html = html.replace("/*SUMMARY_DATA_JSON_PLACEHOLDER*/ {}", json.dumps(summary_data))
+    html = html.replace("/*PROJECTS_DATA_JSON_PLACEHOLDER*/ []", json.dumps(projects_list))
+    html = html.replace("/*ORGS_DATA_JSON_PLACEHOLDER*/ []", json.dumps([organization_name]))
+    html = html.replace("/*USER_DETAILS_CACHE_PLACEHOLDER*/ {}", json.dumps(user_details_cache))
+    
+    bio = io.BytesIO(html.encode("utf-8"))
+    return StreamingResponse(
+        bio,
+        media_type="text/html",
+        headers={"Content-Disposition": f"attachment; filename={organization_name.replace(' ', '_')}_utilization_report.html"}
+    )
+
 @app.get("/organization/invites/preview", response_model=schemas.OrganizationInvitePreviewResponse)
 def preview_org_invite(
     token: str,
