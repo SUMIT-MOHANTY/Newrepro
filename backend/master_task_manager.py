@@ -9,6 +9,9 @@ from typing import Dict, List, Optional, Any, Set
 from datetime import datetime
 import json
 
+from database import SessionLocal
+import models
+
 logger = logging.getLogger(__name__)
 
 class MasterTaskManager:
@@ -265,53 +268,257 @@ class MasterTaskManager:
                 task_type in capabilities.get("secondary", []))
     
     def _task_dependencies_met(self, task: Dict[str, Any]) -> bool:
-        """Check if task dependencies are satisfied"""
-        # For now, simple sequence-based dependency
-        task_sequence = task.get("sequence", 0)
-        
-        # Check if all previous tasks are completed
-        for prev_task in self.task_queue:
-            prev_sequence = prev_task.get("sequence", 0)
-            if prev_sequence < task_sequence and prev_task["status"] != "completed":
+        """Check if task's DIRECT dependencies are satisfied.
+
+        Previously this blocked any task whose sequence number was greater than
+        any uncompleted task — effectively serialising the entire queue.  Now we
+        only check the explicit ``linked_tasks`` / ``dependencies`` fields, which
+        is the correct DAG-based behaviour.  If a task has no explicit deps it is
+        immediately eligible.
+        """
+        # Build a quick lookup of completed task IDs (by internal title, id, or external_id)
+        completed_ids: set = set()
+        for t in self.task_queue:
+            if t.get("status") == "completed":
+                for key in ("id", "external_id", "task_id", "title"):
+                    val = t.get(key)
+                    if val:
+                        completed_ids.add(str(val))
+
+        # Gather this task's direct dependency identifiers
+        deps = []
+        for field in ("linked_tasks", "dependencies"):
+            raw = task.get(field)
+            if isinstance(raw, list):
+                deps = [str(d) for d in raw if d]
+                break
+
+        if not deps:
+            return True  # No declared deps → always ready
+
+        for dep_id in deps:
+            if dep_id not in completed_ids:
+                logger.debug(
+                    f"Task '{task.get('title')}' waiting for dependency '{dep_id}'"
+                )
                 return False
-                
+
         return True
+
+    async def choose_best_agent_for_task_public(
+        self,
+        task: Dict[str, Any],
+        idle_agent_ids: List[str],
+    ) -> Optional[str]:
+        """Public wrapper around ``_choose_best_agent_for_task`` so that external
+        callers (e.g. ``agent_service._pick_next_task``) can perform skill-based
+        selection without accessing private methods.
+
+        Returns the agent_id of the highest-scoring agent, or ``None`` if no
+        suitable agent is found.
+        """
+        return await self._choose_best_agent_for_task(task, idle_agent_ids)
     
-    def _choose_best_agent_for_task(self, task: Dict[str, Any], idle_agents: List[str]) -> str:
-        """Choose the best agent for a specific task type - SCALES TO 100+ AGENTS"""
-        task_type = task.get("classified_type", "backend")
-        
-        # 🎯 SCALABLE AGENT SPECIALIZATION SYSTEM
-        # Automatically categorizes agents by ID patterns and capabilities
-        
-        # Primary specialists (exact matches first)
-        primary_specialists = []
-        # Secondary specialists (can do the work)
-        secondary_specialists = []
-        # General agents (fallback)
-        general_agents = []
-        
-        for agent_id in idle_agents:
-            agent_capabilities = self._get_agent_capabilities(agent_id)
+    async def _choose_best_agent_for_task(self, task: Dict[str, Any], idle_agents: List[str]) -> Optional[str]:
+        """Choose the best agent for a specific task using dynamic scoring based on specialization,
+        skills tags, and dedicated/shared boundary enforcement."""
+        if not idle_agents:
+            return None
+
+        # 1. Open DB session to fetch specialization, skills_tags, AND agent kind/project binding
+        agent_db_map = {}
+        session = SessionLocal()
+        try:
+            db_agents = session.query(models.Agent).filter(models.Agent.id.in_(idle_agents)).all()
+            for a in db_agents:
+                agent_db_map[a.id] = {
+                    "id": a.id,
+                    "name": a.name,
+                    "specialization": a.specialization,
+                    "skills_tags": a.skills_tags,
+                    "skills_summary": a.skills_content or a.skills_summary,
+                    "agent_kind": "shared",       # default
+                    "assigned_project_token": None # default
+                }
+
+            # Fetch org mapping to get agent_kind and project_token binding
+            mappings = session.query(
+                models.OrganizationAgentMapping.agent_id,
+                models.OrganizationAgentMapping.agent_kind,
+                models.OrganizationAgentMapping.project_token,
+            ).filter(
+                models.OrganizationAgentMapping.agent_id.in_(idle_agents)
+            ).all()
+            for m in mappings:
+                if m.agent_id in agent_db_map:
+                    agent_db_map[m.agent_id]["agent_kind"] = m.agent_kind or "shared"
+                    agent_db_map[m.agent_id]["assigned_project_token"] = m.project_token
+
+        except Exception as e:
+            logger.error(f"Error fetching agent data from DB: {e}")
+            return idle_agents[0]
+        finally:
+            session.close()
+
+        # 2. Hard Lane Check: filter candidates
+        try:
+            from agent_service import _classify_task_assignment_lane, _infer_agent_assignment_lanes
+            task_lane = _classify_task_assignment_lane(task)
             
-            # Check if this agent is a primary specialist for this task type
-            if task_type in agent_capabilities.get("primary", []):
-                primary_specialists.append(agent_id)
-            # Check if this agent can handle this task type as secondary skill
-            elif task_type in agent_capabilities.get("secondary", []):
-                secondary_specialists.append(agent_id)
-            # All agents can do general work as fallback
+            filtered_agents = []
+            for agent_id, agent_data in agent_db_map.items():
+                agent_lanes = _infer_agent_assignment_lanes(agent_id, agent_data)
+                
+                # Check dedicated project boundary
+                agent_kind = agent_data.get("agent_kind", "shared")
+                assigned_project = agent_data.get("assigned_project_token")
+                task_project_token = task.get("project_token") or task.get("projectToken")
+                
+                if agent_kind == "dedicated" and assigned_project and assigned_project != task_project_token:
+                    logger.info(f"Agent {agent_id} is dedicated to different project {assigned_project} - skipping")
+                    continue
+                    
+                # Hard lane check
+                if task_lane in ["frontend", "backend", "qa", "devops"]:
+                    if task_lane not in agent_lanes:
+                        logger.info(f"[Master Task Manager] Skipping agent {agent_id} due to lane mismatch (Task: {task_lane}, Agent: {agent_lanes})")
+                        continue
+                filtered_agents.append(agent_data)
+        except Exception as le:
+            logger.warning(f"Error checking lanes: {le}")
+            filtered_agents = list(agent_db_map.values())
+
+        if not filtered_agents:
+            logger.warning("No eligible agents left after lane/boundary check")
+            return None
+
+        # If only one agent is eligible, return it immediately
+        if len(filtered_agents) == 1:
+            return filtered_agents[0]["id"]
+
+        # 3. Call AI to choose the best agent among the filtered candidates
+        try:
+            from llm_gateway import llm_gateway
+            import json
+            
+            candidate_profiles = []
+            for agent in filtered_agents:
+                skills_tags = agent.get("skills_tags", [])
+                if isinstance(skills_tags, str):
+                    try:
+                        skills_tags = json.loads(skills_tags)
+                    except Exception:
+                        skills_tags = []
+                candidate_profiles.append({
+                    "agent_id": agent["id"],
+                    "agent_name": agent["name"],
+                    "specialization": agent["specialization"],
+                    "skills_tags": skills_tags if isinstance(skills_tags, list) else [],
+                    "skills_summary": agent["skills_summary"] or ""
+                })
+                
+            task_details = {
+                "title": task.get("title") or task.get("taskName") or "",
+                "description": (task.get("description") or "")[:500],
+                "phase": task.get("phase") or task.get("task_phase") or "",
+                "domain": task.get("domain") or ""
+            }
+            
+            prompt = f"""You are a Master Agent responsible for matching a task to the most appropriate agent.
+Given the following task details and list of candidate agents, select the single best agent to perform this task.
+
+**Task Details:**
+{json.dumps(task_details, indent=2)}
+
+**Candidate Agents:**
+{json.dumps(candidate_profiles, indent=2)}
+
+**Rules:**
+1. Match the task to the agent whose skills_tags, specialization, and technical summary best fit the task's requirements.
+2. If the task is frontend React/UI/Vite, choose the agent with frontend capabilities.
+3. If the task is backend FastAPI/API/Python, choose the agent with backend capabilities.
+
+**Output Format:**
+Return ONLY a valid JSON object with the chosen "agent_id" and "reason". Example:
+{{
+  "agent_id": "agent_id_here",
+  "reason": "Explain briefly why this agent is the best fit."
+}}
+
+Do not include any other text, markdown blocks, or explanations outside the JSON."""
+
+            ai_content = await llm_gateway.call_llm_and_extract(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=1000
+            )
+            
+            if "```json" in ai_content:
+                ai_content = ai_content.split("```json")[1].split("```")[0].strip()
+            elif "```" in ai_content:
+                ai_content = ai_content.split("```")[1].split("```")[0].strip()
+                
+            res_json = json.loads(ai_content.strip())
+            best_id = res_json.get("agent_id")
+            reason = res_json.get("reason", "")
+            
+            if best_id in [a["id"] for a in filtered_agents]:
+                logger.info(f"[Master Task Manager] AI chose agent {best_id} for task '{task_details['title']}' | Reason: {reason}")
+                return best_id
+        except Exception as ai_err:
+            logger.error(f"[Master Task Manager] AI matchmaking failed: {ai_err}. Falling back to rule-based matchmaking.")
+
+        # 4. Fallback to scoring logic
+        agent_scores = {}
+        for agent in filtered_agents:
+            score = 0
+            agent_id = agent["id"]
+            
+            agent_kind = agent.get("agent_kind", "shared")
+            assigned_project = agent.get("assigned_project_token")
+            task_project_token = task.get("project_token") or task.get("projectToken")
+            
+            if agent_kind == "dedicated" and assigned_project == task_project_token:
+                score += 300
+            elif agent_kind == "shared":
+                score += 50
+                
+            title = task_details["title"].lower()
+            description = task_details["description"].lower()
+            task_text = f"{title} {description}"
+            
+            test_keywords = ["test", "qa", "assert", "check", "verify", "mock", "unittest", "pytest"]
+            is_testing = any(keyword in task_text for keyword in test_keywords)
+            classified_spec = "Testing" if is_testing else "Development"
+            
+            spec = agent.get("specialization")
+            if spec and spec.strip().lower() == classified_spec.lower():
+                score += 500
+                
+            skills_tags = agent.get("skills_tags")
+            tags = []
+            if isinstance(skills_tags, list):
+                tags = skills_tags
+            elif isinstance(skills_tags, str):
+                try:
+                    tags = json.loads(skills_tags)
+                except Exception:
+                    pass
+            if tags:
+                for tag in tags:
+                    if tag and str(tag).lower() in task_text:
+                        score += 50
+            agent_scores[agent_id] = score
+
+        if agent_scores:
+            max_score = max(agent_scores.values())
+            highest_scoring_agents = [aid for aid, s in agent_scores.items() if s == max_score]
+            if len(highest_scoring_agents) == 1:
+                return highest_scoring_agents[0]
             else:
-                general_agents.append(agent_id)
-        
-        # 🎯 PRIORITY SELECTION: Primary → Secondary → General
-        if primary_specialists:
-            # Among primary specialists, prefer less busy ones
-            return self._select_least_busy_agent(primary_specialists)
-        elif secondary_specialists:
-            return self._select_least_busy_agent(secondary_specialists)
-        else:
-            return self._select_least_busy_agent(general_agents)
+                return self._select_least_busy_agent(highest_scoring_agents)
+
+        return filtered_agents[0]["id"]
     
     def _get_agent_capabilities(self, agent_id: str) -> Dict[str, List[str]]:
         """Get agent capabilities - FLEXIBLE ASSIGNMENT SYSTEM"""

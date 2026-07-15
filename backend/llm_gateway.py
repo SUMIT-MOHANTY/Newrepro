@@ -15,11 +15,16 @@ import httpx
 import json
 import re
 import logging
+import contextvars
 from typing import Optional, Dict, Any, AsyncGenerator
 
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+# Thread-safe and async-safe context variables to track user and project token
+current_user_id_var = contextvars.ContextVar("current_user_id", default=None)
+current_project_token_var = contextvars.ContextVar("current_project_token", default=None)
 
 
 # ── Response Extraction ────────────────────────────────────────────────────
@@ -144,8 +149,11 @@ def _build_openai_payload(
         "model": model_name,
         "messages": messages,
         "stream": stream,
-        "chat_template_kwargs": {"thinking": False},
     }
+    # Only add chat_template_kwargs for DeepSeek models to avoid 400 Bad Request on standard endpoints like Gemini
+    if "deepseek" in model_name.lower():
+        payload["chat_template_kwargs"] = {"thinking": False}
+
     if "temperature" in extra:
         payload["temperature"] = extra["temperature"]
     if "response_format" in extra:
@@ -174,8 +182,16 @@ def is_brn_llama_enabled() -> bool:
 def resolve_url(api_url: Optional[str] = None) -> str:
     """Resolve the correct AI endpoint URL."""
     if api_url:
-        return api_url
-    return settings.brn_llama_url if is_brn_llama_enabled() else settings.ai_api_url
+        url = api_url.strip()
+    else:
+        url = settings.brn_llama_url if is_brn_llama_enabled() else settings.ai_api_url
+
+    # Normalize OpenAI-compatible URLs (non-BRN) to make sure they end with chat/completions
+    if not is_brn_llama_enabled() and url != settings.brn_llama_url:
+        if url and not url.endswith("/chat/completions"):
+            url = url.rstrip("/") + "/chat/completions"
+            
+    return url
 
 
 def resolve_model(model: Optional[str] = None) -> str:
@@ -198,6 +214,64 @@ def check_api_key(api_key: Optional[str] = None) -> bool:
         return True
     key = api_key or settings.ai_api_key
     return bool(key and key != "your-api-key-here")
+
+
+def log_ai_usage(
+    messages: list,
+    response_text: str,
+    model_name: str,
+    user_id: Optional[int] = None,
+    project_token: Optional[str] = None,
+):
+    """
+    Asynchronously logs AI token usage and calculations to the database.
+    Rates for BRN Llama (Sonnet-4 in background):
+    - Input: $3.00 per 1M tokens ($0.000003 per token)
+    - Output: $15.00 per 1M tokens ($0.000015 per token)
+    If token count is not provided, estimate using 1 token = 4 characters.
+    """
+    try:
+        from database import SessionLocal
+        import models
+
+        # Get values from ContextVars if not explicitly provided
+        u_id = user_id or current_user_id_var.get()
+        p_token = project_token or current_project_token_var.get()
+
+        # Calculate input characters
+        prompt_text = ""
+        for msg in messages:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                prompt_text += content + "\n"
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        prompt_text += block.get("text", "") + "\n"
+
+        prompt_tokens = max(1, len(prompt_text) // 4)
+        completion_tokens = max(1, len(response_text) // 4) if response_text else 0
+
+        # Calculate cost
+        cost = (prompt_tokens * 0.000003) + (completion_tokens * 0.000015)
+
+        db = SessionLocal()
+        try:
+            log_entry = models.AIUsageLog(
+                user_id=u_id,
+                project_token=p_token,
+                model=model_name,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost=round(cost, 6),
+            )
+            db.add(log_entry)
+            db.commit()
+            logger.info(f"Logged AI Usage: {prompt_tokens} prompt, {completion_tokens} completion. Cost: ${cost:.6f}")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"Failed to log AI usage: {e}", exc_info=True)
 
 
 # ── Core Non-Streaming Call ────────────────────────────────────────────────
@@ -267,6 +341,27 @@ async def call_llm(
 
                 response.raise_for_status()
                 data = response.json()
+                
+                # Log usage
+                try:
+                    response_text = extract_content_from_response(data)
+                    log_ai_usage(messages, response_text, model_name)
+                except Exception as log_err:
+                    logger.error(f"Failed to log AI usage inside call_llm: {log_err}")
+                
+                # Print raw response for debugging
+                print("\n" + "="*80)
+                print("RAW LLM RESPONSE (call_llm)")
+                print("="*80)
+                print(f"URL: {url}")
+                print(f"Model: {model_name}")
+                print(f"Status Code: {response.status_code}")
+                print(f"Response Headers: {dict(response.headers)}")
+                print("-"*80)
+                print("Response Body:")
+                print(json.dumps(data, indent=2))  # First 2000 chars
+                print("="*80 + "\n")
+                
                 last_err = None
                 break
             except Exception as e:
@@ -304,6 +399,23 @@ async def call_llm_and_extract(
         **extra,
     )
     content = extract_content_from_response(data)
+    
+    # Print extracted content for debugging safely (preventing CP1252 crashes on Windows)
+    try:
+        import sys
+        sys_encoding = sys.stdout.encoding or 'utf-8'
+        safe_content = content.encode(sys_encoding, errors='replace').decode(sys_encoding)
+        print("\n" + "="*80)
+        print("EXTRACTED CONTENT (call_llm_and_extract)")
+        print("="*80)
+        print(f"Content Length: {len(content)} chars")
+        print("-"*80)
+        print("Content Preview:")
+        print(safe_content)  # First 1000 chars
+        print("="*80 + "\n")
+    except Exception as print_err:
+        logger.debug(f"Failed to safely print extracted content: {print_err}")
+    
     # Strip <think> blocks from models that embed reasoning in content
     content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
     content = re.sub(r'<think>.*', '', content, flags=re.DOTALL).strip()
@@ -337,6 +449,7 @@ async def call_llm_streaming(
     use_brn = (url == settings.brn_llama_url)
 
     client = httpx.AsyncClient(timeout=timeout)
+    response_content_buffer = []
 
     try:
         if use_brn:
@@ -386,6 +499,7 @@ async def call_llm_streaming(
                                             }
                                         }]
                                     }
+                                    response_content_buffer.append(text)
                                     yield f"data: {json.dumps(chunk)}\n\n"
                             except json.JSONDecodeError:
                                 continue
@@ -403,6 +517,8 @@ async def call_llm_streaming(
                                 }
                             }]
                         }
+                        if content:
+                            response_content_buffer.append(content)
                         yield f"data: {json.dumps(chunk)}\n\n"
                         yield "data: [DONE]\n\n"
             except Exception as stream_err:
@@ -423,6 +539,8 @@ async def call_llm_streaming(
                         }
                     }]
                 }
+                if content:
+                    response_content_buffer.append(content)
                 yield f"data: {json.dumps(chunk)}\n\n"
                 yield "data: [DONE]\n\n"
 
@@ -493,6 +611,8 @@ async def call_llm_streaming(
                                         }
                                     }]
                                 }
+                                if clean_content:
+                                    response_content_buffer.append(clean_content)
                                 yield f"data: {json.dumps(chunk)}\n\n"
                         except json.JSONDecodeError:
                             continue
@@ -503,6 +623,12 @@ async def call_llm_streaming(
         yield f"data: {json.dumps({'error': str(e)})}\n\n"
     finally:
         await client.aclose()
+        # Log AI Cost usage
+        try:
+            full_response_text = "".join(response_content_buffer)
+            log_ai_usage(messages, full_response_text, model_name)
+        except Exception as log_err:
+            logger.error(f"Failed to log AI usage in call_llm_streaming finally block: {log_err}")
 
 
 def _extract_streaming_chunk_text(data: dict) -> str:

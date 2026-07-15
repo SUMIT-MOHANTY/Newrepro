@@ -6,12 +6,15 @@ Builds repository context for AI analysis from Azure DevOps Git repositories.
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import posixpath
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import httpx
+
+logger = logging.getLogger("azure_devops_service")
 
 
 CODE_EXTENSIONS = {
@@ -112,12 +115,18 @@ def parse_azure_repo_url(repo_url: str) -> Dict[str, Optional[str]]:
     if is_project_url:
         if not organization or not project:
             raise ValueError("Unable to parse organization/project from Azure DevOps project URL.")
+        
+        # URL-encode the components for git compatibility
+        from urllib.parse import quote
+        org_encoded = quote(organization, safe='')
+        project_encoded = quote(project, safe='')
+        
         return {
             "organization": organization,
             "project": project,
             "repo": None,
             "branch": None,
-            "url": f"https://dev.azure.com/{organization}/{project}",
+            "url": f"https://dev.azure.com/{org_encoded}/{project_encoded}",
             "is_project_url": True,
         }
 
@@ -127,12 +136,18 @@ def parse_azure_repo_url(repo_url: str) -> Dict[str, Optional[str]]:
 
     inferred_branch = _extract_branch_from_query(parse_qs(parsed.query or ""))
 
+    # URL-encode the components for git compatibility (spaces become %20)
+    from urllib.parse import quote
+    org_encoded = quote(organization, safe='')
+    project_encoded = quote(project, safe='')
+    repo_encoded = quote(repo, safe='')
+
     return {
         "organization": organization,
         "project": project,
         "repo": repo,
         "branch": inferred_branch,
-        "url": f"https://dev.azure.com/{organization}/{project}/_git/{repo}",
+        "url": f"https://dev.azure.com/{org_encoded}/{project_encoded}/_git/{repo_encoded}",
         "is_project_url": False,
     }
 
@@ -162,7 +177,7 @@ async def list_project_repositories(
     if access_token:
         headers["Authorization"] = f"Bearer {access_token}"
     
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
         repos_url = f"https://dev.azure.com/{quote(organization, safe='')}/{quote(project, safe='')}/_apis/git/repositories"
         resp = await client.get(
             repos_url,
@@ -209,26 +224,55 @@ def _auth_headers(pat: Optional[str]) -> Dict[str, str]:
     return headers
 
 
+import time
+_REPO_PUBLIC_CACHE: Dict[str, Tuple[bool, float]] = {}
+_CACHE_TTL_SECONDS = 600  # 10 minutes
+
 async def is_repo_public(
     organization: str,
     project: str,
     repo: str,
+    pat: Optional[str] = None,
 ) -> bool:
-    """Check if an Azure DevOps repository is accessible without authentication.
-    
-    Note: Azure DevOps repositories are typically private by default.
-    This checks if the repo metadata is accessible without a PAT.
+    """
+    Check if an Azure DevOps repository is accessible. 
+    Results are cached permanently for the current PAT/URL combination.
     """
     url = _repo_api_base(organization, project, repo)
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(
-            url,
-            params={"api-version": "7.1"},
-            headers=_auth_headers(pat=None),  # No PAT
-        )
-        # If we get 200, it's public (very rare for Azure DevOps)
-        # Most likely 401/403 for private repos
-        return resp.status_code == 200
+    
+    # Create a unique cache key based on repo and PAT
+    pat_key = str(pat or "")[-8:] # Use last 8 chars of PAT for the key
+    cache_key = f"{url}:{pat_key}"
+    
+    current_time = time.time()
+    # If we have already checked this specific combination, return the cached result
+    if cache_key in _REPO_PUBLIC_CACHE:
+        result, _ = _REPO_PUBLIC_CACHE[cache_key]
+        return result
+
+    has_pat = bool(pat and len(str(pat).strip()) > 0)
+    logger.info(f"[is_repo_public] Checking {url} (Using PAT: {has_pat})")
+
+    # Use follow_redirects=False to avoid being pushed to the Microsoft login page
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
+        try:
+            resp = await client.get(
+                url,
+                params={"api-version": "7.1"},
+                headers=_auth_headers(pat),
+            )
+            
+            is_accessible = (resp.status_code == 200)
+            
+            if not is_accessible:
+                logger.warning(f"[is_repo_public] Repo {repo} returned {resp.status_code}. Accessible: False")
+            
+            # Update cache
+            _REPO_PUBLIC_CACHE[cache_key] = (is_accessible, current_time)
+            return is_accessible
+        except Exception as e:
+            logger.error(f"[is_repo_public] Error checking repo {repo}: {e}")
+            return False
 
 
 def _repo_api_base(organization: str, project: str, repo: str) -> str:
@@ -245,7 +289,7 @@ async def _get_repo_metadata(
     pat: Optional[str],
 ) -> Dict[str, Any]:
     url = _repo_api_base(organization, project, repo)
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
         resp = await client.get(
             url,
             params={"api-version": "7.1"},
@@ -275,7 +319,7 @@ async def _list_repo_files(
         "api-version": "7.1",
     }
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
         resp = await client.get(url, params=params, headers=_auth_headers(pat))
         resp.raise_for_status()
         payload = resp.json() if "application/json" in (resp.headers.get("content-type") or "") else {}
@@ -305,7 +349,10 @@ def _should_include_file(path: str, size: int) -> bool:
     if any(p.startswith(".") and p not in {".env.example", ".azure-pipelines"} for p in parts):
         return False
 
-    skip_dirs = {"node_modules", "vendor", "dist", "build", "__pycache__", ".git", "venv", ".venv"}
+    skip_dirs = {
+        "node_modules", "vendor", "dist", "build", "__pycache__", 
+        ".git", "venv", ".venv", "target", "bin", "obj", "out"
+    }
     if any(p in skip_dirs for p in parts):
         return False
 
@@ -324,22 +371,26 @@ async def _get_file_content(
     path: str,
     pat: Optional[str],
 ) -> Optional[str]:
-    base = _repo_api_base(organization, project, repo)
-    url = f"{base}/items"
-    params = {
-        "path": f"/{path.lstrip('/')}",
-        "versionDescriptor.versionType": "branch",
-        "versionDescriptor.version": branch,
-        "download": "true",
-        "api-version": "7.1",
-    }
+    try:
+        base = _repo_api_base(organization, project, repo)
+        url = f"{base}/items"
+        params = {
+            "path": f"/{path.lstrip('/')}",
+            "versionDescriptor.versionType": "branch",
+            "versionDescriptor.version": branch,
+            "download": "true",
+            "api-version": "7.1",
+        }
 
-    async with httpx.AsyncClient(timeout=45.0) as client:
-        resp = await client.get(url, params=params, headers=_auth_headers(pat))
-        if resp.status_code != 200:
-            return None
-        text = resp.content.decode("utf-8", errors="ignore")
-        return text if text.strip() else None
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(url, params=params, headers=_auth_headers(pat))
+            if resp.status_code != 200:
+                return None
+            text = resp.content.decode("utf-8", errors="ignore")
+            return text if text.strip() else None
+    except Exception as e:
+        logger.error(f"Error fetching Azure DevOps file content for {path}: {e}", exc_info=True)
+        return None
 
 
 async def build_repo_context_from_url(

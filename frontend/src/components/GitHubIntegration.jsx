@@ -108,6 +108,27 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, onRep
         setFetchingContext(true);
         try {
             const [owner, repoName] = repo.full_name.split('/');
+            
+            // First validate the connection
+            const validateResp = await fetch(API_ENDPOINTS.GIT_VALIDATE_CONNECTION, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${getToken()}`,
+                },
+                body: JSON.stringify({
+                    repo_url: `https://github.com/${repo.full_name}.git`,
+                    pat: null, // Using OAuth token from user session
+                    provider: 'github',
+                }),
+            });
+            
+            if (!validateResp.ok) {
+                const errorData = await validateResp.json();
+                throw new Error(errorData.detail || 'Failed to validate repository');
+            }
+            
+            // Now fetch the actual context
             const resp = await fetch(API_ENDPOINTS.GITHUB_REPO_CONTEXT, {
                 method: 'POST',
                 headers: {
@@ -133,6 +154,8 @@ const GitHubIntegration = ({ onRepoContextReady, repoContext, onClearRepo, onRep
             }
         } catch (e) {
             console.error('Repo context error:', e);
+            // Show error to user
+            alert(`Failed to load repository: ${e.message}`);
         } finally {
             setFetchingContext(false);
         }

@@ -4,12 +4,15 @@ Handles OAuth flow & fetching repository data for AI context.
 """
 import io
 import base64
+import logging
 import posixpath
 import re
 import zipfile
 import httpx
 from typing import Optional, Dict, Any, List, Tuple
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
@@ -216,23 +219,29 @@ async def get_file_content(
     password: Optional[str] = None,
 ) -> Optional[str]:
     """Fetch raw content of a single file from GitHub."""
-    owner, repo = normalize_repo_identity(owner, repo)
-    headers = _build_github_headers(
-        "application/vnd.github.raw+json",
-        token=token,
-        username=username,
-        password=password,
-    )
-        
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{GITHUB_API_BASE}/repos/{owner}/{repo}/contents/{path}",
-            params={"ref": branch},
-            headers=headers,
+    try:
+        owner, repo = normalize_repo_identity(owner, repo)
+        headers = _build_github_headers(
+            "application/vnd.github.raw+json",
+            token=token,
+            username=username,
+            password=password,
         )
-        if resp.status_code != 200:
-            return None
-        return resp.text
+            
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{GITHUB_API_BASE}/repos/{owner}/{repo}/contents/{path}",
+                params={"ref": branch},
+                headers=headers,
+                timeout=15.0,
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Failed to fetch content for {path}: HTTP {resp.status_code}")
+                return None
+            return resp.text
+    except Exception as e:
+        logger.error(f"Error fetching file content for {path}: {e}", exc_info=True)
+        return None
 
 
 def _should_include_file(path: str, size: int) -> bool:
@@ -245,8 +254,11 @@ def _should_include_file(path: str, size: int) -> bool:
     parts = path.split("/")
     if any(p.startswith(".") and p not in {".env.example", ".github"} for p in parts):
         return False
-    # Skip common non-essential dirs
-    skip_dirs = {"node_modules", "vendor", "dist", "build", "__pycache__", ".git", "venv", ".venv"}
+    # Skip common non-essential dirs (including target, bin, and obj)
+    skip_dirs = {
+        "node_modules", "vendor", "dist", "build", "__pycache__", 
+        ".git", "venv", ".venv", "target", "bin", "obj", "out"
+    }
     if any(p in skip_dirs for p in parts):
         return False
     if size > MAX_FILE_SIZE_BYTES:

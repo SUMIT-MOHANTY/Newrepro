@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { API_ENDPOINTS } from '../config';
+import { API_ENDPOINTS, VIBE_WORKSPACE_URL, API_BASE_URL } from '../config';
 import {
     KeyRound, CheckCircle2, Circle, AlertCircle, AlertTriangle, ArrowRight,
     ChevronLeft, Database, Globe, Server,
@@ -121,13 +121,13 @@ const PROCESS_MODE_OPTIONS = [
     {
         id: 'ai_assist',
         title: 'AI Assist',
-        description: 'Redirect to VS Code and use N-Mod Extension with AI assistance.',
+        description: 'Redirect to VibeCoding with AI assistance for guided development.',
         enabled: true,
     },
     {
         id: 'vibe_coding',
         title: 'Vibe Coding',
-        description: 'Redirect to VS Code and use N-Mod Extension with Vibe instructions.',
+        description: 'Open VibeCoding workspace with BRD. Auto-creates project, tasks, and executes code.',
         enabled: true,
     },
     {
@@ -183,9 +183,27 @@ const extractPrerequisitesFromAnalysis = (analysisData) => {
     const items = [];
     let id = 1;
 
-    // If AI already returns structured prerequisites
-    if (analysisData.prerequisites && Array.isArray(analysisData.prerequisites)) {
-        return analysisData.prerequisites.map((p, idx) => {
+    // PRIORITY 1: Check for structured prerequisites from chunked analysis stages
+    if (analysisData.stages?.stage4_implementation?.prerequisites && Array.isArray(analysisData.stages.stage4_implementation.prerequisites)) {
+        console.log('Found structured prerequisites from stage4_implementation:', analysisData.stages.stage4_implementation.prerequisites);
+        return analysisData.stages.stage4_implementation.prerequisites.map((p, idx) => {
+            if (typeof p === 'string') {
+                const cleanString = stripHtml(p);
+                return {
+                    id: idx + 1,
+                    name: cleanString || `Prerequisite ${idx + 1}`,
+                    description: '', 
+                    category: 'other',
+                    priority: 'medium',
+                    fieldType: inferFieldTypeFromRequirement(cleanString, ''),
+                    provided: false,
+                    containsSecret: false,
+                    userValue: '',
+                    userFileName: '',
+                };
+            }
+
+            // Handle structured prerequisite objects
             const name = stripHtml(p.name || p.title || `Prerequisite ${idx + 1}`);
             const description = stripHtml(p.description || p.details || '');
             const fieldType = inferFieldTypeFromRequirement(name, description);
@@ -204,7 +222,52 @@ const extractPrerequisitesFromAnalysis = (analysisData) => {
         });
     }
 
-    // Smart extraction from analysis text
+    // PRIORITY 2: Check for prerequisites in the main analysis object
+    if (analysisData.prerequisites && Array.isArray(analysisData.prerequisites)) {
+        console.log('Found prerequisites in main analysis:', analysisData.prerequisites);
+        return analysisData.prerequisites.map((p, idx) => {
+            // ==========================================
+            // FIX START: Handle string inputs
+            // ==========================================
+            if (typeof p === 'string') {
+                const cleanString = stripHtml(p);
+                return {
+                    id: idx + 1,
+                    name: cleanString || `Prerequisite ${idx + 1}`,
+                    description: '', // Strings don't have descriptions by default
+                    category: 'other',
+                    priority: 'medium',
+                    fieldType: inferFieldTypeFromRequirement(cleanString, ''),
+                    provided: false,
+                    containsSecret: false,
+                    userValue: '',
+                    userFileName: '',
+                };
+            }
+            // ==========================================
+            // FIX END
+            // ==========================================
+
+            // Existing logic for Objects
+            const name = stripHtml(p.name || p.title || `Prerequisite ${idx + 1}`);
+            const description = stripHtml(p.description || p.details || '');
+            const fieldType = inferFieldTypeFromRequirement(name, description);
+            return {
+                id: idx + 1,
+                name,
+                description,
+                category: p.category || 'other',
+                priority: p.priority || 'medium',
+                fieldType,
+                provided: false,
+                containsSecret: false,
+                userValue: '',
+                userFileName: '',
+            };
+        });
+    }
+
+    // Smart extraction from analysis text (Fallback if structure is missing)
     const rawText = typeof analysisData === 'string'
         ? analysisData
         : (analysisData.analysis || analysisData.report || JSON.stringify(analysisData));
@@ -476,6 +539,46 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const navigate = useNavigate();
     const [prerequisites, setPrerequisites] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [showRedirectionConfirmation, setShowRedirectionConfirmation] = useState(false);
+    const [redirectionTarget, setRedirectionTarget] = useState(null);
+
+    // Redirect to new project page if no projects exist
+    useEffect(() => {
+        if (!projects || projects.length === 0) {
+            const timer = setTimeout(() => {
+                if (!projects || projects.length === 0) {
+                    navigate('/new-project');
+                }
+            }, 500);
+            return () => clearTimeout(timer);
+        }
+    }, [projects, navigate]);
+
+    const handleConfirmRedirection = async () => {
+        if (!redirectionTarget) return;
+        try {
+            const token = localStorage.getItem('token');
+            const res = await fetch(`${API_ENDPOINTS.VIBECODING_HANDOFF}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ project_token: selectedProjectKey }),
+            });
+            if (res.ok) {
+                const { handoff_token } = await res.json();
+                const sep = redirectionTarget.includes('?') ? '&' : '?';
+                window.location.href = `${redirectionTarget}${sep}handoff_token=${encodeURIComponent(handoff_token)}`;
+                return;
+            }
+        } catch (err) {
+            console.error('Failed to get handoff token:', err);
+        }
+        window.location.href = redirectionTarget;
+    };
+
+    const handleCancelRedirection = () => {
+        setShowRedirectionConfirmation(false);
+        setSubmitting(false);
+    };
     const [error, setError] = useState('');
     const [submitting, setSubmitting] = useState(false);
     const [submitted, setSubmitted] = useState(false);
@@ -487,7 +590,24 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const [isLoadingGitConfig, setIsLoadingGitConfig] = useState(false);
     const [analysisRepoSuggestion, setAnalysisRepoSuggestion] = useState(null);
     const [repoProvider, setRepoProvider] = useState('github');
-
+    
+    // Git validation state
+    const [isValidatingGit, setIsValidatingGit] = useState(false);
+    const [gitValidationResult, setGitValidationResult] = useState(null);
+    const [gitValidationError, setGitValidationError] = useState('');
+    
+    // Claude.md file upload state
+    const [claudeMdFiles, setClaudeMdFiles] = useState([]);
+    const [showClaudeMdViewer, setShowClaudeMdViewer] = useState(false);
+    const [selectedClaudeMdContent, setSelectedClaudeMdContent] = useState('');
+    const [selectedClaudeMdName, setSelectedClaudeMdName] = useState('');
+    
+    // Skills.md file upload state
+    const [skillsMdFiles, setSkillsMdFiles] = useState([]);
+    const [showSkillsMdViewer, setShowSkillsMdViewer] = useState(false);
+    const [selectedSkillsMdContent, setSelectedSkillsMdContent] = useState('');
+    const [selectedSkillsMdName, setSelectedSkillsMdName] = useState('');
+    
     // Determine recommended mode based on governance classification
     const recommendedMode = useMemo(() => {
         try {
@@ -599,6 +719,26 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
         if (selectedProjectKey) {
             const saved = localStorage.getItem(`custom_rules_${selectedProjectKey}`) || '';
             setCustomRules(saved);
+            
+            // Load saved claude.md files
+            const savedClaudeFiles = localStorage.getItem(`claude_md_files_${selectedProjectKey}`);
+            if (savedClaudeFiles) {
+                try {
+                    setClaudeMdFiles(JSON.parse(savedClaudeFiles));
+                } catch (e) {
+                    console.error('Failed to parse saved claude.md files:', e);
+                }
+            }
+            
+            // Load saved skills.md files
+            const savedSkillsFiles = localStorage.getItem(`skills_md_files_${selectedProjectKey}`);
+            if (savedSkillsFiles) {
+                try {
+                    setSkillsMdFiles(JSON.parse(savedSkillsFiles));
+                } catch (e) {
+                    console.error('Failed to parse saved skills.md files:', e);
+                }
+            }
         }
     }, [selectedProjectKey]);
 
@@ -607,6 +747,46 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
             localStorage.setItem(`custom_rules_${selectedProjectKey}`, customRules);
         }
     }, [selectedProjectKey, customRules]);
+    
+    // Save claude.md files when they change
+    useEffect(() => {
+        if (selectedProjectKey && claudeMdFiles.length > 0) {
+            localStorage.setItem(`claude_md_files_${selectedProjectKey}`, JSON.stringify(claudeMdFiles));
+            
+            // Also save to backend
+            const token = localStorage.getItem('token');
+            if (token) {
+                fetch(API_ENDPOINTS.GOVERNANCE_CLAUDE_MD_FILES(selectedProjectKey), {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify(claudeMdFiles)
+                }).catch(err => console.error('Failed to save claude.md files to backend:', err));
+            }
+        }
+    }, [selectedProjectKey, claudeMdFiles]);
+    
+    // Save skills.md files when they change
+    useEffect(() => {
+        if (selectedProjectKey && skillsMdFiles.length > 0) {
+            localStorage.setItem(`skills_md_files_${selectedProjectKey}`, JSON.stringify(skillsMdFiles));
+            
+            // Also save to backend
+            const token = localStorage.getItem('token');
+            if (token) {
+                fetch(API_ENDPOINTS.GOVERNANCE_SKILLS_MD_FILES(selectedProjectKey), {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify(skillsMdFiles)
+                }).catch(err => console.error('Failed to save skills.md files to backend:', err));
+            }
+        }
+    }, [selectedProjectKey, skillsMdFiles]);
 
     // Derive project name from the projects list or governance context
     useEffect(() => {
@@ -642,6 +822,22 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 if (!token) return;
                 setIsLoadingGitConfig(true);
 
+                // 1. Try project-wise git-config endpoint first (Destination Repository)
+                const configRes = await fetch(`${API_BASE_URL}/api/projects/${selectedProjectKey}/git-config`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (configRes.ok) {
+                    const configData = await configRes.json().catch(() => ({}));
+                    if (configData.dest_repo_url) {
+                        if (!isMounted) return;
+                        setGlobalGitRepoUrl(configData.dest_repo_url);
+                        setHasSavedGlobalGitToken(Boolean(configData.dest_repo_token));
+                        setGlobalGitToken('');
+                        return;
+                    }
+                }
+
+                // 2. Legacy fallback
                 const url = new URL(API_ENDPOINTS.AGENTS);
                 url.searchParams.set('project_token', selectedProjectKey);
                 const res = await fetch(url.toString(), {
@@ -793,15 +989,21 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 const detectedRepo = extractRepoSuggestionFromAnalysis(analysisObj);
                 const storedRepo = loadStoredProjectRepoSuggestion();
 
-                const finalRepoSuggestion = detectedRepo || storedRepo;
-                setAnalysisRepoSuggestion(finalRepoSuggestion);
-                if (finalRepoSuggestion?.url) {
-                    setGlobalGitRepoUrl((prev) => prev.trim() || finalRepoSuggestion.url);
-                }
-                if (finalRepoSuggestion?.provider === 'azure-devops') {
-                    setRepoProvider('azure-devops');
-                } else if (finalRepoSuggestion?.provider === 'github') {
-                    setRepoProvider('github');
+                // CRITICAL FIX: For NEW projects, only use repo suggestion if it came from explicit user input
+                // Don't auto-populate from BRD text analysis (which might just be mentioning an example repo)
+                const finalRepoSuggestion = storedRepo || (detectedRepo?.source === 'link' ? detectedRepo : null);
+                
+                // Only set repo suggestion if we have a valid one from user input
+                if (finalRepoSuggestion) {
+                    setAnalysisRepoSuggestion(finalRepoSuggestion);
+                    if (finalRepoSuggestion?.url) {
+                        setGlobalGitRepoUrl((prev) => prev.trim() || finalRepoSuggestion.url);
+                    }
+                    if (finalRepoSuggestion?.provider === 'azure-devops') {
+                        setRepoProvider('azure-devops');
+                    } else if (finalRepoSuggestion?.provider === 'github') {
+                        setRepoProvider('github');
+                    }
                 }
 
                 // Use structured prerequisites from AI if available, otherwise fall back to text extraction
@@ -871,6 +1073,128 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
             })
         );
     }, []);
+    
+    // Handle claude.md file upload
+    const handleClaudeMdUpload = useCallback((event) => {
+        const files = Array.from(event.target.files || []);
+        const mdFiles = files.filter(file => file.name.toLowerCase().endsWith('.md'));
+        
+        if (mdFiles.length === 0) {
+            setError('Please upload only .md files');
+            return;
+        }
+        
+        mdFiles.forEach(file => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const content = e.target.result;
+                setClaudeMdFiles(prev => {
+                    // Check if file already exists
+                    const existingIndex = prev.findIndex(f => f.name === file.name);
+                    if (existingIndex >= 0) {
+                        // Replace existing file
+                        const updated = [...prev];
+                        updated[existingIndex] = {
+                            name: file.name,
+                            content: content,
+                            uploadedAt: new Date().toISOString(),
+                        };
+                        return updated;
+                    } else {
+                        // Add new file
+                        return [...prev, {
+                            name: file.name,
+                            content: content,
+                            uploadedAt: new Date().toISOString(),
+                        }];
+                    }
+                });
+            };
+            reader.onerror = () => {
+                setError(`Failed to read file: ${file.name}`);
+            };
+            reader.readAsText(file);
+        });
+        
+        // Clear the input
+        event.target.value = '';
+    }, []);
+    
+    // Handle viewing claude.md file
+    const handleViewClaudeMd = useCallback((file) => {
+        setSelectedClaudeMdContent(file.content);
+        setSelectedClaudeMdName(file.name);
+        setShowClaudeMdViewer(true);
+    }, []);
+    
+    // Handle removing claude.md file
+    const handleRemoveClaudeMd = useCallback((fileName) => {
+        setClaudeMdFiles(prev => prev.filter(f => f.name !== fileName));
+        if (selectedProjectKey) {
+            const updated = claudeMdFiles.filter(f => f.name !== fileName);
+            if (updated.length === 0) {
+                localStorage.removeItem(`claude_md_files_${selectedProjectKey}`);
+            }
+        }
+    }, [selectedProjectKey, claudeMdFiles]);
+    
+    // Handle skills.md file upload
+    const handleSkillsMdUpload = useCallback((event) => {
+        const files = Array.from(event.target.files || []);
+        
+        files.forEach(file => {
+            if (!file.name.endsWith('.md')) {
+                alert(`${file.name} is not a markdown file. Only .md files are allowed.`);
+                return;
+            }
+            
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const content = e.target.result;
+                setSkillsMdFiles(prev => {
+                    // Check if file already exists
+                    const existingIndex = prev.findIndex(f => f.name === file.name);
+                    const newFile = {
+                        name: file.name,
+                        content: content,
+                        uploadedAt: new Date().toISOString()
+                    };
+                    
+                    if (existingIndex >= 0) {
+                        // Replace existing file
+                        const updated = [...prev];
+                        updated[existingIndex] = newFile;
+                        return updated;
+                    } else {
+                        // Add new file
+                        return [...prev, newFile];
+                    }
+                });
+            };
+            reader.readAsText(file);
+        });
+        
+        // Clear the input
+        event.target.value = '';
+    }, []);
+    
+    // Handle viewing skills.md file
+    const handleViewSkillsMd = useCallback((file) => {
+        setSelectedSkillsMdContent(file.content);
+        setSelectedSkillsMdName(file.name);
+        setShowSkillsMdViewer(true);
+    }, []);
+    
+    // Handle removing skills.md file
+    const handleRemoveSkillsMd = useCallback((fileName) => {
+        setSkillsMdFiles(prev => prev.filter(f => f.name !== fileName));
+        if (selectedProjectKey) {
+            const updated = skillsMdFiles.filter(f => f.name !== fileName);
+            if (updated.length === 0) {
+                localStorage.removeItem(`skills_md_files_${selectedProjectKey}`);
+            }
+        }
+    }, [selectedProjectKey, skillsMdFiles]);
 
     // Group by category
     const grouped = useMemo(() => {
@@ -881,6 +1205,52 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
         });
         return groups;
     }, [prerequisites]);
+
+    // Validate Git connection
+    const handleValidateGitConnection = useCallback(async () => {
+        if (!globalGitRepoUrl.trim()) {
+            setGitValidationError('Please enter a repository URL first');
+            return;
+        }
+
+        setIsValidatingGit(true);
+        setGitValidationError('');
+        setGitValidationResult(null);
+
+        try {
+            const token = localStorage.getItem('token');
+            const response = await fetch(API_ENDPOINTS.GIT_VALIDATE_CONNECTION, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                    repo_url: globalGitRepoUrl.trim(),
+                    pat: globalGitToken.trim() || null,
+                    provider: repoProvider,
+                }),
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.detail || 'Validation failed');
+            }
+
+            setGitValidationResult(data);
+            
+            // If URL was normalized, update the input field
+            if (data.normalized_url && data.normalized_url !== globalGitRepoUrl.trim()) {
+                setGlobalGitRepoUrl(data.normalized_url);
+            }
+        } catch (err) {
+            console.error('Git validation error:', err);
+            setGitValidationError(sanitizeErrorMessage(err));
+        } finally {
+            setIsValidatingGit(false);
+        }
+    }, [globalGitRepoUrl, globalGitToken, repoProvider]);
 
     const totalItems = prerequisites.length;
     const providedCount = prerequisites.filter(p => p.provided).length;
@@ -921,9 +1291,32 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     throw new Error('Please enter a valid Git repository URL (e.g., https://github.com/org/repo.git).');
                 }
                 
-                // PAT is optional - no longer required
-
                 // Save global Git config from prerequisites so all agents reuse it.
+                const sourceUrl = analysisRepoSuggestion?.url || repo;
+                localStorage.setItem(`source_repo_url_${selectedProjectKey}`, sourceUrl);
+
+                // 1. Save destination Git config to project-wise git-config endpoint
+                const destGitConfigPayload = {
+                    dest_repo_url: repo,
+                };
+                if (pat) destGitConfigPayload.dest_repo_token = pat;
+
+                const destConfigRes = await fetch(`${API_BASE_URL}/api/projects/${selectedProjectKey}/git-config`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${token}`,
+                    },
+                    body: JSON.stringify(destGitConfigPayload),
+                });
+                
+                if (!destConfigRes.ok) {
+                    const errData = await destConfigRes.json().catch(() => ({}));
+                    const errorMsg = errData?.detail || 'Failed to save project Git configuration.';
+                    throw new Error(sanitizeErrorMessage(errorMsg));
+                }
+                
+                // 2. Fallback update to legacy AgentCredential table
                 const agentsUrl = new URL(API_ENDPOINTS.AGENTS);
                 agentsUrl.searchParams.set('project_token', selectedProjectKey);
                 const agentsRes = await fetch(agentsUrl.toString(), {
@@ -1027,8 +1420,142 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
             }
 
             if (['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)) {
-                // Redirect immediately without showing the checkmark screen
-                window.location.href = 'vscode:extension/bourntec-Solutions.n-mod-vscode-assistant';
+                // For VibeCoding mode, prepare handoff with BRD data
+                if (processMode === 'vibe_coding') {
+                    try {
+                        // Get the BRD analysis data for this project
+                        const historyRes = await fetch(API_ENDPOINTS.HISTORY, {
+                            headers: { Authorization: `Bearer ${token}` },
+                        });
+                        
+                        if (!historyRes.ok) {
+                            throw new Error('Failed to fetch project analysis for VibeCoding handoff');
+                        }
+                        
+                        const docs = await historyRes.json();
+                        
+                        // Find the document linked to THIS project
+                        const currentProject = projects?.find(p => p.key === selectedProjectKey);
+                        const govResultId = currentProject?.governanceResultId;
+                        const projToken = currentProject?.projectToken || selectedProjectKey;
+                        const projName = currentProject?.name || projectName;
+                        
+                        const projectDoc = docs.find(doc => {
+                            if (!doc.analysis_result) return false;
+                            try {
+                                const analysis = JSON.parse(doc.analysis_result);
+                                const meta = analysis.projectMeta || {};
+                                const govCtx = analysis.governanceContext || {};
+                                
+                                const docToken = meta.project_token || govCtx.project_token;
+                                const docGovId = meta.governance_result_id || govCtx.result_id;
+                                const docName = meta.project_name || govCtx.project_name || '';
+                                
+                                if (docToken && String(docToken) === String(projToken)) return true;
+                                if (docGovId && govResultId && String(docGovId) === String(govResultId)) return true;
+                                if (projName && docName && docName.trim().toLowerCase() === projName.trim().toLowerCase()) return true;
+                                
+                                return false;
+                            } catch {
+                                return false;
+                            }
+                        });
+                        
+                        if (!projectDoc?.analysis_result) {
+                            throw new Error('No BRD analysis found for this project. Please complete Agent Analysis first.');
+                        }
+                        
+                        // Parse the analysis
+                        let analysisObj = null;
+                        try {
+                            analysisObj = JSON.parse(projectDoc.analysis_result);
+                        } catch {
+                            analysisObj = { analysis: projectDoc.analysis_result };
+                        }
+                        
+                        // Get the raw BRD text
+                        const brdText = projectDoc.document_text || analysisObj.analysis || analysisObj.report || '';
+                        
+                        // Create VibeCoding handoff payload
+                        const vibeHandoffPayload = {
+                            project_token: selectedProjectKey,
+                            project_name: projectName,
+                            brd_text: brdText,
+                            analysis_data: analysisObj,
+                            prerequisites: prerequisites
+                                .filter((p) => p.provided)
+                                .map((p) => sanitizePrerequisiteForAiPayload(p)),
+                            custom_rules: customRules,
+                            process_mode: 'vibe_coding',
+                            governance_context: (() => {
+                                try {
+                                    const raw = sessionStorage.getItem('governanceContext') || localStorage.getItem('governanceContext');
+                                    return raw ? JSON.parse(raw) : null;
+                                } catch {
+                                    return null;
+                                }
+                            })(),
+                        };
+                        
+                        // Get handoff token from backend
+                        const handoffRes = await fetch(API_ENDPOINTS.VIBECODING_HANDOFF, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                Authorization: `Bearer ${token}`,
+                            },
+                            body: JSON.stringify(vibeHandoffPayload),
+                        });
+                        
+                        if (!handoffRes.ok) {
+                            const errData = await handoffRes.json().catch(() => ({}));
+                            throw new Error(errData?.detail || 'Failed to create VibeCoding handoff token');
+                        }
+                        
+                        const { handoff_token } = await handoffRes.json();
+                        
+                        // Construct VibeCoding URL with handoff token
+                        const vibeUrl = new URL(VIBE_WORKSPACE_URL);
+                        vibeUrl.searchParams.set('handoff_token', handoff_token);
+                        vibeUrl.searchParams.set('source', 'dsuite');
+                        vibeUrl.searchParams.set('project_token', selectedProjectKey);
+                        vibeUrl.searchParams.set('auto_execute', 'true');  // Signal to auto-trigger execution
+                        
+                        // Save current route to return to after VibeCoding
+                        const returnPath = location.pathname + location.search;
+                        sessionStorage.setItem('dsuite_return_path', returnPath);
+                        sessionStorage.setItem('dsuite_return_project', selectedProjectKey);
+                        console.log('💾 Saved return path for D-Suite:', returnPath);
+                        
+                        // Open VibeCoding in new window
+                        const vibeWindow = window.open(vibeUrl.toString(), '_blank');
+                        
+                        if (!vibeWindow) {
+                            // Popup blocked - show message and provide link
+                            setError('Popup blocked. Please allow popups for this site and try again, or click the link below to open VibeCoding manually.');
+                            setRedirectionTarget(vibeUrl.toString());
+                            setShowRedirectionConfirmation(true);
+                            setSubmitting(false);
+                            return;
+                        }
+                        
+                        // Show success message
+                        setSubmitted(true);
+                        setTimeout(() => {
+                            // Optionally redirect back to dashboard after opening VibeCoding
+                            navigate('/dashboard');
+                        }, 2000);
+                        
+                    } catch (err) {
+                        console.error('VibeCoding handoff error:', err);
+                        setError(sanitizeErrorMessage(err));
+                        setSubmitting(false);
+                        return;
+                    }
+                } else {
+                    // For developer_only and ai_assist modes, redirect to VS Code extension
+                    window.location.href = 'vscode:extension/bourntec-Solutions.n-mod-vscode-assistant';
+                }
                 return; // Stop execution here so it doesn't clear the submitting state right away
             } else {
                 // Bootstrap/create the external task project HERE (prerequisites step),
@@ -1130,14 +1657,30 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                             <CheckCircle2 className="w-10 h-10 text-white" />
                         </div>
 
-                        <h2 className="text-2xl font-extrabold text-app-text-main mb-2 tracking-tight">Prerequisites Acknowledged</h2>
+                        <h2 className="text-2xl font-extrabold text-app-text-main mb-2 tracking-tight">
+                            {processMode === 'vibe_coding' ? 'VibeCoding Launched' : 'Prerequisites Acknowledged'}
+                        </h2>
                         <p className="text-app-text-muted text-sm mb-6 leading-relaxed max-w-md mx-auto">
-                            {providedCount} of {totalItems} prerequisite items have been confirmed for <strong>{projectName || 'this project'}</strong>.
+                            {processMode === 'vibe_coding' ? (
+                                <>
+                                    VibeCoding workspace opened with BRD for{" "}
+                                    <strong>{projectName || 'this project'}</strong>.
+                                    {" "}Project creation and task execution will begin automatically.
+                                </>
+                            ) : (
+                                <>
+                                    {providedCount} of {totalItems} prerequisite items have been confirmed for{" "}
+                                    <strong>{projectName || 'this project'}</strong>.
+                                </>
+                            )}
                         </p>
 
                         <div className="flex items-center justify-center gap-2 text-sm text-app-text-light">
                             <div className="w-4 h-4 border-2 border-app-border border-t-emerald-500 rounded-full animate-spin" />
-                            {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode) ? 'Redirecting to VS Code Extension…' : 'Redirecting to Task Creation…'}
+                            {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode) 
+                                ? 'VibeCoding workspace is ready…' 
+                                : 'Redirecting to Task Creation…'
+                            }
                         </div>
                     </div>
                 </div>
@@ -1148,6 +1691,39 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     /* ── Main View ── */
     return (
         <div className="h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
+            {/* Redirection Confirmation Modal */}
+            {showRedirectionConfirmation && (
+                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+                    <div className="bg-app-bg-card rounded-2xl shadow-2xl border border-app-border max-w-md w-full p-6">
+                        <div className="flex items-start gap-4 mb-4">
+                            <div className="w-12 h-12 rounded-xl bg-amber-100 flex items-center justify-center flex-shrink-0">
+                                <AlertTriangle className="w-6 h-6 text-amber-600" />
+                            </div>
+                            <div className="flex-1">
+                                <h3 className="text-lg font-bold text-app-text-main mb-1">Popup Blocked</h3>
+                                <p className="text-sm text-app-text-muted leading-relaxed">
+                                    Your browser blocked the VibeCoding window. Please allow popups for this site and try again, or click the button below to open VibeCoding manually.
+                                </p>
+                            </div>
+                        </div>
+                        <div className="flex gap-3">
+                            <button
+                                onClick={handleCancelRedirection}
+                                className="flex-1 px-4 py-2.5 text-sm font-semibold text-app-text-main bg-app-bg-page border border-app-border rounded-lg hover:bg-app-bg-hover transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={handleConfirmRedirection}
+                                className="flex-1 px-4 py-2.5 text-sm font-semibold text-white bg-gradient-to-r from-app-primary to-app-primary-hover rounded-lg hover:shadow-lg transition-all"
+                            >
+                                Open VibeCoding
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            
             <div className="px-3 sm:px-4 lg:px-6 py-4 lg:py-6 max-w-[1200px] mx-auto">
 
                 {/* Back Link */}
@@ -1207,7 +1783,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     <div className="mb-6 p-4 rounded-lg border border-yellow-500/50 bg-yellow-500/10 shadow-md">
                         <div className="flex items-start gap-3">
                             <AlertTriangle className="w-5 h-5 text-yellow-500 mt-0.5 flex-shrink-0" />
-                            <div className="text-sm text-yellow-200 flex-1">
+                            <div className="text-sm text-dark-200 flex-1">
                                 <p className="font-bold mb-1.5 text-base flex items-center gap-2">
                                     <span className="text-lg">ℹ️</span> No PAT Provided
                                 </p>
@@ -1304,7 +1880,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         <p className="text-sm font-semibold text-app-primary-dark mb-0.5">How this works</p>
                         <p className="text-xs text-app-text-main leading-relaxed">
                             {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)
-                                ? `In ${processMode === 'vibe_coding' ? 'Vibe Coding' : processMode === 'ai_assist' ? 'AI Assist' : 'Developer Only'} mode, prerequisite classification is not required. You can proceed directly to VS Code where you will work in the designated workflow.`
+                                ? `In ${processMode === 'vibe_coding' ? 'Vibe Coding' : processMode === 'ai_assist' ? 'AI Assist' : 'Developer Only'} mode, prerequisite classification is not required. You can proceed directly to VibeCoding workspace where you will work in the designated workflow.`
                                 : 'Our AI has analyzed your BRD and identified the services, credentials, and infrastructure you\'ll need. Each prerequisite asks for the expected answer type (text, URL, or file upload).'
                             }
                         </p>
@@ -1318,14 +1894,14 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                             <ArrowRight className="w-8 h-8 text-app-primary" />
                         </div>
                         <h3 className="text-lg font-bold text-app-text-main mb-2">
-                            {processMode === 'vibe_coding' ? 'Vibe Coding Workflow.' : processMode === 'ai_assist' ? 'AI Assist Workflow.' : 'Developer Workflow.'}
+                            {processMode === 'vibe_coding' ? 'Vibe Coding Workflow' : processMode === 'ai_assist' ? 'AI Assist Workflow' : 'Developer Workflow'}
                         </h3>
                         <p className="text-sm text-app-text-label max-w-lg mx-auto leading-relaxed">
                             {processMode === 'vibe_coding'
-                                ? <>Prerequisite classification is bypassed for <strong>Vibe Coding</strong> mode. You will be redirected to VS Code. Note: This is an advanced workflow with different instructions unlike AI Assist.</>
+                                ? <>Prerequisite classification is bypassed for <strong>Vibe Coding</strong> mode. You will be redirected to the VibeCoding web workspace where the AI will automatically analyze your BRD and start building your application.</>
                                 : processMode === 'ai_assist'
-                                    ? <>Prerequisite classification is bypassed for <strong>AI Assist</strong> mode. You will be redirected to VS Code with N-Mod Extension.</>
-                                    : <>Prerequisite classification is bypassed for <strong>Developer Only</strong> mode. You will be redirected to VS Code.</>
+                                    ? <>Prerequisite classification is bypassed for <strong>AI Assist</strong> mode. You will be redirected to VibeCoding workspace with AI guidance for development.</>
+                                    : <>Prerequisite classification is bypassed for <strong>Developer Only</strong> mode. You will be redirected to VibeCoding workspace for manual development.</>
                             }
                         </p>
                     </div>
@@ -1378,11 +1954,30 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
                                                 {/* Content */}
                                                 <div className="flex-1 min-w-0">
-                                                    <div className="flex items-center gap-2 mb-1 flex-wrap">
-                                                        <span className={`text-sm font-semibold ${item.provided ? 'text-app-text-muted' : 'text-app-text-main'}`}>
-                                                            {item.name}
-                                                        </span>
-                                                        <PriorityBadge priority={item.priority} />
+                                                    <div className="flex items-center justify-between gap-2 mb-1 flex-wrap">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className={`text-sm font-semibold ${item.provided ? 'text-app-text-muted' : 'text-app-text-main'}`}>
+                                                                {item.name}
+                                                            </span>
+                                                            <PriorityBadge priority={item.priority} />
+                                                        </div>
+                                                        {/* Secret flag toggle - moved to right side */}
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => toggleSecret(item.id)}
+                                                            className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium transition-colors ${item.containsSecret
+                                                                ? 'border-red-200 bg-app-status-errorBg text-app-status-error'
+                                                                : 'border-app-border bg-app-bg-page text-app-text-label hover:bg-app-bg-muted'
+                                                                }`}
+                                                            title="Mark as sensitive (will be excluded from AI payload)"
+                                                        >
+                                                            {item.containsSecret ? (
+                                                                <CheckCircle2 className="w-3.5 h-3.5 text-app-status-error" />
+                                                            ) : (
+                                                                <Circle className="w-3.5 h-3.5 text-app-text-light" />
+                                                            )}
+                                                            Sensitive
+                                                        </button>
                                                     </div>
                                                     <p className="text-xs text-app-text-muted leading-relaxed mb-2.5 max-w-2xl">
                                                         {item.description}
@@ -1435,24 +2030,6 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                                             )}
                                                         </div>
                                                     )}
-
-                                                    {/* Secret flag toggle */}
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => toggleSecret(item.id)}
-                                                        className={`mt-2 inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium transition-colors ${item.containsSecret
-                                                            ? 'border-red-200 bg-app-status-errorBg text-app-status-error'
-                                                            : 'border-app-border bg-app-bg-page text-app-text-label hover:bg-app-bg-muted'
-                                                            }`}
-                                                        title="Mark as sensitive (will be excluded from AI payload)"
-                                                    >
-                                                        {item.containsSecret ? (
-                                                            <CheckCircle2 className="w-3.5 h-3.5 text-app-status-error" />
-                                                        ) : (
-                                                            <Circle className="w-3.5 h-3.5 text-app-text-light" />
-                                                        )}
-                                                        Sensitive
-                                                    </button>
                                                 </div>
                                             </div>
                                         ))}
@@ -1484,6 +2061,242 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         <div className="flex items-center gap-2 text-[11px] text-app-primary font-medium bg-app-primary-light/50 px-3 py-2 rounded-lg italic">
                             <AlertCircle className="w-3.5 h-3.5" />
                             Rules are saved automatically for this project.
+                        </div>
+                    </div>
+                )}
+
+                {/* ── AI CONTEXT FILES UPLOAD SECTION ── */}
+                <div className="bg-app-bg-card/90 backdrop-blur-xl rounded-2xl shadow-sm border border-app-border-light/80 p-6 mb-6 space-y-4">
+                    <div className="flex items-center gap-2 mb-1">
+                        <div className="w-8 h-8 rounded-lg bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center">
+                            <FileKey className="w-4 h-4 text-violet-600 dark:text-violet-400" />
+                        </div>
+                        <h3 className="text-base font-bold text-app-text-main">AI Operational Directives</h3>
+                    </div>
+                    <p className="text-sm text-app-text-muted">
+                        Upload markdown files that contain project context, guidelines, or documentation. These files will be available for reference during development.
+                    </p>
+                    
+                    {/* Upload Button */}
+                    <div className="flex items-center gap-3">
+                        <label className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-gradient-to-r from-violet-500 to-purple-600 rounded-lg hover:shadow-lg transition-all cursor-pointer">
+                            <Package className="w-4 h-4" />
+                            Upload Context Files
+                            <input
+                                type="file"
+                                accept=".md"
+                                multiple
+                                onChange={handleClaudeMdUpload}
+                                className="hidden"
+                            />
+                        </label>
+                        <span className="text-xs text-app-text-muted">
+                            {claudeMdFiles.length > 0 ? `${claudeMdFiles.length} file${claudeMdFiles.length !== 1 ? 's' : ''} uploaded` : 'No files uploaded yet'}
+                        </span>
+                    </div>
+                    
+                    {/* Uploaded Files List */}
+                    {claudeMdFiles.length > 0 && (
+                        <div className="space-y-2 mt-4">
+                            <p className="text-xs font-semibold text-app-text-label uppercase tracking-wider">Uploaded Files</p>
+                            <div className="space-y-2">
+                                {claudeMdFiles.map((file, index) => (
+                                    <div
+                                        key={index}
+                                        className="flex items-center justify-between p-3 bg-app-bg-page border border-app-border rounded-lg hover:bg-app-bg-hover transition-colors"
+                                    >
+                                        <div className="flex items-center gap-3 flex-1 min-w-0">
+                                            <FileKey className="w-4 h-4 text-violet-600 dark:text-violet-400 flex-shrink-0" />
+                                            <div className="flex-1 min-w-0">
+                                                <p className="text-sm font-semibold text-app-text-main truncate">{file.name}</p>
+                                                <p className="text-xs text-app-text-muted">
+                                                    Uploaded {new Date(file.uploadedAt).toLocaleDateString()} at {new Date(file.uploadedAt).toLocaleTimeString()}
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-2 flex-shrink-0">
+                                            <button
+                                                onClick={() => handleViewClaudeMd(file)}
+                                                className="px-3 py-1.5 text-xs font-semibold text-violet-600 dark:text-violet-400 hover:bg-violet-100 dark:hover:bg-violet-900/30 rounded-md transition-colors"
+                                            >
+                                                View
+                                            </button>
+                                            <button
+                                                onClick={() => handleRemoveClaudeMd(file.name)}
+                                                className="px-3 py-1.5 text-xs font-semibold text-app-status-error hover:bg-app-status-errorBg rounded-md transition-colors"
+                                            >
+                                                Remove
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                    
+                    <div className="flex items-center gap-2 text-[11px] text-violet-600 dark:text-violet-400 font-medium bg-violet-100 dark:bg-violet-900/30 px-3 py-2 rounded-lg italic">
+                        <Info className="w-3.5 h-3.5" />
+                        Context files are saved per project and can be referenced during development.
+                    </div>
+                </div>
+
+                {/* ── SKILLS.MD UPLOAD SECTION ── */}
+                <div className="bg-app-bg-card/90 backdrop-blur-xl rounded-2xl shadow-sm border border-app-border-light/80 p-6 mb-6 space-y-4">
+                    <div className="flex items-center gap-2 mb-1">
+                        <div className="w-8 h-8 rounded-lg bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center">
+                            <Sparkles className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                        </div>
+                        <h3 className="text-base font-bold text-app-text-main">Cognitive Skill Modules</h3>
+                    </div>
+                    <p className="text-sm text-app-text-muted">
+                        Upload reusable markdown modules files that define agent capabilities, coding standards, or specialized knowledge. Each skill can be referenced by agents during task execution.
+                    </p>
+                    
+                    {/* Upload Button */}
+                    <div className="flex items-center gap-3">
+                        <label className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-gradient-to-r from-emerald-500 to-teal-600 rounded-lg hover:shadow-lg transition-all cursor-pointer">
+                            <Sparkles className="w-4 h-4" />
+                            Upload Skills.md
+                            <input
+                                type="file"
+                                accept=".md"
+                                multiple
+                                onChange={handleSkillsMdUpload}
+                                className="hidden"
+                            />
+                        </label>
+                        <span className="text-xs text-app-text-muted">
+                            {skillsMdFiles.length > 0 ? `${skillsMdFiles.length} skill${skillsMdFiles.length !== 1 ? 's' : ''} uploaded` : 'No skills uploaded yet'}
+                        </span>
+                    </div>
+                    
+                    {/* Uploaded Files List */}
+                    {skillsMdFiles.length > 0 && (
+                        <div className="space-y-2 mt-4">
+                            <p className="text-xs font-semibold text-app-text-label uppercase tracking-wider">Uploaded Skills</p>
+                            <div className="space-y-2">
+                                {skillsMdFiles.map((file, index) => (
+                                    <div
+                                        key={index}
+                                        className="flex items-center justify-between p-3 bg-app-bg-page border border-app-border rounded-lg hover:bg-app-bg-hover transition-colors"
+                                    >
+                                        <div className="flex items-center gap-3 flex-1 min-w-0">
+                                            <Sparkles className="w-4 h-4 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
+                                            <div className="flex-1 min-w-0">
+                                                <p className="text-sm font-semibold text-app-text-main truncate">{file.name}</p>
+                                                <p className="text-xs text-app-text-muted">
+                                                    Uploaded {new Date(file.uploadedAt).toLocaleDateString()} at {new Date(file.uploadedAt).toLocaleTimeString()}
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-2 flex-shrink-0">
+                                            <button
+                                                onClick={() => handleViewSkillsMd(file)}
+                                                className="px-3 py-1.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/30 rounded-md transition-colors"
+                                            >
+                                                View
+                                            </button>
+                                            <button
+                                                onClick={() => handleRemoveSkillsMd(file.name)}
+                                                className="px-3 py-1.5 text-xs font-semibold text-app-status-error hover:bg-app-status-errorBg rounded-md transition-colors"
+                                            >
+                                                Remove
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                    
+                    <div className="flex items-center gap-2 text-[11px] text-emerald-600 dark:text-emerald-400 font-medium bg-emerald-100 dark:bg-emerald-900/30 px-3 py-2 rounded-lg italic">
+                        <Info className="w-3.5 h-3.5" />
+                        Skills.md files are saved per project and define specialized capabilities for agents.
+                    </div>
+                </div>
+
+                {/* ── AI CONTEXT FILE VIEWER MODAL ── */}
+                {showClaudeMdViewer && (
+                    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[9999] p-4">
+                        <div className="bg-app-bg-card rounded-2xl shadow-2xl border border-app-border max-w-4xl w-full max-h-[80vh] flex flex-col">
+                            {/* Modal Header */}
+                            <div className="flex items-center justify-between p-6 border-b border-app-border">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-10 h-10 rounded-xl bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center">
+                                        <FileKey className="w-5 h-5 text-violet-600 dark:text-violet-400" />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-lg font-bold text-app-text-main">{selectedClaudeMdName}</h3>
+                                        <p className="text-xs text-app-text-muted">Context File Viewer</p>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => setShowClaudeMdViewer(false)}
+                                    className="w-8 h-8 rounded-lg hover:bg-app-bg-hover flex items-center justify-center transition-colors"
+                                >
+                                    <span className="text-xl text-app-text-muted">×</span>
+                                </button>
+                            </div>
+                            
+                            {/* Modal Content */}
+                            <div className="flex-1 overflow-y-auto p-6">
+                                <pre className="text-sm text-app-text-main bg-app-bg-page p-4 rounded-lg border border-app-border whitespace-pre-wrap break-words font-mono">
+                                    {selectedClaudeMdContent}
+                                </pre>
+                            </div>
+                            
+                            {/* Modal Footer */}
+                            <div className="flex items-center justify-end gap-3 p-6 border-t border-app-border">
+                                <button
+                                    onClick={() => setShowClaudeMdViewer(false)}
+                                    className="px-4 py-2.5 text-sm font-semibold text-app-text-main bg-app-bg-page border border-app-border rounded-lg hover:bg-app-bg-hover transition-colors"
+                                >
+                                    Close
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* ── SKILLS.MD VIEWER MODAL ── */}
+                {showSkillsMdViewer && (
+                    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[9999] p-4">
+                        <div className="bg-app-bg-card rounded-2xl shadow-2xl border border-app-border max-w-4xl w-full max-h-[80vh] flex flex-col">
+                            {/* Modal Header */}
+                            <div className="flex items-center justify-between p-6 border-b border-app-border">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-10 h-10 rounded-xl bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center">
+                                        <Sparkles className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-lg font-bold text-app-text-main">{selectedSkillsMdName}</h3>
+                                        <p className="text-xs text-app-text-muted">Skills.md File Viewer</p>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => setShowSkillsMdViewer(false)}
+                                    className="w-8 h-8 rounded-lg hover:bg-app-bg-hover flex items-center justify-center transition-colors"
+                                >
+                                    <span className="text-xl text-app-text-muted">×</span>
+                                </button>
+                            </div>
+                            
+                            {/* Modal Content */}
+                            <div className="flex-1 overflow-y-auto p-6">
+                                <pre className="text-sm text-app-text-main bg-app-bg-page p-4 rounded-lg border border-app-border whitespace-pre-wrap break-words font-mono">
+                                    {selectedSkillsMdContent}
+                                </pre>
+                            </div>
+                            
+                            {/* Modal Footer */}
+                            <div className="flex items-center justify-end gap-3 p-6 border-t border-app-border">
+                                <button
+                                    onClick={() => setShowSkillsMdViewer(false)}
+                                    className="px-4 py-2.5 text-sm font-semibold text-app-text-main bg-app-bg-page border border-app-border rounded-lg hover:bg-app-bg-hover transition-colors"
+                                >
+                                    Close
+                                </button>
+                            </div>
                         </div>
                     </div>
                 )}
@@ -1537,13 +2350,52 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                     <input
                                         type="text"
                                         value={globalGitRepoUrl}
-                                        onChange={(e) => setGlobalGitRepoUrl(e.target.value)}
+                                        onChange={(e) => {
+                                            setGlobalGitRepoUrl(e.target.value);
+                                            // Clear validation when URL changes
+                                            setGitValidationResult(null);
+                                            setGitValidationError('');
+                                        }}
                                         placeholder={repoProvider === 'azure-devops'
                                             ? 'https://dev.azure.com/ORG/PROJECT/_git/REPO'
                                             : 'https://github.com/org/repo.git'
                                         }
                                         className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-blue-400 text-sm bg-app-bg-card text-app-text-main transition-all duration-200"
                                     />
+                                    
+                                    {/* Validation Result */}
+                                    {gitValidationResult && (
+                                        <div className="mt-3 p-3 rounded-lg border border-emerald-200 bg-emerald-50 dark:bg-emerald-900/20 dark:border-emerald-800">
+                                            <div className="flex items-start gap-2">
+                                                <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 mt-0.5 flex-shrink-0" />
+                                                <div className="flex-1 min-w-0">
+                                                    <p className="text-sm font-semibold text-emerald-700 dark:text-dark-300">
+                                                        {gitValidationResult.message}
+                                                    </p>
+                                                    {gitValidationResult.normalized_url && gitValidationResult.normalized_url !== globalGitRepoUrl && (
+                                                        <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">
+                                                            URL normalized to: {gitValidationResult.normalized_url}
+                                                        </p>
+                                                    )}
+                                                    {repoProvider === 'azure-devops' && gitValidationResult.organization && (
+                                                        <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">
+                                                            Organization: {gitValidationResult.organization} | Project: {gitValidationResult.project} | Repo: {gitValidationResult.repo}
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+                                    
+                                    {/* Validation Error */}
+                                    {gitValidationError && (
+                                        <div className="mt-3 p-3 rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/20 dark:border-red-800">
+                                            <div className="flex items-start gap-2">
+                                                <AlertCircle className="w-4 h-4 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
+                                                <p className="text-sm text-red-700 dark:text-red-300">{gitValidationError}</p>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                                 <div>
                                     <label className="block text-[11px] font-bold text-app-text-label mb-2 uppercase tracking-widest">
@@ -1552,7 +2404,12 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                     <input
                                         type="password"
                                         value={globalGitToken}
-                                        onChange={(e) => setGlobalGitToken(e.target.value)}
+                                        onChange={(e) => {
+                                            setGlobalGitToken(e.target.value);
+                                            // Clear validation when token changes
+                                            setGitValidationResult(null);
+                                            setGitValidationError('');
+                                        }}
                                         placeholder={hasSavedGlobalGitToken ? 'Leave blank to keep existing PAT' : 'Optional for public repos (ghp_... or Azure PAT)'}
                                         className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-blue-400 text-sm bg-app-bg-card text-app-text-main transition-all duration-200"
                                     />
@@ -1560,10 +2417,36 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                         {hasSavedGlobalGitToken
                                             ? 'PAT already saved for this project. Enter a new one only if you want to replace it.'
                                             : repoProvider === 'azure-devops'
-                                                ? 'Azure DevOps PAT with Code access (optional for public repos).'
+                                                ? 'Azure DevOps PAT with Code (Read & Write) permissions. Required for pushing code.'
                                                 : 'GitHub PAT with repo scope (optional for public repos).'}
                                     </p>
                                 </div>
+                                
+                                {/* Validate Button */}
+                                <div>
+                                    <button
+                                        type="button"
+                                        onClick={handleValidateGitConnection}
+                                        disabled={isValidatingGit || !globalGitRepoUrl.trim()}
+                                        className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-gradient-to-r from-app-primary to-app-primary-hover rounded-lg hover:shadow-lg transition-all disabled:from-app-border disabled:to-app-text-light disabled:cursor-not-allowed"
+                                    >
+                                        {isValidatingGit ? (
+                                            <>
+                                                <Loader2 className="w-4 h-4 animate-spin" />
+                                                Validating...
+                                            </>
+                                        ) : (
+                                            <>
+                                                <CheckCircle2 className="w-4 h-4" />
+                                                Test Connection
+                                            </>
+                                        )}
+                                    </button>
+                                    <p className="text-xs text-app-text-muted mt-2">
+                                        Click to verify the repository URL and PAT are correct before proceeding.
+                                    </p>
+                                </div>
+                                
                                 {isLoadingGitConfig && (
                                     <p className="text-xs text-app-text-muted">Loading saved Git config...</p>
                                 )}
@@ -1576,7 +2459,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                             <h3 className="text-base font-bold text-app-text-main mb-1">Ready to proceed?</h3>
                             <p className="text-sm text-app-text-muted">
                                 {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)
-                                    ? '🚀 You will be redirected to VS Code to use N-Mod Extension.'
+                                    ? '🚀 You will be redirected to VibeCoding workspace to start development.'
                                     : allProvided
                                         ? '✅ All prerequisites confirmed. You can proceed to task creation.'
                                         : `${totalItems - providedCount} item${totalItems - providedCount !== 1 ? 's' : ''} still pending. You can still proceed, but ensure all items are addressed before agent execution.`
@@ -1596,7 +2479,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                 <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</>
                             ) : (
                                 <>{(allProvided || ['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode)) ? <CheckCircle2 className="w-4 h-4" /> : <ArrowRight className="w-4 h-4" />}
-                                    {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode) ? 'Redirect to VS Code' : (allProvided ? 'Confirm & Proceed' : 'Proceed Anyway')}</>
+                                    {['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode) ? 'Open VibeCoding' : (allProvided ? 'Confirm & Proceed' : 'Proceed Anyway')}</>
                             )}
                         </button>
                     </div>

@@ -20,6 +20,7 @@ export const useCustomModal = () => {
     const showModal = useCallback((options) => {
         return new Promise((resolve) => {
             const promptValue = options.type === 'prompt' ? (options.defaultValue || '') : '';
+            let currentPromptValue = promptValue;
             
             setModalState({
                 isOpen: true,
@@ -35,7 +36,8 @@ export const useCustomModal = () => {
                 onConfirm: () => {
                     setModalState(prev => ({ ...prev, isOpen: false }));
                     if (options.type === 'prompt') {
-                        resolve(modalState.promptValue || promptValue);
+                        // Use the tracked current value instead of stale closure
+                        resolve(currentPromptValue);
                     } else {
                         resolve(true);
                     }
@@ -45,11 +47,12 @@ export const useCustomModal = () => {
                     resolve(options.type === 'prompt' ? null : false);
                 },
                 onPromptChange: (value) => {
+                    currentPromptValue = value;
                     setModalState(prev => ({ ...prev, promptValue: value }));
                 }
             });
         });
-    }, [modalState.promptValue]);
+    }, []);
 
     const hideModal = useCallback(() => {
         setModalState(prev => ({ ...prev, isOpen: false }));

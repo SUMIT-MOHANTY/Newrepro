@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     brn_platform_id: str = "DSuite"
     # brn_max_tokens: int = 4000
     brn_temperature: float = 0.7
+    # If true, use chunked multi-stage analysis to reduce payload size and improve reliability
+    use_chunked_analysis: bool = True
 
     # GitHub OAuth
     github_client_id: Optional[str] = None

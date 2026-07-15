@@ -334,7 +334,7 @@ const AssistantBot = () => {
   const FloatingBall = () => (
     <div
       onClick={() => setIsOpen(true)}
-      className="fixed bottom-6 right-6 z-[1000] cursor-pointer group"
+      className="fixed bottom-6 right-6 z-[250] cursor-pointer group"
       style={{ pointerEvents: 'auto' }}
     >
       {/* Glow effect - enhanced when idle */}
@@ -424,7 +424,7 @@ const AssistantBot = () => {
 
       {isOpen && (
         <div
-          className={`fixed z-[1000] backdrop-blur-xl border shadow-2xl transition-all duration-300 ${
+          className={`fixed z-[250] backdrop-blur-xl border shadow-2xl transition-all duration-300 ${
             isMinimized
               ? 'bottom-6 right-6 w-72 h-14'
               : 'bottom-6 right-6 w-[360px] h-[520px] flex flex-col'

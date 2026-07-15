@@ -117,7 +117,7 @@ def _build_registration_email(
                 <!-- Password row -->
                 <tr>
                   <td style="padding:16px 24px 20px;">
-                    <span style="display:block;color:#475569;font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:5px;">Temporary Password</span>
+                    <span style="display:block;color:#475569;font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:5px;">Password</span>
                     <table cellpadding="0" cellspacing="0" border="0">
                       <tr>
                         <td style="background-color:#1e2130;border-radius:6px;padding:8px 14px;border:1px solid #2d3548;">
@@ -746,4 +746,85 @@ def send_access_request_email(
         organization_name=organization_name,
         section_name=section_name,
     )
+    _send_email_message(message)
+def _build_otp_email(recipient_email: str, otp: str) -> EmailMessage:
+    app_name = str(settings.smtp_from_name or "").strip() or "Dsuite"
+    subject = f"Your Verification Code: {otp}"
+    
+    text_body = (
+        f"Hello,\n\n"
+        f"Your verification code is: {otp}\n\n"
+        f"Use this code to verify your email and access the shared documents.\n\n"
+        f"If you did not request this code, please ignore this email.\n\n"
+        f"Best regards,\n"
+        f"The {app_name} Team"
+    )
+
+    html_body = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{subject}</title>
+</head>
+<body style="margin:0;padding:0;background-color:#0f1117;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#0f1117;padding:40px 16px;">
+    <tr>
+      <td align="center">
+        <table width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%;background-color:#16181f;border-radius:16px;overflow:hidden;border:1px solid #2a2d3a;">
+          <tr>
+            <td style="background:linear-gradient(135deg,#1a1f35 0%,#0f1117 60%,#0d1a2e 100%);padding:48px 40px 40px;text-align:center;border-bottom:1px solid #2a2d3a;">
+              <table cellpadding="0" cellspacing="0" border="0" align="center" style="margin-bottom:20px;">
+                <tr>
+                  <td style="background:linear-gradient(135deg,#3b82f6,#1d4ed8);border-radius:14px;padding:12px 22px;">
+                    <span style="color:#ffffff;font-size:20px;font-weight:800;letter-spacing:-0.5px;">{app_name}</span>
+                  </td>
+                </tr>
+              </table>
+              <h1 style="margin:0 0 8px;color:#f8fafc;font-size:26px;font-weight:700;letter-spacing:-0.5px;line-height:1.2;">Verification Code</h1>
+              <p style="margin:0;color:#64748b;font-size:15px;">Use the code below to access documents</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:40px 40px 32px;">
+              <p style="margin:0 0 24px;color:#94a3b8;font-size:16px;line-height:1.7;">Hello,</p>
+              <p style="margin:0 0 32px;color:#94a3b8;font-size:15px;line-height:1.7;">
+                To securely access the shared documents, please use the following one-time verification code:
+              </p>
+              <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:32px;">
+                <tr>
+                  <td align="center">
+                    <div style="background-color:#0f1117;border-radius:12px;border:1px solid #2a2d3a;padding:24px;display:inline-block;">
+                      <span style="color:#3b82f6;font-size:36px;font-weight:800;letter-spacing:8px;font-family:'Courier New',Courier,monospace;">{otp}</span>
+                    </div>
+                  </td>
+                </tr>
+              </table>
+              <p style="margin:0;color:#64748b;font-size:13px;line-height:1.6;text-align:center;">
+                This code is valid for 10 minutes. If you did not request this verification, no further action is required.
+              </p>
+              <p style="margin:32px 0 0;color:#94a3b8;font-size:14px;line-height:1.7;">
+                Best regards,<br>
+                <strong style="color:#e2e8f0;">The {app_name} Team</strong>
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = _from_header()
+    message["To"] = recipient_email
+    message.set_content(text_body)
+    message.add_alternative(html_body, subtype="html")
+    return message
+
+
+def send_otp_email(recipient_email: str, otp: str) -> None:
+    ensure_email_delivery_configured()
+    message = _build_otp_email(recipient_email, otp)
     _send_email_message(message)
