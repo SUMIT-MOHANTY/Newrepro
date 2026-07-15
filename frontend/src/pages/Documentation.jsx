@@ -110,8 +110,7 @@ export default function Documentation() {
             category: 'GETTING STARTED',
             items: [
                 { id: 'overview', title: 'Platform Overview', icon: <Home size={16} /> },
-                { id: 'quickstart', title: 'Quickstart Guide', icon: <Zap size={16} /> },
-                { id: 'system-architecture', title: 'System Architecture', icon: <Layers size={16} /> }
+                { id: 'quickstart', title: 'Quickstart Guide', icon: <Zap size={16} /> }
             ]
         },
         {
@@ -276,26 +275,6 @@ export default function Documentation() {
                                 </div>
                             </div>
                         ))}
-                    </div>
-                </div>
-            )
-        },
-        'system-architecture': {
-            category: 'GETTING STARTED',
-            title: 'System Architecture',
-            subtitle: 'Overview of the DSuite and VibeCoding platform architecture and logical data pipelines.',
-            rawContent: 'System Architecture, pipeline, data flow, architecture diagram.',
-            content: (
-                <div>
-                    <p style={{ fontSize: '15px', lineHeight: '1.7', color: textMain, marginBottom: '24px' }}>
-                        DSuite and VibeCoding maintain a highly modular, event-driven architecture designed to transform business specifications into compilable codebase modules. This visual layout outlines the data pipelines, API boundaries, and communication routes between the planning dashboard, database schemas, and isolated worker sandboxes.
-                    </p>
-
-                    <div style={{ marginTop: '24px', border: `1px solid ${borderCard}`, borderRadius: '12px', overflow: 'hidden' }}>
-                        <div style={{ padding: '12px 16px', borderBottom: `1px solid ${borderCard}`, backgroundColor: isLight ? '#f8fafc' : 'rgba(255,255,255,0.02)' }}>
-                            <span style={{ fontSize: '13px', fontWeight: '600', color: textHeading }}>High-Level System Architecture Diagram</span>
-                        </div>
-                        <img src="/assets/docs/architecture.png" alt="DSuite and VibeCoding System Architecture" style={{ width: '100%', height: 'auto', display: 'block' }} />
                     </div>
                 </div>
             )

@@ -9277,6 +9277,8 @@ async def run_agent(
     agent["progress"] = 0
     agent["output_log"] = []
     agent["progress_message"] = "Initializing..."
+    agent["blocked"] = False
+    agent["blocked_reason"] = None
 
     # Fire-and-forget: agent runs in background
     run_repo = effective_repo if effective_repo and effective_token else None
