@@ -19130,9 +19130,9 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     "message": f"❌ All {MAX_RETRIES} attempts failed. Last error: {error_msg}",
                 })
                 
-                # CRITICAL: Mark agent as blocked to prevent picking up new tasks
+                # CRITICAL: Set error status but do not permanently block agent
                 agent["status"] = "error"
-                agent["blocked"] = True
+                agent["blocked"] = False
                 agent["blocked_reason"] = f"Task failed after {MAX_RETRIES} attempts: {error_msg}"
                 agent["current_task"] = None
                 
@@ -19194,8 +19194,8 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                     "message": f"❌ All {MAX_RETRIES} attempts failed. Last error: {str(e)}",
                 })
                 
-                # CRITICAL: Mark agent as blocked to prevent picking up new tasks
-                agent["blocked"] = True
+                # CRITICAL: Do not permanently block agent
+                agent["blocked"] = False
                 agent["blocked_reason"] = f"Task failed after {MAX_RETRIES} attempts: {error_msg}"
                 
                 # Notify Master Agent for failure analysis
@@ -19806,8 +19806,45 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             }
 
     try:
+        idle_polls = 0
+        max_idle_polls = 360  # 360 * 10s = 1 hour max idle time
+        
         # ── CONTINUOUS TASK LOOP ─────────────────────────────────────
-        while task is not None:
+        while True:
+            if task is None:
+                if not continuous:
+                    break
+                
+                # Check for new tasks
+                task = await _pick_next_task(agent_id, project_token=project_token, task_token=task_token)
+                if task:
+                    task = _apply_master_task_metadata(task, project_token=project_token)
+                    if isinstance(task, dict) and project_token:
+                        task.setdefault("_project_token", project_token)
+                    agent["current_task"] = task
+                    agent["status"] = "running"
+                    agent["output_log"].append({
+                        "time": datetime.utcnow().isoformat(),
+                        "type": "info",
+                        "message": f"✓ New task found! Starting work..."
+                    })
+                    idle_polls = 0
+                else:
+                    idle_polls += 1
+                    if idle_polls >= max_idle_polls:
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": "⏹️ No tasks available after 1 hour. Agent stopping."
+                        })
+                        break
+                    
+                    agent["current_task"] = None
+                    agent["status"] = "idle"
+                    agent["progress"] = 100
+                    agent["progress_message"] = "Idle - Waiting for next task..."
+                    await asyncio.sleep(10)
+                    continue
             # Generate unique container name for this task
             container_name = f"{agent_id.replace('#', '_')}_{uuid.uuid4().hex[:8]}"
             container_created = False
@@ -24254,6 +24291,9 @@ async def deploy_preview(
             "--name", container_name,
             "-p", f"{host_port}:80",
             "--add-host", "host.docker.internal:host-gateway",
+            "--nano-cpus", "200000000",
+            "--memory", "700m",
+            "--memory-swap", "800m",
             "-e", f"GIT_AUTH_URL={auth_url}",
             "-e", f"GIT_CONFIG_ARGS={json.dumps(auth_config)}",
             "-e", f"SPRINT_BRANCH={GIT_INTEGRATION_BRANCH}",
@@ -24661,6 +24701,8 @@ def reset_agent(agent_id: str, project_token: Optional[str] = None) -> Dict[str,
     agent["status"] = "idle"
     agent["resume_pending_task"] = False
     agent["progress"] = 0
+    agent["blocked"] = False
+    agent["blocked_reason"] = None
     
     # Invalidate cache when agent becomes idle
     _invalidate_cache_if_available(project_token=project_token)

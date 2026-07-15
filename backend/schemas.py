@@ -196,6 +196,7 @@ class DocumentBase(BaseModel):
     content_preview: Optional[str] = None
     full_content: Optional[str] = None
     analysis_result: Optional[str] = None
+    file_path: Optional[str] = None
 
 class DocumentCreate(DocumentBase):
     pass

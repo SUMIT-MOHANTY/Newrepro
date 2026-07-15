@@ -792,6 +792,84 @@ async def assistant_chat_stream(
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
+
+class BRDChatRequest(BaseModel):
+    project_token: str
+    message: str
+    conversation_history: list = []
+
+@app.post("/api/agent/brd-chat")
+async def brd_chat(
+    payload: BRDChatRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Conversational chat endpoint for project BRD and analysis.
+    """
+    import llm_gateway
+    import json
+    from config import settings
+
+    # Fetch document/BRD content
+    token_pattern = f'%"project_token": "{payload.project_token}"%'
+    doc = db.query(models.Document).filter(
+        models.Document.owner_id == current_user.id,
+        models.Document.analysis_result.like(token_pattern)
+    ).order_by(models.Document.upload_date.desc()).first()
+
+    brd_content = doc.full_content if doc else ""
+    analysis_report = ""
+    if doc and doc.analysis_result:
+        try:
+            analysis_data = json.loads(doc.analysis_result)
+            if isinstance(analysis_data, dict):
+                analysis_report = analysis_data.get("analysis", "")
+        except:
+            pass
+
+    system_prompt = f"""You are a senior BRD Refinement Assistant and requirements engineer.
+You are helping the user analyze, clarify, and plan improvements to their Business Requirement Document (BRD) and its generated AI Action Plan/Analysis report.
+
+Your goal is to have a back-and-forth planning conversation with the user. Answer their questions, identify potential edge cases, help them flesh out business logic, and refine requirement details.
+
+CRITICAL RULES:
+1. Do NOT write that the document has been updated or changed. You cannot modify the document yourself in this conversational mode.
+2. If the user wants to apply or write the discussed changes to the BRD, instruct them to type "now update the plan in brd" or click the "Apply to BRD" button.
+3. Be clear, professional, and SDLC-focused.
+
+CONTEXT INFO:
+"""
+    if brd_content:
+        system_prompt += f"\n--- Raw BRD Content snippet ---\n{brd_content[:10000]}\n"
+    if analysis_report:
+        system_prompt += f"\n--- Current AI Analysis Report snippet ---\n{analysis_report[:10000]}\n"
+
+    # Build messages list
+    messages = [{"role": "system", "content": system_prompt}]
+    for msg in payload.conversation_history:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if role in ("user", "assistant"):
+            messages.append({"role": role, "content": content})
+
+    # Add current message
+    messages.append({"role": "user", "content": payload.message})
+
+    try:
+        reply = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=settings.ai_api_url,
+            api_key=settings.ai_api_key,
+            model=settings.ai_model,
+            timeout=120.0
+        )
+        return {"response": reply}
+    except Exception as e:
+        logger.error(f"Error in BRD chat: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
+
+
 # --- Auth Endpoints ---
 @app.post("/token", response_model=schemas.Token)
 async def login_for_access_token(
@@ -2364,6 +2442,490 @@ def list_org_users(
         ))
     return response
 
+@app.get("/organization/billing-logs")
+def get_org_billing_and_logs(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    import datetime
+    organization_name = _require_org_admin(current_user)
+    
+    # Parse date filters
+    start_dt = None
+    end_dt = None
+    if start_date:
+        try:
+            start_dt = datetime.datetime.fromisoformat(start_date)
+        except Exception:
+            pass
+    if end_date:
+        try:
+            end_dt = datetime.datetime.fromisoformat(end_date) + datetime.timedelta(days=1) - datetime.timedelta(microseconds=1)
+        except Exception:
+            pass
+
+    # 1. Get all users in the organization
+    org_users = db.query(models.User).filter(
+        func.lower(models.User.organization_name) == organization_name.lower()
+    ).all()
+    org_user_ids = [u.id for u in org_users]
+    org_user_map = {u.id: u for u in org_users}
+    
+    # 2. Get all projects in the organization
+    org_projects_query = db.query(models.GovernanceResponse).filter(
+        (models.GovernanceResponse.owner_id.in_(org_user_ids)) |
+        (func.lower(models.GovernanceResponse.organization_name) == organization_name.lower())
+    )
+    if start_dt:
+        org_projects_query = org_projects_query.filter(models.GovernanceResponse.submission_date >= start_dt)
+    if end_dt:
+        org_projects_query = org_projects_query.filter(models.GovernanceResponse.submission_date <= end_dt)
+    org_projects = org_projects_query.all()
+    
+    # Aggregate AI stats
+    ai_logs_query = db.query(models.AIUsageLog).filter(
+        models.AIUsageLog.user_id.in_(org_user_ids)
+    )
+    if start_dt:
+        ai_logs_query = ai_logs_query.filter(models.AIUsageLog.created_at >= start_dt)
+    if end_dt:
+        ai_logs_query = ai_logs_query.filter(models.AIUsageLog.created_at <= end_dt)
+    ai_logs = ai_logs_query.all()
+    
+    total_cost = 0.0
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    cost_by_model = {}
+    cost_by_user = {} # user_id -> cost
+    tokens_by_user = {} # user_id -> tokens
+    
+    for log in ai_logs:
+        total_cost += log.cost or 0.0
+        total_prompt_tokens += log.prompt_tokens or 0
+        total_completion_tokens += log.completion_tokens or 0
+        
+        model = log.model or "unknown"
+        cost_by_model[model] = cost_by_model.get(model, 0.0) + (log.cost or 0.0)
+        
+        uid = log.user_id
+        if uid:
+            cost_by_user[uid] = cost_by_user.get(uid, 0.0) + (log.cost or 0.0)
+            tokens_by_user[uid] = tokens_by_user.get(uid, 0) + (log.prompt_tokens or 0) + (log.completion_tokens or 0)
+            
+    # Round float values
+    total_cost = round(total_cost, 4)
+    cost_by_model = {k: round(v, 4) for k, v in cost_by_model.items()}
+    
+    # 3. Calculate session durations based on activity logs
+    activity_logs_query = db.query(models.UserActivityLog).filter(
+        models.UserActivityLog.user_id.in_(org_user_ids)
+    )
+    if start_dt:
+        activity_logs_query = activity_logs_query.filter(models.UserActivityLog.created_at >= start_dt)
+    if end_dt:
+        activity_logs_query = activity_logs_query.filter(models.UserActivityLog.created_at <= end_dt)
+    activity_logs = activity_logs_query.order_by(models.UserActivityLog.user_id, models.UserActivityLog.created_at).all()
+    
+    user_durations = {} # user_id -> seconds
+    user_last_time = {} # user_id -> datetime
+    user_session_count = {} # user_id -> sessions
+    
+    for log in activity_logs:
+        uid = log.user_id
+        log_time = log.created_at
+        if not log_time:
+            continue
+        if uid not in user_durations:
+            user_durations[uid] = 0
+            user_last_time[uid] = log_time
+            user_session_count[uid] = 1
+            continue
+            
+        last_time = user_last_time[uid]
+        diff_sec = (log_time - last_time).total_seconds()
+        
+        # If the gap is less than 30 minutes, accumulate it
+        if 0 < diff_sec < 1800:
+            user_durations[uid] += diff_sec
+        elif diff_sec >= 1800:
+            # new session
+            user_session_count[uid] = user_session_count.get(uid, 0) + 1
+            
+        user_last_time[uid] = log_time
+
+    # 4. Enrich user statistics list
+    user_stats = []
+    for u in org_users:
+        duration_sec = user_durations.get(u.id, 0)
+        user_cost = cost_by_user.get(u.id, 0.0)
+        user_tokens = tokens_by_user.get(u.id, 0)
+        session_count = user_session_count.get(u.id, 0)
+        
+        # Count projects created by this user
+        proj_count = sum(1 for p in org_projects if p.owner_id == u.id)
+        
+        # AI usage details for modal
+        user_ai_logs = [log for log in ai_logs if log.user_id == u.id]
+        ai_usage_by_model = {}
+        for log in user_ai_logs:
+            m = log.model or "unknown"
+            if m not in ai_usage_by_model:
+                ai_usage_by_model[m] = {"model": m, "requests": 0, "prompt": 0, "completion": 0, "cost": 0.0}
+            ai_usage_by_model[m]["requests"] += 1
+            ai_usage_by_model[m]["prompt"] += log.prompt_tokens or 0
+            ai_usage_by_model[m]["completion"] += log.completion_tokens or 0
+            ai_usage_by_model[m]["cost"] += log.cost or 0.0
+            
+        # Format for modal
+        ai_usage_list = []
+        for m, stats in ai_usage_by_model.items():
+            stats["cost"] = round(stats["cost"], 4)
+            ai_usage_list.append(stats)
+            
+        # Projects list for modal
+        user_projects_list = []
+        for p in org_projects:
+            if p.owner_id == u.id:
+                # find bootstrap state
+                b_state = db.query(models.BootstrapState).filter(
+                    models.BootstrapState.project_token == p.project_token
+                ).first()
+                user_projects_list.append({
+                    "project_name": p.project_name or p.project_token,
+                    "classification": p.classification or "SANDBOX",
+                    "status": b_state.status if b_state else "pending"
+                })
+                
+        # Recent sessions for modal
+        recent_sessions_list = []
+        user_activities = [l for l in activity_logs if l.user_id == u.id][-10:] # last 10 activities
+        user_activities.reverse()
+        for act in user_activities:
+            recent_sessions_list.append({
+                "created_at": act.created_at.isoformat() if act.created_at else None,
+                "action": act.action,
+                "method": act.method,
+                "path": act.path,
+                "ip_address": act.ip_address or "—",
+                "user_agent": act.user_agent or "—"
+            })
+            
+        # Permissions paths for modal
+        permissions_paths = db.query(models.UserOrganizationRole).filter(
+            models.UserOrganizationRole.user_id == u.id,
+            func.lower(models.UserOrganizationRole.organization_name) == organization_name.lower()
+        ).all()
+        paths_set = set()
+        for uor in permissions_paths:
+            perms = db.query(models.OrganizationRolePermission).filter(
+                models.OrganizationRolePermission.role_id == uor.role_id
+            ).all()
+            for p_perm in perms:
+                paths_set.add(p_perm.path)
+
+        user_stats.append({
+            "id": u.id,
+            "email": u.email,
+            "name": f"{u.first_name or ''} {u.last_name or ''}".strip() or u.email.split('@')[0],
+            "is_active": u.is_active,
+            "is_org_admin": u.is_org_admin,
+            "total_duration_hours": round(duration_sec / 3600, 2),
+            "total_cost": round(user_cost, 4),
+            "ai_tokens": user_tokens,
+            "projects_count": proj_count,
+            "session_count": session_count,
+            "last_login": u.last_login.isoformat() if u.last_login else None,
+            "github_username": u.github_username or "—",
+            "azure_devops_username": u.azure_devops_username or "—",
+            # Details for drilldown modal
+            "ai_usage": ai_usage_list,
+            "projects": user_projects_list,
+            "recent_sessions": recent_sessions_list,
+            "permissions": sorted(list(paths_set))
+        })
+        
+    # 5. Enrich projects list
+    projects_list = []
+    for p in org_projects:
+        # Get owner details
+        owner = org_user_map.get(p.owner_id)
+        owner_email = owner.email if owner else "—"
+        
+        # Get bootstrap run status
+        b_states = db.query(models.BootstrapState).filter(
+            models.BootstrapState.project_token == p.project_token
+        ).all()
+        run_status = b_states[-1].status if b_states else "pending"
+        total_runs = len(b_states)
+        
+        projects_list.append({
+            "project_token": p.project_token,
+            "project_name": p.project_name or p.project_token,
+            "owner_email": owner_email,
+            "classification": p.classification or "SANDBOX",
+            "total_runs": total_runs,
+            "run_status": run_status,
+            "submission_date": p.submission_date.isoformat() if p.submission_date else None
+        })
+
+    return {
+        "organization_name": organization_name,
+        "summary": {
+            "total_cost": total_cost,
+            "total_prompt_tokens": total_prompt_tokens,
+            "total_completion_tokens": total_completion_tokens,
+            "cost_by_model": cost_by_model,
+        },
+        "user_stats": user_stats,
+        "projects_list": projects_list
+    }
+
+@app.get("/organization/download-billing-report")
+def download_org_billing_report(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    import io
+    import json
+    import datetime
+    from interactive_dashboard_server import DASHBOARD_HTML_TEMPLATE
+    
+    organization_name = _require_org_admin(current_user)
+    
+    # Parse date filters
+    start_dt = None
+    end_dt = None
+    if start_date:
+        try:
+            start_dt = datetime.datetime.fromisoformat(start_date)
+        except Exception:
+            pass
+    if end_date:
+        try:
+            end_dt = datetime.datetime.fromisoformat(end_date) + datetime.timedelta(days=1) - datetime.timedelta(microseconds=1)
+        except Exception:
+            pass
+
+    # 1. Get all users in the organization
+    org_users = db.query(models.User).filter(
+        func.lower(models.User.organization_name) == organization_name.lower()
+    ).all()
+    org_user_ids = [u.id for u in org_users]
+    org_user_map = {u.id: u for u in org_users}
+    
+    # 2. Get all projects in the organization
+    org_projects_query = db.query(models.GovernanceResponse).filter(
+        (models.GovernanceResponse.owner_id.in_(org_user_ids)) |
+        (func.lower(models.GovernanceResponse.organization_name) == organization_name.lower())
+    )
+    if start_dt:
+        org_projects_query = org_projects_query.filter(models.GovernanceResponse.submission_date >= start_dt)
+    if end_dt:
+        org_projects_query = org_projects_query.filter(models.GovernanceResponse.submission_date <= end_dt)
+    org_projects = org_projects_query.all()
+    
+    # Aggregate AI stats
+    ai_logs_query = db.query(models.AIUsageLog).filter(
+        models.AIUsageLog.user_id.in_(org_user_ids)
+    )
+    if start_dt:
+        ai_logs_query = ai_logs_query.filter(models.AIUsageLog.created_at >= start_dt)
+    if end_dt:
+        ai_logs_query = ai_logs_query.filter(models.AIUsageLog.created_at <= end_dt)
+    ai_logs = ai_logs_query.all()
+    
+    total_cost = 0.0
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    cost_by_model = {}
+    cost_by_user = {}
+    tokens_by_user = {}
+    
+    for log in ai_logs:
+        total_cost += log.cost or 0.0
+        total_prompt_tokens += log.prompt_tokens or 0
+        total_completion_tokens += log.completion_tokens or 0
+        
+        model = log.model or "unknown"
+        cost_by_model[model] = cost_by_model.get(model, 0.0) + (log.cost or 0.0)
+        
+        uid = log.user_id
+        if uid:
+            cost_by_user[uid] = cost_by_user.get(uid, 0.0) + (log.cost or 0.0)
+            tokens_by_user[uid] = tokens_by_user.get(uid, 0) + (log.prompt_tokens or 0) + (log.completion_tokens or 0)
+            
+    total_cost = round(total_cost, 4)
+    cost_by_model = {k: round(v, 4) for k, v in cost_by_model.items()}
+    
+    # Calculate session durations based on activity logs
+    activity_logs_query = db.query(models.UserActivityLog).filter(
+        models.UserActivityLog.user_id.in_(org_user_ids)
+    )
+    if start_dt:
+        activity_logs_query = activity_logs_query.filter(models.UserActivityLog.created_at >= start_dt)
+    if end_dt:
+        activity_logs_query = activity_logs_query.filter(models.UserActivityLog.created_at <= end_dt)
+    activity_logs = activity_logs_query.order_by(models.UserActivityLog.user_id, models.UserActivityLog.created_at).all()
+    
+    user_durations = {}
+    user_last_time = {}
+    user_session_count = {}
+    
+    for log in activity_logs:
+        uid = log.user_id
+        log_time = log.created_at
+        if not log_time:
+            continue
+        if uid not in user_durations:
+            user_durations[uid] = 0
+            user_last_time[uid] = log_time
+            user_session_count[uid] = 1
+            continue
+            
+        last_time = user_last_time[uid]
+        diff_sec = (log_time - last_time).total_seconds()
+        
+        if 0 < diff_sec < 1800:
+            user_durations[uid] += diff_sec
+        elif diff_sec >= 1800:
+            user_session_count[uid] = user_session_count.get(uid, 0) + 1
+            
+        user_last_time[uid] = log_time
+
+    # Enrich user statistics list
+    user_stats = []
+    user_details_cache = {}
+    for u in org_users:
+        duration_sec = user_durations.get(u.id, 0)
+        user_cost = cost_by_user.get(u.id, 0.0)
+        user_tokens = tokens_by_user.get(u.id, 0)
+        session_count = user_session_count.get(u.id, 0)
+        
+        proj_count = sum(1 for p in org_projects if p.owner_id == u.id)
+        
+        user_ai_logs = [log for log in ai_logs if log.user_id == u.id]
+        ai_usage_by_model = {}
+        for log in user_ai_logs:
+            m = log.model or "unknown"
+            if m not in ai_usage_by_model:
+                ai_usage_by_model[m] = {"model": m, "requests": 0, "prompt": 0, "completion": 0, "cost": 0.0}
+            ai_usage_by_model[m]["requests"] += 1
+            ai_usage_by_model[m]["prompt"] += log.prompt_tokens or 0
+            ai_usage_by_model[m]["completion"] += log.completion_tokens or 0
+            ai_usage_by_model[m]["cost"] += log.cost or 0.0
+            
+        ai_usage_list = []
+        for m, stats in ai_usage_by_model.items():
+            stats["cost"] = round(stats["cost"], 4)
+            ai_usage_list.append(stats)
+            
+        user_projects_list = []
+        for p in org_projects:
+            if p.owner_id == u.id:
+                b_state = db.query(models.BootstrapState).filter(
+                    models.BootstrapState.project_token == p.project_token
+                ).first()
+                user_projects_list.append({
+                    "project_name": p.project_name or p.project_token,
+                    "classification": p.classification or "SANDBOX",
+                    "status": b_state.status if b_state else "pending"
+                })
+                
+        recent_sessions_list = []
+        user_activities = [l for l in activity_logs if l.user_id == u.id][-10:]
+        user_activities.reverse()
+        for act in user_activities:
+            recent_sessions_list.append({
+                "created_at": act.created_at.isoformat() if act.created_at else None,
+                "action": act.action,
+                "method": act.method,
+                "path": act.path,
+                "ip_address": act.ip_address or "—",
+                "user_agent": act.user_agent or "—"
+            })
+            
+        permissions_paths = db.query(models.UserOrganizationRole).filter(
+            models.UserOrganizationRole.user_id == u.id,
+            func.lower(models.UserOrganizationRole.organization_name) == organization_name.lower()
+        ).all()
+        paths_set = set()
+        for uor in permissions_paths:
+            perms = db.query(models.OrganizationRolePermission).filter(
+                models.OrganizationRolePermission.role_id == uor.role_id
+            ).all()
+            for p_perm in perms:
+                paths_set.add(p_perm.path)
+
+        u_stat = {
+            "id": u.id,
+            "email": u.email,
+            "name": f"{u.first_name or ''} {u.last_name or ''}".strip() or u.email.split('@')[0],
+            "is_active": u.is_active,
+            "is_org_admin": u.is_org_admin,
+            "total_duration_hours": round(duration_sec / 3600, 2),
+            "total_cost": round(user_cost, 4),
+            "ai_tokens": user_tokens,
+            "projects_count": proj_count,
+            "session_count": session_count,
+            "last_login": u.last_login.isoformat() if u.last_login else None,
+            "github_username": u.github_username or "—",
+            "azure_devops_username": u.azure_devops_username or "—"
+        }
+        user_stats.append(u_stat)
+        
+        user_details_cache[str(u.id)] = {
+            "projects": user_projects_list,
+            "sessions": recent_sessions_list,
+            "permissions": sorted(list(paths_set)),
+            "ai_usage": ai_usage_list
+        }
+        
+    projects_list = []
+    for p in org_projects:
+        owner = org_user_map.get(p.owner_id)
+        owner_email = owner.email if owner else "—"
+        
+        b_states = db.query(models.BootstrapState).filter(
+            models.BootstrapState.project_token == p.project_token
+        ).all()
+        run_status = b_states[-1].status if b_states else "pending"
+        total_runs = len(b_states)
+        
+        projects_list.append({
+            "project_token": p.project_token,
+            "project_name": p.project_name or p.project_token,
+            "owner_email": owner_email,
+            "classification": p.classification or "SANDBOX",
+            "total_runs": total_runs,
+            "run_status": run_status,
+            "submission_date": p.submission_date.isoformat() if p.submission_date else None
+        })
+
+    summary_data = {
+        "total_cost": total_cost,
+        "total_prompt_tokens": total_prompt_tokens,
+        "total_completion_tokens": total_completion_tokens,
+        "cost_by_model": cost_by_model,
+    }
+    
+    html = DASHBOARD_HTML_TEMPLATE
+    html = html.replace("/*USERS_DATA_JSON_PLACEHOLDER*/ []", json.dumps(user_stats))
+    html = html.replace("/*SUMMARY_DATA_JSON_PLACEHOLDER*/ {}", json.dumps(summary_data))
+    html = html.replace("/*PROJECTS_DATA_JSON_PLACEHOLDER*/ []", json.dumps(projects_list))
+    html = html.replace("/*ORGS_DATA_JSON_PLACEHOLDER*/ []", json.dumps([organization_name]))
+    html = html.replace("/*USER_DETAILS_CACHE_PLACEHOLDER*/ {}", json.dumps(user_details_cache))
+    
+    bio = io.BytesIO(html.encode("utf-8"))
+    return StreamingResponse(
+        bio,
+        media_type="text/html",
+        headers={"Content-Disposition": f"attachment; filename={organization_name.replace(' ', '_')}_utilization_report.html"}
+    )
+
 @app.get("/organization/invites/preview", response_model=schemas.OrganizationInvitePreviewResponse)
 def preview_org_invite(
     token: str,
@@ -2909,6 +3471,7 @@ async def upload_document(
     total_size = 0
     
     processed_files = []
+    processed_file_paths = []
     combined_markdown = ""
     combined_html = ""
     total_pages = 0
@@ -2941,6 +3504,10 @@ async def upload_document(
                 combined_markdown += file_markdown
                 combined_html += f"<div class='document-separator'><h2>Document: {file.filename}</h2></div><pre style='white-space: pre-wrap; font-family: inherit;'>{text_content}</pre>"
                 total_pages += 1
+                
+                # Save plain text/markdown to disk for viewing/download as well
+                file_path = ingestion.save_uploaded_file(content, file.filename)
+                processed_file_paths.append(os.path.basename(file_path))
                 processed_files.append(file.filename)
             else:
                 print(f"Warning: Text file {file.filename} was empty.")
@@ -2949,13 +3516,15 @@ async def upload_document(
         file_path = ingestion.save_uploaded_file(content, file.filename)
         
         # Process with Docling
-        result = ingestion.process_document(file_path)
+        result = await ingestion.process_document(file_path)
         
-        # Cleanup the uploaded file
-        ingestion.cleanup_file(file_path)
+        # Keep the file on disk! Do not cleanup.
+        # ingestion.cleanup_file(file_path)
         
         if result["status"] == "error":
             print(f"Error processing {file.filename}: {result['error']}")
+            # Cleanup only failed files to prevent orphan corrupted files
+            ingestion.cleanup_file(file_path)
             continue
 
         # Aggregate results
@@ -2968,6 +3537,7 @@ async def upload_document(
         total_pages += result.get("num_pages", 0) or 0
         all_images.extend(result.get("images", []))
         
+        processed_file_paths.append(os.path.basename(file_path))
         processed_files.append(file.filename)
 
     if not processed_files:
@@ -2980,11 +3550,61 @@ async def upload_document(
         "markdown": combined_markdown,
         "html": combined_html if combined_html else None,
         "num_pages": total_pages,
-        "images": all_images
+        "images": all_images,
+        "file_path": ",".join(processed_file_paths)
     }
     
     print(f"DEBUG: API Response keys: {list(response.keys())}")
     return response
+
+
+@app.get("/documents/download/{filename}")
+async def download_document_file(
+    filename: str,
+    token: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Download or view the original uploaded document by its unique filename.
+    Requires token either in Authorization header or token query parameter.
+    """
+    import os
+    from jose import jwt
+    from config import settings
+    from fastapi.responses import FileResponse
+    
+    # 1. Resolve token
+    resolved_token = None
+    if authorization and authorization.startswith("Bearer "):
+        resolved_token = authorization.split(" ")[1]
+    elif token:
+        resolved_token = token
+
+    if not resolved_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # 2. Verify token
+    try:
+        payload = jwt.decode(resolved_token, settings.secret_key, algorithms=[settings.algorithm])
+        email = payload.get("sub")
+        if not email:
+            raise HTTPException(status_code=401, detail="Invalid token")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    # 3. Serve file
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.normpath(os.path.join(base_dir, "uploads", filename))
+    
+    # Security check: ensure path is inside the uploads folder
+    uploads_dir = os.path.normpath(os.path.join(base_dir, "uploads"))
+    if not file_path.startswith(uploads_dir):
+        raise HTTPException(status_code=403, detail="Access denied")
+        
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+        
+    return FileResponse(file_path)
 
 
 @app.post("/documents/extract-from-url")
@@ -3117,13 +3737,12 @@ def update_document_history(
     db_doc.content_preview = payload.get("content_preview")
     db_doc.full_content = payload.get("full_content")
     db_doc.analysis_result = payload.get("analysis_result")
+    db_doc.file_path = payload.get("file_path")
 
     db.add(db_doc)
     db.commit()
     db.refresh(db_doc)
     return db_doc
-
-
 # --- Share Document Endpoints ---
 @app.post("/api/share-doc")
 async def share_doc_documents(
@@ -4356,7 +4975,7 @@ async def upload_and_analyze_document(
     file_path = ingestion.save_uploaded_file(content, file.filename)
     
     # Process with Docling
-    extraction_result = ingestion.process_document(file_path)
+    extraction_result = await ingestion.process_document(file_path)
     
     # Cleanup the uploaded file
     ingestion.cleanup_file(file_path)
@@ -5608,14 +6227,15 @@ def parse_markdown_techniques(content: str) -> List[Dict[str, str]]:
 @app.get("/api/projects/{project_token}/elicitation-techniques")
 async def get_elicitation_techniques(
     project_token: str,
+    only_skills: bool = False,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
 ):
     """
     Get elicitation techniques for a project.
     
-    If the project has skills/methods markdown files uploaded, asks the AI to generate 
-    techniques based on the contents of those uploaded files.
+    If the project has skills/methods markdown files uploaded, parses them directly.
+    If only_skills is True and no files exist, returns empty response.
     Otherwise, dynamically asks the AI to generate 5 SDLC-aligned elicitation techniques.
     """
     import re
@@ -5629,7 +6249,31 @@ async def get_elicitation_techniques(
     )
     governance = query.filter(models.GovernanceResponse.project_token == project_token).first()
     
-    # 2. Check if skills/methods files are uploaded
+    # 2. Direct fallback/parsing if skills files exist
+    if governance and governance.skills_md_files:
+        try:
+            uploaded_techniques = []
+            for file_obj in governance.skills_md_files:
+                file_content = file_obj.get("content", "")
+                if file_content:
+                    parsed = parse_markdown_techniques(file_content)
+                    uploaded_techniques.extend(parsed)
+            if uploaded_techniques:
+                return {
+                    "source": "uploaded",
+                    "techniques": uploaded_techniques[:5]
+                }
+        except Exception as parse_err:
+            logger.error(f"Failed to parse uploaded skills files: {parse_err}")
+
+    # If only_skills is True and we got no uploaded skills, return empty response immediately
+    if only_skills:
+        return {
+            "source": "none",
+            "techniques": []
+        }
+
+    # 3. Check if skills/methods files are uploaded (for prompt context fallback)
     skills_content = ""
     if governance and governance.skills_md_files:
         skills_contents = [f.get("content", "") for f in governance.skills_md_files if f.get("content")]
@@ -5647,7 +6291,17 @@ async def get_elicitation_techniques(
     if doc and doc.full_content:
         brd_content = doc.full_content
 
-    # 3. Build AI prompt based on whether skills are uploaded or not
+    # Extract the finalized AI Analysis/Action Plan report from the document
+    analysis_report = ""
+    if doc and doc.analysis_result:
+        try:
+            analysis_data = json.loads(doc.analysis_result)
+            if isinstance(analysis_data, dict):
+                analysis_report = analysis_data.get("analysis", "")
+        except Exception as json_err:
+            logger.error(f"Failed to parse analysis_result JSON in techniques generator: {json_err}")
+
+    # 4. Build AI prompt based on whether skills are uploaded or not
     system_content = "You are an expert BRD analyst and SDLC process architect."
     
     if skills_content:
@@ -5665,8 +6319,11 @@ Uploaded Methodology Content:
 {skills_content[:20000]}"""
     else:
         logger.info(f"No skills files found for project {project_token}. Dynamically generating SDLC-aligned techniques using AI...")
-        if brd_content:
-            user_content = f"""Based on the following BRD document content, generate exactly 5 tailored requirements elicitation techniques that can improve the BRD quality, aligned with the SDLC lifecycle.
+        context_to_use = analysis_report if analysis_report else brd_content
+        context_label = "AI Analysis/Action Plan Report" if analysis_report else "BRD Document Content"
+        
+        if context_to_use:
+            user_content = f"""Based on the following {context_label}, generate exactly 5 tailored requirements elicitation techniques that can improve the BRD quality, aligned with the SDLC lifecycle.
 Each technique MUST have:
 1. Technique Name
 2. Short Description
@@ -5674,8 +6331,8 @@ Each technique MUST have:
 
 You MUST return the output in a JSON list of objects containing fields 'name', 'description', and 'purpose'. Do not output any markdown fences, thoughts, or explanations. Only return a raw valid JSON array.
 
-BRD Content snippet:
-{brd_content[:15000]}"""
+{context_label}:
+{context_to_use[:15000]}"""
         else:
             user_content = """Generate exactly 5 high-quality, highly practical requirements elicitation techniques that can improve BRD quality, aligned with the SDLC lifecycle.
 Each technique MUST have:
@@ -7815,11 +8472,11 @@ def _startup_init() -> None:
     img_res = agent_service._ensure_agent_runtime_image()
     if img_res.get("success"):
         if img_res.get("built"):
-            print("✅ Docker image built successfully.")
+            print("[OK] Docker image built successfully.")
         else:
-            print("✅ Docker image verified (already exists).")
+            print("[OK] Docker image verified (already exists).")
     else:
-        print(f"❌ Docker initialization failed: {img_res.get('error')}")
+        print(f"[ERROR] Docker initialization failed: {img_res.get('error')}")
 
     agent_service.seed_sample_tasks()
     db = SessionLocal()
@@ -9220,6 +9877,8 @@ async def run_agent(
     agent["progress"] = 0
     agent["output_log"] = []
     agent["progress_message"] = "Initializing..."
+    agent["blocked"] = False
+    agent["blocked_reason"] = None
 
     # Fire-and-forget: agent runs in background
     run_repo = effective_repo if effective_repo and effective_token else None
@@ -14284,3 +14943,84 @@ async def route_proxy(token: str, request: Request, path: str = ""):
     forward_path = "/" + path if path else "/"
     proxy_prefix = f"/app/{token}"
     return proxy_request(target, request, forward_path, proxy_prefix=proxy_prefix)
+
+class BournAIMetricsRequest(BaseModel):
+    salt_key: str
+    date: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+
+@app.post("/api/public/metrics/bournai")
+def get_public_bournai_metrics(
+    req: BournAIMetricsRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Public API endpoint to query BournAI model token usage and cost metrics.
+    Requires salt_key validation in the JSON payload body.
+    """
+    import datetime
+    
+    expected_salt = settings.metrics_api_salt
+    if not req.salt_key or req.salt_key != expected_salt:
+        raise HTTPException(status_code=401, detail="Unauthorized: Invalid salt_key")
+        
+    start_dt = None
+    end_dt = None
+    
+    # 1. Parse date parameters
+    if req.date:
+        try:
+            start_dt = datetime.datetime.strptime(req.date, "%Y-%m-%d")
+            end_dt = start_dt + datetime.timedelta(days=1) - datetime.timedelta(microseconds=1)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Expected YYYY-MM-DD")
+    else:
+        if req.start_date:
+            try:
+                start_dt = datetime.datetime.strptime(req.start_date, "%Y-%m-%d")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid start_date format. Expected YYYY-MM-DD")
+        if req.end_date:
+            try:
+                end_dt = datetime.datetime.strptime(req.end_date, "%Y-%m-%d") + datetime.timedelta(days=1) - datetime.timedelta(microseconds=1)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid end_date format. Expected YYYY-MM-DD")
+                
+    # 2. Query logs
+    query = db.query(models.AIUsageLog).filter(
+        func.lower(models.AIUsageLog.model) == "bournai"
+    )
+    if start_dt:
+        query = query.filter(models.AIUsageLog.created_at >= start_dt)
+    if end_dt:
+        query = query.filter(models.AIUsageLog.created_at <= end_dt)
+        
+    logs = query.all()
+    
+    # 3. Sum up values
+    total_prompt = 0
+    total_completion = 0
+    total_cost = 0.0
+    request_count = len(logs)
+    
+    for l in logs:
+        total_prompt += (l.prompt_tokens or 0)
+        total_completion += (l.completion_tokens or 0)
+        total_cost += (l.cost or 0.0)
+        
+    return {
+        "model": "BournAI",
+        "query_parameters": {
+            "date": req.date,
+            "start_date": req.start_date,
+            "end_date": req.end_date
+        },
+        "metrics": {
+            "request_count": request_count,
+            "total_prompt_tokens": total_prompt,
+            "total_completion_tokens": total_completion,
+            "total_tokens": total_prompt + total_completion,
+            "total_cost_usd": round(total_cost, 6)
+        }
+    }

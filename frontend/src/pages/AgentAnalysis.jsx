@@ -616,10 +616,13 @@ export default function AgentAnalysis({
     const [techniquesLoading, setTechniquesLoading] = useState(false);
     const [techniquesError, setTechniquesError] = useState('');
     const [techniquesSource, setTechniquesSource] = useState('ai_generated'); // 'uploaded' | 'ai_generated' | 'static_fallback'
+    const [discussMode, setDiscussMode] = useState(false);
+    const [isChatExpanded, setIsChatExpanded] = useState(false);
 
     // Cache results by project key to prevent data loss when switching projects
     const resultCacheRef = useRef({});
     const lastLoadedProjectRef = useRef(null);
+    const activeJobIdRef = useRef(null);
 
     const selectedProject = projects.find((p) => p.key === selectedProjectKey) || null;
     const hasGovernanceAssessment = Boolean(selectedProject?.governanceResultId || governanceContext?.result_id);
@@ -782,8 +785,9 @@ export default function AgentAnalysis({
                         setCompletedStages(stages);
                     }
                 },
-                30000, // Poll every 30 seconds
-                120    // Max 60 minutes (120 * 30s = 3600s)
+                5000, // Poll every 5 seconds
+                720,   // Max 60 minutes (720 * 5s = 3600s)
+                selectedProjectKey
             );
 
             // For targeted updates, the backend returns metrics/questions/architecture directly
@@ -874,6 +878,132 @@ export default function AgentAnalysis({
             setAnalysisInProgress(false);  // Ensure flag is cleared
         }
     }, [governanceContext, repoContext, userAnswers, userFeedback, result, selectedProjectKey, saveToHistory]);
+
+    const resumeAnalysisPolling = useCallback(async (jobId, initialResult, options = {}) => {
+        if (activeJobIdRef.current === jobId) {
+            console.log('Already polling this job, skipping duplicate invocation');
+            return;
+        }
+        activeJobIdRef.current = jobId;
+
+        if (!token) {
+            setError('You are not logged in. Please login again.');
+            activeJobIdRef.current = null;
+            return;
+        }
+
+        setAnalysisInProgress(true);
+        setProcessing(true);
+        setLoading(false);
+        setError('');
+        setProgress(70);
+        setProgressMessage('Resuming background Agent Analysis...');
+        
+        if (initialResult) {
+            setResult(initialResult);
+        }
+
+        try {
+            const { pollUntilComplete } = await import('../utils/analysisPolling');
+            const data = await pollUntilComplete(
+                jobId,
+                token,
+                (progress, message, stages) => {
+                    setProgress(progress);
+                    setProgressMessage(message);
+                    if (stages && Object.keys(stages).length > 0) {
+                        setCompletedStages(stages);
+                    }
+                },
+                5000, // Poll every 5 seconds
+                720   // Max 60 minutes (720 * 5s = 3600s)
+            );
+
+            const isTargetedUpdate = Boolean(data.update_type || data.change_summary);
+            const existingAnalysis = (initialResult || result)?.analysis || {};
+            const effectiveRepoContext = options.repoContext || repoContext || null;
+
+            const { report: parsedReport, questions: parsedQuestions, metrics: parsedMetrics,
+                title, prerequisites: parsedPrereqs, architecture: parsedArch } = parseAIResponse(data.analysis || '', effectiveRepoContext);
+
+            const report = parsedReport;
+            const questions = isTargetedUpdate
+                ? (data.questions?.length > 0 ? data.questions : (parsedQuestions.length > 0 ? parsedQuestions : existingAnalysis.questions || []))
+                : parsedQuestions;
+            const metrics = isTargetedUpdate
+                ? (Object.keys(data.metrics || {}).length > 0 ? data.metrics : (parsedMetrics || existingAnalysis.metrics))
+                : parsedMetrics;
+            const prerequisites = isTargetedUpdate
+                ? (data.prerequisites?.length > 0 ? data.prerequisites : (parsedPrereqs.length > 0 ? parsedPrereqs : existingAnalysis.prerequisites || []))
+                : parsedPrereqs;
+            const architecture = isTargetedUpdate
+                ? (data.architecture && Object.keys(data.architecture).length > 0 ? data.architecture : (parsedArch || existingAnalysis.architecture))
+                : parsedArch;
+
+            if (questions.length > 0) setAiQuestions(questions);
+
+            const finalResult = {
+                ...(initialResult || result),
+                filename: title || (initialResult || result)?.filename,
+                analysis: {
+                    ...existingAnalysis,
+                    ...data,
+                    analysis: report,
+                    questions: questions,
+                    metrics: metrics,
+                    prerequisites: prerequisites,
+                    architecture: architecture,
+                    userAnswers: userAnswers,
+                    userFeedback: userFeedback,
+                    governanceContext: options.governanceContext || governanceContext || null,
+                    repoContextMeta: buildRepoContextMeta(effectiveRepoContext),
+                    change_summary: data.change_summary || null,
+                    affected_sections: data.affected_sections || [],
+                    stages: isTargetedUpdate && data.stages
+                        ? { ...(existingAnalysis.stages || {}), ...data.stages }
+                        : (data.stages || existingAnalysis.stages || {}),
+                }
+            };
+
+            const pt = metrics?.project_type || data.project_type || existingAnalysis.metrics?.project_type;
+            if (pt && selectedProjectKey) {
+                const normalizedPt = String(pt).toLowerCase();
+                localStorage.setItem(`project_type_${selectedProjectKey}`, normalizedPt);
+                fetch(`${API_BASE_URL}/api/agent/projects/${selectedProjectKey}/project-type`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ project_type: normalizedPt })
+                }).catch(err => console.error("Failed to save project type from analysis:", err));
+            }
+
+            setResult(finalResult);
+            setProgress(100);
+            setProgressMessage('Analysis complete!');
+            await saveToHistory(finalResult, selectedProjectKey, effectiveRepoContext);
+            
+            // Clean up localStorage keys
+            localStorage.removeItem('active_analysis_job_id');
+            localStorage.removeItem('active_analysis_project_key');
+        } catch (err) {
+            console.error('Resumed analysis polling error:', err);
+            const userFriendlyError = formatAnalysisError(err);
+            setError(`Analysis Error: ${userFriendlyError}`);
+            setProgress(0);
+            setProgressMessage('');
+            setCompletedStages({});
+            
+            // Clean up localStorage keys on error
+            localStorage.removeItem('active_analysis_job_id');
+            localStorage.removeItem('active_analysis_project_key');
+        } finally {
+            setProcessing(false);
+            setAnalysisInProgress(false);
+            activeJobIdRef.current = null;
+        }
+    }, [token, result, repoContext, governanceContext, userAnswers, userFeedback, selectedProjectKey, saveToHistory]);
 
     const streamAnalysis = useCallback(async (
         payload,
@@ -1025,8 +1155,10 @@ export default function AgentAnalysis({
 
     const fetchAnalysisRef = useRef(fetchAnalysis);
     const streamAnalysisRef = useRef(streamAnalysis);
+    const resumeAnalysisPollingRef = useRef(resumeAnalysisPolling);
     fetchAnalysisRef.current = fetchAnalysis;
     streamAnalysisRef.current = streamAnalysis;
+    resumeAnalysisPollingRef.current = resumeAnalysisPolling;
 
     const handleRepositoryOnlyAnalysis = useCallback(async () => {
         if (!token) {
@@ -1240,6 +1372,27 @@ export default function AgentAnalysis({
         }
 
         const loadAnalysis = async () => {
+            const storedJobId = localStorage.getItem('active_analysis_job_id');
+            const storedProjectKey = localStorage.getItem('active_analysis_project_key');
+            if (storedJobId && storedProjectKey === selectedProjectKey) {
+                console.log('Found running analysis job in localStorage, resuming polling:', storedJobId);
+                const latestDocument = selectedProject.latestDocument;
+                const initialResult = {
+                    id: latestDocument?.id,
+                    filename: latestDocument?.filename || 'BRD',
+                    extraction: {
+                        markdown: latestDocument?.full_content || '',
+                        html: '',
+                        num_pages: null,
+                    },
+                    analysis: { analysis: '', reasoning: '' },
+                    revisionNumber: selectedProject.documents?.length || 1,
+                };
+                
+                resumeAnalysisPollingRef.current(storedJobId, initialResult);
+                return;
+            }
+
             setLoading(true);
             setError('');
 
@@ -1574,12 +1727,13 @@ export default function AgentAnalysis({
     };
 
     // ── Fetch Elicitation Techniques ──
-    const fetchElicitationTechniques = useCallback(async (projectToken) => {
+    const fetchElicitationTechniques = useCallback(async (projectToken, onlySkills = false) => {
         if (!projectToken || !token) return;
         setTechniquesLoading(true);
         setTechniquesError('');
         try {
-            const response = await fetch(API_ENDPOINTS.GOVERNANCE_ELICITATION_TECHNIQUES(projectToken), {
+            const url = `${API_ENDPOINTS.GOVERNANCE_ELICITATION_TECHNIQUES(projectToken)}${onlySkills ? '?only_skills=true' : ''}`;
+            const response = await fetch(url, {
                 headers: {
                     'Authorization': `Bearer ${token}`,
                 },
@@ -1601,10 +1755,10 @@ export default function AgentAnalysis({
         }
     }, [token]);
 
-    // Fetch techniques when project switches
+    // Fetch techniques when project switches (only check for pre-uploaded skills files on load)
     useEffect(() => {
         if (selectedProjectKey) {
-            fetchElicitationTechniques(selectedProjectKey);
+            fetchElicitationTechniques(selectedProjectKey, true);
         }
     }, [selectedProjectKey, fetchElicitationTechniques]);
 
@@ -1659,6 +1813,108 @@ export default function AgentAnalysis({
         }
     }, [result, token]);
 
+    // ── Apply planned changes from discussion to BRD ──
+    const handleApplyDiscussionToBRD = async () => {
+        setDiscussMode(false);
+        const feedbackText = (() => {
+            const historyContext = chatMessages
+                .filter(m => m.id !== 'welcome-elicitation')
+                .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+                .join('\n\n');
+            return `Please update the BRD based on the following conversation:\n\n${historyContext}\n\nApply the discussed changes.`;
+        })();
+
+        const msgId = `msg_${Date.now()}`;
+        const userMsg = {
+            id: msgId,
+            role: 'user',
+            content: "Apply discussion to update BRD",
+            timestamp: new Date().toISOString(),
+        };
+
+        setChatMessages(prev => [...prev, userMsg]);
+        setChatSending(true);
+        await saveChatMessage(userMsg);
+
+        try {
+            const updatedResult = await handleRefineAnalysis(feedbackText, 'feedback');
+
+            const assistantMsg = {
+                id: `resp_${Date.now()}`,
+                role: 'assistant',
+                content: updatedResult?.analysis?.change_summary
+                    || 'Analysis updated successfully based on your input.',
+                affectedSections: updatedResult?.analysis?.affected_sections || [],
+                changeSummary: updatedResult?.analysis?.change_summary,
+                timestamp: new Date().toISOString(),
+            };
+            setChatMessages(prev => [...prev, assistantMsg]);
+            await saveChatMessage(assistantMsg);
+        } catch (err) {
+            const errMsg = {
+                id: `err_${Date.now()}`,
+                role: 'assistant',
+                content: `Update failed: ${err.message || 'Unknown error'}`,
+                isError: true,
+                timestamp: new Date().toISOString(),
+            };
+            setChatMessages(prev => [...prev, errMsg]);
+            await saveChatMessage(errMsg);
+        } finally {
+            setChatSending(false);
+        }
+    };
+
+    // ── Predefined Suggested Options click handler ──
+    const handleSuggestedOption = async (option) => {
+        if (chatSending || processing) return;
+
+        if (option === 'generate_techniques') {
+            setDiscussMode(true);
+            const userMsg = {
+                id: `msg_${Date.now()}`,
+                role: 'user',
+                content: "Please generate requirements elicitation techniques for this project.",
+                timestamp: new Date().toISOString(),
+            };
+            setChatMessages(prev => [...prev, userMsg]);
+            setChatSending(true);
+            await saveChatMessage(userMsg);
+
+            try {
+                // Call techniques API (force only_skills=false for AI generation)
+                await fetchElicitationTechniques(selectedProjectKey, false);
+                
+                const assistantMsg = {
+                    id: `resp_${Date.now()}`,
+                    role: 'assistant',
+                    content: "I have completed the analysis and generated 5 tailored elicitation techniques based on the AI report. Select any technique below to surgically enhance your BRD.",
+                    timestamp: new Date().toISOString(),
+                };
+                setChatMessages(prev => [...prev, assistantMsg]);
+                await saveChatMessage(assistantMsg);
+            } catch (err) {
+                const errMsg = {
+                    id: `err_${Date.now()}`,
+                    role: 'assistant',
+                    content: `Failed to generate techniques: ${err.message || 'Unknown error'}`,
+                    isError: true,
+                    timestamp: new Date().toISOString(),
+                };
+                setChatMessages(prev => [...prev, errMsg]);
+                await saveChatMessage(errMsg);
+            } finally {
+                setChatSending(false);
+            }
+        } else if (option === 'identify_gaps') {
+            setDiscussMode(true);
+            setChatInput("Can you analyze this BRD and identify potential edge cases, logic gaps, or missing requirements?");
+        } else if (option === 'summarize_report') {
+            setDiscussMode(true);
+            setChatInput("Please summarize the key findings, complexity metrics, and next steps from the generated Action Plan.");
+        }
+    };
+
     // ── Chat-based BRD update handler ──
     const handleChatSend = async () => {
         const message = chatInput.trim();
@@ -1680,27 +1936,60 @@ export default function AgentAnalysis({
         await saveChatMessage(userMsg);
 
         try {
-            const updatedResult = await handleRefineAnalysis(message, 'feedback');
+            if (!discussMode) {
+                // Direct BRD Update mode (discussMode is false)
+                const updatedResult = await handleRefineAnalysis(message, 'feedback');
 
-            // After analysis completes, add an assistant confirmation message
-            const assistantMsg = {
-                id: `resp_${Date.now()}`,
-                role: 'assistant',
-                content: updatedResult?.analysis?.change_summary
-                    || 'Analysis updated successfully based on your input.',
-                affectedSections: updatedResult?.analysis?.affected_sections || [],
-                changeSummary: updatedResult?.analysis?.change_summary,
-                timestamp: new Date().toISOString(),
-            };
-            setChatMessages(prev => [...prev, assistantMsg]);
+                // After analysis completes, add an assistant confirmation message
+                const assistantMsg = {
+                    id: `resp_${Date.now()}`,
+                    role: 'assistant',
+                    content: updatedResult?.analysis?.change_summary
+                        || 'Analysis updated successfully based on your input.',
+                    affectedSections: updatedResult?.analysis?.affected_sections || [],
+                    changeSummary: updatedResult?.analysis?.change_summary,
+                    timestamp: new Date().toISOString(),
+                };
+                setChatMessages(prev => [...prev, assistantMsg]);
 
-            // Save assistant message to database
-            await saveChatMessage(assistantMsg);
+                // Save assistant message to database
+                await saveChatMessage(assistantMsg);
+            } else {
+                // Discuss mode: call conversational chat API
+                const response = await fetch(`${API_BASE_URL}/api/agent/brd-chat`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                        project_token: selectedProjectKey,
+                        message: message,
+                        conversation_history: chatMessages
+                            .filter(m => m.id !== 'welcome-elicitation')
+                            .map(m => ({ role: m.role, content: m.content }))
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(await response.text());
+                }
+
+                const data = await response.json();
+                const assistantMsg = {
+                    id: `resp_${Date.now()}`,
+                    role: 'assistant',
+                    content: data.response,
+                    timestamp: new Date().toISOString(),
+                };
+                setChatMessages(prev => [...prev, assistantMsg]);
+                await saveChatMessage(assistantMsg);
+            }
         } catch (err) {
             const errMsg = {
                 id: `err_${Date.now()}`,
                 role: 'assistant',
-                content: `Update failed: ${err.message || 'Unknown error'}`,
+                content: `Error: ${err.message || 'Unknown error'}`,
                 isError: true,
                 timestamp: new Date().toISOString(),
             };
@@ -1857,13 +2146,13 @@ export default function AgentAnalysis({
         ol: ({ node, ...props }) => <ol className="list-decimal list-outside ml-5 space-y-1 mb-3 text-sm text-gray-700" {...props} />,
         li: ({ node, ...props }) => <li className="leading-relaxed text-sm" {...props} />,
         table: ({ node, ...props }) => (
-            <div className="overflow-x-auto my-6">
-                <table className="min-w-full divide-y divide-gray-200 border border-gray-200 rounded-lg" {...props} />
+            <div className="overflow-x-auto my-4 w-full border border-gray-200 rounded-lg max-w-full">
+                <table className="min-w-max w-full divide-y divide-gray-200 table-auto text-xs" {...props} />
             </div>
         ),
         thead: ({ node, ...props }) => <thead className="bg-gray-50" {...props} />,
-        th: ({ node, ...props }) => <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider border-b border-gray-200" {...props} />,
-        td: ({ node, ...props }) => <td className="px-4 py-3 text-sm text-gray-700 border-t border-gray-200" {...props} />,
+        th: ({ node, ...props }) => <th className="px-3 py-2 text-left font-bold text-gray-700 uppercase border-b border-gray-200 min-w-[150px] whitespace-normal leading-snug" {...props} />,
+        td: ({ node, ...props }) => <td className="px-3 py-2 text-gray-700 border-t border-gray-200 min-w-[150px] whitespace-normal leading-relaxed" {...props} />,
         code: ({ node, inline, className, children, ...props }) => {
             if (inline) {
                 return <code className="bg-gray-100 text-red-600 px-1 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>;
@@ -2646,29 +2935,54 @@ export default function AgentAnalysis({
                 const clarificationCount = clarificationQuestions.length;
                 return (
                     <div
-                        className={`fixed right-6 top-6 bottom-6 bg-white border border-gray-200 rounded-2xl shadow-2xl transition-all duration-300 z-[260] w-[440px] flex flex-col overflow-hidden ${isSidebarOpen
+                        className={`fixed right-6 top-6 bottom-6 bg-white border border-gray-200 rounded-2xl shadow-2xl transition-all duration-300 z-[260] flex flex-col overflow-hidden ${isSidebarOpen
                             ? 'translate-x-0 opacity-100'
                             : 'translate-x-[120%] opacity-0 pointer-events-none'
-                            }`}
+                            } ${isChatExpanded ? 'w-[900px] max-w-[90vw]' : 'w-[440px]'}`}
                     >
 
                         {/* Sidebar Header with tabs */}
                         <div className="flex-shrink-0 bg-white border-b border-gray-200">
-                            {/* Top bar: title + close */}
+                            {/* Top bar: title + expand + close */}
                             <div className="flex items-center justify-between px-5 py-3">
                                 <div className="flex items-center gap-2">
                                     <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
                                     <span className="text-sm font-bold text-gray-900">BRD Assistant</span>
                                 </div>
-                                <button
-                                    onClick={() => setIsSidebarOpen(false)}
-                                    className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 hover:text-gray-900 hover:bg-gray-100 px-3 py-1.5 rounded-lg transition-all"
-                                >
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                    </svg>
-                                    Close
-                                </button>
+                                <div className="flex items-center gap-1.5">
+                                    {/* Expand/Collapse Button */}
+                                    <button
+                                        onClick={() => setIsChatExpanded(prev => !prev)}
+                                        title={isChatExpanded ? "Collapse panel" : "Expand panel"}
+                                        className="flex items-center gap-1 text-xs font-semibold text-gray-500 hover:text-gray-900 hover:bg-gray-100 px-2.5 py-1.5 rounded-lg transition-all"
+                                    >
+                                        {isChatExpanded ? (
+                                            <>
+                                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M18 12H6" />
+                                                </svg>
+                                                <span>Collapse</span>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+                                                </svg>
+                                                <span>Expand</span>
+                                            </>
+                                        )}
+                                    </button>
+
+                                    <button
+                                        onClick={() => setIsSidebarOpen(false)}
+                                        className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 hover:text-gray-900 hover:bg-gray-100 px-3 py-1.5 rounded-lg transition-all"
+                                    >
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                        </svg>
+                                        Close
+                                    </button>
+                                </div>
                             </div>
 
                             {/* Tab switcher */}
@@ -2711,18 +3025,42 @@ export default function AgentAnalysis({
                             <>
                                 {/* Chat Message Thread */}
                                 <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4 bg-gray-50">
-                                    {/* Welcome message */}
+                                    {/* Welcome message with suggested options */}
                                     {renderedMessages.length === 0 && (
-                                        <div className="text-center py-8">
-                                            <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center mx-auto mb-3">
-                                                <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <div className="py-6 px-4 bg-white border border-gray-200 rounded-2xl shadow-sm text-center my-2">
+                                            <div className="w-10 h-10 rounded-full bg-blue-50 flex items-center justify-center mx-auto mb-3">
+                                                <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                                                 </svg>
                                             </div>
-                                            <p className="text-sm font-semibold text-gray-700 mb-1">BRD Update Assistant</p>
-                                            <p className="text-xs text-gray-500 leading-relaxed max-w-[280px] mx-auto">
-                                                Describe what you want to update in the BRD analysis.
+                                            <h4 className="text-xs font-bold text-gray-700 mb-1">BRD Refinement Assistant</h4>
+                                            <p className="text-[11px] text-gray-500 mb-4 max-w-[260px] mx-auto">
+                                                How would you like to enhance your requirements? Choose one of the quick options below:
                                             </p>
+                                            
+                                            <div className="space-y-2 text-left">
+                                                <button
+                                                    onClick={() => handleSuggestedOption('generate_techniques')}
+                                                    className="w-full text-[11px] font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl px-3 py-2 text-left transition-all flex items-center gap-2 group"
+                                                >
+                                                    <span className="group-hover:scale-110 transition-transform">💡</span>
+                                                    <span>Generate requirements elicitation techniques</span>
+                                                </button>
+                                                <button
+                                                    onClick={() => handleSuggestedOption('identify_gaps')}
+                                                    className="w-full text-[11px] font-semibold text-gray-700 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl px-3 py-2 text-left transition-all flex items-center gap-2 group"
+                                                >
+                                                    <span className="group-hover:scale-110 transition-transform">🔍</span>
+                                                    <span>Identify potential edge cases and gaps</span>
+                                                </button>
+                                                <button
+                                                    onClick={() => handleSuggestedOption('summarize_report')}
+                                                    className="w-full text-[11px] font-semibold text-gray-700 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl px-3 py-2 text-left transition-all flex items-center gap-2 group"
+                                                >
+                                                    <span className="group-hover:scale-110 transition-transform">📄</span>
+                                                    <span>Summarize finalized report & metrics</span>
+                                                </button>
+                                            </div>
                                         </div>
                                     )}
 
@@ -2740,8 +3078,8 @@ export default function AgentAnalysis({
                                                     ? 'bg-red-50 text-red-700 border border-red-200 rounded-tl-sm'
                                                     : 'bg-white text-gray-800 border border-gray-200 rounded-tl-sm'
                                                 }`}>
-                                                <div className="prose prose-xs max-w-none">
-                                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                                <div className={`prose prose-xs max-w-none ${msg.role === 'user' ? 'prose-invert text-white' : 'text-gray-800'}`}>
+                                                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                                                         {msg.content}
                                                     </ReactMarkdown>
                                                 </div>
@@ -2853,6 +3191,22 @@ export default function AgentAnalysis({
 
                                 {/* Chat Input */}
                                 <div className="px-4 py-4 border-t border-gray-100 bg-white flex-shrink-0">
+                                    {/* Apply discussion changes banner */}
+                                    {discussMode && chatMessages.length > 0 && (
+                                        <div className="mb-3 px-3 py-2 bg-blue-50 border border-blue-100 rounded-xl flex items-center justify-between gap-3 text-[11px] animate-fade-in">
+                                            <span className="text-blue-700 font-medium leading-tight">
+                                                Ready to write these planned changes into the BRD?
+                                            </span>
+                                            <button
+                                                onClick={handleApplyDiscussionToBRD}
+                                                disabled={chatSending || processing}
+                                                className="px-2.5 py-1 text-[10px] font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed rounded-lg shadow-sm transition-all whitespace-nowrap"
+                                            >
+                                                Apply to BRD
+                                            </button>
+                                        </div>
+                                    )}
+
                                     <div className="flex items-end gap-2">
                                         <div className="flex-1">
                                             <textarea
@@ -2870,9 +3224,17 @@ export default function AgentAnalysis({
                                                         handleChatSend();
                                                     }
                                                 }}
-                                                placeholder="Describe what to update in the BRD... (Enter to send)"
+                                                placeholder={
+                                                    discussMode
+                                                        ? "Ask anything, discuss requirements..."
+                                                        : "Describe what to update in the BRD... (will rebuild BRD)"
+                                                }
                                                 rows={1}
-                                                className="w-full px-3 py-2.5 text-xs border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-gray-50 resize-none placeholder-gray-400 overflow-y-auto min-h-[42px] max-h-[140px]"
+                                                className={`w-full px-3 py-2.5 text-xs border rounded-xl focus:ring-2 resize-none placeholder-gray-400 overflow-y-auto min-h-[42px] max-h-[140px] transition-all duration-300 ${
+                                                    discussMode
+                                                        ? "border-gray-200 focus:ring-blue-500 focus:border-blue-500 bg-gray-50"
+                                                        : "border-purple-200 focus:ring-purple-500 focus:border-purple-500 bg-purple-50/20 placeholder-purple-400/80"
+                                                }`}
                                                 style={{ height: '42px' }}
                                                 disabled={chatSending || processing}
                                             />
@@ -2881,7 +3243,11 @@ export default function AgentAnalysis({
                                         <button
                                             onClick={handleChatSend}
                                             disabled={!chatInput.trim() || chatSending || processing}
-                                            className="flex-shrink-0 p-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-200 disabled:cursor-not-allowed text-white rounded-xl transition-colors shadow-sm"
+                                            className={`flex-shrink-0 p-2.5 text-white rounded-xl transition-all duration-300 shadow-sm ${
+                                                discussMode
+                                                    ? "bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 disabled:from-gray-200 disabled:to-gray-200 disabled:cursor-not-allowed"
+                                                    : "bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 disabled:from-gray-200 disabled:to-gray-200 disabled:cursor-not-allowed"
+                                            }`}
                                         >
                                             <svg
                                                 className="w-4 h-4"
@@ -2899,6 +3265,33 @@ export default function AgentAnalysis({
                                         </button>
                                     </div>
 
+                                    {/* Bottom bar for Discuss Mode toggle */}
+                                    <div className="flex items-center justify-between mt-2.5 text-[10px] text-gray-400">
+                                        <div className="flex items-center gap-2">
+                                            <button
+                                                onClick={() => setDiscussMode(prev => !prev)}
+                                                disabled={chatSending || processing}
+                                                title={
+                                                    discussMode
+                                                        ? 'Discuss mode enabled - Chat without changing BRD'
+                                                        : 'Discuss mode disabled - Sending a message will update the BRD'
+                                                }
+                                                className={`flex items-center gap-1.5 h-6 px-2.5 rounded-full text-[10px] font-bold transition-all border shadow-xs ${
+                                                    discussMode
+                                                        ? 'bg-blue-50 border-blue-200 text-blue-600'
+                                                        : 'bg-gray-50 border-gray-300 text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                                                }`}
+                                            >
+                                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                                </svg>
+                                                <span>Discuss</span>
+                                            </button>
+                                        </div>
+                                        <span>
+                                            {discussMode ? 'Conversational mode' : 'Direct update mode'}
+                                        </span>
+                                    </div>
                                 </div>
                             </>
                         )}
@@ -2970,12 +3363,12 @@ export default function AgentAnalysis({
                             <div className="bg-gradient-to-r from-white to-gray-50 rounded-2xl shadow-md border border-gray-200 overflow-hidden">
                                 {/* Top Section - File Info */}
                                 <div className="flex flex-col md:flex-row md:items-center justify-between p-5 border-b border-gray-100">
-                                    <div className="flex items-start gap-4 mb-4 md:mb-0">
+                                    <div className="flex items-start gap-4 mb-4 md:mb-0 min-w-0 flex-grow md:flex-1">
                                         <div className="flex-shrink-0 w-12 h-12 bg-gradient-to-br from-emerald-400 to-green-500 rounded-xl flex items-center justify-center shadow-lg shadow-emerald-500/30">
                                             <FileText className="w-6 h-6 text-white" />
                                         </div>
                                         <div className="flex-1 min-w-0">
-                                            <h2 className="text-xl font-bold text-gray-900 truncate mb-1">{result.filename}</h2>
+                                            <h2 className="text-xl font-bold text-gray-900 truncate mb-1" title={result.filename}>{result.filename}</h2>
                                             <div className="flex flex-wrap items-center gap-2 text-sm text-gray-600">
                                                 {selectedProject && (
                                                     <>

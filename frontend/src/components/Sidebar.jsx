@@ -261,6 +261,19 @@ export default function Sidebar({
                                     Organization Admin
                                 </button>
                             )}
+                            {user?.is_org_admin && (
+                                <button
+                                    onClick={() => {
+                                        navigate('/billing');
+                                    }}
+                                    className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname === '/billing'
+                                        ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
+                                        : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
+                                >
+                                    <CreditCard className="w-4 h-4 mr-3" />
+                                    Billing & Activity
+                                </button>
+                            )}
                             {user?.is_org_admin && canAccess('/governance-management') && (
                                 <button
                                     onClick={() => {
@@ -300,13 +313,13 @@ export default function Sidebar({
                                     Plugins
                                 </button>
                             )}
-                            <button
+                            {/* <button
                                 onClick={() => setShowSettings(true)}
                                 className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md hover:bg-app-text-label hover:text-white transition-colors mb-2 ${isDarkMode ? 'text-app-text-label' : 'text-app-border'}`}
                             >
                                 <Settings className="w-4 h-4 mr-3" />
                                 Settings
-                            </button>
+                            </button> */}
                             {user && (
                                 <div className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md hover:bg-app-text-label transition-colors justify-between bg-white/5 border border-white/10 ${isDarkMode ? 'text-app-text-label' : 'text-app-border'}`}>
                                     <div className="flex items-center overflow-hidden">
