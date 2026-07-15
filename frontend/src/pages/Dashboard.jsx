@@ -4320,38 +4320,9 @@ const Dashboard = ({
                                     <span className="text-xl text-app-text-muted">×</span>
                                 </button>
                             </div>
-                            
-                            {/* Toggle Tabs if file path exists */}
-                            {hasFilePath && (
-                                <div className="flex border-b border-app-border px-6 bg-app-bg-page/50">
-                                    <button
-                                        type="button"
-                                        onClick={() => setPreviewMode('original')}
-                                        className={`py-3 px-4 text-sm font-semibold border-b-2 transition-all flex items-center gap-2 ${
-                                            previewMode === 'original'
-                                                ? 'border-blue-600 text-blue-600 dark:text-blue-400 dark:border-blue-400'
-                                                : 'border-transparent text-app-text-muted hover:text-app-text-main'
-                                        }`}
-                                    >
-                                        <span className="text-base">📄</span> Original Document
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => setPreviewMode('parsed')}
-                                        className={`py-3 px-4 text-sm font-semibold border-b-2 transition-all flex items-center gap-2 ${
-                                            previewMode === 'parsed'
-                                                ? 'border-blue-600 text-blue-600 dark:text-blue-400 dark:border-blue-400'
-                                                : 'border-transparent text-app-text-muted hover:text-app-text-main'
-                                        }`}
-                                    >
-                                        <span className="text-base">📝</span> AI Parsed Text
-                                    </button>
-                                </div>
-                            )}
-
                             {/* Modal Content */}
                             <div className="flex-1 overflow-y-auto p-6 text-left">
-                                {activeMode === 'original' ? (
+                                {hasFilePath ? (
                                     <div className="flex flex-col gap-4">
                                         {filesToView.map((fname, idx) => {
                                             const fileExt = fname.split('.').pop().toLowerCase();
@@ -4389,7 +4360,7 @@ const Dashboard = ({
                                                                     No Direct Browser Preview
                                                                 </h4>
                                                                 <p className="text-xs text-app-text-muted max-w-md mx-auto">
-                                                                    Files of type <code>.{fileExt}</code> (like Word or PowerPoint documents) cannot be previewed natively in the browser. You can download the file directly, or switch to the <strong>AI Parsed Text</strong> tab to view the extracted contents.
+                                                                    Files of type <code>.{fileExt}</code> (like Word or PowerPoint documents) cannot be previewed natively in the browser. You can download the file directly to view its contents.
                                                                 </p>
                                                             </div>
                                                             <a
@@ -4407,18 +4378,6 @@ const Dashboard = ({
                                     </div>
                                 ) : (
                                     <>
-                                        <div className="mb-5 p-4 bg-blue-50/50 dark:bg-blue-950/20 border border-blue-200/60 dark:border-blue-900/30 rounded-xl text-xs leading-relaxed text-blue-800 dark:text-blue-300 flex gap-3 shadow-sm">
-                                            <span className="text-base select-none">💡</span>
-                                            <div>
-                                                <p className="font-bold mb-1 text-blue-950 dark:text-blue-200">AI-Parsed Document Representation</p>
-                                                <p className="mb-2">
-                                                    This view shows the raw text extracted from your PDF via layout analysis and OCR. This is the exact representation that the AI reads. 
-                                                </p>
-                                                <p>
-                                                    Non-textual components (like icons, borders, page footers, or background graphics) are automatically parsed by the document extraction engine. This can sometimes result in garbled character patterns (e.g., <code>s14.IaL...</code>) or HTML comments (like <code>&lt;!-- image --&gt;</code>) which is normal behavior.
-                                                </p>
-                                            </div>
-                                        </div>
                                         <div className="prose prose-sm dark:prose-invert max-w-none text-app-text-main font-sans">
                                             <ReactMarkdown remarkPlugins={[remarkGfm]}>
                                                 {previewDoc.full_content || previewDoc.content_preview || 'No content parsed or found in this document.'}

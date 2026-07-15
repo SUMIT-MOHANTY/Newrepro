@@ -2954,7 +2954,7 @@ async def upload_document(
         file_path = ingestion.save_uploaded_file(content, file.filename)
         
         # Process with Docling
-        result = ingestion.process_document(file_path)
+        result = await ingestion.process_document(file_path)
         
         # Keep the file on disk! Do not cleanup.
         # ingestion.cleanup_file(file_path)
@@ -3181,8 +3181,6 @@ def update_document_history(
     db.commit()
     db.refresh(db_doc)
     return db_doc
-
-
 # --- Share Document Endpoints ---
 @app.post("/api/share-doc")
 async def share_doc_documents(
@@ -4415,7 +4413,7 @@ async def upload_and_analyze_document(
     file_path = ingestion.save_uploaded_file(content, file.filename)
     
     # Process with Docling
-    extraction_result = ingestion.process_document(file_path)
+    extraction_result = await ingestion.process_document(file_path)
     
     # Cleanup the uploaded file
     ingestion.cleanup_file(file_path)

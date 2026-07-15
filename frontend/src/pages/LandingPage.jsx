@@ -22,6 +22,7 @@ export default function LandingPage() {
             const currentTheme = localStorage.getItem('theme') || 'dark';
             setTheme(currentTheme);
             applyTheme(currentTheme);
+            setTimeout(updateFooter, 50);
         };
 
         window.addEventListener('theme-changed', handleThemeChange);
@@ -182,6 +183,7 @@ export default function LandingPage() {
                             if (logo) {
                                 logo.src = newTheme === 'dark' ? '/assets/docs/bourntec_logo.png' : '/assets/docs/bourntec_logo_l.png';
                             }
+                            updateFooter();
                         }, 50);
                     };
                     
@@ -205,7 +207,7 @@ export default function LandingPage() {
             gradientTextEls.forEach(el => {
                 if (el.textContent.trim() === 'DSuite') {
                     // Skip if this is the label we already created or is inside our wrapper
-                    if (el.id === 'bourntec-landing-label' || el.closest('#bourntec-landing-logo-wrapper')) {
+                    if (el.id === 'bourntec-landing-label' || el.closest('#bourntec-landing-logo-wrapper') || el.closest('footer')) {
                         return;
                     }
                     const parent = el.parentNode;
@@ -301,12 +303,96 @@ export default function LandingPage() {
             });
         };
 
+        const updateFooter = () => {
+            const footer = document.querySelector('footer');
+            if (!footer) return;
+
+            // 1. Update copyright text
+            const pElements = Array.from(footer.querySelectorAll('p'));
+            const copyrightText = pElements.find(p => p.textContent.includes('2024') || p.textContent.includes('DSuite'));
+            if (copyrightText && copyrightText.textContent.includes('2024')) {
+                copyrightText.innerHTML = copyrightText.innerHTML.replace('2024', '2026');
+            }
+
+            // 2. Update links hrefs
+            const links = Array.from(footer.querySelectorAll('a'));
+            links.forEach(link => {
+                const text = link.textContent.trim();
+                if (text === 'Features') {
+                    link.href = '#features';
+                } else if (text === 'Pricing') {
+                    link.href = '/login';
+                } else if (text === 'Documentation') {
+                    link.href = '/docs';
+                } else if (text === 'API Reference') {
+                    link.href = '/docs';
+                } else if (text === 'About') {
+                    link.href = 'https://www.bourntec.com/about-us/';
+                    link.target = '_blank';
+                } else if (text === 'Blog') {
+                    link.href = 'https://www.bourntec.com/blog/';
+                    link.target = '_blank';
+                } else if (text === 'Careers') {
+                    link.href = 'https://www.bourntec.com/careers/';
+                    link.target = '_blank';
+                } else if (text === 'Contact') {
+                    link.href = 'https://www.bourntec.com/contact-us/';
+                    link.target = '_blank';
+                } else if (text === 'Privacy') {
+                    link.href = 'https://www.bourntec.com/privacy-policy/';
+                    link.target = '_blank';
+                } else if (text === 'Terms') {
+                    link.href = 'https://www.bourntec.com/terms-of-use/';
+                    link.target = '_blank';
+                } else if (text === 'Security') {
+                    link.href = '/docs';
+                } else if (text === 'Compliance') {
+                    link.href = '/docs';
+                }
+            });
+
+            // 3. Rebrand DSuite logo in footer with Bourntec logo
+            const spans = Array.from(footer.querySelectorAll('span'));
+            const brandSpan = spans.find(span => span.textContent.trim() === 'DSuite' && span.className.includes('gradient-text'));
+            if (brandSpan) {
+                if (!document.getElementById('bourntec-footer-logo')) {
+                    const parent = brandSpan.parentNode;
+                    const iconDiv = parent.querySelector('div[style*="width: 40px"]');
+                    if (iconDiv) {
+                        iconDiv.remove();
+                    }
+                    
+                    const currentTheme = localStorage.getItem('theme') || 'dark';
+                    const isDark = currentTheme === 'dark';
+                    const logoSrc = isDark ? '/assets/docs/bourntec_logo.png' : '/assets/docs/bourntec_logo_l.png';
+
+                    const img = document.createElement('img');
+                    img.src = logoSrc;
+                    img.alt = 'Bourntec Logo';
+                    img.id = 'bourntec-footer-logo';
+                    img.style.height = '32px';
+                    img.style.width = 'auto';
+                    img.style.marginRight = '8px';
+                    img.style.display = 'block';
+
+                    parent.insertBefore(img, brandSpan);
+                } else {
+                    const currentTheme = localStorage.getItem('theme') || 'dark';
+                    const isDark = currentTheme === 'dark';
+                    const logoSrc = isDark ? '/assets/docs/bourntec_logo.png' : '/assets/docs/bourntec_logo_l.png';
+                    const img = document.getElementById('bourntec-footer-logo');
+                    if (img) img.src = logoSrc;
+                }
+            }
+        };
+
         // Try to inject multiple times to account for compiled script rendering delays
         const delays = [100, 300, 500, 1000, 1500, 2000, 3000];
         const timeouts = delays.map(delay => setTimeout(() => {
             injectNavbarButtons();
             rebrandLandingLogos();
             updateVibeCodingButton();
+            updateFooter();
         }, delay));
 
         // 4. Intercept click events on CTA buttons
