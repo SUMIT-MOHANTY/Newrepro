@@ -2367,10 +2367,27 @@ def list_org_users(
 @app.get("/organization/billing-logs")
 def get_org_billing_and_logs(
     current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
+    import datetime
     organization_name = _require_org_admin(current_user)
     
+    # Parse date filters
+    start_dt = None
+    end_dt = None
+    if start_date:
+        try:
+            start_dt = datetime.datetime.fromisoformat(start_date)
+        except Exception:
+            pass
+    if end_date:
+        try:
+            end_dt = datetime.datetime.fromisoformat(end_date) + datetime.timedelta(days=1) - datetime.timedelta(microseconds=1)
+        except Exception:
+            pass
+
     # 1. Get all users in the organization
     org_users = db.query(models.User).filter(
         func.lower(models.User.organization_name) == organization_name.lower()
@@ -2379,15 +2396,25 @@ def get_org_billing_and_logs(
     org_user_map = {u.id: u for u in org_users}
     
     # 2. Get all projects in the organization
-    org_projects = db.query(models.GovernanceResponse).filter(
+    org_projects_query = db.query(models.GovernanceResponse).filter(
         (models.GovernanceResponse.owner_id.in_(org_user_ids)) |
         (func.lower(models.GovernanceResponse.organization_name) == organization_name.lower())
-    ).all()
+    )
+    if start_dt:
+        org_projects_query = org_projects_query.filter(models.GovernanceResponse.submission_date >= start_dt)
+    if end_dt:
+        org_projects_query = org_projects_query.filter(models.GovernanceResponse.submission_date <= end_dt)
+    org_projects = org_projects_query.all()
     
     # Aggregate AI stats
-    ai_logs = db.query(models.AIUsageLog).filter(
+    ai_logs_query = db.query(models.AIUsageLog).filter(
         models.AIUsageLog.user_id.in_(org_user_ids)
-    ).all()
+    )
+    if start_dt:
+        ai_logs_query = ai_logs_query.filter(models.AIUsageLog.created_at >= start_dt)
+    if end_dt:
+        ai_logs_query = ai_logs_query.filter(models.AIUsageLog.created_at <= end_dt)
+    ai_logs = ai_logs_query.all()
     
     total_cost = 0.0
     total_prompt_tokens = 0
@@ -2414,9 +2441,14 @@ def get_org_billing_and_logs(
     cost_by_model = {k: round(v, 4) for k, v in cost_by_model.items()}
     
     # 3. Calculate session durations based on activity logs
-    activity_logs = db.query(models.UserActivityLog).filter(
+    activity_logs_query = db.query(models.UserActivityLog).filter(
         models.UserActivityLog.user_id.in_(org_user_ids)
-    ).order_by(models.UserActivityLog.user_id, models.UserActivityLog.created_at).all()
+    )
+    if start_dt:
+        activity_logs_query = activity_logs_query.filter(models.UserActivityLog.created_at >= start_dt)
+    if end_dt:
+        activity_logs_query = activity_logs_query.filter(models.UserActivityLog.created_at <= end_dt)
+    activity_logs = activity_logs_query.order_by(models.UserActivityLog.user_id, models.UserActivityLog.created_at).all()
     
     user_durations = {} # user_id -> seconds
     user_last_time = {} # user_id -> datetime
@@ -2575,14 +2607,31 @@ def get_org_billing_and_logs(
 @app.get("/organization/download-billing-report")
 def download_org_billing_report(
     current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     import io
     import json
+    import datetime
     from interactive_dashboard_server import DASHBOARD_HTML_TEMPLATE
     
     organization_name = _require_org_admin(current_user)
     
+    # Parse date filters
+    start_dt = None
+    end_dt = None
+    if start_date:
+        try:
+            start_dt = datetime.datetime.fromisoformat(start_date)
+        except Exception:
+            pass
+    if end_date:
+        try:
+            end_dt = datetime.datetime.fromisoformat(end_date) + datetime.timedelta(days=1) - datetime.timedelta(microseconds=1)
+        except Exception:
+            pass
+
     # 1. Get all users in the organization
     org_users = db.query(models.User).filter(
         func.lower(models.User.organization_name) == organization_name.lower()
@@ -2591,15 +2640,25 @@ def download_org_billing_report(
     org_user_map = {u.id: u for u in org_users}
     
     # 2. Get all projects in the organization
-    org_projects = db.query(models.GovernanceResponse).filter(
+    org_projects_query = db.query(models.GovernanceResponse).filter(
         (models.GovernanceResponse.owner_id.in_(org_user_ids)) |
         (func.lower(models.GovernanceResponse.organization_name) == organization_name.lower())
-    ).all()
+    )
+    if start_dt:
+        org_projects_query = org_projects_query.filter(models.GovernanceResponse.submission_date >= start_dt)
+    if end_dt:
+        org_projects_query = org_projects_query.filter(models.GovernanceResponse.submission_date <= end_dt)
+    org_projects = org_projects_query.all()
     
     # Aggregate AI stats
-    ai_logs = db.query(models.AIUsageLog).filter(
+    ai_logs_query = db.query(models.AIUsageLog).filter(
         models.AIUsageLog.user_id.in_(org_user_ids)
-    ).all()
+    )
+    if start_dt:
+        ai_logs_query = ai_logs_query.filter(models.AIUsageLog.created_at >= start_dt)
+    if end_dt:
+        ai_logs_query = ai_logs_query.filter(models.AIUsageLog.created_at <= end_dt)
+    ai_logs = ai_logs_query.all()
     
     total_cost = 0.0
     total_prompt_tokens = 0
@@ -2625,9 +2684,14 @@ def download_org_billing_report(
     cost_by_model = {k: round(v, 4) for k, v in cost_by_model.items()}
     
     # Calculate session durations based on activity logs
-    activity_logs = db.query(models.UserActivityLog).filter(
+    activity_logs_query = db.query(models.UserActivityLog).filter(
         models.UserActivityLog.user_id.in_(org_user_ids)
-    ).order_by(models.UserActivityLog.user_id, models.UserActivityLog.created_at).all()
+    )
+    if start_dt:
+        activity_logs_query = activity_logs_query.filter(models.UserActivityLog.created_at >= start_dt)
+    if end_dt:
+        activity_logs_query = activity_logs_query.filter(models.UserActivityLog.created_at <= end_dt)
+    activity_logs = activity_logs_query.order_by(models.UserActivityLog.user_id, models.UserActivityLog.created_at).all()
     
     user_durations = {}
     user_last_time = {}

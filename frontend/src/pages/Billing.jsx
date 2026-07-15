@@ -21,6 +21,10 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
     const [agentFilter, setAgentFilter] = useState('all');
     const [refreshing, setRefreshing] = useState(false);
     
+    // Date Range filters
+    const [startDate, setStartDate] = useState('');
+    const [endDate, setEndDate] = useState('');
+    
     // Sort states for user table
     const [userSortField, setUserSortField] = useState('name');
     const [userSortAsc, setUserSortAsc] = useState(true);
@@ -47,7 +51,15 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
             };
 
             if (isOrgAdmin) {
-                const res = await fetch(`${API_BASE_URL}/organization/billing-logs`, {
+                let logsUrl = `${API_BASE_URL}/organization/billing-logs`;
+                const params = [];
+                if (startDate) params.push(`start_date=${startDate}`);
+                if (endDate) params.push(`end_date=${endDate}`);
+                if (params.length > 0) {
+                    logsUrl += `?${params.join('&')}`;
+                }
+                
+                const res = await fetch(logsUrl, {
                     headers
                 });
 
@@ -95,6 +107,22 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                 format: 'a4'
             });
             
+            // Filtered lists matching current search
+            const filteredUsers = processedUsers;
+            const filteredProjects = processedProjects;
+            
+            // Dynamic sums based on filters
+            const totalCost = filteredUsers.reduce((sum, u) => sum + (u.total_cost || 0), 0);
+            const totalPromptTokens = filteredUsers.reduce((sum, u) => sum + (u.ai_usage?.reduce((s, a) => s + (a.prompt || 0), 0) || 0), 0);
+            const totalCompletionTokens = filteredUsers.reduce((sum, u) => sum + (u.ai_usage?.reduce((s, a) => s + (a.completion || 0), 0) || 0), 0);
+            
+            const costByModel = {};
+            filteredUsers.forEach(u => {
+                u.ai_usage?.forEach(a => {
+                    costByModel[a.model] = (costByModel[a.model] || 0) + (a.cost || 0);
+                });
+            });
+            
             // Page dimension metrics
             const pageWidth = 210;
             const pageHeight = 297;
@@ -140,10 +168,15 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
             doc.setFont('helvetica', 'normal');
             doc.setFontSize(11);
             doc.setTextColor(226, 232, 240);
-            doc.text(`Organization: ${orgBillingData.organization_name || 'Biourntec'}`, margin, 34);
+            doc.text(`Organization: ${orgBillingData.organization_name || 'Biourntec'}`, margin, 32);
+            
+            const periodStr = startDate || endDate 
+                ? `Period: ${startDate || 'Beginning'} to ${endDate || 'Present'}`
+                : `Period: All-Time`;
+            doc.text(periodStr, margin, 38);
             
             doc.setFontSize(9);
-            doc.text(`Exported By: ${user?.email || 'Admin'}`, margin, 42);
+            doc.text(`Exported By: ${user?.email || 'Admin'}`, margin, 44);
             
             cursorY = 60;
             
@@ -168,7 +201,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
             doc.text("TOTAL COST (USD)", margin + 3, cursorY + 5);
             doc.setFontSize(12);
             doc.setTextColor(16, 185, 129); // Emerald-500
-            doc.text(`$${orgBillingData.summary?.total_cost?.toFixed(2)}`, margin + 3, cursorY + 12);
+            doc.text(`$${totalCost?.toFixed(2)}`, margin + 3, cursorY + 12);
             
             // Prompt tokens box
             doc.setFillColor(248, 250, 252);
@@ -179,7 +212,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
             doc.text("PROMPT TOKENS", margin + kpiWidth + 6, cursorY + 5);
             doc.setFontSize(12);
             doc.setTextColor(59, 130, 246); // Blue-500
-            doc.text(orgBillingData.summary?.total_prompt_tokens?.toLocaleString() || "0", margin + kpiWidth + 6, cursorY + 12);
+            doc.text(totalPromptTokens?.toLocaleString() || "0", margin + kpiWidth + 6, cursorY + 12);
             
             // Completion tokens box
             doc.setFillColor(248, 250, 252);
@@ -190,12 +223,12 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
             doc.text("COMPLETION TOKENS", margin + (kpiWidth * 2) + 9, cursorY + 5);
             doc.setFontSize(12);
             doc.setTextColor(168, 85, 247); // Purple-500
-            doc.text(orgBillingData.summary?.total_completion_tokens?.toLocaleString() || "0", margin + (kpiWidth * 2) + 9, cursorY + 12);
+            doc.text(totalCompletionTokens?.toLocaleString() || "0", margin + (kpiWidth * 2) + 9, cursorY + 12);
             
             cursorY += kpiHeight + 10;
             
             // Model breakdown
-            if (orgBillingData.summary?.cost_by_model && Object.keys(orgBillingData.summary.cost_by_model).length > 0) {
+            if (costByModel && Object.keys(costByModel).length > 0) {
                 doc.setFont('helvetica', 'bold');
                 doc.setFontSize(10);
                 doc.setTextColor(15, 23, 42);
@@ -206,7 +239,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                 doc.setFontSize(8.5);
                 doc.setTextColor(71, 85, 105);
                 
-                Object.entries(orgBillingData.summary.cost_by_model).forEach(([model, cost]) => {
+                Object.entries(costByModel).forEach(([model, cost]) => {
                     checkSpace(6);
                     doc.text(`• ${model}:`, margin + 3, cursorY);
                     doc.setFont('helvetica', 'bold');
@@ -247,7 +280,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
             doc.setFontSize(7.5);
             doc.setTextColor(51, 65, 85);
             
-            (orgBillingData.user_stats || []).forEach((u, i) => {
+            (filteredUsers || []).forEach((u, i) => {
                 checkSpace(11);
                 if (i % 2 === 1) {
                     doc.setFillColor(248, 250, 252);
@@ -307,7 +340,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
             doc.setFontSize(7.5);
             doc.setTextColor(51, 65, 85);
             
-            (orgBillingData.projects_list || []).forEach((p, i) => {
+            (filteredProjects || []).forEach((p, i) => {
                 checkSpace(11);
                 if (i % 2 === 1) {
                     doc.setFillColor(248, 250, 252);
@@ -356,7 +389,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
 
     useEffect(() => {
         fetchBillingData();
-    }, [selectedProjectKey, isOrgAdmin]);
+    }, [selectedProjectKey, isOrgAdmin, startDate, endDate]);
 
     // Handle user sort
     const handleUserSort = (field) => {
@@ -423,6 +456,31 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
         return list;
     }, [orgBillingData, searchTerm]);
 
+    const derivedSummary = useMemo(() => {
+        if (!orgBillingData) return {};
+        if (!searchTerm) return orgBillingData.summary || {};
+        
+        const totalCost = processedUsers.reduce((sum, u) => sum + (u.total_cost || 0), 0);
+        let totalPrompt = 0;
+        let totalCompletion = 0;
+        const costByModel = {};
+        
+        processedUsers.forEach(u => {
+            u.ai_usage?.forEach(a => {
+                totalPrompt += (a.prompt || 0);
+                totalCompletion += (a.completion || 0);
+                costByModel[a.model] = (costByModel[a.model] || 0) + (a.cost || 0);
+            });
+        });
+        
+        return {
+            total_cost: totalCost,
+            total_prompt_tokens: totalPrompt,
+            total_completion_tokens: totalCompletion,
+            cost_by_model: costByModel
+        };
+    }, [orgBillingData, processedUsers, searchTerm]);
+
     // Filtered lists for Standard User View
     const filteredTasks = useMemo(() => {
         if (!billingData || !billingData.tasks) return [];
@@ -478,7 +536,8 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
 
     // ── RENDER 1: Organization Admin Billing & Logs Dashboard ──
     if (isOrgAdmin && orgBillingData) {
-        const { organization_name, summary: orgSummary = {} } = orgBillingData;
+        const { organization_name } = orgBillingData;
+        const orgSummary = derivedSummary;
 
         return (
             <div className="flex-1 overflow-y-auto h-full bg-app-bg-page custom-scrollbar">
@@ -529,6 +588,42 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                                 <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
                                 {refreshing ? 'Refreshing...' : 'Refresh Logs'}
                             </button>
+                        </div>
+                    </div>
+
+                    {/* Date Range Filter */}
+                    <div className="mb-6 p-4 rounded-xl bg-app-bg-card border border-app-border flex flex-wrap items-center gap-4 shadow-sm no-print">
+                        <div className="flex items-center gap-2">
+                            <Clock className="w-4 h-4 text-app-primary" />
+                            <span className="text-xs font-bold text-app-text-label uppercase tracking-wider">Filter by Date Range:</span>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-3">
+                            <div className="flex items-center gap-2">
+                                <label className="text-xs text-app-text-muted font-semibold">Start:</label>
+                                <input
+                                    type="date"
+                                    value={startDate}
+                                    onChange={(e) => setStartDate(e.target.value)}
+                                    className="px-3 py-1 bg-app-bg-muted border border-app-border hover:border-app-border-active focus:border-app-primary text-xs text-app-text-main rounded-lg focus:outline-none transition-all cursor-pointer"
+                                />
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <label className="text-xs text-app-text-muted font-semibold">End:</label>
+                                <input
+                                    type="date"
+                                    value={endDate}
+                                    onChange={(e) => setEndDate(e.target.value)}
+                                    className="px-3 py-1 bg-app-bg-muted border border-app-border hover:border-app-border-active focus:border-app-primary text-xs text-app-text-main rounded-lg focus:outline-none transition-all cursor-pointer"
+                                />
+                            </div>
+                            {(startDate || endDate) && (
+                                <button
+                                    onClick={() => { setStartDate(''); setEndDate(''); }}
+                                    className="px-3 py-1 bg-rose-50 hover:bg-rose-105 dark:bg-app-status-errorBg/20 dark:hover:bg-app-status-errorBg/40 border border-rose-200 dark:border-rose-900/30 text-rose-600 dark:text-rose-450 text-xs font-bold rounded-lg transition-colors cursor-pointer"
+                                >
+                                    Clear Dates
+                                </button>
+                            )}
                         </div>
                     </div>
 
@@ -619,7 +714,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                                         </div>
                                     </div>
                                     <h3 className="text-2xl font-black text-app-text-main">
-                                        {orgBillingData.user_stats?.length}
+                                        {processedUsers.length}
                                     </h3>
                                     <p className="text-[10px] text-app-text-label mt-1 font-medium">
                                         Active users in organization
