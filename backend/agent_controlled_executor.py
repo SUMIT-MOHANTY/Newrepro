@@ -1703,14 +1703,18 @@ async def run_controlled_execution(
 def _find_agent_container(agent_id: str) -> Optional[str]:
     """
     Find a running Docker container for this agent by scanning container names.
-    Container names follow the pattern: {agent_id}_{8-char-hex}
+    Container names follow the pattern: {sanitized_agent_id}_{8-char-hex}
+    Agent IDs containing '#' are sanitized to '_' to match how containers are named.
     """
     if not agent_id:
         return None
     try:
-        # List all running containers and filter by name containing agent_id
+        # Normalize agent_id: containers replace '#' with '_' in names
+        sanitized_id = agent_id.replace('#', '_')
+        
+        # List all running containers and filter by name containing sanitized_id
         result = subprocess.run(
-            ["docker", "ps", "--filter", f"name={agent_id}",
+            ["docker", "ps", "--filter", f"name={sanitized_id}",
              "--format", "{{.Names}}", "--no-trunc"],
             capture_output=True, text=True, timeout=10,
         )
@@ -1721,9 +1725,9 @@ def _find_agent_container(agent_id: str) -> Optional[str]:
         if not containers:
             return None
 
-        # Exact match: prefer container that starts with agent_id_
+        # Exact match: prefer container that starts with sanitized_id_
         for name in containers:
-            if name.startswith(f"{agent_id}_"):
+            if name.startswith(f"{sanitized_id}_"):
                 return name
 
         # Fallback to first matching container

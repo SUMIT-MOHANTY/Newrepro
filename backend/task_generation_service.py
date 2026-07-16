@@ -46,19 +46,30 @@ If an agent builds a button that does nothing, the task has FAILED. There are no
 
 ### NAVIGATION ARCHITECTURE REQUIREMENT
 TASK-00 MUST establish the navigation foundation that ALL frontend tasks depend on:
-  1. **React Router v6 setup** in `src/App.tsx` with ALL application routes pre-registered
-  2. **Shared Layout component** (`src/components/layout/AppLayout.tsx`) containing:
+  1. **React Router v6 setup** in the main App entry file with ALL application routes pre-registered
+  2. **Shared Layout component** (e.g. AppLayout.tsx) containing:
      - Persistent sidebar with navigation links to every major section
      - Top navigation bar with user avatar, notifications bell, and breadcrumbs
      - Main content area where page components are rendered via `<Outlet />`
-  3. **Design token file** (`src/styles/tokens.css` or `src/theme/tokens.ts`) defining:
+  3. **Design token file** (e.g. tokens.css or tokens.ts) defining:
      - Primary, secondary, accent, surface, and text color variables
      - Typography scale (display, heading, body, caption font sizes)
      - Spacing scale, border radius, shadow levels
-  4. **Global mock data store** (`src/mocks/mockData.ts`) with 5-10 realistic records per entity type, using domain-specific names, realistic values, and varied statuses
-  5. **Shared UI components** (`src/components/ui/`) — Button, Badge, Card, Modal, Table, Sidebar, etc. — used consistently by all page components
+  4. **Global mock data store** (e.g. mockData.ts) with 5-10 realistic records per entity type, using domain-specific names, realistic values, and varied statuses
+  5. **Shared UI components** (e.g. a ui/ directory) — Button, Badge, Card, Modal, Table, Sidebar, etc. — used consistently by all page components
 
 Every subsequent Sprint 1 frontend task IMPORTS from these shared foundations. No task invents its own navigation, colors, or mock data structure.
+
+### ⚠️ CRITICAL — CANONICAL PATH RULE (APPLIES TO ALL TASKS)
+The REPOSITORY STRUCTURE provided in the context is the SINGLE SOURCE OF TRUTH for all file paths.
+Every file path you write in FILE OWNERSHIP blocks, descriptions, and checklists MUST use the FULL path exactly as it appears in the canonical repository structure tree.
+
+**EXAMPLES of the rule in action:**
+- If the canonical tree shows `frontend/src/pages/`, then all frontend page paths MUST start with `frontend/src/pages/...` — NEVER bare `src/pages/...`
+- If the canonical tree shows `backend/app/models/`, then all model paths MUST start with `backend/app/models/...` — NEVER bare `app/models/...`
+- If there is NO `frontend/` wrapper in the tree (flat project), then `src/pages/...` is correct.
+
+The rule is simple: **look at the tree, use the exact prefix shown in the tree.** If the tree has a `frontend/` parent directory containing `src/`, then every frontend path MUST include `frontend/` as the prefix. No exceptions.
 
 ### DESIGN QUALITY STANDARD
 Sprint 1 prototype screens must be visually outstanding — not generic, not bare, not "bootstrap default."
@@ -242,42 +253,45 @@ Sprint 1 frontend screens with deep interactivity (modals, drawers, search, form
 ## ═══════════════════════════════════════════════════════
 
 Every task description MUST state:
-  - "This agent owns: [exact file paths from section 0.5]"
-  - "This agent must create: [list of specific files with full paths and their purpose]"
+  - "This agent owns: [exact file paths derived from the CANONICAL REPOSITORY STRUCTURE]"
+  - "This agent must create: [list of specific files with FULL canonical paths and their purpose]"
   - "This agent must NOT modify: [other folders/files]"
-  - For Sprint 1 tasks: "This agent must IMPORT from: src/components/layout/AppLayout.tsx, src/mocks/mockData.ts, src/components/ui/"
+  - For Sprint 1 tasks: "This agent must IMPORT from: [canonical path to layout], [canonical path to mockData], [canonical path to ui components]"
+
+⚠️ REMINDER: All file paths in FILE OWNERSHIP blocks MUST match the CANONICAL REPOSITORY STRUCTURE exactly.
+If the repo tree shows files under `frontend/src/`, use `frontend/src/...` — NEVER bare `src/...`.
+If the repo tree shows files under `backend/app/`, use `backend/app/...` — NEVER bare `app/...`.
+Deriving paths from the tree prevents conflicts between task descriptions and the actual project layout.
 
 **Example of GOOD Sprint 1 frontend task description (abbreviated):**
+(Note: paths below use `{fe}` as placeholder for whatever the canonical frontend root is — e.g. `frontend/` or empty if flat)
 ```
 [SCREEN STORY]
 The user arrives at the Projects Overview screen after clicking "Projects" in the sidebar.
 They see a page header "All Projects" with a "+ New Project" button in the top right.
-Below the header, a search input and status filter dropdown allow real-time filtering of the project list.
 The main content is a data table with columns: Project Name, Status (color-coded badge), Owner, Due Date, Budget Utilization (progress bar), and Actions.
 Clicking any row navigates to /projects/:id (Project Detail screen).
-Clicking "+ New Project" opens a Drawer from the right with a 3-field form (Name, Description, Due Date). On submit, a success toast "Project created" appears, the drawer closes, and the new project is optimistically prepended to the table.
+Clicking "+ New Project" opens a Drawer from the right with a 3-field form. On submit, a success toast appears.
 
 [SCREEN CONNECTIVITY]
 - Sidebar "Projects" → current page (active state)
 - Table row click → /projects/:id (Project Detail)
 - "+ New Project" button → opens ProjectCreateDrawer (right-side drawer, no navigation)
-- "View Report" action → /projects/:id/report (Project Report)
 - Breadcrumb "Home" → /dashboard
 
 [MOCK DATA SPECIFICATION]
 Entity: Project — 8 records
-Fields: id, name ("Apollo CRM Rebuild", "Nexus Dashboard v2", ...), status (Active/On Hold/Completed/At Risk), owner ("Sarah Chen", "Marcus Webb", ...), dueDate, budgetUsed (0-100), budgetTotal
+Fields: id, name, status (Active/On Hold/Completed/At Risk), owner, dueDate, budgetUsed, budgetTotal
 
 [FILE OWNERSHIP]
-This agent owns: src/pages/projects/ProjectsPage.tsx, src/pages/projects/ProjectDetailPage.tsx, src/components/projects/ProjectCreateDrawer.tsx, src/components/projects/ProjectTable.tsx
+This agent owns: {fe}src/pages/projects/ProjectsPage.tsx, {fe}src/pages/projects/ProjectDetailPage.tsx
 This agent must create:
-  - src/pages/projects/ProjectsPage.tsx (main projects list screen)
-  - src/pages/projects/ProjectDetailPage.tsx (individual project drill-down)
-  - src/components/projects/ProjectCreateDrawer.tsx (new project right-side drawer)
-  - src/components/projects/ProjectTable.tsx (data table with sort, filter, row actions)
-This agent must IMPORT from: src/components/layout/AppLayout.tsx, src/mocks/mockData.ts, src/components/ui/
-This agent must NOT modify: src/App.tsx, src/mocks/mockData.ts, src/components/layout/, src/styles/tokens.css, backend/
+  - {fe}src/pages/projects/ProjectsPage.tsx (main projects list screen)
+  - {fe}src/pages/projects/ProjectDetailPage.tsx (individual project drill-down)
+This agent must IMPORT from: {fe}src/components/layout/AppLayout.tsx, {fe}src/mocks/mockData.ts, {fe}src/components/ui/
+This agent must NOT modify: {fe}src/App.tsx, {fe}src/mocks/mockData.ts, {fe}src/components/layout/, backend/
 ```
+IMPORTANT: In your actual output, replace `{fe}` with the real canonical frontend prefix from the REPOSITORY STRUCTURE (e.g. `frontend/` if the tree shows `frontend/src/`, or nothing if `src/` is at root).
 
 ---
 
@@ -322,21 +336,22 @@ Every other task in the entire plan — Sprint 1, 2, 3, and 4 — must list "TAS
 This is enforced by the linked_tasks dependency. All Sprint 1 tasks depend on TASK-00 because they import from the files it creates (AppLayout, mockData, design tokens, UI components, App.tsx routes). An agent starting a screen task without TASK-00's output would fail immediately.
 
 **Rule 5 — TASK-00 owns the entire shared foundation. No other task may touch these files.**
-  - src/App.tsx (React Router route registry)
-  - src/components/layout/AppLayout.tsx (persistent navigation shell)
-  - src/styles/tokens.css OR src/theme/tokens.ts (design tokens)
-  - src/mocks/mockData.ts (global mock data store)
-  - src/components/ui/* (shared UI component kit)
-  - backend/main.py (entry point skeleton)
+  - The main App entry file (e.g. App.tsx — route registry)
+  - The shared Layout component (e.g. AppLayout.tsx — persistent navigation shell)
+  - The design token file (e.g. tokens.css or tokens.ts)
+  - The global mock data store (e.g. mockData.ts)
+  - The shared UI component directory (e.g. components/ui/*)
+  - The backend entry point skeleton (e.g. main.py)
 No other task in any sprint may modify these files. They are read-only after TASK-00 completes.
+⚠️ Use FULL CANONICAL PATHS from the REPOSITORY STRUCTURE when listing these in the actual task output. Never use bare relative paths like `src/App.tsx` if the canonical tree shows `frontend/src/`.
 
-### TASK-00 MANDATORY CONTENT (use this exact structure):
+### TASK-00 MANDATORY CONTENT (use this structure, with CANONICAL PATHS from the repository tree):
 
 ```json
 {
   "task_id": "TASK-00",
   "taskName": "Project Bootstrap, Navigation Shell & Shared Frontend Foundation",
-  "description": "GATEWAY TASK — All other tasks depend on this. Must complete before any other agent starts.\n\nThis task creates the entire shared foundation that every Sprint 1 frontend agent will import from. It does NOT build any feature screens — it builds the INFRASTRUCTURE that makes all screens possible.\n\n[WHAT THIS TASK BUILDS]\n1. Repository scaffold: all directories from the canonical structure, package.json, tsconfig, vite.config, tailwind.config, .env.example.\n2. React Router v6 setup in src/App.tsx: ALL application routes pre-registered with placeholder lazy-loaded components, wrapped in the AppLayout shell.\n3. AppLayout.tsx (src/components/layout/AppLayout.tsx): persistent left sidebar with navigation links to every major section, top navbar with app logo, user avatar dropdown, notifications bell, breadcrumb trail, and <Outlet /> for page content. Sidebar must be collapsible.\n4. Design token system (src/styles/tokens.css): CSS custom properties for — primary/secondary/accent colors, semantic colors (success, warning, error, info), surface/background layers, typography scale (display/heading/subheading/body/caption), spacing scale, border-radius levels, box-shadow levels. All Sprint 1 screens MUST use these tokens, never hardcoded values.\n5. Global mock data store (src/mocks/mockData.ts): exports typed arrays of 8–10 realistic mock records for EVERY entity type in the application. Use domain-appropriate names, IDs, dates, and statuses. This is the single source of truth for all Sprint 1 mock data.\n6. Shared UI component kit (src/components/ui/): Button (variants: primary, secondary, ghost, danger), Badge (color variants by status), Card, Modal, Drawer (right-side slide-in panel), DataTable (sortable, with row-click handler prop), SearchInput, Toast/notification system, LoadingSkeleton, EmptyState, PageHeader (title + subtitle + action slot).\n7. Backend entry point ONLY: backend/main.py with FastAPI app instantiation, CORS middleware, and a /health endpoint. NO database, NO models, NO business logic.\n\n[WHAT THIS TASK MUST NOT BUILD]\n- No feature screens (those are built by subsequent Sprint 1 tasks)\n- No backend database schemas, models, or API routes (Sprint 2)\n- No third-party API integrations (Sprint 2)\n\nThis agent owns: src/App.tsx, src/components/layout/, src/components/ui/, src/styles/, src/mocks/, src/theme/, backend/main.py, all config files (package.json, vite.config.ts, tailwind.config.ts, tsconfig.json)\nThis agent must NOT modify: src/pages/ (owned by individual Sprint 1 screen tasks)\nAll subsequent tasks MUST wait for this task to complete before starting.",
+  "description": "GATEWAY TASK — All other tasks depend on this. Must complete before any other agent starts.\n\nThis task creates the entire shared foundation that every Sprint 1 frontend agent will import from. It does NOT build any feature screens — it builds the INFRASTRUCTURE that makes all screens possible.\n\n[WHAT THIS TASK BUILDS]\n1. Repository scaffold: all directories from the CANONICAL REPOSITORY STRUCTURE, plus package.json, tsconfig, vite.config, tailwind.config, .env.example.\n2. React Router v6 setup in the main App entry file: ALL application routes pre-registered with placeholder lazy-loaded components, wrapped in the AppLayout shell.\n3. AppLayout.tsx: persistent left sidebar with navigation links to every major section, top navbar with app logo, user avatar dropdown, notifications bell, breadcrumb trail, and <Outlet /> for page content. Sidebar must be collapsible.\n4. Design token system: CSS custom properties for colors, typography, spacing, border-radius, box-shadow. All Sprint 1 screens MUST use these tokens, never hardcoded values.\n5. Global mock data store (e.g. mockData.ts): exports typed arrays of 8-10 realistic mock records for EVERY entity type. Use domain-appropriate names, IDs, dates, and statuses.\n6. Shared UI component kit: Button (variants: primary, secondary, ghost, danger), Badge, Card, Modal, Drawer, DataTable, SearchInput, Toast system, LoadingSkeleton, EmptyState, PageHeader.\n7. Backend entry point skeleton ONLY (e.g. main.py) with CORS middleware and a /health endpoint. NO database, NO models, NO business logic.\n\n[WHAT THIS TASK MUST NOT BUILD]\n- No feature screens (those are built by subsequent Sprint 1 tasks)\n- No backend database schemas, models, or API routes (Sprint 2)\n- No third-party API integrations (Sprint 2)\n\n⚠️ FILE OWNERSHIP: List ALL owned files using FULL CANONICAL PATHS from the REPOSITORY STRUCTURE. If the tree shows frontend/src/, use frontend/src/... not bare src/...\nAll subsequent tasks MUST wait for this task to complete before starting.",
   "task_type": "TASK",
   "priority": "high",
   "task_wallet": 8,
@@ -346,11 +361,11 @@ No other task in any sprint may modify these files. They are read-only after TAS
   "linked_tasks": [],
   "reported_by": "system",
   "checklist": [
-    { "text": "Scaffold full repository structure: all directories, package.json, tsconfig, vite.config, tailwind.config, .env.example, README", "completed": false },
-    { "text": "Build AppLayout.tsx with collapsible sidebar (all nav links), top navbar (logo, user avatar, notifications, breadcrumbs), and <Outlet /> content slot. Register all routes in src/App.tsx with React Router v6.", "completed": false },
-    { "text": "Create design token file with complete color palette (primary, accent, semantic), typography scale, spacing scale, border radius, and shadow levels. Verify tokens render correctly in browser.", "completed": false },
-    { "text": "Populate src/mocks/mockData.ts with 8–10 realistic typed records for every entity type in the application. Verify all exported arrays are importable and TypeScript-typed.", "completed": false },
-    { "text": "Build shared UI component kit: Button (all variants), Badge, Card, Modal, Drawer, DataTable, SearchInput, Toast system, LoadingSkeleton, EmptyState, PageHeader. Verify each component renders with mock props.", "completed": false }
+    { "text": "Scaffold full repository structure: all directories from canonical tree, package.json, tsconfig, vite.config, tailwind.config, .env.example, README", "completed": false },
+    { "text": "Build AppLayout.tsx with collapsible sidebar (all nav links), top navbar (logo, user avatar, notifications, breadcrumbs), and <Outlet /> content slot. Register all routes in the main App entry file with React Router v6.", "completed": false },
+    { "text": "Create design token file with complete color palette (primary, accent, semantic), typography scale, spacing scale, border radius, and shadow levels.", "completed": false },
+    { "text": "Populate global mock data store with 8-10 realistic typed records for every entity type in the application.", "completed": false },
+    { "text": "Build shared UI component kit: Button (all variants), Badge, Card, Modal, Drawer, DataTable, SearchInput, Toast system, LoadingSkeleton, EmptyState, PageHeader.", "completed": false }
   ]
 }
 ```
@@ -389,8 +404,10 @@ Sprint 4 tasks → linked_tasks: ["TASK-00", relevant Sprint 2/3 tasks]
    - Sprint 4 milestones: "QA & Testing", "Production Deployment"
 
 3. **File Path Accuracy:**
-   - Reference exact folders/modules from the repository structure (section 0.5.1 of the Agent Action Plan)
-   - Sprint 1 agents: src/ paths only. Sprint 2 agents: backend/ paths only.
+   - ALL file paths MUST be derived from the CANONICAL REPOSITORY STRUCTURE provided in the context.
+   - NEVER use bare `src/...` if the canonical tree shows the frontend source under a subdirectory like `frontend/src/...`.
+   - NEVER use bare `app/...` if the canonical tree shows the backend source under `backend/app/...`.
+   - The canonical tree is the single source of truth. Every path you output must be traceable to a node in that tree.
 
 4. **Output Format:**
    - Return ONLY a valid JSON array
@@ -1210,6 +1227,12 @@ this prompt asks you to generate EVERYTHING at once — all 4 sprints, all tasks
   Sprint 3 creates "Auth Integration" (connecting them) — NOT another "Auth UI"
 - Every task must have a UNIQUE purpose and UNIQUE file ownership
 
+## CANONICAL PATH ENFORCEMENT
+- ALL file paths in task descriptions, FILE OWNERSHIP blocks, and checklists MUST use the FULL canonical paths from the REPOSITORY STRUCTURE provided in the context.
+- If the repository tree shows `frontend/src/`, then ALL frontend paths MUST start with `frontend/src/...` — NEVER bare `src/...`.
+- If the repository tree shows `backend/app/`, then ALL backend paths MUST start with `backend/app/...` — NEVER bare `app/...`.
+- Derive every path from the tree. Do NOT invent or assume path prefixes.
+
 ## OUTPUT RULES
 - Return ONLY a valid JSON array — no markdown, no preamble, no explanation
 - First element MUST be TASK-00 (task_id exactly "TASK-00", linked_tasks: [])
@@ -1247,6 +1270,7 @@ OUTPUT RULES:
 - Return ONLY a valid JSON array — no markdown, no preamble, no explanation
 - First element MUST be TASK-00
 - All other Sprint 1 tasks have linked_tasks: ["TASK-00"]
+- ALL file paths MUST use FULL canonical paths from the REPOSITORY STRUCTURE (e.g. `frontend/src/...` if the tree shows `frontend/src/`, NEVER bare `src/...`)
 
 Generate Sprint 1 tasks now:"""
 
@@ -1273,6 +1297,7 @@ SPRINT 1 TASKS ALREADY GENERATED (for reference — use their task_ids in linked
 OUTPUT RULES:
 - Return ONLY a valid JSON array — no markdown, no preamble, no explanation
 - Every task linked_tasks must include "TASK-00" at minimum
+- ALL file paths MUST use FULL canonical paths from the REPOSITORY STRUCTURE (e.g. `backend/app/...` if the tree shows `backend/app/`, NEVER bare `app/...`)
 
 Generate Sprint 2 tasks now:"""
 
@@ -1308,6 +1333,7 @@ SPRINT 2 TASKS (backend APIs already built):
 OUTPUT RULES:
 - Return ONLY a valid JSON array — no markdown, no preamble, no explanation
 - Every task's linked_tasks must reference: ["TASK-00", "<Sprint1 task_id>", "<Sprint2 task_id>"]
+- ALL file paths MUST use FULL canonical paths from the REPOSITORY STRUCTURE
 
 Generate Sprint 3 tasks now:"""
 
@@ -1339,6 +1365,7 @@ PREVIOUSLY GENERATED TASKS (all sprints — for linked_tasks reference):
 OUTPUT RULES:
 - Return ONLY a valid JSON array — no markdown, no preamble, no explanation
 - Every task's linked_tasks must include "TASK-00" at minimum
+- ALL file paths MUST use FULL canonical paths from the REPOSITORY STRUCTURE
 
 Generate Sprint 4 tasks now:"""
 
@@ -1843,7 +1870,7 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
             scaffold = {
                 "task_id": "TASK-00",
                 "taskName": "Project Bootstrap & Shared Foundation",
-                "description": "Project bootstrap: repository scaffold, navigation shell, design tokens, mock data store, and shared UI components.\nThis agent owns: all config files, src/components/layout/, src/components/ui/, src/styles/, src/mocks/",
+                "description": "Project bootstrap: repository scaffold, navigation shell, design tokens, mock data store, and shared UI components.\nThis agent owns: all config files and shared foundation directories as defined in the canonical repository structure.",
                 "task_type": "TASK",
                 "priority": "high",
                 "task_wallet": 8,
@@ -1898,6 +1925,60 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
 
     logger.info(f"[{project_token}] Single-call generation complete — {len(all_tasks)} tasks after dedup")
 
+    # ── Helper: detect frontend prefix from canonical tree ────────────────────
+    def _detect_frontend_prefix(tree_text: str) -> str:
+        """
+        Scan the canonical repository tree to find the parent directory
+        that wraps 'src/' (e.g. 'frontend/'). Returns '' if src/ is at root.
+        
+        Works with any tree format:
+          ├── frontend/
+          │   ├── src/
+        """
+        import re
+        lines = tree_text.splitlines()
+
+        def _get_depth(line):
+            """Count nesting depth by counting tree connector groups (each ~4 chars)."""
+            stripped = line.rstrip()
+            if not stripped:
+                return -1
+            depth = 0
+            pos = 0
+            while pos < len(stripped):
+                chunk = stripped[pos:pos+4]
+                if chunk in ('│   ', '├── ', '└── ', '    ', '|   '):
+                    depth += 1
+                    pos += 4
+                elif stripped[pos:pos+3] in ('├──', '└──'):
+                    depth += 1
+                    pos += 3
+                    break
+                else:
+                    break
+            return depth
+
+        def _get_name(line):
+            """Extract the clean name from a tree line."""
+            return re.sub(r'^[\s│├└─\-\|]+', '', line).strip()
+
+        for i, line in enumerate(lines):
+            name = _get_name(line)
+            if name in ('src/', 'src'):
+                src_depth = _get_depth(line)
+                # Walk backwards to find parent (lower depth)
+                for j in range(i - 1, -1, -1):
+                    parent_name = _get_name(lines[j])
+                    parent_depth = _get_depth(lines[j])
+                    if parent_depth < src_depth and parent_name and parent_name not in ('.', './', ''):
+                        parent_dir = parent_name.rstrip('/') + '/'
+                        if parent_dir in ('.', './', '/'):
+                            return ''
+                        return parent_dir
+                # No parent found → src/ is at root
+                return ''
+        return ''
+
     # ── 6. Validate, enrich, inject repo structure ─────────────────────────────
     valid_tasks: List[Dict[str, Any]] = []
     repo_structure = context.get("repository_structure", "")
@@ -1925,6 +2006,26 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
         task.setdefault("planned_start", task["startdate"])
         if "deadline" not in task:
             task["deadline"] = (today + timedelta(days=min(task["task_wallet"], 7))).strftime('%Y-%m-%d')
+
+        # ── Normalize paths in description to match canonical tree ────────────
+        # Detect if the canonical repo tree has a frontend/ wrapper around src/
+        # If so, fix any bare src/ references in the description to use frontend/src/
+        if repo_structure:
+            import re
+            desc = task.get("description", "")
+            if desc:
+                fe_prefix = _detect_frontend_prefix(repo_structure)
+
+                # If we found a frontend prefix (e.g. "frontend/"), fix bare src/ paths
+                if fe_prefix:
+                    # Replace bare src/ references that are NOT already prefixed
+                    prefix_no_slash = fe_prefix.rstrip("/")
+                    desc = re.sub(
+                        r'(?<!' + re.escape(prefix_no_slash) + r'/)(?<![a-zA-Z0-9_-])(src/)',
+                        fe_prefix + r'src/',
+                        desc
+                    )
+                    task["description"] = desc
 
         # ── Inject repo structure ──────────────────────────────────────────────
         if repo_structure:
@@ -1962,11 +2063,15 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
             has_dev_check = any("run dev" in item.get("text", "").lower() or "development server" in item.get("text", "").lower() for item in checklist)
             
             # Smart file target detection from description or files
+            # Match full canonical paths: frontend/src/..., backend/..., or bare src/...
             import re
-            file_matches = re.findall(r'(src/[a-zA-Z0-9_\-/]+\.(?:tsx|jsx|ts|js|css))', task.get("description", ""))
-            primary_file = file_matches[0] if file_matches else "src/App.tsx"
+            file_matches = re.findall(r'((?:[a-zA-Z0-9_-]+/)*src/[a-zA-Z0-9_\-/]+\.(?:tsx|jsx|ts|js|css))', task.get("description", ""))
+            if not file_matches:
+                # Also try backend paths like backend/app/models.py
+                file_matches = re.findall(r'((?:[a-zA-Z0-9_-]+/)+[a-zA-Z0-9_\-/]+\.(?:py|rb|go|java|rs|php))', task.get("description", ""))
+            primary_file = file_matches[0] if file_matches else None
             
-            if not any(f"test -f {primary_file}" in item.get("text", "") for item in checklist):
+            if primary_file and not any(f"test -f {primary_file}" in item.get("text", "") for item in checklist):
                 checklist.append({
                     "text": f"Verify file exists: run `test -f {primary_file}` and verify exit code 0",
                     "completed": False
@@ -1975,7 +2080,7 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
             # --- Smart subcomponent integration check ---
             desc_text = task.get("description", "")
             title_text = task.get("taskName", "")
-            task_files = re.findall(r'(src/[a-zA-Z0-9_\-/]+\.(?:tsx|jsx|ts|js))', desc_text)
+            task_files = re.findall(r'((?:[a-zA-Z0-9_-]+/)*src/[a-zA-Z0-9_\-/]+\.(?:tsx|jsx|ts|js))', desc_text)
             
             # Find React component names mentioned in the description, excluding common React terms
             matches = set(re.findall(r'\b(Task[A-Z][a-zA-Z0-9]+|[A-Z][a-zA-Z0-9]+List|[A-Z][a-zA-Z0-9]+Item|[A-Z][a-zA-Z0-9]+Filter|[A-Z][a-zA-Z0-9]+Form|[A-Z][a-zA-Z0-9]+Stats)\b', desc_text + " " + title_text))

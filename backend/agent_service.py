@@ -1103,10 +1103,10 @@ def mark_run_all_waiting_state(
         master_agent["progress"] = 0
         master_agent["progress_message"] = MASTER_BUILDING_MESSAGE
 
-    # NEW: start the DAG watcher background task
+    # ── Start Master Orchestrator ──
     asyncio.create_task(
-        _dag_progress_watcher(project_token),
-        name=f"dag_watcher_{project_token or 'default'}"
+        _master_orchestrator_loop(project_token),
+        name=f"master_orch_{project_token or 'default'}"
     )
 
 
@@ -6247,6 +6247,140 @@ def _sync_local_branch_from_remote(
     return {"success": True, "base_branch": source_branch}
 
 
+
+
+
+
+# ── Master Orchestrator — Tree Enforcement ─────────────────────────────────
+# After each agent completes, validate their files against the canonical tree.
+
+async def _validate_agent_tree_compliance(
+    agent_id: str,
+    project_token: Optional[str] = None,
+    branch_name: str = "",
+) -> Dict[str, Any]:
+    """Validate agent-created files against the canonical project tree.
+
+    Returns:
+        {"status": "ok" | "violation" | "updated", "files": [...], "violations": [...]}
+    """
+    result: Dict[str, Any] = {
+        "status": "ok", "files": [], "violations": [], "additions": [],
+    }
+    if not project_token or not branch_name:
+        return result
+    state = _ensure_project_state(project_token)
+    canonical_paths: set = set()
+    try:
+        master_note_cache = state.get("master_note_cache", {})
+        workspace_tree = master_note_cache.get("workspace_tree", "")
+        if workspace_tree and isinstance(workspace_tree, str) and workspace_tree.startswith("{"):
+            tree_data = json.loads(workspace_tree)
+            _extract_tree_paths(tree_data, canonical_paths, prefix="")
+    except Exception:
+        pass
+    if not canonical_paths:
+        return result
+    ledger = state.get("task_ledger", {})
+    agent_files: List[str] = []
+    for entry in ledger.values():
+        if entry.agent_id == agent_id and entry.status == "done":
+            agent_files.extend(entry.files_written)
+    result["files"] = agent_files
+    if not agent_files:
+        return result
+
+    # ═══ FIX: Generate alternative canonical paths by stripping root wrapper prefix ═══
+    # The canonical tree JSON often has a root wrapper node (e.g., {"name":"backend",...})
+    # which creates paths like "backend/backend/manage.py" instead of "backend/manage.py".
+    # We strip the first path component ONLY for 3+ level paths (where wrapper is clear).
+    # DO NOT strip for 2-level paths (normal subdirectory like "backend/manage.py")
+    # as that would create false positives (matching wrong-level files).
+    all_canonical = set(canonical_paths)
+    for cp in list(canonical_paths):
+        parts = cp.strip("/").split("/")
+        if len(parts) > 2:
+            # Add alternative: "backend/backend/manage.py" → also match "backend/manage.py"
+            all_canonical.add("/".join(parts[1:]))
+    # ────────────────────────────────────────────────────────────────────────────────────────
+
+    for fpath in agent_files:
+        fpath_normalized = fpath.replace("\\", "/").strip().strip("/")
+        is_allowed = False
+        for canonical in all_canonical:
+            c_normalized = canonical.replace("\\", "/").strip().strip("/")
+            if fpath_normalized == c_normalized or fpath_normalized.startswith(c_normalized + "/"):
+                is_allowed = True
+                break
+        if not is_allowed:
+            filename = fpath_normalized.split("/")[-1]
+            is_likely_useful = any([
+                filename.endswith((".py", ".js", ".tsx", ".ts", ".jsx", ".go", ".rs", ".java")),
+                filename in ("README.md", "docker-compose.yml", "Dockerfile", ".gitignore", "Makefile", "package.json", "tsconfig.json"),
+                "test" in filename.lower() or "spec" in filename.lower(),
+                "config" in filename.lower() or "util" in filename.lower(),
+                "helper" in filename.lower() or "constant" in filename.lower(),
+            ])
+            if is_likely_useful:
+                result["additions"].append(fpath_normalized)
+                _log_master_agent(
+                    f"Agent {agent_id} added new useful file: {fpath_normalized} - updating tree",
+                    project_token=project_token,
+                )
+            else:
+                result["violations"].append(fpath_normalized)
+                _log_master_agent(
+                    f"Agent {agent_id} added file outside canonical tree: {fpath_normalized}",
+                    level="warning", project_token=project_token,
+                )
+    if result["violations"]:
+        result["status"] = "violation"
+    elif result["additions"]:
+        result["status"] = "updated"
+    if result["status"] == "ok":
+        _log_master_agent(f"Agent {agent_id} tree validation PASSED", project_token=project_token)
+    elif result["status"] == "updated":
+        _log_master_agent(f"Agent {agent_id} tree validation PASSED (with {len(result['additions'])} additions)", project_token=project_token)
+    elif result["status"] == "violation":
+        _log_master_agent(
+            f"Agent {agent_id} tree validation: {len(result['violations'])} file(s) outside tree: {', '.join(result['violations'][:3])}",
+            level="warning", project_token=project_token,
+        )
+    return result
+
+
+def _extract_tree_paths(node: Dict[str, Any], paths: set, prefix: str = "") -> None:
+    """Recursively extract file/directory paths from a nested JSON tree."""
+    name = node.get("name", "")
+    if not name:
+        return
+    current_path = f"{prefix}/{name}" if prefix else name
+    children = node.get("children")
+    if children and isinstance(children, list):
+        paths.add(current_path)
+        for child in children:
+            if isinstance(child, dict):
+                _extract_tree_paths(child, paths, current_path)
+    else:
+        paths.add(current_path)
+
+
+# ── Master Orchestrator — Publish task_failed event ─────────────────────
+async def _publish_agent_failed_event(
+    project_token: Optional[str],
+    agent_id: str,
+    task_title: str,
+    error: str,
+) -> None:
+    """Publish a task_failed event so the Master Orchestrator can react."""
+    try:
+        await _publish_agent_event(
+            project_token, "task_failed", agent_id,
+            task_id="", task_title=task_title, error=str(error)[:500],
+        )
+    except Exception:
+        pass
+
 async def _publish_agent_event(
     project_token: Optional[str],
     event_type: str,
@@ -6333,10 +6467,10 @@ async def _mark_repo_bootstrap_result(
         # Also persist to ProjectCanonicalState (local-first immutable store)
         # This enables guard_canonical_regeneration() to return True on restart
         try:
-            _canonical_state = state.get("master_note_payload") or {}
+            _canonical_state = state.get("master_note_cache") or {}
             _workspace_tree = _canonical_state.get("workspace_tree") or ""
-            _tech_spec = _canonical_state.get("tech_spec") or ""
-            _tech_stack = _canonical_state.get("tech_stack") or {}
+            _tech_spec = _canonical_state.get("brd_analysis_context") or ""
+            _tech_stack = _canonical_state.get("stack_profile") or {}
             if _workspace_tree or _tech_spec:
                 save_bootstrap_canonical_artifacts(
                     project_token=project_token,
@@ -6666,9 +6800,12 @@ def _log_master_agent(message: str, level: str = "info", project_token: Optional
 def _get_git_manager_creds(repo_url: Optional[str], token: Optional[str], project_token: Optional[str] = None) -> Dict[str, str]:
     project_agents = _get_agent_states(project_token)
     git_agent = project_agents.get(GIT_MANAGER_AGENT_ID) or {}
+    # ── FIX: Use passed repo_url FIRST, Git Manager's cached URL as fallback ──
+    # The passed repo_url is the actual repo where the agent pushed its work.
+    # The Git Manager's cached URL may be stale (user changed repo in settings).
     return {
-        "repo_url": git_agent.get("git_repo_url") or repo_url or "",
-        "token": git_agent.get("git_token") or token or ""
+        "repo_url": repo_url or git_agent.get("git_repo_url") or "",
+        "token": token or git_agent.get("git_token") or ""
     }
 
 
@@ -9249,6 +9386,15 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                 return
         else:
             _log_git_agent(f"Using existing shared git manager container: {container_name}", project_token=project_token)
+            # ═══ FIX: Update remote URL before fetching (repo may have changed) ═══
+            # The container was created in a previous run with OLD credentials.
+            # Without updating origin, git fetch would use the stale remote URL.
+            auth_url = _build_git_auth_url(repo_url, token)
+            subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "remote", "set-url", "origin", auth_url],
+                capture_output=True, text=True, timeout=15,
+            )
             # Fetch latest changes
             auth_config = _get_git_auth_config(repo_url, token)
             fetch_all_cmd = ["docker", "exec", "-w", "/workspace", container_name, "git"]
@@ -12899,6 +13045,7 @@ async def _ai_assign_tasks_to_agents(
 5. If there's only ONE agent with matching skills for a task type, assign ALL tasks of that type to that agent
 6. If there are MULTIPLE agents with matching skills, distribute tasks evenly among them
 7. Consider the agent's specialization field as the highest priority indicator
+8. For "bootstrap", "setup", "scaffold", "infrastructure", "navigation shell", or "project scaffold" tasks: assign to the FIRST available agent that has "frontend" or "backend" in skills_tags, NOT to agents with "Testing" specialization or "qa" in skills_tags
 
 **Output Format:**
 Return ONLY a valid JSON object mapping task_id to agent_id. Example:
@@ -18594,44 +18741,51 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 # Bootstrap task should NEVER be blocked by dependencies
                 # It runs first and has no prerequisites
                 if not is_bootstrap_task:
-                    # If bootstrap is pushed, skip all dependency checks — scaffold is ready
-                    _proj_key = _project_key(project_token)
-                    if not is_bootstrap_pushed(project_token):
-                        task_deps = t.get("dependencies", [])
-                        if not task_deps:
-                            linked = t.get("linked_tasks", [])
-                            if linked:
-                                executable_deps = []
-                                for lt_id in linked:
-                                    linked_task = next((ext_t for ext_t in external_tasks if str(_normalize_task_id(ext_t) or ext_t.get("external_id") or ext_t.get("id")) == str(lt_id)), None)
-                                    if linked_task:
-                                        linked_type = (linked_task.get("task_type") or "").upper()
-                                        if linked_type in ["TASK", "BUG"]:
-                                            executable_deps.append(str(lt_id))
-                                task_deps = executable_deps
+                    # ── DAG DEPENDENCY CHECK ──────────────────────────────────
+                    # ALWAYS check dependencies, not just before bootstrap pushes.
+                    # This ensures TASK-03 waits for TASK-01 and TASK-02 to complete
+                    # before an agent picks it up.
+                    task_deps = t.get("dependencies", [])
+                    if not task_deps:
+                        linked = t.get("linked_tasks", [])
+                        if linked:
+                            executable_deps = []
+                            for lt_id in linked:
+                                linked_task = next((ext_t for ext_t in external_tasks if str(_normalize_task_id(ext_t) or ext_t.get("external_id") or ext_t.get("id")) == str(lt_id)), None)
+                                if linked_task:
+                                    linked_type = (linked_task.get("task_type") or "").upper()
+                                    if linked_type in ["TASK", "BUG"]:
+                                        executable_deps.append(str(lt_id))
+                            task_deps = executable_deps
 
-                        if task_deps:
-                            live_mem.register_task_dependencies(tid, [str(d) for d in task_deps])
+                    if task_deps:
+                        live_mem.register_task_dependencies(tid, [str(d) for d in task_deps])
 
-                        if not live_mem.check_task_dependencies(tid):
-                            blocking = live_mem.get_blocking_tasks(tid)
-                            logger.info(f"[{agent_id}] Task {tid} blocked by dependencies: {blocking}")
-                            skip_reasons["dependency_blocked"] += 1
-                            continue
+                    if not live_mem.check_task_dependencies(tid):
+                        blocking = live_mem.get_blocking_tasks(tid)
+                        logger.info(f"[{agent_id}] Task {tid} blocked by dependencies: {blocking}")
+                        if agent:
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": f"⏸️ Task {tid} waiting for dependencies: {blocking}"
+                            })
+                        skip_reasons["dependency_blocked"] += 1
+                        continue
 
-                    # Skip conflict checks too if bootstrap just pushed and no tasks completed yet
-                    if not is_bootstrap_pushed(project_token) or live_mem.completed_history:
-                        blocked, reason = _check_task_conflicts(agent_id, t, live_mem, project_token=project_token)
-                        if blocked:
-                            logger.info(f"[{agent_id}] Task {tid} blocked by conflict rules: {reason}")
-                            if agent:
-                                agent["output_log"].append({
-                                    "time": datetime.utcnow().isoformat(),
-                                    "type": "info",
-                                    "message": f"⚠️ Task {tid} conflict: {reason}"
-                                })
-                            skip_reasons["conflict_blocked"] += 1
-                            continue
+                    # ── CONFLICT CHECK ─────────────────────────────────────────
+                    # Always check for file conflicts between agents
+                    blocked, reason = _check_task_conflicts(agent_id, t, live_mem, project_token=project_token)
+                    if blocked:
+                        logger.info(f"[{agent_id}] Task {tid} blocked by conflict rules: {reason}")
+                        if agent:
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": f"⚠️ Task {tid} conflict: {reason}"
+                            })
+                        skip_reasons["conflict_blocked"] += 1
+                        continue
 
             # ── Step 2b: Workstream Sequential Gate ──────────────────────────────
             # Enforce sequential execution within the same domain (frontend/backend/qa).
@@ -18803,6 +18957,125 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
             })
         
         return None
+
+
+# ── Master Orchestrator Loop ─────────────────────────────────────────────────
+# Enhanced supervisor that monitors ALL agents, triggers incremental merge,
+# tree enforcement, and reassigns ready tasks to idle agents.
+
+async def _master_orchestrator_loop(project_token: Optional[str]) -> None:
+    """
+    Master Orchestrator — replaces _dag_progress_watcher.
+    Monitors ALL agents, detects stuck agents, triggers tree enforcement
+    and incremental merge after each completion, reassigns ready tasks.
+    """
+    state = _ensure_project_state(project_token)
+    bus: AgentEventBus = state.get("event_bus")
+    if bus is None:
+        logger.warning("[Master Orchestrator] No event bus found, exiting.")
+        return
+
+    q = await bus.subscribe()
+    _log_master_agent("Master Orchestrator started", project_token=project_token)
+    logger.info(f"[Master Orchestrator] Started for project {project_token}")
+    agent_activity: Dict[str, Dict[str, Any]] = {}
+
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(q.get(), timeout=20.0)
+                event_type = event.get("type", "")
+                agent_id = event.get("agent_id", "")
+                task_id = event.get("task_id", "")
+            except asyncio.TimeoutError:
+                event_type = "heartbeat"
+                agent_id = ""
+                task_id = ""
+
+            if event_type == "heartbeat":
+                now = time.time()
+                project_agents = state.get("agent_states", {})
+                running_agents = []
+                for aid, agt in list(project_agents.items()):
+                    if _is_system_agent_id(aid):
+                        continue
+                    status = agt.get("status", "")
+                    if status == "running":
+                        running_agents.append(aid)
+                        activity = agent_activity.get(aid, {})
+                        last_event = activity.get("last_event", 0)
+                        stuck_threshold = activity.get("stuck_threshold", 600)
+                        if last_event > 0 and (now - last_event) > stuck_threshold:
+                            _log_master_agent(f"Agent {aid} running for {(now - last_event)/60:.0f} min", level="info", project_token=project_token)
+                            activity["last_event"] = now
+                    elif status == "error":
+                        _log_master_agent(f"Agent {aid} in ERROR state", level="warning", project_token=project_token)
+                if running_agents:
+                    _log_master_agent(f"Monitoring {len(running_agents)} agent(s)", project_token=project_token)
+                continue
+
+            if event_type == "task_started":
+                task_title = event.get("task_title", "")
+                branch = event.get("branch_name", "")
+                agent_activity[agent_id] = {"last_event": time.time(), "task": task_id, "task_title": task_title, "stuck_count": 0}
+                _log_master_agent(f"Agent {agent_id} started task '{task_title}'", project_token=project_token)
+                continue
+
+            if event_type == "task_completed":
+                task_title = event.get("task_title", "")
+                branch = event.get("branch_name", "")
+                _log_master_agent(f"Agent {agent_id} completed task '{task_title}'", project_token=project_token)
+                try:
+                    await _validate_agent_tree_compliance(agent_id=agent_id, project_token=project_token, branch_name=branch)
+                except Exception:
+                    pass
+                if branch:
+                    try:
+                        project_agents = state.get("agent_states", {})
+                        agent = project_agents.get(agent_id, {})
+                        repo_url = agent.get("git_repo_url", "")
+                        token = agent.get("git_token", "")
+                        if repo_url:
+                            await _enqueue_git_merge(branch=branch, repo_url=repo_url, token=token, source_agent=agent_id, task_title=task_title, project_token=project_token)
+                            _log_master_agent(f"Enqueued merge of '{branch}'", project_token=project_token)
+                    except Exception:
+                        pass
+                dag = state.get("task_dag", {})
+                if dag:
+                    completed_ids = _ledger_get_completed_ids(project_token)
+                    in_progress_ids = _ledger_get_in_progress_ids(project_token)
+                    ready_ids = _get_ready_task_ids(dag, completed_ids, in_progress_ids)
+                    if ready_ids:
+                        _log_master_agent(f"{len(ready_ids)} task(s) unblocked", project_token=project_token)
+                        idle_agents = [aid for aid, a in state["agent_states"].items() if not _is_system_agent_id(aid) and a.get("status") == "idle" and aid != DEPLOY_AGENT_ID]
+                        if idle_agents:
+                            ttv = get_project_task_token(project_token)
+                            for aid, rid in zip(idle_agents, ready_ids):
+                                try:
+                                    assigned = await _master_assign_task_to_agent(rid, aid, agent_name=state["agent_states"][aid].get("name"), project_token=project_token, task_token=ttv)
+                                    if assigned:
+                                        _log_master_agent(f"Assigned '{rid}' to {aid}", project_token=project_token)
+                                except Exception as e:
+                                    logger.warning(f"[Master] Assign {rid} failed: {e}")
+                continue
+
+            if event_type == "task_failed":
+                task_title = event.get("task_title", "")
+                error = event.get("error", "")
+                _log_master_agent(f"Agent {agent_id} FAILED on '{task_title}'", level="error", project_token=project_token)
+                continue
+
+    except asyncio.CancelledError:
+        _log_master_agent("Master Orchestrator stopped", project_token=project_token)
+        raise
+    except Exception as e:
+        logger.error(f"[Master Orchestrator] Fatal: {e}")
+        raise
+    finally:
+        try:
+            await bus.unsubscribe(q)
+        except Exception:
+            pass
 
 
 # ── DAG Progress Watcher ──────────────────────────────────────────────────────

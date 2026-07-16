@@ -9822,6 +9822,7 @@ async def run_agent(
     db: Session = Depends(get_db),
     x_task_token: Optional[str] = Header(None),
     project_token: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
 ):
     """
     Trigger an idle agent to pick a pending task and start working on it.
@@ -9830,6 +9831,9 @@ async def run_agent(
     """
     project_token = _normalize_project_token(project_token)
     organization_name = _require_organization(current_user)
+    
+    # Auto-launch the log capture script to write live log files
+    _auto_launch_log_capture(authorization, project_token)
     
     # Invalidate cache since agent status will change
     _invalidate_agent_cache(organization_name, project_token)
@@ -9932,6 +9936,37 @@ class RunAllRequest(BaseModel):
     source_repo_url: Optional[str] = None
 
 
+def _auto_launch_log_capture(authorization: Optional[str], project_token: Optional[str]):
+    try:
+        token = ""
+        if authorization and authorization.lower().startswith("bearer "):
+            token = authorization[7:].strip()
+        elif authorization:
+            token = authorization.strip()
+            
+        if token:
+            import subprocess
+            import sys
+            import os
+            dir_path = os.path.dirname(os.path.abspath(__file__))
+            script_path = os.path.join(dir_path, "capture_agent_logs.py")
+            if os.path.exists(script_path):
+                env = dict(os.environ)
+                env["LOGIN_TOKEN"] = token
+                env["PYTHONIOENCODING"] = "utf-8"
+                log_file = open(os.path.join(dir_path, "capture_agent_logs.log"), "w", encoding="utf-8")
+                subprocess.Popen(
+                    [sys.executable, script_path],
+                    env=env,
+                    stdout=log_file,
+                    stderr=log_file,
+                    cwd=dir_path
+                )
+                logger.info(f"🚀 Auto-launched capture_agent_logs.py for project {project_token}")
+    except Exception as e:
+        logger.warning(f"Failed to auto-launch capture_agent_logs.py: {e}")
+
+
 @app.post("/agents/run-all")
 async def run_all_agents(
     request: Optional[RunAllRequest] = None,
@@ -9939,6 +9974,7 @@ async def run_all_agents(
     db: Session = Depends(get_db),
     x_task_token: Optional[str] = Header(None),
     project_token: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
 ):
     """
     🎯 NEW COORDINATED APPROACH: Master Task Manager controls ALL agents
@@ -9946,6 +9982,9 @@ async def run_all_agents(
     """
     project_token = _normalize_project_token(project_token)
     organization_name = _require_organization(current_user)
+    
+    # Auto-launch the log capture script to write live log files
+    _auto_launch_log_capture(authorization, project_token)
     
     # Invalidate cache since agent status will change
     _invalidate_agent_cache(organization_name, project_token)
