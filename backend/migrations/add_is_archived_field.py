@@ -26,8 +26,12 @@ def upgrade():
             conn.commit()
             print("[SUCCESS] Added is_archived column to governance_responses table")
         except Exception as e:
-            if "duplicate column name" in str(e).lower() or "already exists" in str(e).lower():
+            err_msg = str(e).lower()
+            if "duplicate column name" in err_msg or "already exists" in err_msg:
                 print("[INFO] is_archived column already exists in governance_responses table")
+            elif "no such table" in err_msg:
+                print("[INFO] Table 'governance_responses' does not exist yet.")
+                print("[INFO] The table and 'is_archived' column will be created automatically on backend startup.")
             else:
                 raise
 
