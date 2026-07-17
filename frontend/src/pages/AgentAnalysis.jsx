@@ -649,7 +649,7 @@ export default function AgentAnalysis({
 
     // CRITICAL FIX: Update cache whenever state changes for the current project
     useEffect(() => {
-        if (selectedProjectKey && result) {
+        if (selectedProjectKey && result && selectedProjectKey === lastLoadedProjectRef.current) {
             resultCacheRef.current[selectedProjectKey] = {
                 result,
                 aiQuestions,

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { API_ENDPOINTS } from '../config';
@@ -146,7 +146,7 @@ const GovernanceForm = ({
 
     // Step state: 0 = Project Name page, 1…N = dimension steps, N+1 = review
     const [currentStep, setCurrentStep] = useState(0);
-    const lastHydratedProjectKeyRef = React.useRef(null);
+    const lastHydratedProjectKeyRef = useRef(null);
 
     /* ── helpers ── */
     const getStoredJson = (key) => {

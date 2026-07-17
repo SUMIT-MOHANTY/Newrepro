@@ -344,6 +344,9 @@ class GovernanceResponse(Base):
     dest_repo_url = Column(String, nullable=True)
     dest_repo_token = Column(String, nullable=True)
 
+    # Soft-delete / archive flag — when True, project is hidden from UI but stays in DB
+    is_archived = Column(Boolean, default=False)
+
     owner = relationship("User", back_populates="governance_responses")
 
 class GovernanceQuestion(Base):

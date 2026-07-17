@@ -164,10 +164,10 @@ export default function Sidebar({
                                 projects.map((project) => {
                                     const canDelete = Boolean(project.projectToken || project.governanceResultId);
                                     return (
-                                        <div key={project.key || project.project_token} className="flex items-center gap-1">
+                                        <div key={project.key || project.project_token} className="flex items-center gap-1 w-full min-w-0">
                                             <button
                                                 onClick={() => handleSelectProject(project)}
-                                                className={`flex-1 flex items-center px-2 py-2 text-sm font-medium rounded-md group transition-all text-left border ${selectedProjectKey === project.key ? 'bg-app-primary-dark/40 text-app-primary-light border-app-primary-dark' : 'border-transparent text-app-text-light hover:bg-app-text-label hover:text-app-bg-card'}
+                                                className={`flex-1 min-w-0 flex items-center px-2 py-2 text-sm font-medium rounded-md group transition-all text-left border ${selectedProjectKey === project.key ? 'bg-app-primary-dark/40 text-app-primary-light border-app-primary-dark' : 'border-transparent text-app-text-light hover:bg-app-text-label hover:text-app-bg-card'}
                                                 `}
                                                 title={project.name}
                                             >
@@ -176,7 +176,7 @@ export default function Sidebar({
                                                 ) : (
                                                     <History className={`w-4 h-4 mr-3 flex-shrink-0 transition-colors ${selectedProjectKey === project.key ? 'text-blue-400' : 'text-app-text-label group-hover:text-blue-400'}`} />
                                                 )}
-                                                <div className="min-w-0">
+                                                <div className="min-w-0 flex-1">
                                                     <p className="truncate">{project.name}</p>
                                                     <p className="text-[11px] text-app-text-muted truncate">
                                                         {project.type === 'standard' && project.status === 'analysis_complete'
@@ -190,7 +190,7 @@ export default function Sidebar({
                                                     type="button"
                                                     onClick={() => handleDeleteProject(project)}
                                                     disabled={deletingProjectKey === project.key}
-                                                    className={`p-2 rounded-md border transition-colors ${deletingProjectKey === project.key ? 'text-app-text-muted border-app-text-label cursor-not-allowed' : 'text-red-400 border-transparent hover:text-red-300 hover:bg-app-status-error/10'}`}
+                                                    className={`flex-shrink-0 p-2 rounded-md border transition-colors ${deletingProjectKey === project.key ? 'text-app-text-muted border-app-text-label cursor-not-allowed' : 'text-red-400 border-transparent hover:text-red-300 hover:bg-app-status-error/10'}`}
                                                     title={deletingProjectKey === project.key ? 'Deleting project...' : `Delete ${project.name || 'project'}`}
                                                     aria-label={`Delete ${project.name || 'project'}`}
                                                 >

@@ -5555,10 +5555,20 @@ async def get_governance_history(
     Get submission history for the current user.
     """
     organization_name = _normalized_text(getattr(current_user, "organization_name", None))
+
+    # Base filter: exclude archived projects
+    not_archived = or_(
+        models.GovernanceResponse.is_archived == None,
+        models.GovernanceResponse.is_archived == False
+    )
+
     if not organization_name:
         responses = (
             db.query(models.GovernanceResponse)
-            .filter(models.GovernanceResponse.owner_id == current_user.id)
+            .filter(
+                models.GovernanceResponse.owner_id == current_user.id,
+                not_archived
+            )
             .order_by(models.GovernanceResponse.submission_date.desc())
             .all()
         )
@@ -5566,7 +5576,10 @@ async def get_governance_history(
         if current_user.is_org_admin:
             responses = (
                 db.query(models.GovernanceResponse)
-                .filter(func.lower(models.GovernanceResponse.organization_name) == organization_name.lower())
+                .filter(
+                    func.lower(models.GovernanceResponse.organization_name) == organization_name.lower(),
+                    not_archived
+                )
                 .order_by(models.GovernanceResponse.submission_date.desc())
                 .all()
             )
@@ -5578,6 +5591,7 @@ async def get_governance_history(
                 db.query(models.GovernanceResponse)
                 .filter(
                     func.lower(models.GovernanceResponse.organization_name) == organization_name.lower(),
+                    not_archived,
                     or_(
                         models.GovernanceResponse.owner_id == current_user.id,
                         models.GovernanceResponse.project_token.in_(associated_tokens)
@@ -5953,7 +5967,7 @@ async def delete_governance_project(
     db: Session = Depends(get_db),
 ):
     """
-    Permanently delete a project and all locally stored project-scoped data.
+    Archive (soft-delete) a project — hides it from the UI but keeps all data in the database.
     """
     query = db.query(models.GovernanceResponse).filter(
         models.GovernanceResponse.owner_id == current_user.id
@@ -5968,38 +5982,12 @@ async def delete_governance_project(
         raise HTTPException(status_code=404, detail="Project not found")
 
     project_token = _normalize_project_token(governance.project_token or str(governance.id))
-    user_documents = db.query(models.Document).filter(
-        models.Document.owner_id == current_user.id
-    ).all()
-    linked_document_ids = [
-        doc.id for doc in user_documents if _is_document_linked_to_governance(doc, governance)
-    ]
+    archived_project_name = governance.project_name or "Untitled Project"
+    archived_project_token = governance.project_token or str(governance.id)
+    archived_result_id = governance.id
 
-    deleted_documents = 0
-    if linked_document_ids:
-        deleted_documents = db.query(models.Document).filter(
-            models.Document.owner_id == current_user.id,
-            models.Document.id.in_(linked_document_ids),
-        ).delete(synchronize_session=False)
-
-    deleted_agent_credentials = 0
-    deleted_agent_records = 0
-
-    if project_token:
-        deleted_agent_credentials = db.query(models.AgentCredential).filter(
-            models.AgentCredential.owner_id == current_user.id,
-            models.AgentCredential.project_token == project_token,
-        ).delete(synchronize_session=False)
-
-        deleted_agent_records = db.query(models.Agent).filter(
-            models.Agent.project_token == project_token
-        ).delete(synchronize_session=False)
-
-    deleted_project_name = governance.project_name or "Untitled Project"
-    deleted_project_token = governance.project_token or str(governance.id)
-    deleted_result_id = governance.id
-
-    db.delete(governance)
+    # Soft-delete: set is_archived flag instead of deleting records
+    governance.is_archived = True
     db.commit()
 
     cleanup_warnings: List[str] = []
@@ -6025,13 +6013,10 @@ async def delete_governance_project(
             cleanup_warnings.append(f"Knowledge graph cleanup failed: {exc}")
 
     response: Dict[str, Any] = {
-        "status": "deleted",
-        "result_id": deleted_result_id,
-        "project_token": deleted_project_token,
-        "project_name": deleted_project_name,
-        "deleted_documents": deleted_documents,
-        "deleted_agent_credentials": deleted_agent_credentials,
-        "deleted_agent_records": deleted_agent_records,
+        "status": "archived",
+        "result_id": archived_result_id,
+        "project_token": archived_project_token,
+        "project_name": archived_project_name,
     }
     if cleanup_warnings:
         response["warnings"] = cleanup_warnings

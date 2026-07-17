@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { API_ENDPOINTS, API_BASE_URL } from '../config';
 import { clearAuthData } from '../utils/auth';
 import { customError } from '../utils/modalHelpers';
+import { useModal } from '../contexts/ModalContext';
 import { Menu, Settings, Moon, Sun, Lock, Mail, ShieldAlert, CheckCircle, BookOpen } from 'lucide-react';
 import Sidebar from './Sidebar';
 import RoadmapHeader from './RoadmapHeader';
@@ -12,7 +13,7 @@ import AssistantBot from '../components/AssistantBot';
 import { useProgressTracking } from '../hooks/useProgressTracking';
 
 import { useProjects, useRoadmapData, useInvalidateProjects } from '../hooks/useProjects';
-import { fetchRoadmapStep } from '../api/projects';
+import { fetchRoadmapStep, deleteProjectByIdentifier } from '../api/projects';
 import ProjectDropdown from './ProjectDropdown';
 import RoleDropdown from './RoleDropdown';
 import { getDraftProject } from '../utils/draftProjects';
@@ -57,6 +58,8 @@ export default function AppLayout({ children }) {
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const [projects, setProjects] = useState([]);
     const [shareProjects, setShareProjects] = useState([]);
+    const [deletingProjectKey, setDeletingProjectKey] = useState('');
+
     const [selectedProjectKey, setSelectedProjectKey] = useState(() => {
         try {
             return localStorage.getItem(PROJECT_STORAGE_KEY) || '';
@@ -156,6 +159,7 @@ export default function AppLayout({ children }) {
     const [authorizedRoles, setAuthorizedRoles] = useState([]);
 
     const invalidateProjects = useInvalidateProjects();
+    const modal = useModal();
 
     // Track user progress automatically
     useProgressTracking(selectedProjectKey, true);
@@ -985,6 +989,38 @@ export default function AppLayout({ children }) {
         invalidateProjects();
     }, [invalidateProjects]);
 
+    const handleDeleteProject = useCallback(async (project) => {
+        const key = project.key || project.projectToken;
+        if (!key || deletingProjectKey) return;
+
+        // Step 1: Ask for confirmation
+        const confirmed = await modal.showConfirm(
+            `Are you sure you want to archive "${project.name || 'this project'}"?\n\nIt will be hidden from the project list but all data will be preserved in the database.`,
+            'Archive Project'
+        );
+        if (!confirmed) return;
+
+        setDeletingProjectKey(key);
+
+        // Remove project from local state immediately
+        setProjects(prev => prev.filter(p => p.key !== key && p.projectToken !== key));
+        setShareProjects(prev => prev.filter(p => p.project_token !== key && p.key !== key));
+        if (selectedProjectKey === key) {
+            setSelectedProjectKey('');
+        }
+
+        try {
+            const identifier = project.governanceResultId || project.projectToken || project.key;
+            await deleteProjectByIdentifier(identifier);
+            invalidateProjects();
+        } catch (err) {
+            console.error('Failed to archive project:', err);
+            customError('Failed to archive project: ' + (err.message || 'Unknown error'));
+        } finally {
+            setDeletingProjectKey('');
+        }
+    }, [deletingProjectKey, selectedProjectKey, invalidateProjects, modal]);
+
     const handleNewProject = useCallback(() => {
         // Reset roadmap immediately and enter "new project" mode
         setSelectedProjectKey('');
@@ -1169,8 +1205,7 @@ export default function AppLayout({ children }) {
     };
 
     return (
-        <div className="flex h-screen bg-app-bg-page overflow-hidden font-sans">
-            <Sidebar
+        <div className="flex h-screen bg-app-bg-page overflow-hidden font-sans">                        <Sidebar
                 isSidebarOpen={isSidebarOpen}
                 setIsSidebarOpen={setIsSidebarOpen}
                 handleNewProject={handleNewProject}
@@ -1190,6 +1225,8 @@ export default function AppLayout({ children }) {
                 rbac={rbac}
                 isShareMode={isShareMode}
                 handleCreateShareProject={handleCreateShareProject}
+                handleDeleteProject={handleDeleteProject}
+                deletingProjectKey={deletingProjectKey}
             />
 
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden relative w-full bg-app-bg-page h-full transition-all duration-300 ease-in-out">
@@ -1248,6 +1285,8 @@ export default function AppLayout({ children }) {
                                                         handleSelectProject(proj);
                                                     }
                                                 }}
+                                                onDelete={handleDeleteProject}
+                                                deletingKey={deletingProjectKey}
                                                 theme="dark"
                                             />
                                         </div>
@@ -1434,6 +1473,15 @@ export default function AppLayout({ children }) {
                     </div>
                 )
             }
+            {/* Archiving loading overlay — non-dismissible, shown while deletingProjectKey is set */}
+            {deletingProjectKey && (
+                <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+                    <div className="bg-app-bg-card rounded-2xl shadow-2xl border border-app-border p-8 flex flex-col items-center gap-4 min-w-[260px]">
+                        <div className="w-10 h-10 border-[3px] border-app-primary border-t-transparent rounded-full animate-spin" />
+                        <p className="text-sm font-semibold text-app-text-main">Archiving project...</p>
+                    </div>
+                </div>
+            )}
             {/* AI Assistant Bot - available on all pages */}
             <AssistantBot />
         </div >
