@@ -1735,6 +1735,53 @@ const Dashboard = ({
         loadGovernanceContextForProject(selectedProject.governanceResultId);
     }, [selectedProject, governanceContext, loadGovernanceContextForProject]);
 
+    // Sync repoContext state when selectedProjectKey changes
+    useEffect(() => {
+        if (!selectedProjectKey) {
+            setRepoContext(null);
+            return;
+        }
+
+        const syncRepoContext = async () => {
+            try {
+                const token = localStorage.getItem('token');
+                const configRes = await fetch(`${API_BASE_URL}/api/projects/${selectedProjectKey}/git-config`, {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+
+                if (configRes.ok) {
+                    const configData = await configRes.json();
+                    if (configData && configData.source_repo_url) {
+                        const nextRepoContext = {
+                            repo: configData.source_repo_url,
+                            provider: (configData.source_repo_url.includes('dev.azure.com') || configData.source_repo_url.includes('visualstudio.com')) ? 'azure-devops' : 'github',
+                            context: '',
+                            fromLink: true
+                        };
+                        setRepoContext(nextRepoContext);
+                        return;
+                    }
+                }
+            } catch (e) {
+                console.warn('Failed to sync repo context in dashboard:', e);
+            }
+
+            // Fallback: load from storage
+            const storedRepoContext = sessionStorage.getItem('repoContext') || localStorage.getItem('repoContext');
+            if (storedRepoContext) {
+                try {
+                    setRepoContext(JSON.parse(storedRepoContext));
+                } catch {
+                    setRepoContext(null);
+                }
+            } else {
+                setRepoContext(null);
+            }
+        };
+
+        syncRepoContext();
+    }, [selectedProjectKey]);
+
 
     const loadHistoryItem = (doc, taskKey = selectedProjectKey) => {
         try {

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { API_ENDPOINTS } from '../config';
+import { API_ENDPOINTS, API_BASE_URL } from '../config';
 import { clearAuthData } from '../utils/auth';
 import { customError } from '../utils/modalHelpers';
 import { Menu, Settings, Moon, Sun, Lock, Mail, ShieldAlert, CheckCircle, BookOpen } from 'lucide-react';
@@ -521,8 +521,13 @@ export default function AppLayout({ children }) {
         }
     }, [location.pathname, selectedProjectKey, refetchRoadmapData]);
     const lastNavigatedProjectRef = React.useRef(null);
+    const lastSyncedProjectKeyRef = React.useRef(null);
 
     // Navigate to the appropriate page based on roadmap step when project is selected
+    // IMPORTANT: This effect should ONLY navigate on initial page load or when landing
+    // on a project URL (/a/{token}). When the user is already on a valid step page
+    // and switches projects via the dropdown, we stay on the same step and let the
+    // step component reload its own data for the new project.
     useEffect(() => {
         // Skip automatic redirection when a navigation was explicitly triggered
         // from GovernanceForm after project creation. This prevents the AppLayout
@@ -534,9 +539,6 @@ export default function AppLayout({ children }) {
         }
 
         // If we are already on the Requirement Screening page, do not redirect
-        // regardless of roadmap step. This avoids a race where the roadmap data
-        // hasn't been refreshed yet and would otherwise push the user back to
-        // the initiation step.
         if (location.pathname.startsWith('/dashboard')) {
             return;
         }
@@ -544,97 +546,29 @@ export default function AppLayout({ children }) {
         if (!selectedProjectKey || isNewProjectMode || isShareMode) return;
 
         // FIRST: Check if governance was all skipped (score 5) - if so, block ALL navigation
-        // This check now relies on roadmapDataResult.classification from the backend
         const isAllSkippedCase = roadmapDataResult &&
             roadmapDataResult.weighted_score === 5.0 &&
             roadmapDataResult.classification === 'ENTERPRISE';
 
-        // If all skipped, block ALL routes except governance-related pages
         if (isAllSkippedCase) {
             const allowedRoutes = ['/new-project/governance', '/new-project', '/dashboard'];
             const isAllowedRoute = allowedRoutes.some(route => location.pathname.startsWith(route));
 
             if (!isAllowedRoute) {
-                // Redirect to governance page if trying to access any other route
                 navigate('/new-project/governance', { replace: true });
-                lastNavigatedProjectRef.current = selectedProjectKey; // Prevent re-navigation loop
+                lastNavigatedProjectRef.current = selectedProjectKey;
             }
-            return; // Stop here - don't process roadmap navigation
+            return;
         }
 
-        // Continue with normal roadmap navigation only if NOT all skipped
         if (!roadmapDataResult) return;
 
         // Skip if we already navigated for this project
         if (lastNavigatedProjectRef.current === selectedProjectKey) return;
 
-        const stepLabel = roadmapDataResult.current_step_label;
-        if (!stepLabel) return;
-
-        // Map step label to route
-        const stepLabelToRoute = {
-            'Project Initiation': '/new-project',
-            'Requirement Screening': '/dashboard',
-            'Governance': '/new-project/governance',
-            'Agent Analysis': '/agent-analysis',
-            'Prerequisite Classification': '/prerequisites',
-            'Task Creation': '/task-creation',
-            'Resource Onboarding': '/resource-onboarding',
-            'On Flight': '/status-dashboard',
-            'Complete': '/status-dashboard',
-            // Share Document workflow
-            'Upload Documents': '/share-doc?step=1',
-            'Configure Access': '/share-doc?step=2',
-            'Share & Invite': '/share-doc?step=3',
-            'Track Status': '/share-doc?step=4',
-        };
-
-        const targetRoute = stepLabelToRoute[stepLabel];
-        if (!targetRoute) return;
-
-        // Special handling for Agent Analysis: Don't auto-navigate unless user clicked "Proceed to Agent Analysis"
-        // This prevents auto-redirect when viewing Governance score page
-        if (targetRoute === '/agent-analysis') {
-            const shouldStartAnalysis = sessionStorage.getItem('shouldStartAnalysis') === 'true';
-            const isOnGovernancePage = location.pathname === '/new-project/governance' || location.pathname.startsWith('/new-project/governance');
-
-            // Don't auto-navigate to Agent Analysis if:
-            // 1. User is on Governance page (viewing score)
-            // 2. Flag is not set (user hasn't clicked "Proceed to Agent Analysis")
-            if (isOnGovernancePage || !shouldStartAnalysis) {
-                return; // Stay on current page, don't navigate
-            }
-        }
-
-        // Special handling for Prerequisites: Don't auto-navigate from Agent Analysis page
-        // User should manually click "Review Prerequisites" button to navigate
-        if (targetRoute === '/prerequisites') {
-            const isOnAgentAnalysisPage = location.pathname === '/agent-analysis' || location.pathname.startsWith('/agent-analysis');
-
-            // Don't auto-navigate to Prerequisites if user is on Agent Analysis page
-            // Let them manually click the button to navigate
-            if (isOnAgentAnalysisPage) {
-                return; // Stay on Agent Analysis page, don't auto-navigate
-            }
-        }
-
-        // Navigate if:
-        // 1. We're on a project URL (/a/{token}) - redirect to step page
-        // 2. We're not on the correct step page already
-        // 3. We're not on special pages like /agents
-        // 4. IMPORTANT: Don't navigate away from current step if we're already on a valid step page
-        const isOnProjectUrl = location.pathname.startsWith('/a/');
-        const isOnTargetRoute = location.pathname.startsWith(targetRoute);
-        const isOnSpecialPage = ['/agents', '/organization-admin', '/plugins', '/billing'].includes(location.pathname);
-
-        // Don't navigate away from status-dashboard if we're in On Flight or Complete mode
-        const isOnStatusDashboard = location.pathname === '/status-dashboard';
-        const isOnFlightOrComplete = stepLabel === 'On Flight' || stepLabel === 'Complete';
-        if (isOnStatusDashboard && isOnFlightOrComplete) {
-            return; // Stay on status dashboard, don't navigate away
-        }
-
-        // Don't navigate away from any valid step page unless we're on a project URL
+        // If user is already on a valid step page, DON'T auto-navigate away.
+        // The step components will handle reloading their own data when
+        // selectedProjectKey changes.
         const validStepPages = [
             '/new-project',
             '/dashboard',
@@ -646,23 +580,147 @@ export default function AppLayout({ children }) {
             '/status-dashboard',
         ];
         const isOnValidStepPage = validStepPages.some(page => location.pathname.startsWith(page));
-
-        // Only navigate if we're on a project URL or not on the target route
-        // Don't navigate if we're already on a valid step page (prevents unwanted redirects on refresh)
-        if ((isOnProjectUrl || !isOnTargetRoute) && !isOnSpecialPage && !isOnValidStepPage) {
+        if (isOnValidStepPage) {
             lastNavigatedProjectRef.current = selectedProjectKey;
-            navigate(targetRoute);
-        } else if (isOnProjectUrl) {
-            // If we're on a project URL, always navigate to the correct step
+            return; // Stay on current step, let the component reload for the new project
+        }
+
+        const stepLabel = roadmapDataResult.current_step_label;
+        if (!stepLabel) return;
+
+        const stepLabelToRoute = {
+            'Project Initiation': '/new-project',
+            'Requirement Screening': '/dashboard',
+            'Governance': '/new-project/governance',
+            'Agent Analysis': '/agent-analysis',
+            'Prerequisite Classification': '/prerequisites',
+            'Task Creation': '/task-creation',
+            'Resource Onboarding': '/resource-onboarding',
+            'On Flight': '/status-dashboard',
+            'Complete': '/status-dashboard',
+            'Upload Documents': '/share-doc?step=1',
+            'Configure Access': '/share-doc?step=2',
+            'Share & Invite': '/share-doc?step=3',
+            'Track Status': '/share-doc?step=4',
+        };
+
+        const targetRoute = stepLabelToRoute[stepLabel];
+        if (!targetRoute) return;
+
+        // Only navigate if we're on a project URL (/a/{token}) or a non-step page
+        const isOnProjectUrl = location.pathname.startsWith('/a/');
+        const isOnSpecialPage = ['/agents', '/organization-admin', '/plugins', '/billing'].includes(location.pathname);
+
+        if (isOnProjectUrl && !isOnSpecialPage) {
             lastNavigatedProjectRef.current = selectedProjectKey;
             navigate(targetRoute);
         }
     }, [selectedProjectKey, roadmapDataResult, isNewProjectMode, isShareMode, location.pathname, navigate]);
 
-    // Reset navigation tracking when project changes
+    // Sync governanceContext and repoContext in sessionStorage/localStorage globally when selectedProjectKey changes
     useEffect(() => {
-        lastNavigatedProjectRef.current = null;
-    }, [selectedProjectKey]);
+        if (!selectedProjectKey || selectedProjectKey === lastSyncedProjectKeyRef.current) return;
+        lastSyncedProjectKeyRef.current = selectedProjectKey;
+
+        const syncProjectStorage = async () => {
+            const token = localStorage.getItem('token');
+            if (!token) return;
+
+            try {
+                // Determine target identifier (prefer governanceResultId, fallback to project token)
+                const projectFromList = projects.find((project) => project.key === selectedProjectKey);
+                const identifier = projectFromList?.governanceResultId || selectedProjectKey;
+
+                // 1. Fetch governance result from backend
+                const govRes = await fetch(`${API_BASE_URL}/governance/result/${identifier}`, {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+
+                if (govRes.ok) {
+                    const data = await govRes.json();
+                    if (data && data.id) {
+                        const normalizedDimensionScores = {
+                            business_value: data.dimension_scores?.business_value ?? 0,
+                            data_sensitivity: data.dimension_scores?.data_sensitivity ?? 0,
+                            integration_complexity: data.dimension_scores?.integration_complexity ?? 0,
+                            operational_impact: data.dimension_scores?.operational_impact ?? 0,
+                            ai_risk: data.dimension_scores?.ai_risk ?? 0,
+                            ownership: data.dimension_scores?.ownership ?? 0,
+                        };
+                        const formattedAnswers = Array.isArray(data.answers)
+                            ? data.answers.map((answer) => ({
+                                question_id: answer.question_id,
+                                score: answer.score,
+                                selected_option: answer.selected_option || '',
+                            }))
+                            : [];
+                        const fallbackDesc = (cls) => {
+                            if (cls === 'SANDBOX') return 'Sandbox Approved - Low governance required';
+                            if (cls === 'CONTROLLED_SANDBOX') return 'Controlled Sandbox (Fusion) - Standard template required';
+                            if (cls === 'ENTERPRISE') return 'Enterprise Build - Full IT oversight required';
+                            return 'Governance classification unavailable';
+                        };
+
+                        const govCtx = {
+                            project_name: data.project_name || '',
+                            result_id: data.id || null,
+                            submission_date: data.submission_date,
+                            classification: data.classification,
+                            classification_description: data.classification_description || fallbackDesc(data.classification),
+                            weighted_score: data.weighted_score,
+                            recommendation: data.recommendation,
+                            hard_stops: data.hard_stops || [],
+                            answers: formattedAnswers,
+                            dimension_scores: normalizedDimensionScores,
+                        };
+
+                        sessionStorage.setItem('governanceContext', JSON.stringify(govCtx));
+                        sessionStorage.setItem('governanceResult', JSON.stringify(data));
+                        localStorage.setItem('governanceContext', JSON.stringify(govCtx));
+                        localStorage.setItem('governanceResult', JSON.stringify(data));
+
+                        // Trigger storage event to notify other components/hooks of storage changes
+                        window.dispatchEvent(new Event('storage'));
+                    }
+                }
+            } catch (e) {
+                console.warn('Failed to sync governance storage for project:', e);
+            }
+
+            try {
+                // 2. Fetch repo git config from backend
+                const configRes = await fetch(`${API_BASE_URL}/api/projects/${selectedProjectKey}/git-config`, {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+
+                if (configRes.ok) {
+                    const configData = await configRes.json();
+                    if (configData && configData.source_repo_url) {
+                        const repoContextObj = {
+                            repo: configData.source_repo_url,
+                            provider: (configData.source_repo_url.includes('dev.azure.com') || configData.source_repo_url.includes('visualstudio.com')) ? 'azure-devops' : 'github',
+                            context: '' // Left empty until actual handoff/analysis
+                        };
+                        sessionStorage.setItem('repoContext', JSON.stringify(repoContextObj));
+                        localStorage.setItem('repoContext', JSON.stringify(repoContextObj));
+                        window.dispatchEvent(new Event('storage'));
+                    } else {
+                        sessionStorage.removeItem('repoContext');
+                        localStorage.removeItem('repoContext');
+                        window.dispatchEvent(new Event('storage'));
+                    }
+                } else {
+                    sessionStorage.removeItem('repoContext');
+                    localStorage.removeItem('repoContext');
+                    window.dispatchEvent(new Event('storage'));
+                }
+            } catch (e) {
+                console.warn('Failed to sync repo storage for project:', e);
+            }
+        };
+
+        syncProjectStorage();
+    }, [selectedProjectKey, projects]);
     const hasServerRoadmap = !!roadmapDataResult;
     let roadmapData = roadmapDataResult || DEFAULT_ROADMAP;
 
@@ -942,17 +1000,49 @@ export default function AppLayout({ children }) {
     const handleSelectProject = async (project) => {
         if (!project) return;
         setIsNewProjectMode(false);
+
+        // Determine if the user is currently on a valid step page
+        const validStepPages = [
+            '/new-project',
+            '/dashboard',
+            '/new-project/governance',
+            '/agent-analysis',
+            '/prerequisites',
+            '/task-creation',
+            '/resource-onboarding',
+            '/status-dashboard',
+        ];
+        const isOnValidStepPage = validStepPages.some(page => location.pathname.startsWith(page));
+
+        // Reset sync ref so the sync effect re-runs for the new project
+        lastSyncedProjectKeyRef.current = null;
+
+        // Update the selected project key — this triggers all step components
+        // to reload their data for the new project via their useEffect deps
         setSelectedProjectKey(project.key);
 
-        // Fetch roadmap data to determine which page to navigate to
+        // Refresh roadmap data for the sidebar stepper
         try {
-            // Prefer the project token if it exists – the backend uses this to locate the project
+            const identifier = project.projectToken || project.key;
+            await fetchRoadmapStep(identifier);
+            refetchRoadmapData();
+        } catch (error) {
+            console.error('Failed to fetch roadmap for project:', error);
+        }
+
+        // If the user is already on a valid step page, STAY THERE.
+        // The step component will detect the selectedProjectKey change and
+        // reload its own data. This is the key fix for smooth project switching.
+        if (isOnValidStepPage) {
+            return;
+        }
+
+        // If user is NOT on a step page (e.g. on /a/{token} or root), navigate
+        // to the project's current roadmap step
+        try {
             const identifier = project.projectToken || project.key;
             const roadmapResponse = await fetchRoadmapStep(identifier);
             if (roadmapResponse && roadmapResponse.current_step_label) {
-                const stepLabel = roadmapResponse.current_step_label;
-
-                // Map step label to route (same mapping as before)
                 const stepLabelToRoute = {
                     'Project Initiation': '/new-project',
                     'Requirement Screening': '/dashboard',
@@ -963,18 +1053,14 @@ export default function AppLayout({ children }) {
                     'Resource Onboarding': '/resource-onboarding',
                     'On Flight': '/status-dashboard',
                     'Complete': '/status-dashboard',
-                    // Share Document workflow
                     'Upload Documents': '/share-doc?step=1',
                     'Configure Access': '/share-doc?step=2',
                     'Share & Invite': '/share-doc?step=3',
                     'Track Status': '/share-doc?step=4',
                 };
-                const targetRoute = stepLabelToRoute[stepLabel];
+                const targetRoute = stepLabelToRoute[roadmapResponse.current_step_label];
                 if (targetRoute) {
-                    // Always navigate to the target route (even if we are already there) to force a refresh
                     navigate(targetRoute);
-                    // Ensure we have the freshest roadmap data for the newly selected project
-                    refetchRoadmapData();
                     return;
                 }
             }
@@ -982,11 +1068,10 @@ export default function AppLayout({ children }) {
             console.error('Failed to fetch roadmap for navigation:', error);
         }
 
-        // Fallback – navigate to the generic project URL (uses token if available)
+        // Fallback
         const targetPath = project.projectToken ? `/a/${project.projectToken}` : `/a/${project.key}`;
         if (location.pathname !== targetPath) {
             navigate(targetPath);
-            refetchRoadmapData();
         }
     };
 
