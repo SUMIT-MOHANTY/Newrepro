@@ -1059,12 +1059,27 @@ def get_agent_lanes_from_skills(agent_id: str, skills_tags: Any, specialization:
 def is_task_in_agent_lanes(task_lane: str, agent_lanes: Set[str]) -> bool:
     """
     Returns True if the agent is allowed to work on a task of the given lane.
-    "general" lane is always allowed for unspecialized tasks.
+
+    3-Layer Fallback System (prevents agent starvation):
+    - Layer 1 (General = Wildcard): If the agent has "general" in its lane set,
+      it can take ANY task lane. "general" means flexible/catch-all.
+    - Layer 2 (Unspecialized): Agents with only "general" configured can take
+      any task (backwards compatibility for legacy agents).
+    - Layer 3 (Strict): Truly specialised agents (no "general" lane) only match
+      their exact lane.
     """
     if not task_lane or task_lane == "general":
         return True  # Any agent can handle general tasks
-    if "general" in agent_lanes and len(agent_lanes) == 1:
-        return True  # Unspecialized agent — allow all tasks
+
+    # ── LAYER 1: General = Wildcard ────────────────────────────────────────
+    if "general" in agent_lanes:
+        return True  # General agents can pick any lane
+
+    # ── LAYER 2: Unspecialized agent (only general) ────────────────────────
+    if len(agent_lanes) == 0 or agent_lanes == {"general"}:
+        return True
+
+    # ── LAYER 3: Strict match for fully specialised agents ─────────────────
     return task_lane in agent_lanes
 
 

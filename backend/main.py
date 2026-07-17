@@ -173,14 +173,19 @@ async def lifespan(app: FastAPI):
     # Import and start background sync engine
     from local_sync_service import run_nxdune_sync_worker
     sync_task = asyncio.create_task(run_nxdune_sync_worker())
+
+    # Start background auto-capture logs loop
+    from capture_agent_logs import auto_capture_loop
+    log_task = asyncio.create_task(auto_capture_loop())
     
     yield
     
-    # Cancel sync engine and shutdown job manager
+    # Cancel sync engine, log capture task, and shutdown job manager
     sync_task.cancel()
+    log_task.cancel()
     try:
-        await sync_task
-    except asyncio.CancelledError:
+        await asyncio.gather(sync_task, log_task, return_exceptions=True)
+    except Exception:
         pass
     await analysis_job_manager.shutdown_job_manager()
 
@@ -8495,14 +8500,18 @@ def _ensure_default_governance_questions(db: Session) -> None:
 def _startup_init() -> None:
     # Ensure Docker image is ready before anything else
     print("Initializing Docker runtime environment...")
-    img_res = agent_service._ensure_agent_runtime_image()
-    if img_res.get("success"):
-        if img_res.get("built"):
-            print("[OK] Docker image built successfully.")
+    try:
+        img_res = agent_service._ensure_agent_runtime_image()
+        if img_res.get("success"):
+            if img_res.get("built"):
+                print("[OK] Docker image built successfully.")
+            else:
+                print("[OK] Docker image verified (already exists).")
         else:
-            print("[OK] Docker image verified (already exists).")
-    else:
-        print(f"[ERROR] Docker initialization failed: {img_res.get('error')}")
+            print(f"[ERROR] Docker initialization failed: {img_res.get('error')}")
+    except Exception as exc:
+        print(f"[WARNING] Docker initialization check failed or timed out: {exc}")
+        print("The server will continue to start, but agent execution tasks will require Docker to be running.")
 
     agent_service.seed_sample_tasks()
     db = SessionLocal()

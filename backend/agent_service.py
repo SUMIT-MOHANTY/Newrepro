@@ -899,6 +899,103 @@ def _build_brd_analysis_context(brd_analysis: Any, max_chars: int = 0) -> str:
     return combined
 
 
+async def _post_agent_design_context(
+    project_token: Optional[str],
+    agent_id: str,
+    task: Dict[str, Any],
+    branch: str = "",
+) -> None:
+    """
+    Post a structured design contract to the Enhanced Context Service after
+    task completion. This allows other agents to see API endpoints, DB tables,
+    files created, and other design artifacts produced by this agent.
+
+    The Enhanced Context Service maintains a rich shared state with:
+    - api_registry: [{method, path, handler, agent}]
+    - database_schema: {tables: {name: {agent, columns}}}
+    - file_ownership: {file_path: agent_id}
+    - agent_contexts: per-agent context with completed_tasks, created_files, etc.
+
+    Other agents query this via _build_peer_context_block() before they start
+    working, so they can build consistent code that integrates properly.
+    """
+    if not project_token:
+        return
+
+    from enhanced_context_service import enhanced_context_service, AgentContextUpdate
+
+    # Gather what this task built — files from ledger, hints from description
+    task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
+    task_title = task.get("title") or task.get("taskName") or ""
+    task_desc = task.get("description") or ""
+
+    # Read files_written from task ledger
+    files_written: List[str] = []
+    try:
+        state = _ensure_project_state(project_token)
+        ledger: dict = state.get("task_ledger", {})
+        entry = ledger.get(task_id)
+        if entry and entry.files_written:
+            files_written = list(entry.files_written)
+    except Exception:
+        pass
+
+    # Infer API endpoints & DB tables from task title + description keywords
+    combined_lower = (task_title + " " + task_desc).lower()
+    api_endpoints = []
+    if any(w in combined_lower for w in ("login", "register", "auth", "authenticate")):
+        api_endpoints.append({"method": "POST", "path": "/auth/login", "handler": "login"})
+        api_endpoints.append({"method": "POST", "path": "/auth/register", "handler": "register"})
+    if any(w in combined_lower for w in ("project", "projects", "kanban", "board")):
+        api_endpoints.append({"method": "GET", "path": "/projects", "handler": "list_projects"})
+        api_endpoints.append({"method": "POST", "path": "/projects", "handler": "create_project"})
+    if any(w in combined_lower for w in ("task", "tasks", "issue")):
+        api_endpoints.append({"method": "GET", "path": "/tasks", "handler": "list_tasks"})
+        api_endpoints.append({"method": "POST", "path": "/tasks", "handler": "create_task"})
+    if any(w in combined_lower for w in ("comment", "comments", "note")):
+        api_endpoints.append({"method": "GET", "path": "/comments", "handler": "list_comments"})
+        api_endpoints.append({"method": "POST", "path": "/comments", "handler": "create_comment"})
+    if any(w in combined_lower for w in ("user", "profile", "settings")):
+        api_endpoints.append({"method": "GET", "path": "/users/me", "handler": "get_profile"})
+        api_endpoints.append({"method": "PUT", "path": "/users/me", "handler": "update_profile"})
+
+    # Infer DB tables
+    db_tables = []
+    if "user" in combined_lower:
+        db_tables.append("users")
+    if "project" in combined_lower:
+        db_tables.append("projects")
+    if "task" in combined_lower:
+        db_tables.append("tasks")
+    if "comment" in combined_lower:
+        db_tables.append("comments")
+
+    # Infer shared utilities / integration points
+    shared_utils = []
+    if "auth" in combined_lower or "jwt" in combined_lower:
+        shared_utils.append("auth_middleware")
+    if "database" in combined_lower or "db" in combined_lower or "sql" in combined_lower:
+        shared_utils.append("database_config")
+
+    # Build and post the context update
+    from datetime import datetime
+    context_update = AgentContextUpdate(
+        agent_id=agent_id,
+        timestamp=datetime.utcnow().isoformat(),
+        current_task=task_title,
+        status="completed",
+        completed_tasks=[task_title],
+        created_files=files_written,
+        api_endpoints=api_endpoints,
+        database_tables=db_tables,
+        shared_utilities=shared_utils,
+        tags=["automated_context", "completion"] + [p.split("/")[-1].split(".")[0] for p in files_written[:5]],
+    )
+
+    await enhanced_context_service.update_agent_context(project_token, context_update)
+    logger.info(f"[{agent_id}] Design context posted to enhanced context: {len(api_endpoints)} API(s), {len(db_tables)} table(s), {len(files_written)} file(s)")
+
+
 async def _build_peer_context_block(
     agent_id: str,
     task: Dict[str, Any],
@@ -1008,6 +1105,45 @@ async def _build_peer_context_block(
                 lines.append("")
     except Exception as _ws_err:
         logger.debug(f"Failed to inject workstream files into context block: {_ws_err}")
+
+    # ── DESIGN CONTRACTS FROM ENHANCED CONTEXT SERVICE ──────────────────────
+    # Query the shared context for API endpoints, DB tables, and utilities
+    # that other agents have already built. This helps the current agent build
+    # consistent code that integrates properly (no naming conflicts, no
+    # re-implementing existing endpoints).
+    try:
+        from enhanced_context_service import enhanced_context_service as _ecs
+        if project_token and hasattr(_ecs, 'query_context'):
+            api_result = await _ecs.query_context(project_token, "api_endpoints")
+            endpoints = api_result.get("endpoints", [])
+            # Filter to only OTHER agents' endpoints (not this agent's)
+            other_endpoints = [e for e in endpoints if e.get("agent") != agent_id]
+            if other_endpoints:
+                lines.append("\n🔌 API ENDPOINTS ALREADY REGISTERED BY OTHER AGENTS:")
+                for ep in other_endpoints[-12:]:
+                    lines.append(f"  {ep.get('method','?')} {ep.get('path','?')} → {ep.get('handler','?')} (by {ep.get('agent','?')})")
+                lines.append("")
+
+            db_result = await _ecs.query_context(project_token, "database_schema")
+            tables = db_result.get("tables", {})
+            if tables:
+                lines.append("\n🗄️ DATABASE TABLES ALREADY CREATED BY OTHER AGENTS:")
+                for tname in sorted(tables.keys())[:10]:
+                    meta = tables[tname]
+                    lines.append(f"  - {tname} (by {meta.get('agent','?')})")
+                lines.append("")
+
+            util_result = await _ecs.query_context(project_token, "shared_utilities")
+            utils = util_result.get("utilities", {})
+            other_utils = {k: v for k, v in utils.items() if v != agent_id}
+            if other_utils:
+                lines.append("\n🧰 SHARED UTILITIES PROVIDED BY OTHER AGENTS:")
+                for util_name, owner in sorted(other_utils.items())[:8]:
+                    lines.append(f"  - {util_name} (by {owner})")
+                lines.append("")
+    except Exception as _ctx_err:
+        logger.debug(f"[{agent_id}] Enhanced context query failed (non-fatal): {_ctx_err}")
+    # ─────────────────────────────────────────────────────────────────────────
 
     for entry in completed_by_peers[-8:]:
         lines.append(f"\n[{entry.agent_id}] Task: '{entry.task_title}'")
@@ -12715,24 +12851,34 @@ def is_task_in_agent_lanes(task_lane: str, agent_lanes: set) -> bool:
     """
     Returns True if the agent is allowed to work on a task with the given lane.
 
-    Strict skill-based enforcement (as per user requirement):
-    - 'general' tasks: any agent can take them (no skill restriction).
-    - Agents with ONLY 'general' lane (no skills configured): can take any task
-      for backwards compatibility with legacy/unconfigured agents.
-    - Agents with specific skill lanes: MUST match the task lane — IDLE otherwise.
-      A Frontend Dev agent stays IDLE on backend tasks indefinitely.
-      A QA agent stays IDLE on frontend/backend tasks indefinitely.
-    - This is intentional: agents work strictly within their skill boundaries.
+    3-Layer Fallback System (prevents agent starvation):
+    - Layer 1 (General = Wildcard): If the agent has "general" in its lane set,
+      it can take ANY task lane. "general" means flexible/catch-all, not
+      "unclassified only". This prevents specialised agents with a general
+      fallback from starving when tasks have varied lane assignments.
+    - Layer 2 (Unspecialized fallback): Agents with no specific lanes configured
+      can take any task (backwards compatibility for legacy agents).
+    - Layer 3 (Strict): Truly specialised agents (e.g. only "frontend" skill,
+      no "general") only match their exact lane — this is rare and intentional.
     """
     if not task_lane or task_lane == "general":
         return True  # Any agent can handle general/unclassified tasks
 
-    specific_lanes = agent_lanes - {"general"}
-    if not specific_lanes:
-        # Truly unspecialized agent (no skills configured) — backwards compat
+    # ── LAYER 1: General = Wildcard ────────────────────────────────────────
+    # If the agent has "general" in its lane list, it can take ANY task lane.
+    # This is the most common case — most agents have "general" + 1-2 specific
+    # lanes. Without this, a backend agent with "general" fallback would starve
+    # when all tasks are classified as "frontend" or "qa" or "devops".
+    if "general" in agent_lanes:
         return True
 
-    # Specialized agent: strict lane enforcement — stay IDLE if no match
+    # ── LAYER 2: Unspecialized agent (no skills configured) ─────────────────
+    specific_lanes = agent_lanes - {"general"}
+    if not specific_lanes:
+        return True
+
+    # ── LAYER 3: Strict match for fully specialised agents ─────────────────
+    # Only reached if agent has NO "general" and at least one specific lane.
     return task_lane in specific_lanes
 
 
@@ -23430,6 +23576,19 @@ Be extremely specific. Every field name must be exact. This is the single source
                     agent_id=agent_id,
                     task=task or {},
                     result={"files_created": [], "branch": _completed_task_branch},
+                )
+            except Exception:
+                pass  # Non-critical
+
+            # ── POST DESIGN CONTEXT TO ENHANCED CONTEXT SERVICE ──────────────
+            # Share structured design context (API endpoints, DB tables, files)
+            # so other agents can see what was built and build consistent code.
+            try:
+                await _post_agent_design_context(
+                    project_token=project_token,
+                    agent_id=agent_id,
+                    task=task or {},
+                    branch=_completed_task_branch,
                 )
             except Exception:
                 pass  # Non-critical

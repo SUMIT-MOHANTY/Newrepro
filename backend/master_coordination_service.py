@@ -18,6 +18,13 @@ class MasterCoordinationService:
     
     def __init__(self):
         self.active_projects: Dict[str, bool] = {}
+
+        # ── LAYER 3: Starvation Detection ───────────────────────────────────
+        # Track consecutive "no task found" cycles per agent per project.
+        # When an agent exceeds the threshold, the master force-assigns a task
+        # ignoring lane restrictions — this is the safety net against starvation.
+        self._starvation_cycles: Dict[str, Dict[str, int]] = {}  # project_token -> {agent_id: count}
+        self._starvation_threshold: int = 5  # Consecutive empty polls before force-assign
     
     async def start_coordinated_project(
         self, 
@@ -36,8 +43,16 @@ class MasterCoordinationService:
         # Mark project as active
         self.active_projects[project_token] = True
         
+        # Initialize starvation tracker for this project
+        self._starvation_cycles[project_token] = {a: 0 for a in agents}
+        
         # Start the coordination loop
         asyncio.create_task(self._coordination_loop(project_token))
+        
+        # ── LAYER 3: Launch starvation detector ────────────────────────────
+        # Runs alongside the coordination loop as a safety net. Every 30s it
+        # checks for agents stuck in empty polling loops and force-assigns tasks.
+        asyncio.create_task(self._starvation_detector(project_token))
         
         return {
             "status": "started",
@@ -88,6 +103,91 @@ class MasterCoordinationService:
                 logger.error(f"❌ Error in coordination loop: {e}")
                 await asyncio.sleep(10)  # Wait longer on error
     
+    # ─────────────────────────────────────────────────────────────────────────
+    # LAYER 3: Starvation Detection — safety net for agents stuck in empty polls
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _record_empty_poll(self, project_token: str, agent_id: str) -> int:
+        """Record one empty polling cycle for an agent. Returns the consecutive count."""
+        tracker = self._starvation_cycles.get(project_token, {})
+        count = tracker.get(agent_id, 0) + 1
+        tracker[agent_id] = count
+        self._starvation_cycles[project_token] = tracker
+        return count
+
+    def _reset_starvation_counter(self, project_token: str, agent_id: str):
+        """Reset starvation counter when agent picks up a task."""
+        tracker = self._starvation_cycles.get(project_token, {})
+        if agent_id in tracker:
+            tracker[agent_id] = 0
+
+    def _get_starved_agents(self, project_token: str) -> List[str]:
+        """Return agent IDs whose consecutive empty polls exceed the threshold."""
+        tracker = self._starvation_cycles.get(project_token, {})
+        return [
+            a for a, count in tracker.items()
+            if count >= self._starvation_threshold
+        ]
+
+    async def _starvation_detector(self, project_token: str):
+        """
+        Run every 30 seconds as a safety net. Detects agents stuck in empty
+        polling loops (starvation) and force-assigns a pending task to them,
+        completely ignoring lane restrictions.
+        """
+        logger.info(f"🔍 Starvation detector started for {project_token} (threshold={self._starvation_threshold} empty polls)")
+
+        while self.active_projects.get(project_token, False):
+            await asyncio.sleep(30)
+
+            try:
+                starved = self._get_starved_agents(project_token)
+                if not starved:
+                    continue
+
+                # Find pending tasks whose dependencies are met
+                available = [
+                    t for t in master_task_manager.task_queue
+                    if t.get("status") == "pending"
+                    and master_task_manager._task_dependencies_met(t)
+                ]
+                if not available:
+                    continue
+
+                logger.warning(
+                    f"⚠️ Starvation detected — {len(starved)} agent(s) stuck, "
+                    f"{len(available)} pending task(s). Force-assigning..."
+                )
+
+                for agent_id in starved:
+                    if not available:
+                        break
+
+                    task = available.pop(0)
+
+                    # Force-assign: bypass lane checks entirely
+                    master_task_manager.agent_assignments[agent_id] = task
+                    master_task_manager.agent_status[agent_id] = "assigned"
+                    task["assigned_agent"] = agent_id
+                    task["status"] = "assigned"
+                    task["assigned_at"] = __import__("datetime").datetime.now().isoformat()
+                    task["_force_assigned"] = True  # Marker so agent knows lane was overridden
+
+                    self._reset_starvation_counter(project_token, agent_id)
+
+                    logger.warning(
+                        f"🚨 FORCE-ASSIGNED task '{task.get('title')}' to {agent_id} "
+                        f"(lane restriction overridden by starvation detector)"
+                    )
+
+                    # Dispatch the agent immediately
+                    asyncio.create_task(
+                        self._run_coordinated_agent(agent_id, task, project_token)
+                    )
+
+            except Exception as e:
+                logger.error(f"❌ Starvation detector error for {project_token}: {e}")
+
     async def _run_coordinated_agent(
         self, 
         agent_id: str, 

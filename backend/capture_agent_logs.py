@@ -10,7 +10,32 @@ Files:
 import httpx, asyncio, json, os, getpass, datetime, socket, sys
 from pathlib import Path
 
-TOKEN = "4847e1af-721e-40af-adc9-b69aa4c15ba6"
+# Resolve token dynamically (env variable -> CLI argument -> latest DB project -> fallback)
+TOKEN = os.environ.get("PROJECT_TOKEN")
+if not TOKEN:
+    if len(sys.argv) > 1 and len(sys.argv[1]) == 36 and "-" in sys.argv[1]:
+        TOKEN = sys.argv[1]
+
+if not TOKEN:
+    try:
+        import sqlite3
+        # Look for sql_app.db in current or parent dirs
+        db_file = "sql_app.db"
+        if os.path.exists(db_file):
+            conn = sqlite3.connect(db_file)
+            cur = conn.cursor()
+            cur.execute("SELECT project_token FROM governance_responses ORDER BY id DESC LIMIT 1")
+            row = cur.fetchone()
+            if row:
+                TOKEN = row[0]
+                print(f"Auto-detected active project token from DB: {TOKEN}")
+            conn.close()
+    except Exception:
+        pass
+
+if not TOKEN:
+    TOKEN = "4847e1af-721e-40af-adc9-b69aa4c15ba6"
+
 API = "http://localhost:8000"
 
 # File paths
@@ -235,4 +260,129 @@ async def main():
         print(f"\n  Open {TXT_PATH} to see the final agent status summary!")
         print(f"{'='*70}")
 
-asyncio.run(main())
+
+async def auto_capture_loop():
+    """
+    Runs in the background of the FastAPI web server.
+    Directly queries the in-memory agent service and SQLite DB to update
+    agent_logs_live.json and agent_logs_live.txt in real-time.
+    """
+    import asyncio
+    import datetime
+    import json
+    from pathlib import Path
+    
+    json_path = Path("agent_logs_live.json")
+    txt_path = Path("agent_logs_live.txt")
+    
+    # Auto-detect project token dynamically
+    token = None
+    try:
+        import sqlite3
+        db_file = "sql_app.db"
+        if os.path.exists(db_file):
+            conn = sqlite3.connect(db_file)
+            cur = conn.cursor()
+            cur.execute("SELECT project_token FROM governance_responses ORDER BY id DESC LIMIT 1")
+            row = cur.fetchone()
+            if row:
+                token = row[0]
+            conn.close()
+    except Exception:
+        pass
+        
+    if not token:
+        token = "7e2855a0-ec9a-4246-b3df-ad80dffe8322"  # fallback to 'main test'
+
+    # Clear/initialize live files on server start
+    try:
+        start_marker = {"type": "capture_started", "time": datetime.datetime.utcnow().isoformat(), "project_token": token}
+        json_path.write_text(json.dumps(start_marker) + "\n", encoding="utf-8")
+        txt_path.write_text(f"[LOG CAPTURE] Auto-started at {datetime.datetime.utcnow().isoformat()}\n{'='*70}\n", encoding="utf-8")
+    except Exception:
+        pass
+
+    seen_logs = {}  # agent_id -> set of log keys
+    
+    # Import locally to avoid circular dependency
+    import agent_service
+    from database import SessionLocal
+    import models
+
+    while True:
+        try:
+            await asyncio.sleep(2)
+            
+            # Fetch all agents from in-memory agent_service
+            agents = agent_service.get_all_agents(token)
+            if not agents:
+                continue
+                
+            # Fetch local task summary status
+            db = SessionLocal()
+            task_data = {}
+            try:
+                local_tasks = db.query(models.Task).filter(
+                    models.Task.project_token == token
+                ).all()
+                if local_tasks:
+                    done = sum(1 for t in local_tasks if t.synced_to_nxdune)
+                    total = len(local_tasks)
+                    task_data = {
+                        "summary": {
+                            "done": done,
+                            "in_progress": sum(1 for t in local_tasks if t.selected and not t.synced_to_nxdune),
+                            "total": total
+                        }
+                    }
+            except Exception:
+                pass
+            finally:
+                db.close()
+
+            # Process new log entries
+            for a in agents:
+                aid = a.get("id", "?")
+                logs = a.get("output_log", []) or []
+                
+                if aid not in seen_logs:
+                    seen_logs[aid] = set()
+                    # Mark existing initial logs as seen
+                    for l in logs:
+                        seen_logs[aid].add(json.dumps(l))
+                    continue
+
+                for l in logs:
+                    key = json.dumps(l)
+                    if key not in seen_logs[aid]:
+                        seen_logs[aid].add(key)
+                        
+                        # Append to agent_logs_live.json
+                        entry = {
+                            "time": l.get("time", datetime.datetime.utcnow().isoformat()),
+                            "agent_id": aid,
+                            "agent_name": a.get("name", "?"),
+                            "type": l.get("type", "info"),
+                            "message": l.get("message", ""),
+                        }
+                        try:
+                            with open(json_path, "a", encoding="utf-8") as f:
+                                f.write(json.dumps(entry) + "\n")
+                        except Exception:
+                            pass
+                            
+            # Update readable status snapshot TXT file
+            try:
+                from capture_agent_logs import write_status_snapshot
+                write_status_snapshot(agents, task_data)
+            except Exception:
+                pass
+
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            await asyncio.sleep(2)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
