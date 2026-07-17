@@ -11,6 +11,7 @@ export const clearAuthData = () => {
     localStorage.removeItem('governanceContext');
     sessionStorage.removeItem('governanceResult');
     sessionStorage.removeItem('governanceContext');
+    sessionStorage.removeItem('brd_project_states');
     clearDraftProjects();
 };
 

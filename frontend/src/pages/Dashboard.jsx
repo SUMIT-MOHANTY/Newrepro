@@ -543,7 +543,26 @@ const Dashboard = ({
     const setSelectedProjectKey = propSetSelectedProjectKey || setInternalSelectedProjectKey;
 
     // -- Per-Project State Management --
-    const [projectStates, setProjectStates] = useState({});
+    const [projectStates, setProjectStates] = useState(() => {
+        try {
+            const saved = sessionStorage.getItem('brd_project_states');
+            if (saved) {
+                const parsed = JSON.parse(saved);
+                // Reset file fields since File objects cannot be persisted as JSON
+                Object.keys(parsed).forEach(key => {
+                    if (parsed[key]) {
+                        parsed[key].files = [];
+                        parsed[key].linkedFiles = [];
+                        parsed[key].skillFiles = [];
+                    }
+                });
+                return parsed;
+            }
+        } catch (e) {
+            console.error('Failed to load project states from session storage', e);
+        }
+        return {};
+    });
 
     // -- Local Skills Viewer Modal States --
     const [showSkillsViewer, setShowSkillsViewer] = useState(false);
@@ -615,6 +634,27 @@ const Dashboard = ({
     const setError = (v) => setProjectState(selectedProjectKey, { error: typeof v === 'function' ? v(activeState.error) : v });
     const setUserFeedback = (v) => setProjectState(selectedProjectKey, { userFeedback: typeof v === 'function' ? v(activeState.userFeedback) : v });
     const setUserAnswers = (v) => setProjectState(selectedProjectKey, { userAnswers: typeof v === 'function' ? v(activeState.userAnswers) : v });
+    
+    // Persist project input state to sessionStorage so it survives route navigation
+    useEffect(() => {
+        try {
+            const statesToSave = {};
+            Object.keys(projectStates).forEach(key => {
+                if (projectStates[key]) {
+                    const { files, linkedFiles, skillFiles, ...rest } = projectStates[key];
+                    statesToSave[key] = {
+                        ...rest,
+                        files: [],
+                        linkedFiles: [],
+                        skillFiles: []
+                    };
+                }
+            });
+            sessionStorage.setItem('brd_project_states', JSON.stringify(statesToSave));
+        } catch (e) {
+            console.error('Failed to save project states to session storage', e);
+        }
+    }, [projectStates]);
 
     const location = useLocation();
 
