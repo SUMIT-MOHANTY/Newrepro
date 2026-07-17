@@ -11,6 +11,8 @@ import {
     Milestone,
     RefreshCw,
     Sparkles,
+    ChevronDown,
+    ChevronRight,
 } from 'lucide-react';
 import { API_ENDPOINTS, API_BASE_URL } from '../config';
 import { upsertDraftProject, getDraftProject } from '../utils/draftProjects';
@@ -346,6 +348,14 @@ export default function TaskCreation({
         }
         return 'greenfield';
     });
+
+    const [collapsedSprints, setCollapsedSprints] = useState({});
+    const toggleSprint = (sprintId) => {
+        setCollapsedSprints(prev => ({
+            ...prev,
+            [sprintId]: !prev[sprintId]
+        }));
+    };
 
     useEffect(() => {
         if (selectedProjectKey) {
@@ -1158,186 +1168,203 @@ export default function TaskCreation({
 
     return (
         <>
-            <div className={`h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30 ${isGenerating ? 'blur-sm' : ''}`}>
+            <div className={`h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/10 ${isGenerating ? 'blur-sm' : ''}`}>
                 <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
-                    <div className="bg-app-bg-card rounded-2xl border border-app-border-light shadow-sm p-5">
-                        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                    {/* Top Premium Gradient Banner Header */}
+                    <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-blue-950 text-white shadow-xl border border-indigo-500/10 p-6 sm:p-7">
+                        <div className="absolute top-0 right-0 w-64 h-64 bg-app-primary/10 rounded-full blur-3xl -mr-16 -mt-16 pointer-events-none"></div>
+                        <div className="absolute bottom-0 left-0 w-48 h-48 bg-indigo-500/5 rounded-full blur-2xl -ml-16 -mb-16 pointer-events-none"></div>
+                        
+                        <div className="relative flex flex-col md:flex-row md:items-center justify-between gap-6">
                             <div>
-                                <p className="text-xs font-semibold uppercase tracking-widest text-app-text-muted">Master Agent Planner</p>
-                                <h2 className="text-2xl font-extrabold text-app-text-main mt-1">Create Sprint, Milestone, and Tasks</h2>
-                                <p className="text-sm text-app-text-muted mt-2">
-                                    Project: <span className="font-semibold text-app-text-main">{selectedProject?.name || 'Not selected'}</span>
-                                </p>
-                                <p className="text-xs text-app-text-muted mt-1">
-                                    Mode: <span className="font-semibold text-app-text-main">
-                                        {processMode === 'ai_first' ? 'AI-First' :
-                                            processMode === 'coexistence' ? 'Coexistence' :
-                                                processMode === 'developer_only' ? 'Developer Only' :
-                                                    processMode === 'ai_assist' ? 'AI Assist' :
-                                                        processMode === 'vibe_coding' ? 'Vibe Coding' :
-                                                            processMode}
+                                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/10 border border-white/10 text-[10px] font-extrabold tracking-widest uppercase text-indigo-200">
+                                    <Sparkles className="w-3 h-3 text-indigo-300 animate-pulse" />
+                                    Master Agent Planner
+                                </div>
+                                <h2 className="text-2xl sm:text-3xl font-black tracking-tight mt-3">Create Sprint, Milestone & Tasks</h2>
+                                <p className="text-sm text-slate-300 mt-2 flex items-center gap-2">
+                                    <span>Project:</span>
+                                    <span className="px-2 py-0.5 rounded bg-indigo-500/20 border border-indigo-500/30 text-white font-semibold text-xs">
+                                        {selectedProject?.name || 'Not selected'}
                                     </span>
                                 </p>
+                                <div className="flex flex-wrap gap-2 mt-3 text-xs text-slate-400">
+                                    <span className="flex items-center gap-1">
+                                        Mode: <span className="font-semibold text-white">
+                                            {processMode === 'ai_first' ? 'AI-First' :
+                                                processMode === 'coexistence' ? 'Coexistence' :
+                                                    processMode === 'developer_only' ? 'Developer Only' :
+                                                        processMode === 'ai_assist' ? 'AI Assist' :
+                                                            processMode === 'vibe_coding' ? 'Vibe Coding' :
+                                                                processMode}
+                                        </span>
+                                    </span>
+                                </div>
                                 {processMode === 'ai_assist' && (
-                                    <div className="mt-3 flex items-center gap-2 px-3 py-1.5 bg-app-primary-light border border-app-primary-light rounded-lg text-xs font-semibold text-app-primary-hover">
-                                        <Sparkles className="w-3.5 h-3.5" />
-                                        <span>AI Assist Active: You will be redirected to VS Code's N-Mod Ext.</span>
+                                    <div className="mt-4 inline-flex items-center gap-2 px-3 py-1.5 bg-indigo-500/25 border border-indigo-500/35 rounded-lg text-xs font-semibold text-indigo-200">
+                                        <Sparkles className="w-3.5 h-3.5 text-indigo-300 animate-bounce" />
+                                        <span>AI Assist Active: You will be redirected to VS Code's N-Mod Extension.</span>
                                     </div>
                                 )}
                             </div>
                             <button
                                 onClick={handleStartProcess}
-                                className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white bg-gradient-to-r from-app-status-success to-app-status-success rounded-lg shadow hover:shadow-lg transition-all"
+                                className="group inline-flex items-center justify-center gap-2 px-6 py-3.5 text-sm font-extrabold text-white bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 rounded-xl shadow-lg shadow-emerald-500/20 active:scale-95 duration-200 shrink-0 border-0"
                             >
                                 Start the Process
-                                <ArrowRight className="w-4 h-4" />
+                                <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
                             </button>
                         </div>
                     </div>
 
-                    <div className="bg-app-bg-card rounded-2xl border border-app-border-light shadow-sm p-5 space-y-4">
-                        <h3 className="text-sm font-bold text-app-text-main flex items-center gap-2">
-                            <FolderKanban className="w-4 h-4 text-app-primary" />
-                            AI Planning
-                        </h3>
-                        <p className="text-sm text-app-text-muted">
-                            Master Agent will generate the task JSON, upload it to the external batch task API, and show the same payload on this page.
+                    {/* AI Planning & Configuration Section */}
+                    <div className="bg-app-bg-card rounded-2xl border border-app-border-light shadow-md p-6 space-y-5 relative overflow-hidden">
+                        <div className="absolute top-0 left-0 w-1 h-full bg-app-primary"></div>
+                        <div className="flex items-center justify-between border-b border-app-border-light pb-3">
+                            <h3 className="text-sm font-bold text-app-text-main flex items-center gap-2">
+                                <Sparkles className="w-4 h-4 text-app-primary" />
+                                AI Planner Config
+                            </h3>
+                            <span className="text-xs text-app-text-muted">Generate & customize your plan strategy</span>
+                        </div>
+                        
+                        <p className="text-sm text-app-text-label leading-relaxed">
+                            The Master Agent parses project context to generate a structured Sprint/Milestone task model, uploads the results to the external task API, and tracks it dynamically.
                         </p>
-                        <div className="text-xs text-app-text-muted bg-app-bg-muted rounded-lg px-3 py-2 border border-app-border-light flex items-center justify-between">
-                            <span>Project deadline: <span className="font-semibold text-app-text-main">{projectDeadline || 'Not available'}</span></span>
-                            <div className="flex items-center gap-2">
-                                <span className="text-[10px] uppercase font-bold text-app-text-muted">Strategy:</span>
-                                <select
-                                    value={projectType}
-                                    onChange={(e) => handleProjectTypeChange(e.target.value)}
-                                    className="bg-app-bg-card border border-app-border rounded px-2 py-0.5 text-xs font-semibold text-app-primary-hover focus:outline-none focus:ring-1 focus:ring-app-primary"
-                                >
-                                    <option value="greenfield">Greenfield (New Build)</option>
-                                    <option value="brownfield">Brownfield (Enhancement)</option>
-                                    <option value="modernization">Modernization (Migration)</option>
-                                </select>
+                        
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {/* Deadline Display */}
+                            <div className="flex items-center gap-3 px-4 py-3 bg-app-bg-page border border-app-border-light rounded-xl">
+                                <CalendarDays className="w-5 h-5 text-indigo-500 shrink-0" />
+                                <div className="min-w-0 flex-1">
+                                    <p className="text-[10px] font-bold text-app-text-muted uppercase tracking-wider">Project Deadline</p>
+                                    <p className="text-sm font-semibold text-app-text-main truncate mt-0.5">
+                                        {projectDeadline || 'Not specified'}
+                                    </p>
+                                </div>
+                            </div>
+                            
+                            {/* Strategy Select */}
+                            <div className="flex items-center gap-3 px-4 py-3 bg-app-bg-page border border-app-border-light rounded-xl">
+                                <FolderKanban className="w-5 h-5 text-app-primary shrink-0" />
+                                <div className="min-w-0 flex-1">
+                                    <p className="text-[10px] font-bold text-app-text-muted uppercase tracking-wider">Plan Strategy</p>
+                                    <select
+                                        value={projectType}
+                                        onChange={(e) => handleProjectTypeChange(e.target.value)}
+                                        className="w-full bg-transparent border-0 p-0 text-sm font-semibold text-app-primary-hover focus:outline-none focus:ring-0 mt-0.5 cursor-pointer"
+                                    >
+                                        <option value="greenfield">Greenfield (New Build)</option>
+                                        <option value="brownfield">Brownfield (Enhancement)</option>
+                                        <option value="modernization">Modernization (Migration)</option>
+                                    </select>
+                                </div>
                             </div>
                         </div>
 
                         {projectType !== 'greenfield' && (
-                            <div className="text-xs px-3 py-2 bg-blue-500/10 border border-blue-500/20 text-blue-400 rounded-lg flex items-center gap-2">
-                                <Sparkles className="w-3.5 h-3.5 text-blue-400 animate-pulse" />
-                                <span>Auto-detected <strong>{projectType === 'brownfield' ? 'Brownfield' : 'Modernization'}</strong> development from repository analysis.</span>
+                            <div className="text-xs px-4 py-3 bg-blue-500/10 border border-blue-500/20 text-blue-600 dark:text-blue-400 rounded-xl flex items-center gap-2.5">
+                                <Sparkles className="w-4 h-4 text-blue-500 animate-pulse shrink-0" />
+                                <span>Auto-detected <strong>{projectType === 'brownfield' ? 'Brownfield' : 'Modernization'}</strong> development pattern based on repository architecture.</span>
                             </div>
                         )}
-
-                        <button
-                            onClick={handleMasterCreate}
-                            disabled={!selectedProjectKey || isGenerating || isLoadingProjectInfo || isResolvingTaskToken}
-                            className={`w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg font-bold text-sm transition-colors ${(!selectedProjectKey || isGenerating || isLoadingProjectInfo || isResolvingTaskToken)
-                                ? 'bg-app-border text-app-text-muted cursor-not-allowed'
-                                : 'bg-gradient-to-r from-app-primary to-app-primary text-app-bg-card hover:from-app-primary-hover hover:to-app-primary-hover'
+                        
+                        <div className="space-y-3 pt-2">
+                            <button
+                                onClick={handleMasterCreate}
+                                disabled={!selectedProjectKey || isGenerating || isLoadingProjectInfo || isResolvingTaskToken}
+                                className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg font-semibold text-sm transition-all duration-200 active:scale-95 ${
+                                    (!selectedProjectKey || isGenerating || isLoadingProjectInfo || isResolvingTaskToken)
+                                        ? 'bg-app-border text-app-text-muted cursor-not-allowed border border-app-border'
+                                        : 'bg-app-primary hover:bg-app-primary-hover text-white shadow-sm hover:shadow-md'
                                 }`}
-                        >
-                            {isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : (isLoadingProjectInfo || isResolvingTaskToken) ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                            {isGenerating ? 'Creating Plan...' : (isLoadingProjectInfo || isResolvingTaskToken) ? 'Loading Project Info...' : 'Create Tasks (AI Auto Plan)'}
-                        </button>
-                        {!selectedProjectKey && (
-                            <p className="text-xs text-app-status-warning bg-app-status-warningBg border border-amber-200 rounded-lg px-3 py-2">
-                                No project selected. Select a project from the sidebar or top project dropdown.
-                            </p>
-                        )}
-                        {selectedProjectKey && (isLoadingProjectInfo || isResolvingTaskToken) && (
-                            <p className="text-xs text-app-primary-hover bg-app-primary-light border border-app-primary-ring rounded-lg px-3 py-2 flex items-start gap-2">
-                                <Loader2 className="w-4 h-4 mt-0.5 shrink-0 animate-spin" />
-                                <span>Loading project information and deadline. Please wait before creating tasks...</span>
-                            </p>
-                        )}
-                        {selectedProjectKey && tasks.length > 0 && !isLoadingProjectInfo && !isResolvingTaskToken && (
-                            <p className="text-xs text-app-primary-hover bg-app-primary-light border border-app-primary-ring rounded-lg px-3 py-2 flex items-start gap-2">
-                                <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
-                                <span>Tasks have been created for this project. You can regenerate them or view existing tasks below.</span>
-                            </p>
-                        )}
-                        {selectedProjectKey && tasks.length > 0 && !isLoadingProjectInfo && !isResolvingTaskToken && (
-                            <div className="flex flex-col sm:flex-row gap-3 w-full">
-                                {tasks.some(t => !t.synced_to_nxdune && t.selected) && taskToken && (
-                                    <button
-                                        onClick={handleSync}
-                                        disabled={isSyncing || isLoading}
-                                        className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-bold text-sm transition-colors bg-gradient-to-r from-emerald-600 to-emerald-700 text-white hover:from-emerald-700 hover:to-emerald-800 disabled:opacity-60 disabled:cursor-not-allowed"
-                                    >
-                                        {isSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-                                        {isSyncing ? 'Syncing...' : `Sync ${tasks.filter(t => !t.synced_to_nxdune && t.selected).length} task(s) to NXDUNE`}
-                                    </button>
+                            >
+                                {isGenerating ? (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : (isLoadingProjectInfo || isResolvingTaskToken) ? (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                    <Sparkles className="w-3.5 h-3.5" />
                                 )}
-                                <button
-                                    onClick={handleSaveSelection}
-                                    disabled={isLoading || isSyncing}
-                                    className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-bold text-sm transition-colors bg-gradient-to-r from-blue-600 to-indigo-700 text-white hover:from-blue-700 hover:to-indigo-800 disabled:opacity-60 disabled:cursor-not-allowed"
-                                >
-                                    {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                                    {isLoading ? 'Saving...' : tasks.some(t => t.selected) ? `Save Selection (${tasks.filter(t => t.selected).length} Selected)` : 'Save Selection'}
-                                </button>
-                            </div>
-                        )}
-                        {/* {selectedProjectKey && (
-                            <p className="text-xs text-app-primary-hover bg-app-primary-light border border-app-primary-ring rounded-lg px-3 py-2">
-                                The generated task JSON is uploaded to the batch task API, stored locally for this project, and shown below.
-                            </p>
-                        )} */}
+                                {isGenerating ? 'Creating Plan...' : (isLoadingProjectInfo || isResolvingTaskToken) ? 'Loading...' : 'Create Tasks (AI Auto Plan)'}
+                            </button>
+
+                            {!selectedProjectKey && (
+                                <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                                    No project selected. Select a project from the sidebar to initialize planning.
+                                </p>
+                            )}
+
+                            {selectedProjectKey && (isLoadingProjectInfo || isResolvingTaskToken) && (
+                                <div className="text-xs text-app-primary bg-app-primary-light border border-app-primary-ring rounded-lg px-3 py-2 flex items-center gap-2">
+                                    <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" />
+                                    <span>Retrieving project context. Creating tasks will be unlocked shortly.</span>
+                                </div>
+                            )}
+
+                            {selectedProjectKey && tasks.length > 0 && !isLoadingProjectInfo && !isResolvingTaskToken && (
+                                <div className="text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 flex items-center gap-2">
+                                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-600" />
+                                    <span>Task roadmap generated. Modify selections, sync, or regenerate below.</span>
+                                </div>
+                            )}
+
+                            {selectedProjectKey && tasks.length > 0 && !isLoadingProjectInfo && !isResolvingTaskToken && (
+                                <div className="flex flex-wrap items-center gap-2 pt-1">
+                                    {tasks.some(t => !t.synced_to_nxdune && t.selected) && taskToken && (
+                                        <button
+                                            onClick={handleSync}
+                                            disabled={isSyncing || isLoading}
+                                            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-semibold text-xs transition-all duration-200 bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed"
+                                        >
+                                            {isSyncing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                                            {isSyncing ? 'Syncing...' : `Sync ${tasks.filter(t => !t.synced_to_nxdune && t.selected).length} to NXDUNE`}
+                                        </button>
+                                    )}
+                                    <button
+                                        onClick={handleSaveSelection}
+                                        disabled={isLoading || isSyncing}
+                                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-semibold text-xs transition-all duration-200 bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed"
+                                    >
+                                        {isLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                                        {isLoading ? 'Saving...' : tasks.some(t => t.selected) ? `Save Selection (${tasks.filter(t => t.selected).length})` : 'Save Selection'}
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+
                         {error && (
-                            <p className="text-xs text-app-status-error bg-app-status-errorBg border border-red-200 rounded-lg px-3 py-2">{error}</p>
+                            <div className="text-xs text-app-status-error bg-app-status-errorBg border border-red-200 rounded-xl px-4 py-3">{error}</div>
                         )}
                         {success && (
-                            <p className="text-xs text-app-status-success bg-app-status-successBg border border-emerald-200 rounded-lg px-3 py-2 flex items-start gap-2">
-                                <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
+                            <div className="text-xs text-app-status-success bg-app-status-successBg border border-emerald-200 rounded-xl px-4 py-3 flex items-start gap-2.5">
+                                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-500 mt-0.5" />
                                 <span>{success}</span>
-                            </p>
+                            </div>
                         )}
                     </div>
 
-                    {/* <div className="bg-app-bg-card rounded-2xl border border-app-border-light shadow-sm p-5">
-                        <div className="flex items-center justify-between mb-4">
-                            <h3 className="text-sm font-bold text-app-text-main">Generated JSON Preview</h3>
-                            {generatedTaskPlan && (
-                                <span className="text-xs font-semibold text-app-text-muted">
-                                    {Array.isArray(generatedTaskPlan?.tasks) ? generatedTaskPlan.tasks.length : 0} item(s)
-                                </span>
-                            )}
-                        </div>
-                        {generatedTaskPlan ? (
-                            <div className="space-y-4">
-                                <pre className="max-h-[420px] overflow-auto rounded-xl bg-slate-900 px-4 py-4 text-xs leading-6 text-app-primary-light font-mono border border-slate-800">
-                                    {JSON.stringify(previewJsonForDisplay, null, 2)}
-                                </pre>
-                                <div>
-                                    <h4 className="mb-3 text-sm font-bold text-app-text-main">Generated CSV Preview</h4>
-                                    <pre className="max-h-[320px] overflow-auto rounded-xl bg-slate-900 px-4 py-4 text-xs leading-6 text-emerald-400 font-mono border border-slate-800">
-                                        {previewCsv}
-                                    </pre>
-                                </div>
+                    {/* Task Tree Grid / Accordion Grouping */}
+                    <div className="bg-app-bg-card rounded-2xl border border-app-border-light shadow-md p-6 space-y-6">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-app-border-light pb-4">
+                            <div>
+                                <h3 className="text-base font-extrabold text-app-text-main">Project Roadmap</h3>
+                                <p className="text-xs text-app-text-muted mt-1">Sprints, milestones, and development work items</p>
                             </div>
-                        ) : (
-                            <div className="py-10 text-center text-sm text-app-text-muted">
-                                No generated JSON yet. Run Create Tasks to preview the payload.
-                            </div>
-                        )}
-                    </div> */}
-
-
-                    <div className="bg-app-bg-card rounded-2xl border border-app-border-light shadow-sm p-5">
-                        <div className="flex items-center justify-between mb-4">
-                            <h3 className="text-sm font-bold text-app-text-main">Tasks Grouped by Sprint / Milestone</h3>
-                            <div className="flex items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
                                 {tasks.length > 0 && tasks.some(t => !t.synced_to_nxdune) && (
                                     <>
                                         <button
                                             onClick={() => handleBulkSelection(true)}
                                             disabled={isLoading}
-                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold bg-app-primary text-white hover:bg-app-primary-hover disabled:opacity-50"
+                                            className="px-3.5 py-2 rounded-lg text-xs font-bold bg-app-primary hover:bg-app-primary-hover text-white transition-all shadow-sm"
                                         >
                                             Select All
                                         </button>
                                         <button
                                             onClick={() => handleBulkSelection(false)}
                                             disabled={isLoading}
-                                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold bg-app-bg-muted text-app-text-main hover:bg-app-bg-hover disabled:opacity-50"
+                                            className="px-3.5 py-2 rounded-lg text-xs font-bold bg-app-bg-page border border-app-border text-app-text-main hover:bg-app-bg-hover transition-all"
                                         >
                                             Deselect All
                                         </button>
@@ -1346,122 +1373,214 @@ export default function TaskCreation({
                                 <button
                                     onClick={() => loadData(1)}
                                     disabled={isLoading}
-                                    className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold bg-app-bg-muted text-app-text-main hover:bg-app-bg-hover"
+                                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold bg-app-bg-page border border-app-border text-app-text-main hover:bg-app-bg-hover transition-all"
                                 >
-                                    {isLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                                    {isLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
                                     Refresh
                                 </button>
                             </div>
                         </div>
 
                         {isLoading ? (
-                            <div className="py-10 text-center text-sm text-app-text-muted">Loading generated task plan...</div>
+                            <div className="py-12 text-center text-sm text-app-text-muted flex flex-col items-center justify-center gap-2">
+                                <Loader2 className="w-8 h-8 text-app-primary animate-spin" />
+                                <span>Loading generated roadmap...</span>
+                            </div>
                         ) : groupedTasks.length === 0 ? (
-                            <div className="py-10 text-center text-sm text-app-text-muted">No generated tasks found yet.</div>
+                            <div className="py-16 text-center text-sm text-app-text-muted border border-dashed border-app-border rounded-xl bg-app-bg-page/50">
+                                <FolderKanban className="w-10 h-10 text-app-text-muted mx-auto opacity-40 mb-3" />
+                                <p className="font-semibold">No tasks generated yet</p>
+                                <p className="text-xs text-app-text-muted mt-1">Use the config card above to generate sprint tasks with AI.</p>
+                            </div>
                         ) : (
-                            <div className="space-y-4">
-                                {groupedTasks.map((sprintGroup) => (
-                                    <div key={`s-${sprintGroup.sprint.id}`} className="border border-app-border rounded-xl overflow-hidden">
-                                        <div className="px-4 py-3 bg-app-primary-light border-b border-app-border-light flex items-center gap-3">
-                                            <input
-                                                type="checkbox"
-                                                checked={isSprintFullySelected(sprintGroup.sprint.id)}
-                                                onChange={(e) => handleSprintSelection(sprintGroup.sprint.id, e.target.checked)}
-                                                className="w-4 h-4 text-app-primary border-app-border rounded focus:ring-app-primary focus:ring-2"
-                                                title="Select all tasks in this sprint"
-                                            />
-                                            <FolderKanban className="w-4 h-4 text-app-primary-hover" />
-                                            <p className="text-sm font-bold text-app-primary-dark">{sprintGroup.sprint.name}</p>
-                                        </div>
-                                        <div className="p-4 space-y-3">
-                                            {Array.from(sprintGroup.milestones.values()).map((milestoneGroup) => (
-                                                <div key={`m-${milestoneGroup.milestone.id}`} className="border border-app-border rounded-lg">
-                                                    <div className="px-3 py-2 bg-violet-50 border-b border-app-border-light flex items-center gap-2">
-                                                        <input
-                                                            type="checkbox"
-                                                            checked={isMilestoneFullySelected(sprintGroup.sprint.id, milestoneGroup.milestone.id)}
-                                                            onChange={(e) => handleMilestoneSelection(sprintGroup.sprint.id, milestoneGroup.milestone.id, e.target.checked)}
-                                                            className="w-4 h-4 text-violet-600 border-violet-300 rounded focus:ring-violet-500 focus:ring-2"
-                                                            title="Select all tasks in this milestone"
-                                                        />
-                                                        <Milestone className="w-4 h-4 text-violet-700" />
-                                                        <p className="text-xs font-bold text-violet-900">{milestoneGroup.milestone.name}</p>
+                            <div className="space-y-5">
+                                {groupedTasks.map((sprintGroup) => {
+                                    const isCollapsed = collapsedSprints[sprintGroup.sprint.id];
+                                    const sprintTasks = tasks.filter(t => {
+                                        const taskSprintId = extractEntityId(t, 'sprint');
+                                        const taskSprintKey = taskSprintId != null ? String(taskSprintId) : 'unassigned_sprint';
+                                        return taskSprintKey === String(sprintGroup.sprint.id);
+                                    });
+                                    const selectedSprintTasksCount = sprintTasks.filter(t => t.selected).length;
+
+                                    return (
+                                        <div 
+                                            key={`s-${sprintGroup.sprint.id}`} 
+                                            className="border border-app-border-light rounded-xl overflow-hidden shadow-sm bg-app-bg-page/20"
+                                        >
+                                            {/* Collapsible Sprint Header */}
+                                            <div className="px-4 py-3 bg-app-primary-light/50 border-b border-app-border-light flex items-center justify-between gap-3 hover:bg-app-primary-light/60 transition-colors select-none">
+                                                <div className="flex items-center gap-3">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={isSprintFullySelected(sprintGroup.sprint.id)}
+                                                        onChange={(e) => handleSprintSelection(sprintGroup.sprint.id, e.target.checked)}
+                                                        className="w-4.5 h-4.5 text-app-primary border-app-border rounded focus:ring-app-primary focus:ring-2 cursor-pointer"
+                                                        title="Select all tasks in this sprint"
+                                                        onClick={(e) => e.stopPropagation()}
+                                                    />
+                                                    <div 
+                                                        onClick={() => toggleSprint(sprintGroup.sprint.id)}
+                                                        className="flex items-center gap-2 cursor-pointer"
+                                                    >
+                                                        <FolderKanban className="w-4 h-4 text-app-primary-dark" />
+                                                        <p className="text-sm font-extrabold text-app-primary-dark">{sprintGroup.sprint.name}</p>
                                                     </div>
-                                                    <div className="p-3 space-y-2">
-                                                        {milestoneGroup.tasks.map((task) => (
-                                                            <div key={task.id || task.task_id || task.taskName} className="border border-app-border rounded-lg px-3 py-2 bg-app-bg-card flex items-start gap-3">
-                                                                <input
-                                                                    type="checkbox"
-                                                                    checked={task.selected || false}
-                                                                    disabled={task.synced_to_nxdune}
-                                                                    onChange={(e) => handleTaskSelection(task.id, e.target.checked)}
-                                                                    className="mt-1 w-4 h-4 text-app-primary border-app-border rounded focus:ring-app-primary focus:ring-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                                                                />
-                                                                <div className="flex-1">
-                                                                    <div className="flex items-start justify-between gap-2">
-                                                                        <p className="text-sm font-semibold text-app-text-main">{task.title || task.taskName || 'Untitled Task'}</p>
-                                                                        <div className="flex items-center gap-1.5 shrink-0">
-                                                                             {task.synced_to_nxdune && (
-                                                                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold uppercase tracking-wide">
-                                                                                     <CheckCircle2 className="w-3 h-3" />
-                                                                                     Synced
-                                                                                 </span>
-                                                                             )}
-                                                                             {task.selected && (
-                                                                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 text-[10px] font-bold uppercase tracking-wide">
-                                                                                     <CheckCircle2 className="w-3 h-3" />
-                                                                                     Saved Locally
-                                                                                 </span>
-                                                                             )}
-                                                                        </div>
+                                                    <span className="px-2 py-0.5 text-[10px] font-extrabold rounded-full bg-app-primary-light text-app-primary-hover border border-app-primary-light">
+                                                        {selectedSprintTasksCount} / {sprintTasks.length} Selected
+                                                    </span>
+                                                </div>
+                                                <button
+                                                    onClick={() => toggleSprint(sprintGroup.sprint.id)}
+                                                    className="p-1 rounded hover:bg-app-primary-light transition-colors text-app-primary-dark"
+                                                >
+                                                    {isCollapsed ? (
+                                                        <ChevronRight className="w-4.5 h-4.5" />
+                                                    ) : (
+                                                        <ChevronDown className="w-4.5 h-4.5" />
+                                                    )}
+                                                </button>
+                                            </div>
+
+                                            {/* Sprints Content Panel */}
+                                            {!isCollapsed && (
+                                                <div className="p-4 space-y-4">
+                                                    {Array.from(sprintGroup.milestones.values()).map((milestoneGroup) => {
+                                                        const milestoneTasks = milestoneGroup.tasks;
+                                                        const selectedMilestoneCount = milestoneTasks.filter(t => t.selected).length;
+
+                                                        return (
+                                                            <div key={`m-${milestoneGroup.milestone.id}`} className="flex gap-4">
+                                                                {/* Timeline vertical node line indicator */}
+                                                                <div className="hidden sm:flex flex-col items-center shrink-0">
+                                                                    <div className="w-7 h-7 rounded-full bg-violet-100 border border-violet-200 flex items-center justify-center text-violet-700 shadow-sm">
+                                                                        <Milestone className="w-3.5 h-3.5" />
                                                                     </div>
-                                                                    <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-app-text-muted">
-                                                                        <span className="inline-flex items-center gap-1">
-                                                                            <Flag className="w-3 h-3" />
-                                                                            {task.priority || 'medium'}
+                                                                    <div className="w-[1.5px] flex-1 bg-gradient-to-b from-violet-200 via-slate-100 to-transparent mt-2"></div>
+                                                                </div>
+
+                                                                {/* Milestone Card content */}
+                                                                <div className="flex-1 border border-app-border-light rounded-xl overflow-hidden bg-app-bg-card shadow-sm">
+                                                                    <div className="px-4 py-2.5 bg-violet-500/5 border-b border-app-border-light flex items-center justify-between gap-3">
+                                                                        <div className="flex items-center gap-2.5">
+                                                                            <input
+                                                                                type="checkbox"
+                                                                                checked={isMilestoneFullySelected(sprintGroup.sprint.id, milestoneGroup.milestone.id)}
+                                                                                onChange={(e) => handleMilestoneSelection(sprintGroup.sprint.id, milestoneGroup.milestone.id, e.target.checked)}
+                                                                                className="w-4 h-4 text-violet-600 border-violet-300 rounded focus:ring-violet-500 focus:ring-2 cursor-pointer"
+                                                                                title="Select all tasks in this milestone"
+                                                                            />
+                                                                            <span className="text-xs font-black tracking-wide text-violet-900 uppercase">
+                                                                                {milestoneGroup.milestone.name}
+                                                                            </span>
+                                                                        </div>
+                                                                        <span className="text-[10px] font-bold text-violet-600">
+                                                                            {selectedMilestoneCount} / {milestoneTasks.length} Work Items
                                                                         </span>
-                                                                        <span className="inline-flex items-center gap-1">
-                                                                            <CalendarDays className="w-3 h-3" />
-                                                                            {task.planned_end || task.deadline || 'No deadline'}
-                                                                        </span>
-                                                                        <span className="rounded-full bg-app-bg-muted px-2 py-0.5 font-semibold uppercase tracking-wide text-[10px] text-app-text-label">
-                                                                            {task.type || task.task_type || 'task'}
-                                                                        </span>
+                                                                    </div>
+                                                                    
+                                                                    <div className="p-3 space-y-2.5">
+                                                                        {milestoneTasks.map((task) => {
+                                                                            const prio = String(task.priority || 'medium').toLowerCase();
+                                                                            const isHigh = prio.includes('high');
+                                                                            const isLow = prio.includes('low');
+
+                                                                            return (
+                                                                                <div 
+                                                                                    key={task.id || task.task_id || task.taskName} 
+                                                                                    className={`group border rounded-xl p-3 bg-app-bg-card flex items-start gap-3 hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 ${
+                                                                                        task.selected 
+                                                                                            ? 'border-indigo-200 bg-indigo-50/5' 
+                                                                                            : 'border-app-border-light'
+                                                                                    }`}
+                                                                                >
+                                                                                    <input
+                                                                                        type="checkbox"
+                                                                                        checked={task.selected || false}
+                                                                                        disabled={task.synced_to_nxdune}
+                                                                                        onChange={(e) => handleTaskSelection(task.id, e.target.checked)}
+                                                                                        className="mt-1 w-4.5 h-4.5 text-app-primary border-app-border rounded focus:ring-app-primary focus:ring-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                                                                                    />
+                                                                                    
+                                                                                    <div className="flex-1 min-w-0">
+                                                                                        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2">
+                                                                                            <p className="text-sm font-bold text-app-text-main leading-snug truncate">
+                                                                                                {task.title || task.taskName || 'Untitled Task'}
+                                                                                            </p>
+                                                                                            <div className="flex items-center gap-1.5 shrink-0">
+                                                                                                 {task.synced_to_nxdune && (
+                                                                                                     <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400 text-[9px] font-extrabold uppercase tracking-wider border border-emerald-200/30">
+                                                                                                         <CheckCircle2 className="w-2.5 h-2.5" />
+                                                                                                         Synced
+                                                                                                     </span>
+                                                                                                 )}
+                                                                                                 {task.selected && !task.synced_to_nxdune && (
+                                                                                                     <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-400 text-[9px] font-extrabold uppercase tracking-wider border border-indigo-200/30">
+                                                                                                         <CheckCircle2 className="w-2.5 h-2.5" />
+                                                                                                         Saved Locally
+                                                                                                     </span>
+                                                                                                 )}
+                                                                                            </div>
+                                                                                        </div>
+                                                                                        
+                                                                                        <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-app-text-muted">
+                                                                                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-semibold text-[10px] uppercase border ${
+                                                                                                isHigh 
+                                                                                                    ? 'bg-red-500/10 text-red-600 border-red-500/20' 
+                                                                                                    : isLow 
+                                                                                                        ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20' 
+                                                                                                        : 'bg-amber-500/10 text-amber-600 border-amber-500/20'
+                                                                                            }`}>
+                                                                                                <Flag className="w-2.8 h-2.8 shrink-0" />
+                                                                                                {task.priority || 'medium'}
+                                                                                            </span>
+                                                                                            <span className="inline-flex items-center gap-1 text-[11px]">
+                                                                                                <CalendarDays className="w-3.5 h-3.5 text-slate-400" />
+                                                                                                Due: {task.planned_end || task.deadline || 'No deadline'}
+                                                                                            </span>
+                                                                                            <span className="rounded bg-app-bg-page border border-app-border-light px-2 py-0.5 font-bold uppercase tracking-widest text-[9px] text-app-text-label shrink-0">
+                                                                                                {task.type || task.task_type || 'task'}
+                                                                                            </span>
+                                                                                        </div>
+                                                                                    </div>
+                                                                                </div>
+                                                                            );
+                                                                        })}
                                                                     </div>
                                                                 </div>
                                                             </div>
-                                                        ))}
-                                                    </div>
+                                                        );
+                                                    })}
                                                 </div>
-                                            ))}
+                                            )}
                                         </div>
-                                    </div>
-                                ))}
+                                    );
+                                })}
 
                                 {pagination.count > 0 && (
-                                    <div className="mt-6 flex items-center justify-between border-t border-app-border-light pt-4 px-1">
-                                        <div className="text-xs text-app-text-muted">
-                                            Showing <span className="font-semibold text-app-text-main">{tasks.length}</span> of <span className="font-semibold text-app-text-main">{pagination.count}</span> tasks
+                                    <div className="mt-6 flex flex-col sm:flex-row items-center justify-between border-t border-app-border-light pt-5 px-1 gap-4">
+                                        <div className="text-xs font-medium text-app-text-muted">
+                                            Showing <span className="font-extrabold text-app-text-main">{tasks.length}</span> of <span className="font-extrabold text-app-text-main">{pagination.count}</span> tasks
                                         </div>
                                         <div className="flex items-center gap-2">
                                             <button
                                                 onClick={() => loadData(pagination.currentPage - 1)}
                                                 disabled={!pagination.previous || isLoading}
-                                                className={`px-3 py-1.5 text-xs font-bold rounded-lg border transition-all ${!pagination.previous || isLoading
-                                                    ? 'border-app-border text-app-text-muted cursor-not-allowed opacity-50'
+                                                className={`px-4 py-2 text-xs font-bold rounded-xl border transition-all duration-250 ${!pagination.previous || isLoading
+                                                    ? 'border-app-border text-app-text-muted cursor-not-allowed opacity-40 bg-app-bg-page'
                                                     : 'border-app-border bg-app-bg-card text-app-text-main hover:bg-app-bg-hover active:scale-95'
                                                     }`}
                                             >
                                                 Previous
                                             </button>
-                                            <div className="flex items-center justify-center min-w-[2rem] h-8 rounded-lg bg-app-primary-light text-app-primary-hover text-xs font-extrabold">
+                                            <div className="flex items-center justify-center min-w-[2.2rem] h-8 rounded-lg bg-indigo-50 text-indigo-700 text-xs font-black border border-indigo-100">
                                                 {pagination.currentPage}
                                             </div>
                                             <button
                                                 onClick={() => loadData(pagination.currentPage + 1)}
                                                 disabled={!pagination.next || isLoading}
-                                                className={`px-3 py-1.5 text-xs font-bold rounded-lg border transition-all ${!pagination.next || isLoading
-                                                    ? 'border-app-border text-app-text-muted cursor-not-allowed opacity-50'
+                                                className={`px-4 py-2 text-xs font-bold rounded-xl border transition-all duration-250 ${!pagination.next || isLoading
+                                                    ? 'border-app-border text-app-text-muted cursor-not-allowed opacity-40 bg-app-bg-page'
                                                     : 'border-app-border bg-app-bg-card text-app-text-main hover:bg-app-bg-hover active:scale-95'
                                                     }`}
                                             >
@@ -1475,50 +1594,60 @@ export default function TaskCreation({
                     </div>
                 </div>
             </div>
+
+            {/* Premium Frosted AI Generating Progress Modal Overlay */}
             {isGenerating && (
-                <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 pointer-events-none" style={{ filter: 'none', backdropFilter: 'none', paddingTop: '15%' }}>
-                    <div className="w-full max-w-xl rounded-2xl border border-app-border bg-app-bg-card shadow-2xl p-6 sm:p-7 pointer-events-auto" style={{ filter: 'none', backdropFilter: 'none' }}>
-                        <div className="flex items-center gap-3">
-                            <Loader2 className="w-6 h-6 text-app-primary animate-spin" />
-                            <h3 className="text-lg font-extrabold text-app-text-main">AI Plan Generation In Progress</h3>
+                <div className="fixed inset-0 z-[300] bg-slate-950/60 backdrop-blur-md flex items-center justify-center p-4">
+                    <div className="w-full max-w-lg rounded-2xl border border-indigo-500/10 bg-app-bg-card shadow-2xl p-6 sm:p-8 text-center animate-fade-in relative overflow-hidden" style={{ filter: 'none', backdropFilter: 'none' }}>
+                        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500 animate-pulse"></div>
+                        <div className="flex justify-center mb-4">
+                            <div className="relative">
+                                <div className="absolute -inset-1 rounded-full bg-app-primary/30 blur animate-ping"></div>
+                                <div className="relative w-12 h-12 rounded-full bg-indigo-50 border border-indigo-100 flex items-center justify-center text-app-primary">
+                                    <Loader2 className="w-6 h-6 animate-spin" />
+                                </div>
+                            </div>
                         </div>
-                        <p className="mt-2 text-sm text-app-text-label">
-                            Generating a local task preview for <span className="font-semibold text-app-text-main">{selectedProject?.name || 'selected project'}</span>. Please wait.
+                        <h3 className="text-xl font-black text-app-text-main tracking-tight">AI Plan Generation In Progress</h3>
+                        <p className="mt-2.5 text-sm text-app-text-label leading-relaxed">
+                            Parsing the BRD artifacts to design custom sprints, milestones, and development checklists for <span className="font-semibold text-app-text-main">{selectedProject?.name || 'your project'}</span>.
                         </p>
-                        {/* <div className="mt-4 rounded-xl border border-app-primary-light bg-app-primary-light px-4 py-3 flex items-center justify-between">
-                            <span className="text-sm font-semibold text-app-primary-dark">Preview tasks generated</span>
-                            <span className="text-2xl font-extrabold text-app-primary-hover tabular-nums">{liveCreatedTaskCount}</span>
-                        </div> */}
-                        <div className="mt-5 space-y-3">
+                        
+                        <div className="mt-6 space-y-3.5">
                             {PLAN_CREATION_STEPS.map((stepLabel, idx) => {
                                 const isDone = idx < creationStageIndex;
                                 const isActive = idx === creationStageIndex;
                                 return (
                                     <div
                                         key={stepLabel}
-                                        className={`flex items-center gap-3 rounded-lg border px-3 py-2 ${isDone
-                                            ? 'border-emerald-200 bg-app-status-successBg'
+                                        className={`flex items-center gap-3.5 rounded-xl border px-4 py-3 text-left transition-all duration-300 ${isDone
+                                            ? 'border-emerald-100 bg-emerald-50/20 dark:bg-emerald-950/15'
                                             : isActive
-                                                ? 'border-app-primary-ring bg-app-primary-light'
-                                                : 'border-app-border bg-app-bg-page'
+                                                ? 'border-indigo-100 bg-indigo-50/20 dark:bg-indigo-950/15 ring-2 ring-indigo-500/10'
+                                                : 'border-app-border-light bg-app-bg-page/50 opacity-55'
                                             }`}
                                     >
                                         {isDone ? (
-                                            <CheckCircle2 className="w-4 h-4 text-app-status-success" />
+                                            <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" />
                                         ) : isActive ? (
-                                            <Loader2 className="w-4 h-4 text-app-primary animate-spin" />
+                                            <Loader2 className="w-5 h-5 text-indigo-500 animate-spin shrink-0" />
                                         ) : (
-                                            <span className="inline-block w-3 h-3 rounded-full border border-app-border bg-app-bg-card" />
+                                            <div className="w-5 h-5 rounded-full border border-app-border bg-app-bg-page shrink-0" />
                                         )}
-                                        <span className={`text-sm font-semibold ${isDone ? 'text-app-status-success' : isActive ? 'text-app-primary-hover' : 'text-app-text-muted'}`}>
-                                            {stepLabel}
-                                        </span>
+                                        <div className="min-w-0 flex-1">
+                                            <span className={`text-sm font-bold block ${isDone ? 'text-emerald-700 dark:text-emerald-400' : isActive ? 'text-indigo-700 dark:text-indigo-400' : 'text-app-text-muted'}`}>
+                                                {stepLabel}
+                                            </span>
+                                            {isActive && (
+                                                <span className="text-[10px] text-app-text-muted block mt-0.5 animate-pulse">Running planning algorithms...</span>
+                                            )}
+                                        </div>
                                     </div>
                                 );
                             })}
                         </div>
-                        <p className="mt-4 text-xs text-app-text-muted">
-                            Actions are temporarily locked until task plan creation completes.
+                        <p className="mt-5 text-[11px] text-app-text-muted italic">
+                            Planning operations are locked until task structure layout settles.
                         </p>
                     </div>
                 </div>

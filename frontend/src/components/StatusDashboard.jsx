@@ -1702,6 +1702,74 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     );
 
     const selectedRoleMeta = DASHBOARD_ROLES.find((role) => role.value === selectedRole) || DASHBOARD_ROLES[1];
+
+    // ── Local (offline / flight-mode) metrics ─────────────────────────
+    // When tasks exist in the local taskList but haven't been synced to NXDUNE yet,
+    // dashboardData returns zeros. We compute accurate counts from taskList directly
+    // and use them as fallbacks so the stat cards always show correct numbers.
+    const localMetrics = useMemo(() => {
+        const all = taskList || [];
+        const total = all.length;
+        if (total === 0) return null;
+
+        const normalizeStatus = (t) => String(t.taskStatus || t.status || t.task_status || '').toLowerCase().trim();
+
+        const completed   = all.filter(t => normalizeStatus(t) === 'completed' || t.is_completed || t.task_progress === 100).length;
+        const inProgress  = all.filter(t => { const s = normalizeStatus(t); return s === 'in progress' || s === 'in_progress' || s === 'inprogress'; }).length;
+        const pending     = all.filter(t => { const s = normalizeStatus(t); return !s || s === 'pending' || s === 'todo' || s === 'to do' || s === 'not started'; }).length;
+
+        // Sprints: count distinct sprint IDs
+        const sprintIds = new Set();
+        all.forEach(t => {
+            const sid = extractEntityId(t, 'sprint');
+            if (sid != null && sid !== '') sprintIds.add(String(sid));
+        });
+        const totalSprints = sprintIds.size;
+
+        // Milestones: count distinct milestone IDs
+        const milestoneIds = new Set();
+        all.forEach(t => {
+            const mid = extractEntityId(t, 'milestone');
+            if (mid != null && mid !== '') milestoneIds.add(String(mid));
+        });
+
+        const completionPct = total > 0 ? Math.round((completed / total) * 100) : 0;
+        const remainingPct  = 100 - completionPct;
+
+        return {
+            total,
+            completed,
+            inProgress,
+            pending,
+            totalSprints,
+            activeSprints: totalSprints, // all sprints considered active locally
+            completionPct,
+            remainingPct,
+            isLocalOnly: true,
+        };
+    }, [taskList]);
+
+    // ── Resolved metric values (API data preferred; local as fallback) ──
+    // If dashboardData is present and has real data, use it.
+    // Otherwise fall back to locally computed metrics from taskList.
+    const hasDashboardStats = Boolean(dashboardData?.summary_statistics);
+    const resolvedTotal      = hasDashboardStats ? (dashboardData.summary_statistics.total_tasks ?? 0)     : (localMetrics?.total      ?? 0);
+    const resolvedCompleted  = hasDashboardStats ? (dashboardData.summary_statistics.completed_tasks ?? 0)  : (localMetrics?.completed   ?? 0);
+    const resolvedInProgress = hasDashboardStats ? (dashboardData.summary_statistics.in_progress_tasks ?? 0): (localMetrics?.inProgress  ?? 0);
+    const resolvedPending    = hasDashboardStats ? (dashboardData.summary_statistics.pending_tasks ?? 0)    : (localMetrics?.pending     ?? 0);
+    const resolvedActiveSprints = hasDashboardStats ? (dashboardData.summary_statistics.active_sprints ?? 0): (localMetrics?.activeSprints ?? 0);
+    const resolvedTotalSprints  = hasDashboardStats ? (dashboardData.summary_statistics.total_sprints ?? 0) : (localMetrics?.totalSprints  ?? 0);
+    const resolvedWorkComplete  = hasDashboardStats ? (dashboardData.kpi?.work_complete_percentage ?? 0)    : (localMetrics?.completionPct ?? 0);
+    const resolvedHoursLogged   = dashboardData?.kpi?.total_hours_logged ?? 0;
+    const resolvedCompletionKpi = hasDashboardStats ? (dashboardData.kpi?.completion_percentage ?? 0)       : (localMetrics?.completionPct ?? 0);
+    // Offline donut chart work percentages
+    const resolvedWorkCompletedPct  = hasDashboardStats
+        ? Math.max(0, Math.min(100, Number(dashboardData.actual_vs_remaining_work?.work_completed_percentage ?? 0)))
+        : (localMetrics?.completionPct ?? 0);
+    const resolvedWorkRemainingPct  = hasDashboardStats
+        ? Math.max(0, Math.min(100, Number(dashboardData.actual_vs_remaining_work?.work_remaining_percentage ?? 0)))
+        : (localMetrics?.remainingPct  ?? 0);
+
     const overallHealth = dashboardData?.project_status?.overall_health || 'Unknown';
     const lateTaskCount = dashboardData?.tasks?.late_tasks?.length || 0;
     const upcomingTaskCount = dashboardData?.tasks?.upcoming_tasks_next_period?.length || 0;
@@ -1717,8 +1785,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const cxoRiskLabel = lateTaskCount > 0 || overallHealth === 'Critical' ? 'High'
         : overallHealth === 'At Risk' ? 'Medium'
             : 'Low';
-    const workCompletedPct = Math.max(0, Math.min(100, Number(dashboardData?.actual_vs_remaining_work?.work_completed_percentage ?? 0)));
-    const workRemainingPct = Math.max(0, Math.min(100, Number(dashboardData?.actual_vs_remaining_work?.work_remaining_percentage ?? 0)));
+    const workCompletedPct = resolvedWorkCompletedPct;
+    const workRemainingPct = resolvedWorkRemainingPct;
     const workTotalPct = workCompletedPct + workRemainingPct;
     const donutCompletedPct = workTotalPct > 0 ? (workCompletedPct / workTotalPct) * 100 : 0;
     const donutRemainingPct = workTotalPct > 0 ? (workRemainingPct / workTotalPct) * 100 : 0;
@@ -2061,42 +2129,47 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
                                     {/* Hours Logged - Spans 2 */}
                                     <div className="bg-gradient-to-br from-app-bg-card to-app-bg-page/50 p-3.5 rounded-xl shadow-sm border border-app-border-light flex flex-col justify-center col-span-2">
-                                        <p className="text-[10px] font-bold text-app-text-label uppercase tracking-widest mb-1 pl-0.5">Hours Logged</p>
+                                        <div className="flex items-center justify-between mb-1 pl-0.5">
+                                            <p className="text-[10px] font-bold text-app-text-label uppercase tracking-widest">Hours Logged</p>
+                                            {localMetrics?.isLocalOnly && !hasDashboardStats && (
+                                                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 border border-amber-200 uppercase tracking-wide">Offline</span>
+                                            )}
+                                        </div>
                                         <div className="flex items-center justify-between mb-1.5 pl-0.5">
-                                            <h3 className="text-xl font-black text-app-text-main mb-0">{dashboardData?.kpi?.total_hours_logged ?? 0}</h3>
-                                            <span className="text-xs font-black text-app-primary">{dashboardData?.kpi?.work_complete_percentage ?? 0}%</span>
+                                            <h3 className="text-xl font-black text-app-text-main mb-0">{resolvedHoursLogged}</h3>
+                                            <span className="text-xs font-black text-app-primary">{resolvedWorkComplete}%</span>
                                         </div>
                                         <div className="w-full bg-app-primary-light rounded-full h-1.5">
-                                            <div className="bg-gradient-to-r from-indigo-400 to-app-primary h-1.5 rounded-full" style={{ width: `${dashboardData?.kpi?.work_complete_percentage ?? 0}%` }}></div>
+                                            <div className="bg-gradient-to-r from-indigo-400 to-app-primary h-1.5 rounded-full" style={{ width: `${resolvedWorkComplete}%` }}></div>
                                         </div>
                                     </div>
 
                                     {/* Active Sprints */}
                                     <div className="bg-app-bg-card p-3 rounded-xl shadow-sm border border-app-border-light flex flex-col justify-center hover:border-app-primary-ring transition-colors">
                                         <p className="text-[10px] font-bold text-app-text-label uppercase tracking-wider mb-1 flex items-center gap-1"><RefreshCw className="w-3 h-3" /> Sprints</p>
-                                        <h3 className="text-xl font-black text-app-text-main mb-0.5">{dashboardData?.summary_statistics?.active_sprints ?? 0} <span className="text-xs text-app-text-light font-medium tracking-normal">/ {dashboardData?.summary_statistics?.total_sprints ?? 0}</span></h3>
+                                        <h3 className="text-xl font-black text-app-text-main mb-0.5">{resolvedActiveSprints} <span className="text-xs text-app-text-light font-medium tracking-normal">/ {resolvedTotalSprints}</span></h3>
                                         <p className="text-[9px] font-semibold text-app-text-muted uppercase tracking-wider">Active</p>
                                     </div>
 
                                     {/* Pending */}
                                     <div className="bg-app-bg-card p-3 rounded-xl shadow-sm border border-app-border-light flex flex-col justify-center hover:border-amber-200 transition-colors">
                                         <p className="text-[10px] font-bold text-app-text-label uppercase tracking-wider mb-1 flex items-center gap-1"><AlertCircle className="w-3 h-3 text-app-status-warning" /> Pending</p>
-                                        <h3 className="text-xl font-black text-app-status-warning mb-0.5">{dashboardData?.summary_statistics?.pending_tasks ?? 0}</h3>
+                                        <h3 className="text-xl font-black text-app-status-warning mb-0.5">{resolvedPending}</h3>
                                         <p className="text-[9px] font-semibold text-app-text-muted uppercase tracking-wider">Tasks</p>
                                     </div>
 
                                     {/* In Progress */}
                                     <div className="bg-app-bg-card p-3 rounded-xl shadow-sm border border-app-border-light flex flex-col justify-center hover:border-app-primary-ring transition-colors">
                                         <p className="text-[10px] font-bold text-app-text-label uppercase tracking-wider mb-1 flex items-center gap-1"><Activity className="w-3 h-3 text-app-primary" /> In Progress</p>
-                                        <h3 className="text-xl font-black text-app-primary mb-0.5">{dashboardData?.summary_statistics?.in_progress_tasks ?? 0}</h3>
+                                        <h3 className="text-xl font-black text-app-primary mb-0.5">{resolvedInProgress}</h3>
                                         <p className="text-[9px] font-semibold text-app-text-muted uppercase tracking-wider">Tasks</p>
                                     </div>
 
                                     {/* Completed */}
                                     <div className="bg-app-bg-card p-3 rounded-xl shadow-sm border border-app-border-light flex flex-col justify-center hover:border-green-200 transition-colors">
                                         <p className="text-[10px] font-bold text-app-text-label uppercase tracking-wider mb-1 flex items-center gap-1"><CheckCircle className="w-3 h-3 text-app-status-success" /> Completed</p>
-                                        <h3 className="text-xl font-black text-app-status-success mb-0.5">{dashboardData?.summary_statistics?.completed_tasks ?? 0}</h3>
-                                        <p className="text-[9px] font-semibold text-app-text-muted uppercase tracking-wider">/ {dashboardData?.summary_statistics?.total_tasks ?? 0} Total</p>
+                                        <h3 className="text-xl font-black text-app-status-success mb-0.5">{resolvedCompleted}</h3>
+                                        <p className="text-[9px] font-semibold text-app-text-muted uppercase tracking-wider">/ {resolvedTotal} Total</p>
                                     </div>
                                 </div>
                             </div>

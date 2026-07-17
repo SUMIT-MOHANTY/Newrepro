@@ -278,7 +278,7 @@ Create Mermaid ER diagram with:
 - Use `erDiagram` (no `end` keyword needed)
 - Use proper relationship syntax: ||--o{, }}o--||, etc.
 - Quote attribute names with spaces
-
+- ONLY use 'PK' or 'FK' (or 'PK, FK') for key annotations. Do NOT use 'UQ', 'UK', 'NN', or other unsupported annotations.
 ### 2. Validation Rules
 List business validation rules:
 - Field validations
@@ -402,7 +402,7 @@ Create a comprehensive Markdown report with these sections:
 # BRD Analysis Report
 
 ## 0.1 Product Understanding
-[Use Stage 1 data]
+[Use Stage 1 data. Format this section as a structured list of bold items (e.g. **Product Name**, **Vision**, **Target Users**, **Product Category**, etc.) followed by descriptive sentences. DO NOT format this section as a table.]
 
 ## 0.2 Background Research
 [Synthesize from Stage 2 tech stack rationale]
@@ -441,13 +441,13 @@ CRITICAL: If the Stage 4 tree is a "BROWNFIELD IMPACT ANALYSIS", output it exact
 [Use Stage 4 file creation plan and phases]
 
 ## 0.8 Risks & Gap Analysis
-[Analyze based on all stages]
+[Analyze based on all stages. Format this section as a structured list of bold risk items followed by detailed mitigation sentences. DO NOT use a table.]
 
 ## 0.9 Clarification Questions
 [Use Stage 1 questions]
 
 ## 0.10 Prerequisites & Credentials
-[Use Stage 4 prerequisites. Group them logically by category (credentials, apis, infrastructure, databases, cloud, dependencies). List each with name, description, and priority.]
+[Use Stage 4 prerequisites. Group them logically by category (credentials, apis, infrastructure, databases, cloud, dependencies). Format each category as a clean bulleted list showing name, description, and priority in sentences. DO NOT use a table.]
 
 ## 0.11 Execution Patterns
 [Use Stage 4 implementation guidelines]
