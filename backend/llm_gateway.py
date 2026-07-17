@@ -225,7 +225,7 @@ def log_ai_usage(
 ):
     """
     Asynchronously logs AI token usage and calculations to the database.
-    Rates for BRN Llama (Sonnet-4 in background):
+    Rates for BRN Llama (Sonnet 4.6 in background):
     - Input: $3.00 per 1M tokens ($0.000003 per token)
     - Output: $15.00 per 1M tokens ($0.000015 per token)
     If token count is not provided, estimate using 1 token = 4 characters.

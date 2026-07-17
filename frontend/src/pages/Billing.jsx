@@ -3,7 +3,7 @@ import {
     CreditCard, CheckCircle2, ShieldAlert, Sparkles, Bot, Clock, 
     DollarSign, Search, Filter, Cpu, RefreshCw, AlertCircle, Zap, 
     User, Activity, ShieldCheck, Globe, Users, FileText, ArrowUpDown,
-    CheckCircle, XCircle, ExternalLink
+    CheckCircle, XCircle, ExternalLink, FileSpreadsheet
 } from 'lucide-react';
 import { API_BASE_URL } from '../config';
 import { getCachedTaskToken } from '../utils/tokenCache';
@@ -387,6 +387,106 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
         }
     };
 
+    const handleExportExcel = () => {
+        if (!orgBillingData) return;
+
+        try {
+            const escapeCSV = (val) => {
+                if (val === null || val === undefined) return '';
+                const str = String(val);
+                if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+                    return `"${str.replace(/"/g, '""')}"`;
+                }
+                return str;
+            };
+
+            const rows = [];
+
+            // 1. Report Metadata
+            rows.push(['ORGANIZATION UTILIZATION & BILLING REPORT']);
+            rows.push(['Organization:', orgBillingData.organization_name || 'Organization']);
+            rows.push(['Exported By:', user?.email || 'Admin']);
+            rows.push(['Export Date:', new Date().toLocaleString()]);
+            rows.push(['Date Range:', `${startDate || 'All-Time'} to ${endDate || 'Present'}`]);
+            rows.push([]);
+
+            // 2. Summary KPIs
+            rows.push(['1. EXECUTIVE SUMMARY KPIs']);
+            rows.push(['Total Cost (USD)', `$${orgBillingData.summary?.total_cost || 0}`]);
+            rows.push(['Total Prompt Tokens', orgBillingData.summary?.total_prompt_tokens || 0]);
+            rows.push(['Total Completion Tokens', orgBillingData.summary?.total_completion_tokens || 0]);
+            rows.push(['Total Requests', orgBillingData.detailed_ai_logs?.length || 0]);
+            rows.push([]);
+
+            // 3. Cost By Model
+            rows.push(['2. COST BY MODEL']);
+            rows.push(['Model', 'Total Cost (USD)']);
+            if (orgBillingData.summary?.cost_by_model) {
+                Object.entries(orgBillingData.summary.cost_by_model).forEach(([model, cost]) => {
+                    rows.push([model, `$${cost}`]);
+                });
+            } else {
+                rows.push(['None', '$0.00']);
+            }
+            rows.push([]);
+
+            // 4. User Stats
+            rows.push(['3. USER UTILIZATION BREAKDOWN']);
+            rows.push([
+                'User Name',
+                'Email',
+                'Is Active',
+                'Is Org Admin',
+                'Session Count',
+                'Session Duration (Hours)',
+                'AI Tokens',
+                'Projects Created',
+                'Total Cost (USD)',
+                'Last Login'
+            ]);
+            if (orgBillingData.user_stats) {
+                orgBillingData.user_stats.forEach(u => {
+                    rows.push([
+                        u.name || '',
+                        u.email || '',
+                        u.is_active ? 'Yes' : 'No',
+                        u.is_org_admin ? 'Yes' : 'No',
+                        u.session_count || 0,
+                        u.total_duration_hours || 0,
+                        u.ai_tokens || 0,
+                        u.projects_count || 0,
+                        u.total_cost || 0,
+                        u.last_login || '—'
+                    ]);
+                });
+            }
+            rows.push([]);
+
+            // Convert to CSV string
+            const csvContent = rows
+                .map(row => row.map(cell => escapeCSV(cell)).join(','))
+                .join('\n');
+
+            // Trigger file download
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            const fileName = `${(orgBillingData.organization_name || 'Organization').replace(/\s+/g, '_')}_utilization_report.csv`;
+            
+            link.setAttribute('href', url);
+            link.setAttribute('download', fileName);
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            URL.revokeObjectURL(url);
+        } catch (csvErr) {
+            console.error('Failed to export Excel CSV:', csvErr);
+            alert('Failed to export Excel CSV: ' + csvErr.message);
+        }
+    };
+
     useEffect(() => {
         fetchBillingData();
     }, [selectedProjectKey, isOrgAdmin, startDate, endDate]);
@@ -579,6 +679,13 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                             >
                                 <ExternalLink className="w-3.5 h-3.5" />
                                 Download Report
+                            </button>
+                            <button
+                                onClick={handleExportExcel}
+                                className="px-4 py-2 border border-app-border bg-app-bg-card text-app-text-label hover:bg-app-bg-hover rounded-lg transition-all text-xs font-semibold flex items-center gap-2 shadow-sm cursor-pointer"
+                            >
+                                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-500" />
+                                Export Excel
                             </button>
                             <button
                                 onClick={() => fetchBillingData(true)}

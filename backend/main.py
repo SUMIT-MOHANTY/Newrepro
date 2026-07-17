@@ -2670,6 +2670,31 @@ def get_org_billing_and_logs(
             "submission_date": p.submission_date.isoformat() if p.submission_date else None
         })
 
+    # Serialize detailed AI logs for Excel export
+    detailed_ai_logs = []
+    project_name_map = {p.project_token: p.project_name for p in org_projects}
+    for log in ai_logs:
+        user_obj = org_user_map.get(log.user_id)
+        user_email = user_obj.email if user_obj else "unknown"
+        user_name = f"{user_obj.first_name or ''} {user_obj.last_name or ''}".strip() if user_obj else "unknown"
+        if not user_name:
+            user_name = user_email.split('@')[0]
+            
+        proj_name = project_name_map.get(log.project_token) or log.project_token or "System/General"
+        
+        detailed_ai_logs.append({
+            "id": log.id,
+            "created_at": log.created_at.isoformat() if log.created_at else None,
+            "user_email": user_email,
+            "user_name": user_name,
+            "project_name": proj_name,
+            "project_token": log.project_token or "—",
+            "model": log.model or "unknown",
+            "prompt_tokens": log.prompt_tokens or 0,
+            "completion_tokens": log.completion_tokens or 0,
+            "cost": round(log.cost or 0.0, 6)
+        })
+
     return {
         "organization_name": organization_name,
         "summary": {
@@ -2679,7 +2704,8 @@ def get_org_billing_and_logs(
             "cost_by_model": cost_by_model,
         },
         "user_stats": user_stats,
-        "projects_list": projects_list
+        "projects_list": projects_list,
+        "detailed_ai_logs": detailed_ai_logs
     }
 
 @app.get("/organization/download-billing-report")
