@@ -59,6 +59,42 @@ def _invalidate_cache_if_available(organization_name: str = None, project_token:
         logger.warning(f"Cache invalidation failed: {e}")
 
 
+# ── Rate Limiter for External API Calls ────────────────────────────────────
+# Prevents burst calls from overwhelming NXDUNE / task-service endpoints.
+# Uses a simple sliding-window per-call-type approach with async lock.
+
+_rate_limit_state: Dict[str, float] = {}
+_rate_limit_lock = asyncio.Lock()
+
+# Minimum interval (seconds) between calls per operation type
+_RATE_LIMIT_INTERVALS: Dict[str, float] = {
+    "opt_in_task": 0.75,
+    "task_progress": 0.5,
+    "timer_log": 0.5,
+    "task_complete": 1.0,
+    "task_message": 0.5,
+    "update_task": 0.75,
+    "default": 0.5,
+}
+
+
+async def _rate_limit(operation: str = "default") -> None:
+    """
+    Enforce minimum interval between external API calls of the same type.
+
+    Call before any external HTTP request to avoid 429 / rate-limit errors.
+    Non-blocking for first call; sleeps only when needed.
+    """
+    interval = _RATE_LIMIT_INTERVALS.get(operation, _RATE_LIMIT_INTERVALS["default"])
+    async with _rate_limit_lock:
+        now = time.time()
+        last = _rate_limit_state.get(operation, 0.0)
+        wait = last + interval - now
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _rate_limit_state[operation] = time.time()
+
+
 # ── AI Response Cleaner ─────────────────────────────────────────────────────
 
 def _clean_ai_code_response(content: str) -> tuple[str, str]:
@@ -1295,6 +1331,56 @@ def _task_status_is_done(status: Any) -> bool:
         "closed",
         "resolved",
     }
+
+
+# ── Valid status transitions ───────────────────────────────────────────────────
+# Key: current status (lowered) → set of allowed next statuses (lowered)
+_VALID_STATUS_TRANSITIONS: Dict[str, set] = {
+    "to do": {"on going", "in progress", "to do"},   # self is idempotent re-fetch
+    "on going": {"completed", "done", "complete", "closed", "failed", "blocked", "on going"},
+    "in progress": {"completed", "done", "complete", "closed", "failed", "blocked", "in progress"},
+    "blocked": {"on going", "in progress", "to do", "blocked"},
+    "failed": {"on going", "in progress", "to do", "failed"},
+    "completed": {"completed", "reopened"},  # NEVER allow completed→anything except reopen
+    "done": {"done", "reopened"},
+    "complete": {"complete", "reopened"},
+    "closed": {"closed", "reopened"},
+}
+
+
+def _validate_status_transition(
+    current_status: Any, new_status: Any, task_id: str = "?", agent_id: str = "?"
+) -> Optional[str]:
+    """
+    Check whether a status transition is valid.
+
+    Returns None if the transition is allowed, or a warning string if it looks
+    suspicious (e.g. trying to complete an already-completed task).
+
+    This is a soft guard — it logs but does not block execution — because
+    remote statuses can drift between calls.
+    """
+    cur = str(current_status or "").strip().lower()
+    new = str(new_status or "").strip().lower()
+
+    if not cur or not new:
+        return None  # can't validate without both sides
+
+    if cur == new:
+        return None  # idempotent — fine
+
+    allowed = _VALID_STATUS_TRANSITIONS.get(cur)
+    if allowed is None:
+        # Unknown current status — warn but allow
+        return f"Unknown current status '{cur}' for transition to '{new}' (task {task_id})"
+
+    if new not in allowed:
+        return (
+            f"SUSPICIOUS transition: '{cur}' → '{new}' is NOT in allowed set "
+            f"{allowed} (task {task_id}, agent {agent_id})"
+        )
+
+    return None  # valid transition
 
 
 def _active_owned_task_ids(project_token: Optional[str]) -> set[str]:
@@ -5070,6 +5156,22 @@ CRITICAL FOR FIX SCRIPTS (iterations > 1):
 13. Re-run the check command after fixes to verify errors are gone
 14. Output "FIX APPLIED: <description>" for each successful modification
 15. Exit 0 ONLY if fixes were applied AND verification passes
+
+CHECKLIST VERIFICATION RULE (MANDATORY — applies to ALL stack types):
+16. The TASK DESCRIPTION below may contain a CHECKLIST section with numbered items.
+17. You MUST read each checklist item and generate a shell command that verifies it.
+18. For EVERY checklist item, output: \"[CHECKLIST: <item summary>] PASS\" or \"[CHECKLIST: <item summary>] FAIL\"
+19. If a checklist item is NOT VERIFIABLE with shell commands (e.g. \"review UX\"),
+    output: \"[CHECKLIST: <item summary>] SKIP (not verifiable via shell)\"
+20. Exit code MUST be 1 if ANY checklist item reports FAIL.
+
+API CONTRACT ENFORCEMENT (MANDATORY — applies when a TECHNICAL SPECIFICATION exists):
+21. If the TECHNICAL SPECIFICATION below contains an API CONTRACT section, you MUST verify that:
+    a. Every API endpoint your code creates MATCHES the contract (method + path exactly)
+    b. Your code does NOT create endpoints NOT in the contract (extraneous endpoints = FAIL)
+    c. Request/response schemas match the contract (check field names and types with grep)
+22. For each endpoint verification, output: \"[API-CONTRACT: <endpoint>] PASS\" or \"[API-CONTRACT: <endpoint>] FAIL\"
+23. If no API contract is provided, skip rules 21-22 silently.
 
 RESPONSE FORMAT:
 Your response must contain shell scripts in this exact format:
@@ -17119,6 +17221,53 @@ def _coerce_task_execution_order(value: Any) -> Optional[float]:
     return None
 
 
+def _normalize_sprint_id(task: Dict[str, Any]) -> Optional[str]:
+    """Extract a canonical string sprint identifier from a task dict.
+    Handles both direct string IDs and nested dict (e.g. {"id": "uuid"}).
+    Returns None if no sprint data is present."""
+    raw = task.get("sprint") or task.get("sprint_id")
+    if not raw:
+        return None
+    if isinstance(raw, dict):
+        return str(raw.get("id") or raw.get("name") or "")
+    return str(raw)
+
+
+def _compute_active_sprint(tasks: List[Dict[str, Any]]) -> Optional[str]:
+    """
+    Find the earliest sprint that still has at least one incomplete executable task.
+
+    Returns the canonical sprint id string of the first (by natural ordering)
+    sprint whose tasks are not all done, or None if every sprint is complete
+    or no sprint metadata exists.
+    """
+    sprint_tasks: Dict[str, List[Dict[str, Any]]] = {}
+    sprint_order: Dict[str, float] = {}
+
+    for t in tasks:
+        task_type = (t.get("task_type") or "").upper()
+        if task_type not in ("TASK", "BUG", "ANALYSIS", "DEVELOPMENT", "TESTING"):
+            continue
+        sid = _normalize_sprint_id(t)
+        if not sid:
+            continue
+        sid = str(sid)
+        if sid not in sprint_tasks:
+            sprint_tasks[sid] = []
+            sprint_order[sid] = _coerce_task_execution_order(sid) or float("inf")
+        sprint_tasks[sid].append(t)
+
+    if not sprint_tasks:
+        return None
+
+    # Walk sprints in natural order; return the first that is not fully done
+    for sprint_id in sorted(sprint_tasks.keys(), key=lambda _sid: sprint_order.get(_sid, float("inf"))):
+        if not all(_task_status_is_done(t.get("status")) for t in sprint_tasks[sprint_id]):
+            return sprint_id
+
+    return None  # every sprint already finished
+
+
 def _build_task_dag(tasks: List[Dict[str, Any]]) -> Dict[str, set]:
     """
     Build a dependency map from the task list.
@@ -17629,6 +17778,20 @@ async def _post_task_complete(task: Dict[str, Any], project_token: Optional[str]
         logger.warning("[agent_service] Cannot complete task: no task_id found")
         return False
     resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
+
+    # ═══ STATUS TRANSITION GUARD ═══
+    current_status = str(task.get("status") or "").strip()
+    warning = _validate_status_transition(
+        current_status, "Completed", str(task_id),
+        str(task.get("assigned_agent") or task.get("_local_agent_id") or "?")
+    )
+    if warning:
+        logger.warning(f"[agent_service] {warning}")
+        # If already completed, skip silently — don't repeat work
+        if _task_status_is_done(current_status):
+            logger.info(f"[agent_service] Task {task_id} is already in done state ({current_status}) — skipping completion")
+            return True
+
     state = _ensure_project_state(resolved_project)
     ledger = state.setdefault("task_ledger", {})
     
@@ -17701,11 +17864,25 @@ async def _opt_in_task(task: Dict[str, Any], username: str,
     if not task_id:
         return False
     resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
+
+    # ═══ STATUS TRANSITION GUARD ═══
+    current_status = str(task.get("status") or "").strip()
+    warning = _validate_status_transition(
+        current_status, "On Going", str(task_id), str(username or "?")
+    )
+    if warning:
+        logger.warning(f"[agent_service] {warning}")
+        # If already completed or in-progress, skip claiming
+        if _task_status_is_done(current_status):
+            logger.info(f"[agent_service] Task {task_id} is already done ({current_status}) — skipping opt-in")
+            return False
+
     _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
     
     # 1. Queue sync opt-in to NXDune asynchronously
     if resolved_project:
         try:
+            await _rate_limit("opt_in_task")
             from local_state_manager import queue_nxdune_sync
             queue_nxdune_sync(
                 project_token=resolved_project,
@@ -18258,6 +18435,7 @@ async def _sync_rollup_status_for_completed_task(
                 # If all children are complete, mark parent complete
                 if children and all(_is_completed_task_status(c.get("status")) for c in children):
                     try:
+                        await _rate_limit("update_task")
                         await task_service.update_task_status(
                             task_id=int(parent_id),
                             status="Completed",
@@ -18541,13 +18719,9 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 f"[{agent_id}] Released stale claimed task ids: {', '.join(sorted(stale_claims)[:10])}"
             )
 
-        # Get current active sprint from project state (if available)
-        current_sprint_id = None
-        project_state = None
-        try:
-            project_state = _ensure_project_state(project_token)
-        except Exception:
-            pass
+        # Compute the earliest sprint that still has incomplete tasks.
+        # Tasks from later sprints are gated until all earlier-sprint tasks finish.
+        current_sprint_id = _compute_active_sprint(external_tasks)
 
         # external_tasks are already sorted above
 
@@ -18713,7 +18887,7 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                     continue
 
             if current_sprint_id:
-                task_sprint_id = t.get("sprint") or t.get("sprint_id")
+                task_sprint_id = _normalize_sprint_id(t)
                 if task_sprint_id and str(task_sprint_id) != str(current_sprint_id):
                     skip_reasons["sprint_mismatch"] += 1
                     continue
@@ -18786,6 +18960,42 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                             })
                         skip_reasons["conflict_blocked"] += 1
                         continue
+
+            else:
+                # ═══ FALLBACK DEPENDENCY CHECK (live_mem unavailable) ═══
+                # When shared memory is not available, validate dependencies
+                # directly against external task statuses so DAG order is still
+                # enforced even without the in-memory coordination layer.
+                if not is_bootstrap_task:
+                    task_deps = t.get("dependencies", [])
+                    if not task_deps:
+                        linked = t.get("linked_tasks", [])
+                        if linked:
+                            executable_deps = []
+                            for lt_id in linked:
+                                linked_task = next((ext_t for ext_t in external_tasks if str(_normalize_task_id(ext_t) or ext_t.get("external_id") or ext_t.get("id")) == str(lt_id)), None)
+                                if linked_task:
+                                    linked_type = (linked_task.get("task_type") or "").upper()
+                                    if linked_type in ["TASK", "BUG"]:
+                                        executable_deps.append(str(lt_id))
+                            task_deps = executable_deps
+
+                    if task_deps:
+                        blocking = []
+                        for dep_id in task_deps:
+                            dep_task = next((ext_t for ext_t in external_tasks if str(_normalize_task_id(ext_t) or ext_t.get("external_id") or ext_t.get("id")) == str(dep_id)), None)
+                            if dep_task and not _task_status_is_done(dep_task.get("status")):
+                                blocking.append(str(dep_id))
+                        if blocking:
+                            logger.info(f"[{agent_id}] Task {tid} blocked by dependencies (fallback check): {blocking}")
+                            if agent:
+                                agent["output_log"].append({
+                                    "time": datetime.utcnow().isoformat(),
+                                    "type": "info",
+                                    "message": f"⏸️ Task {tid} waiting for dependencies: {blocking}"
+                                })
+                            skip_reasons["dependency_blocked"] += 1
+                            continue
 
             # ── Step 2b: Workstream Sequential Gate ──────────────────────────────
             # Enforce sequential execution within the same domain (frontend/backend/qa).
@@ -23304,22 +23514,46 @@ Be extremely specific. Every field name must be exact. This is the single source
             task_progress_state.pop(task_key, None)
             timer_log_state.pop(task_key, None)
 
-            # DO NOT release claimed IDs for successfully completed tasks.
-            # If the external API fails to mark the task as "completed",
-            # _pick_next_task would re-pick it, causing duplicate execution.
-            # IDs are only discarded on error/abort (see error handler below).
+            # ═══ TASK COMPLETION ACCOUNTING ═══
+            # Only count SUCCESSFUL tasks as completed.  Failed tasks must
+            # release their claim so another agent (or the same agent on retry)
+            # can pick them up.
+            if result["exit_code"] == 0:
+                completed_tasks.append(task)
+                # DO NOT release claimed IDs for successfully completed tasks.
+                # If the external API fails to mark the task as "completed",
+                # _pick_next_task would re-pick it, causing duplicate execution.
+            else:
+                # FAILED TASK — release claim so it can be reassigned
+                task_id_for_claim = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
+                if task_id_for_claim:
+                    claimed_task_ids.discard(task_id_for_claim)
+                    # Also mark the task as blocked in external system so master supervisor knows
+                    try:
+                        from task_service import task_service
+                        await task_service.update_task_tags({
+                            "task_id": int(task_id_for_claim),
+                            "tags": ["blocked"]
+                        }, task_token=task_token)
+                    except Exception:
+                        pass
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "warning",
+                    "message": f"⚠️ Task claim released — master supervisor may reassign to another agent"
+                })
 
-            completed_tasks.append(task)
             all_results.append({
                 "task": task["title"],
                 "exit_code": result["exit_code"],
                 "duration": elapsed,
             })
 
+            exit_status_label = "completed" if result["exit_code"] == 0 else "FAILED"
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "info",
-                "message": f"✅ Task '{task['title']}' completed in {elapsed}s (exit={result['exit_code']})"
+                "message": f"{'✅' if result['exit_code'] == 0 else '❌'} Task '{task['title']}' {exit_status_label} in {elapsed}s (exit={result['exit_code']})"
             })
             # ═══ REMOVED DUPLICATE: progress and progress_message already set above ═══
 
@@ -25093,19 +25327,32 @@ async def _master_detect_agent_failures(
         # Check for stuck agents (running too long)
         if agent_status == "running" and last_run:
             try:
-                # Dynamic SLA timeout based on days_left
-                # 1 day = 86400 seconds, fallback to 1800s if days_left is 0 or missing
+                # ── DYNAMIC TIMEOUT BASED ON TASK COMPLEXITY ──
+                # Base: 30 min per task-wallet point (30 min for wallet=1, 4h for wallet=8).
+                # Cap at 4 hours max, floor at 30 min.
+                task_wallet = 1
                 days_left = 0
                 if isinstance(current_task, dict):
+                    try:
+                        task_wallet = int(current_task.get("task_wallet", 1) or 1)
+                    except (ValueError, TypeError):
+                        pass
                     try:
                         days_left = int(current_task.get("days_left", 0))
                     except (ValueError, TypeError):
                         pass
-                
-                # If they have a deadline, give them up to that deadline incrementally
-                # Otherwise, stick to the strict 30 min (1800s) hard limit
-                dynamic_threshold = max((days_left * 86400) // 24, stuck_threshold_seconds) if days_left > 0 else stuck_threshold_seconds
-                
+
+                # Wallet-aware base threshold: 30 min × wallet points
+                wallet_timeout = max(1800, min(task_wallet * 1800, 14400))  # 30min–4h range
+
+                # Deadline pressure: if deadline is close, be tighter
+                if days_left > 0:
+                    # days_left-based: 1h per day remaining (min 30 min)
+                    deadline_timeout = max(days_left * 3600, stuck_threshold_seconds)
+                    dynamic_threshold = min(wallet_timeout, deadline_timeout)
+                else:
+                    dynamic_threshold = wallet_timeout
+
                 last_run_time = datetime.fromisoformat(last_run.replace("Z", "+00:00"))
                 if last_run_time.tzinfo is None:
                     last_run_time = last_run_time.replace(tzinfo=timezone.utc)
@@ -25113,7 +25360,10 @@ async def _master_detect_agent_failures(
                 
                 if elapsed > dynamic_threshold:
                     failure_info["failure_type"] = "stuck"
-                    failure_info["failure_reason"] = f"Agent running for {elapsed:.0f} seconds (>{stuck_threshold_seconds}s threshold)"
+                    failure_info["failure_reason"] = (
+                        f"Agent running for {elapsed:.0f}s "
+                        f"(>{dynamic_threshold:.0f}s dynamic threshold — wallet={task_wallet}, days_left={days_left})"
+                    )
                     failed_agents.append(failure_info)
             except Exception:
                 pass
@@ -25909,7 +26159,60 @@ async def _master_supervisor_loop(
                 # If bootstrap is not pushed, ONLY the bootstrap task can be assigned.
                 # If the bootstrap task is not available (already in progress or claimed), do not assign anything.
                 available_tasks = bootstrap_tasks
-            
+
+                # ═══ BOOTSTRAP FAILURE RECOVERY ═══
+                # If bootstrap task is stuck (claimed/assigned but agent is failing),
+                # forcibly reclaim it so another agent can take over.
+                if not available_tasks:
+                    # Find TASK-00 from ALL external tasks (not just available ones)
+                    task00 = None
+                    for ext_t in external_tasks:
+                        _maybe_bt = (
+                            str(_normalize_task_id(ext_t) or ext_t.get("external_id") or ext_t.get("id") or "").strip().upper() == "TASK-00"
+                            or "project bootstrap" in str(ext_t.get("title") or ext_t.get("taskName") or "").strip().lower()
+                        )
+                        if _maybe_bt:
+                            task00 = ext_t
+                            break
+
+                    if task00 and not _task_status_is_done(task00.get("status")):
+                        task00_tid = str(_normalize_task_id(task00) or task00.get("external_id") or task00.get("id") or "")
+                        # Check if task is claimed by a stuck/failing agent
+                        if task00_tid in claimed_task_ids:
+                            _log_master_agent(
+                                f"🚨 Bootstrap task {task00_tid} is claimed but not progressing. Reclaiming for reassignment.",
+                                level="warning",
+                                project_token=project_token,
+                            )
+                            claimed_task_ids.discard(task00_tid)
+                            available_tasks = [task00]
+                        else:
+                            # Task exists but wasn't in available_tasks — may be incorrectly filtered
+                            available_tasks = [task00]
+
+            # ═══ SPRINT GATE ═══
+            # After bootstrap completes, enforce sprint-level ordering:
+            # only tasks from the earliest incomplete sprint are available.
+            # This prevents Sprint 2 tasks from being worked on while Sprint 1
+            # tasks are still unfinished.
+            if available_tasks and is_bootstrap_pushed(project_token):
+                active_sprint = _compute_active_sprint(external_tasks)
+                if active_sprint:
+                    gated_tasks = []
+                    for t in available_tasks:
+                        task_sid = _normalize_sprint_id(t)
+                        if task_sid and str(task_sid) == str(active_sprint):
+                            gated_tasks.append(t)
+                    if gated_tasks:
+                        if len(gated_tasks) < len(available_tasks):
+                            _log_master_agent(
+                                f"🔄 Sprint gate: {len(gated_tasks)}/{len(available_tasks)} tasks available in active sprint {active_sprint}",
+                                project_token=project_token,
+                            )
+                        available_tasks = gated_tasks
+                    # If no tasks match the active sprint but there ARE available tasks,
+                    # it means all sprint tasks are done — allow remaining tasks through.
+
             # Log supervisor status every iteration
             _log_master_agent(
                 f"📊 Supervisor Check #{iteration}: {len(idle_agents)} idle agent(s), {len(available_tasks)} available task(s)",
@@ -26233,6 +26536,48 @@ Follow the specific instructions to avoid repeating the same failures.
                         level="warning",
                         project_token=project_token,
                     )
+                    
+                    # ═══ STUCK AGENT TASK REASSIGNMENT ═══
+                    # If the agent has been running too long on a task, reassign it
+                    # so the project doesn't stall indefinitely.
+                    if current_task:
+                        try:
+                            task_id = str(_normalize_task_id(current_task) or current_task.get("external_id") or current_task.get("id") or "")
+                            if task_id:
+                                # Mark task as blocked in external system
+                                from task_service import task_service
+                                await task_service.update_task_tags({
+                                    "task_id": int(task_id),
+                                    "tags": ["blocked"]
+                                }, task_token=task_token)
+                                
+                                # Release claim so another agent can pick it up
+                                claimed_task_ids.discard(task_id)
+                                
+                                agent_ref = project_agents.get(agent_id)
+                                if agent_ref:
+                                    agent_ref["current_task"] = None
+                                    agent_ref["status"] = "idle"
+                                    agent_ref["progress_message"] = f"Recovered from stuck state — task {task_id} released"
+                                    agent_ref["output_log"].append({
+                                        "time": datetime.utcnow().isoformat(),
+                                        "type": "warning",
+                                        "message": f"⚠️ Master Agent: Unstuck — task {task_id} released for reassignment ({failure_reason})"
+                                    })
+                                
+                                _log_master_agent(
+                                    f"🔄 Stuck agent {agent_id} reset — task {task_id} released for reassignment",
+                                    project_token=project_token,
+                                )
+                                await _post_task_message(
+                                    current_task,
+                                    f"⚠️ Master Agent: Previous agent was stuck ({failure_reason}). Task released for reassignment.",
+                                    project_token=project_token,
+                                    task_token=task_token,
+                                )
+                        except Exception as stuck_err:
+                            logger.warning(f"[Master Agent] Failed to reassign stuck agent {agent_id} task: {stuck_err}")
+                    
                     total_interventions += 1
                 elif failure_type == "idle_too_long":
                     _log_master_agent(
@@ -26272,6 +26617,60 @@ Follow the specific instructions to avoid repeating the same failures.
                             project_token=project_token,
                         )
                     total_interventions += 1
+            
+            # ═══ ORPHAN BLOCKED-TASK DETECTION ═══
+            # Scan for tasks tagged "blocked" that have no active agent working
+            # on them.  These are orphaned by agent failures or stuck-timeout.  The
+            # master supervisor releases their claim so they can be reassigned.
+            try:
+                orphan_count = 0
+                for t in external_tasks:
+                    task_tags = (t.get("tags") or [])
+                    if isinstance(task_tags, str):
+                        task_tags = [tag.strip() for tag in task_tags.split(",")]
+                    is_blocked = "blocked" in [str(tag).lower().strip() for tag in task_tags]
+                    if not is_blocked:
+                        continue
+                    task_tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id") or "")
+                    if not task_tid:
+                        continue
+                    # Check if any agent is actively working on this task
+                    active_agent = None
+                    for aid, ainfo in project_agents.items():
+                        if _is_system_agent_id(aid):
+                            continue
+                        cur_task = ainfo.get("current_task")
+                        if isinstance(cur_task, dict):
+                            cur_tid = str(_normalize_task_id(cur_task) or cur_task.get("external_id") or cur_task.get("id") or "")
+                            if cur_tid == task_tid and ainfo.get("status") == "running":
+                                active_agent = aid
+                                break
+                    if active_agent:
+                        continue  # Someone IS working on it — leave it alone
+                    # ORPHAN DETECTED — release claim and unblock for reassignment
+                    claimed_task_ids.discard(task_tid)
+                    try:
+                        from task_service import task_service
+                        await task_service.update_task_tags({
+                            "task_id": int(task_tid),
+                            "tags": ["unblocked"]
+                        }, task_token=task_token)
+                    except Exception:
+                        pass
+                    orphan_count += 1
+                    _log_master_agent(
+                        f"🔓 Orphan blocked task {task_tid} ('{t.get('title', 'Untitled')[:40]}') released for reassignment",
+                        project_token=project_token,
+                    )
+                if orphan_count > 0:
+                    _log_master_agent(
+                        f"🔄 Released {orphan_count} orphan blocked task(s) for reassignment",
+                        level="warning",
+                        project_token=project_token,
+                    )
+            except Exception as orphan_err:
+                logger.warning(f"[Master Agent] Orphan task scan failed: {orphan_err}")
+            # ═══ END ORPHAN DETECTION ═══
             
             # Check integration branch readiness
             if iteration % 10 == 0:  # Check every 10 iterations (5 minutes)

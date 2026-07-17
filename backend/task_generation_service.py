@@ -591,8 +591,42 @@ def _parse_task_json(content: str) -> List[Dict[str, Any]]:
         return tasks
     
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse task JSON: {e}")
-        logger.error(f"Content: {content[:500]}")
+        # ── Truncation detection & salvage ──
+        # LLM outputs can be cut off mid-response.  Detect that and try to
+        # salvage partial tasks rather than returning nothing.
+        content_stripped = content.strip()
+        truncated_indicators = (
+            not content_stripped.endswith(']')  # missing closing array bracket
+            or content_stripped.endswith(',')     # trailing comma (incomplete object)
+            or content_stripped.rfind('"') > content_stripped.rfind('}')  # string truncated mid-way
+        )
+        if truncated_indicators:
+            try:
+                salvaged = content_stripped
+                open_braces = salvaged.count('{') - salvaged.count('}')
+                open_brackets = salvaged.count('[') - salvaged.count(']')
+                if open_braces > 0 or open_brackets > 0:
+                    # Close any unterminated structures
+                    # Remove trailing comma before closing (common truncation point)
+                    while salvaged.rstrip().endswith(','):
+                        salvaged = salvaged.rstrip()[:-1]
+                    salvaged += '}' * max(open_braces, 0) + ']' * max(open_brackets, 0)
+                    tasks = json.loads(salvaged)
+                    if isinstance(tasks, list) and tasks:
+                        logger.warning(
+                            f"⚠️ LLM output was TRUNCATED — salvaged {len(tasks)} partial tasks "
+                            f"(expected at least {len(tasks) + 1} based on truncation position)"
+                        )
+                        return tasks
+            except Exception:
+                pass
+            logger.error(
+                f"LLM output TRUNCATED and could not be salvaged. "
+                f"Last 200 chars: ...{content_stripped[-200:]}"
+            )
+        else:
+            logger.error(f"Failed to parse task JSON: {e}")
+            logger.error(f"Content preview: {content[:500]}")
         return []
     except Exception as e:
         logger.error(f"Unexpected error parsing task JSON: {e}")
@@ -733,6 +767,213 @@ def _validate_task_structure(task: Dict[str, Any]) -> bool:
         logger.info(f"Auto-fixed missing task_wallet → {task['task_wallet']} for {task.get('task_id')}")
     
     return True
+
+
+def _validate_task_set_completeness(
+    tasks: List[Dict[str, Any]], 
+    project_token: str = ""
+) -> List[str]:
+    """
+    Post-generation validation that checks the generated task set for:
+    - TASK-00 existence (bootstrap task)
+    - DAG connectivity (no orphan tasks with unresolvable linked_tasks)
+    - Cross-reference integrity (every linked_task ID refers to an existing task)
+    - Sprint ordering consistency (Sprint N+1 tasks only reference Sprint N or earlier)
+    - No cycles in the dependency graph
+
+    Returns a list of human-readable issue strings. Empty list = no issues.
+    """
+    issues: List[str] = []
+
+    if not tasks:
+        return ["No tasks generated at all"]
+
+    # Build lookup maps
+    task_ids: Set[str] = set()
+    task_by_id: Dict[str, Dict[str, Any]] = {}
+    sprint_order: Dict[str, float] = {}
+
+    for t in tasks:
+        tid = str(t.get("task_id", "")).strip().upper()
+        if not tid:
+            issues.append(f"Task '{t.get('taskName', t.get('title', '?'))}' has no task_id")
+            continue
+        task_ids.add(tid)
+        task_by_id[tid] = t
+
+        # Record sprint ordering for cross-sprint dependency checking
+        sprint_raw = t.get("sprint") or t.get("sprint_id") or t.get("sprint_name", "")
+        if sprint_raw:
+            sprint_str = str(sprint_raw)
+            # Try to extract numeric sprint order (Sprint 1 → 1.0)
+            import re as _re_validate
+            sprint_match = _re_validate.match(r"^\D*(\d+(?:\.\d+)?)", sprint_str)
+            if sprint_match:
+                sprint_order[tid] = float(sprint_match.group(1))
+            else:
+                sprint_order[tid] = float("inf")
+        else:
+            sprint_order[tid] = float("inf")
+
+    # ── CHECK 1: TASK-00 existence ────────────────────────────
+    if "TASK-00" not in task_ids:
+        issues.append("CRITICAL: TASK-00 (bootstrap/scaffold task) is missing — every project must have a bootstrap gateway")
+
+    # ── CHECK 2: linked_tasks cross-reference integrity ───────
+    for tid, t in task_by_id.items():
+        linked = t.get("linked_tasks", [])
+        if not isinstance(linked, list):
+            linked = []
+        for link_id in linked:
+            link_id_str = str(link_id).strip().upper()
+            if link_id_str not in task_ids:
+                issues.append(
+                    f"Task '{tid}' references linked_tasks '{link_id_str}' which does NOT exist in the task set"
+                )
+
+    # ── CHECK 3: DAG cycle detection (simple DFS) ─────────────
+    visited: Set[str] = set()
+    rec_stack: Set[str] = set()
+
+    def _has_cycle(node: str) -> bool:
+        visited.add(node)
+        rec_stack.add(node)
+        t = task_by_id.get(node)
+        if t:
+            for link_id in (t.get("linked_tasks") or []):
+                link_id_str = str(link_id).strip().upper()
+                if link_id_str not in task_ids:
+                    continue  # already caught in cross-ref check
+                if link_id_str not in visited:
+                    if _has_cycle(link_id_str):
+                        return True
+                elif link_id_str in rec_stack:
+                    return True
+        rec_stack.discard(node)
+        return False
+
+    for tid in task_ids:
+        if tid not in visited:
+            if _has_cycle(tid):
+                issues.append(f"CRITICAL: Cyclic dependency detected involving task '{tid}'")
+                break  # one cycle is enough — report once
+
+    # ── CHECK 4: Sprint ordering — ensure no task depends on a later sprint ──
+    for tid, t in task_by_id.items():
+        tid_sprint = sprint_order.get(tid, float("inf"))
+        linked = t.get("linked_tasks", [])
+        if not isinstance(linked, list):
+            linked = []
+        for link_id in linked:
+            link_id_str = str(link_id).strip().upper()
+            link_sprint = sprint_order.get(link_id_str, float("inf"))
+            # If dependency sprint > this task's sprint → forward dependency violation
+            if link_sprint > tid_sprint and link_sprint != float("inf") and tid_sprint != float("inf"):
+                issues.append(
+                    f"Task '{tid}' (sprint ~{tid_sprint}) depends on '{link_id_str}' "
+                    f"(sprint ~{link_sprint}) which is in a LATER sprint"
+                )
+
+    # ── CHECK 5: Ensure every non-TASK-00 executable task has at least one dependency ──
+    # (in complex projects, isolated tasks with no links may indicate incomplete generation)
+    if len(tasks) > 3:  # only warn for non-trivial projects
+        unlinked: List[str] = []
+        for tid, t in task_by_id.items():
+            if tid == "TASK-00":
+                continue
+            task_type = str(t.get("task_type", "")).upper()
+            if task_type not in ("TASK", "BUG", "ANALYSIS", "DEVELOPMENT", "TESTING"):
+                continue
+            linked = t.get("linked_tasks", [])
+            if not linked or (isinstance(linked, list) and len(linked) == 1 and str(linked[0]).upper() == "TASK-00"):
+                # Only warn if task ONLY depends on TASK-00 (no real dependencies)
+                pass  # actually, TASK-00 dependency is the minimum — this is ok
+            if not linked:
+                unlinked.append(tid)
+        if unlinked:
+            issues.append(
+                f"{len(unlinked)} executable tasks have NO linked_tasks at all: {', '.join(unlinked[:5])}"
+                + (f"... (+{len(unlinked)-5} more)" if len(unlinked) > 5 else "")
+            )
+
+    return issues
+
+
+def _score_task_quality(task: Dict[str, Any], task_id: str) -> Dict[str, Any]:
+    """
+    Score a single generated task on quality dimensions (0-10 scale).
+    Returns {"score": int, "warnings": [str], "level": "good"|"ok"|"poor"}.
+
+    Catches common LLM-generation problems before tasks reach agents.
+    """
+    warnings: List[str] = []
+    score = 10  # start perfect, deduct for issues
+
+    task_type = str(task.get("task_type", "")).upper()
+    desc = str(task.get("description", "") or "")
+    title = str(task.get("taskName", "") or task.get("title", "") or "")
+    checklist = task.get("checklist", []) or []
+    sprint = task.get("sprint") or task.get("sprint_id") or ""
+
+    # Only score executable tasks; containers don't need fine-grained quality
+    if task_type not in ("TASK", "BUG", "ANALYSIS", "DEVELOPMENT", "TESTING"):
+        return {"score": 10, "warnings": [], "level": "good"}
+
+    # ── Description length ──
+    desc_len = len(desc.strip())
+    if desc_len < 80:
+        score -= 3
+        warnings.append(f"Description too short ({desc_len} chars — should be 80+ for actionable context)")
+    elif desc_len < 150:
+        score -= 1
+
+    # ── File paths in description ──
+    import re as _re_q
+    file_paths = _re_q.findall(r'[a-zA-Z0-9_\-]+/[a-zA-Z0-9_\-/.]+', desc)
+    if not file_paths:
+        score -= 2
+        warnings.append("No file paths mentioned in description — agent may not know what to create")
+
+    # ── Checklist completeness ──
+    if isinstance(checklist, list):
+        if len(checklist) < 2:
+            score -= 2
+            warnings.append(f"Only {len(checklist)} checklist item(s) — should have 3+ for verification")
+    else:
+        score -= 1
+        warnings.append("Checklist is missing or not a list")
+
+    # ── Title quality ──
+    generic_titles = {"set up project", "create app", "add feature", "fix bug", "update code",
+                      "implement functionality", "write tests", "setup", "init", "misc"}
+    if title.strip().lower() in generic_titles or len(title.strip()) < 10:
+        score -= 2
+        warnings.append(f"Task title is too generic: '{title[:60]}' — should describe specific deliverable")
+
+    # ── Sprint assignment ──
+    if not sprint:
+        score -= 1
+        warnings.append("No sprint assigned — task may be executed out of order")
+
+    # ── Story-first check for frontend tasks ──
+    title_lower = title.lower()
+    desc_lower = desc.lower()
+    is_frontend = any(kw in title_lower or kw in desc_lower
+                      for kw in ("screen", "page", "component", "ui", "frontend", "modal", "dashboard"))
+    if is_frontend and task.get("sprint") and str(task.get("sprint", "")).lower().startswith("sprint 1"):
+        if "[SCREEN STORY]" not in desc and "screen story" not in desc_lower:
+            score -= 2
+            warnings.append("Sprint 1 frontend task missing [SCREEN STORY] — agent may produce isolated dead UI")
+
+    # ── Final level ──
+    if score >= 7:
+        level = "good"
+    elif score >= 4:
+        level = "ok"
+    else:
+        level = "poor"
+
+    return {"score": max(score, 0), "warnings": warnings, "level": level}
 
 
 def _generate_bootstrap_checklist(repo_structure: str, project_name: str) -> List[Dict[str, Any]]:
@@ -1708,7 +1949,7 @@ async def generate_tasks_locally(
     Returns:
         List of generated task dictionaries
     """
-    
+
     if not llm_gateway.check_api_key(api_key):
         raise Exception("API key not configured for task generation")
 
@@ -1825,34 +2066,134 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
 ===================================================================
 """
 
-    # ── 5. SINGLE-CALL GENERATION (replaces old 4-phase approach) ─────────────
-    # NEW: Generate ALL tasks for all 4 sprints in one LLM call to prevent
-    # duplicate tasks and ensure proper cross-sprint dependency resolution.
-    logger.info(f"[{project_token}] Single-call generation — generating all sprints at once")
-
-    messages = [
-        {"role": "system", "content": INTELLIGENT_TASK_GENERATION_PROMPT},
-        {"role": "user", "content": brd_block + "\n\n" + ALL_SPRINTS_SINGLE_CALL_PROMPT},
-    ]
+    # ── 5. PER-SPRINT SEQUENTIAL GENERATION ──────────────────────────────────
+    # Generate tasks one sprint at a time, each with a focused scope:
+    #   Sprint 1 = Frontend screens + bootstrap (story-first format)
+    #   Sprint 2 = Backend services, DB models, API routes
+    #   Sprint 3 = Frontend-Backend integration, real API wiring
+    #   Sprint 4 = Testing, polish, deployment config
+    # Previous sprints are passed as context so each sprint builds on the last.
+    # This fixes "information overload" where a single LLM call forgets entire
+    # feature areas (especially backend CRUD) because it has too much to produce.
+    logger.info(f"[{project_token}] Per-sprint sequential generation — {len(sprints)} sprints")
 
     all_tasks: List[Dict[str, Any]] = []
 
+    # ── Sprint 1: Frontend Prototype & Bootstrap ────────────────────────────
     try:
-        response_content = await llm_gateway.call_llm_and_extract(
-            messages=messages,
-            api_url=api_url,
-            api_key=api_key,
-            model=model,
-            timeout=240.0,  # Longer timeout for single big call
+        logger.info(f"  → Generating Sprint 1 (Frontend) tasks...")
+        messages_1 = [
+            {"role": "system", "content": INTELLIGENT_TASK_GENERATION_PROMPT},
+            {"role": "user", "content": brd_block + "\n\n" + SPRINT1_GENERATION_PROMPT},
+        ]
+        response_1 = await llm_gateway.call_llm_and_extract(
+            messages=messages_1, api_url=api_url, api_key=api_key,
+            model=model, timeout=180.0,
         )
-
-        all_tasks = _parse_task_json(response_content)
-        logger.info(f"[{project_token}] Single-call generation produced {len(all_tasks)} raw tasks")
-
+        tasks_1 = _parse_task_json(response_1)
+        if tasks_1:
+            all_tasks.extend(tasks_1)
+            logger.info(f"[{project_token}] Sprint 1 generated {len(tasks_1)} tasks")
+        else:
+            logger.warning(f"[{project_token}] Sprint 1 generated 0 tasks")
     except Exception as e:
-        logger.error(f"[{project_token}] Single-call task generation failed: {e}")
-        # Fallback to empty list — caller can handle
-        all_tasks = []
+        logger.error(f"[{project_token}] Sprint 1 generation failed: {e}")
+
+    # ── Sprint 2: Backend Services & Database ───────────────────────────────
+    if all_tasks:
+        sprint1_summary = _build_tasks_summary(
+            [t for t in all_tasks if "Sprint 1" in t.get("sprint", "")]
+        ) or _build_tasks_summary(all_tasks)
+        try:
+            logger.info(f"  → Generating Sprint 2 (Backend) tasks...")
+            formatted_prompt_2 = SPRINT2_GENERATION_PROMPT.format(
+                start_index=len(all_tasks),
+                sprint1_summary=sprint1_summary,
+            )
+            messages_2 = [
+                {"role": "system", "content": INTELLIGENT_TASK_GENERATION_PROMPT},
+                {"role": "user", "content": brd_block + "\n\n" + formatted_prompt_2},
+            ]
+            response_2 = await llm_gateway.call_llm_and_extract(
+                messages=messages_2, api_url=api_url, api_key=api_key,
+                model=model, timeout=180.0,
+            )
+            tasks_2 = _parse_task_json(response_2)
+            if tasks_2:
+                all_tasks.extend(tasks_2)
+                logger.info(f"[{project_token}] Sprint 2 generated {len(tasks_2)} tasks")
+            else:
+                logger.warning(f"[{project_token}] Sprint 2 generated 0 tasks")
+        except Exception as e:
+            logger.error(f"[{project_token}] Sprint 2 generation failed: {e}")
+
+    # ── Sprint 3: Frontend-Backend Integration ──────────────────────────────
+    if all_tasks:
+        s1 = [t for t in all_tasks if "Sprint 1" in t.get("sprint", "")]
+        s2 = [t for t in all_tasks if "Sprint 2" in t.get("sprint", "")]
+        s1_summary = _build_tasks_summary(s1) if s1 else _build_tasks_summary(all_tasks)
+        s2_summary = _build_tasks_summary(s2) if s2 else "No Sprint 2 tasks generated yet."
+        try:
+            logger.info(f"  → Generating Sprint 3 (Integration) tasks...")
+            formatted_prompt_3 = SPRINT3_GENERATION_PROMPT.format(
+                start_index=len(all_tasks),
+                sprint1_summary=s1_summary,
+                sprint2_summary=s2_summary,
+            )
+            messages_3 = [
+                {"role": "system", "content": INTELLIGENT_TASK_GENERATION_PROMPT},
+                {"role": "user", "content": brd_block + "\n\n" + formatted_prompt_3},
+            ]
+            response_3 = await llm_gateway.call_llm_and_extract(
+                messages=messages_3, api_url=api_url, api_key=api_key,
+                model=model, timeout=180.0,
+            )
+            tasks_3 = _parse_task_json(response_3)
+            if tasks_3:
+                all_tasks.extend(tasks_3)
+                logger.info(f"[{project_token}] Sprint 3 generated {len(tasks_3)} tasks")
+            else:
+                logger.warning(f"[{project_token}] Sprint 3 generated 0 tasks")
+        except Exception as e:
+            logger.error(f"[{project_token}] Sprint 3 generation failed: {e}")
+
+    # ── Sprint 4: Testing & Deployment ──────────────────────────────────────
+    if all_tasks:
+        all_summary = _build_tasks_summary(all_tasks)
+        try:
+            logger.info(f"  → Generating Sprint 4 (Testing) tasks...")
+            formatted_prompt_4 = SPRINT4_GENERATION_PROMPT.format(
+                start_index=len(all_tasks),
+                all_previous_summary=all_summary,
+            )
+            messages_4 = [
+                {"role": "system", "content": INTELLIGENT_TASK_GENERATION_PROMPT},
+                {"role": "user", "content": brd_block + "\n\n" + formatted_prompt_4},
+            ]
+            response_4 = await llm_gateway.call_llm_and_extract(
+                messages=messages_4, api_url=api_url, api_key=api_key,
+                model=model, timeout=180.0,
+            )
+            tasks_4 = _parse_task_json(response_4)
+            if tasks_4:
+                all_tasks.extend(tasks_4)
+                logger.info(f"[{project_token}] Sprint 4 generated {len(tasks_4)} tasks")
+            else:
+                logger.warning(f"[{project_token}] Sprint 4 generated 0 tasks")
+        except Exception as e:
+            logger.error(f"[{project_token}] Sprint 4 generation failed: {e}")
+
+    if not all_tasks:
+        logger.error(f"[{project_token}] No tasks generated from any sprint")
+        return []
+
+    # Cross-sprint deduplication (removes any overlap between sprints)
+    before_dedup = len(all_tasks)
+    all_tasks = _deduplicate_tasks(all_tasks)
+    if len(all_tasks) < before_dedup:
+        logger.info(f"[{project_token}] Cross-sprint dedup removed {before_dedup - len(all_tasks)} tasks")
+
+    logger.info(f"[{project_token}] Per-sprint generation complete — {len(all_tasks)} tasks across all sprints")
 
     # ── 5b. Validate and ensure TASK-00 exists ─────────────────────────────────
     if not all_tasks:
@@ -2132,7 +2473,199 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
     valid_tasks = first_elements + [t for t in valid_tasks if t.get("task_id") != "TASK-00"]
 
     logger.info(f"[{project_token}] ✅ Sprint-wise generation complete — {len(valid_tasks)} valid tasks")
+
+    # ── 7b. POST-GENERATION VALIDATION ──────────────────────────
+    issues = _validate_task_set_completeness(valid_tasks, project_token)
+    if issues:
+        logger.warning(f"[{project_token}] ⚠️ Task validation found {len(issues)} issues:")
+        for issue in issues:
+            logger.warning(f"[{project_token}]   → {issue}")
+
+    # ── 7b2. BRD-TASK COVERAGE CROSS-REFERENCE ─────────────────
+    # Check that all BRD requirements are covered by at least one task.
+    # This catches LLM omissions where entire feature areas are missed.
+    brd_raw = context.get("brd_analysis", "")
+    if brd_raw and len(valid_tasks) > 3:
+        try:
+            coverage_issues = await _audit_brd_task_coverage(
+                brd_content=str(brd_raw)[:20000],  # Truncate huge BRDs
+                tasks=valid_tasks,
+                project_token=project_token,
+                api_url=api_url,
+                api_key=api_key,
+                model=model,
+            )
+            if coverage_issues:
+                logger.warning(
+                    f"[{project_token}] 🚨 BRD COVERAGE GAP: {len(coverage_issues)} requirement(s) not mapped to any task!"
+                )
+                for ci in coverage_issues:
+                    logger.warning(f"[{project_token}]   ⚠️ UNCOVERED: {ci}")
+
+                # ── AUTO-FILL: Generate tasks for uncovered requirements ──────
+                logger.info(f"[{project_token}] 🔄 Auto-generating tasks for {len(coverage_issues)} uncovered requirements...")
+                try:
+                    fill_prompt = (
+                        "You are generating additional tasks to fill gaps in a project plan.\n\n"
+                        "The following BRD requirements were found to have NO corresponding task:\n"
+                        + "\n".join(f"{i+1}. {req}" for i, req in enumerate(coverage_issues)) +
+                        "\n\n"
+                        "EXISTING TASKS (do NOT duplicate any of these):\n"
+                        + _build_tasks_summary(valid_tasks) +
+                        "\n\n"
+                        "Generate ONE task per uncovered requirement. Each task must:\n"
+                        "- Have a unique task_id (starting from TASK-GAP-01, TASK-GAP-02, ...)\n"
+                        "- Include: taskName, description, task_type (\"FEATURE\"), priority, "
+                        "task_wallet (3-5), sprint (infer from content), milestone, "
+                        "linked_tasks, checklist (3-5 items), assignedTo: []\n"
+                        "- linked_tasks must include \"TASK-00\" plus any relevant existing task IDs\n"
+                        "- Description must explicitly reference the BRD requirement it fulfills\n"
+                        "- Use the same repository structure as existing tasks for file paths\n"
+                        "\nReturn ONLY a valid JSON array — no markdown, no preamble, no explanation."
+                    )
+                    fill_messages = [
+                        {"role": "system", "content": "You are a precise task planner filling gaps in a project plan. Generate complete, actionable task objects."},
+                        {"role": "user", "content": fill_prompt},
+                    ]
+                    fill_response = await llm_gateway.call_llm_and_extract(
+                        messages=fill_messages,
+                        api_url=api_url,
+                        api_key=api_key,
+                        model=model,
+                        timeout=120.0,
+                    )
+                    fill_tasks = _parse_task_json(fill_response)
+                    if fill_tasks:
+                        # Validate each new task has required fields
+                        validated_fill = []
+                        for ft in fill_tasks:
+                            ft.setdefault("task_type", "FEATURE")
+                            ft.setdefault("priority", "medium")
+                            ft.setdefault("task_wallet", 3)
+                            ft.setdefault("assignedTo", [])
+                            ft.setdefault("reported_by", "system")
+                            ft.setdefault("checklist", [{"text": "Implement this feature", "completed": False}])
+                            ft.setdefault("linked_tasks", ["TASK-00"])
+                            ft["sprint"] = ft.get("sprint", "Sprint 1 - Frontend Proto & Bootstrap")
+                            ft["milestone"] = ft.get("milestone", "Frontend Screens & Bootstrap Complete")
+                            validated_fill.append(ft)
+
+                        before = len(valid_tasks)
+                        valid_tasks.extend(validated_fill)
+                        # Renumber so gap tasks get proper sequential IDs
+                        valid_tasks = _renumber_task_ids(valid_tasks, start_index=1)
+                        added = len(valid_tasks) - before
+                        logger.info(f"[{project_token}] ✅ Coverage auto-fill: added {added} new task(s)")
+                    else:
+                        logger.warning(f"[{project_token}] Coverage auto-fill returned 0 tasks — gaps remain")
+                except Exception as fill_err:
+                    logger.warning(f"[{project_token}] Coverage auto-fill failed (non-critical): {fill_err}")
+                # ── END AUTO-FILL ─────────────────────────────────────────────
+            else:
+                logger.info(f"[{project_token}] ✅ BRD coverage audit: all requirements mapped to tasks")
+        except Exception as cov_err:
+            logger.warning(f"[{project_token}] BRD coverage audit skipped (non-critical): {cov_err}")
+    # ═══ END BRD-TASK COVERAGE AUDIT ═══
+
+    # ── 7c. QUALITY SCORING ────────────────────────────────────
+    quality_stats = {"good": 0, "ok": 0, "poor": 0}
+    for t in valid_tasks:
+        tid = str(t.get("task_id", ""))
+        result = _score_task_quality(t, tid)
+        quality_stats[result["level"]] = quality_stats.get(result["level"], 0) + 1
+        if result["level"] == "poor":
+            logger.warning(
+                f"[{project_token}] 🟡 LOW-QUALITY task {tid}: score={result['score']}/10 — "
+                + "; ".join(result["warnings"])
+            )
+    if quality_stats["poor"] > 0:
+        logger.warning(
+            f"[{project_token}] 📊 Quality: {quality_stats['good']} good, "
+            f"{quality_stats['ok']} ok, {quality_stats['poor']} poor"
+        )
+
     for t in valid_tasks:
         logger.info(f"    {t['task_id']}: {t['taskName']} [{t.get('sprint', '?')}]")
 
     return valid_tasks
+
+
+async def _audit_brd_task_coverage(
+    brd_content: str,
+    tasks: List[Dict[str, Any]],
+    project_token: str = "",
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+) -> List[str]:
+    """
+    Cross-reference the BRD/Action Plan against generated tasks to detect
+    requirements that have NO corresponding task.  Returns a list of
+    uncovered requirement descriptions (empty = full coverage).
+
+    Uses a lightweight LLM call since this is a classification problem, not
+    generation.
+    """
+    if not brd_content or not tasks:
+        return []
+
+    # Build a compact task summary: one line per task
+    task_summaries: List[str] = []
+    for t in tasks:
+        tid = t.get("task_id", "?")
+        title = t.get("taskName") or t.get("title", "Untitled")
+        desc = (t.get("description") or "")[:120]
+        sprint = t.get("sprint", "?")
+        task_summaries.append(f"{tid}: [{sprint}] {title} — {desc}")
+
+    task_block = "\n".join(task_summaries)
+
+    system_prompt = (
+        "You are a precise requirements analyst. "
+        "Compare the BRD/Agent-Action-Plan to the task list and return "
+        "ONLY requirements from the BRD that are NOT covered by ANY task. "
+        "If every requirement is covered, return an empty JSON array: []. "
+        "Each uncovered item should be a short string describing the missing requirement."
+    )
+
+    user_prompt = (
+        f"BRD / AGENT ACTION PLAN (truncated):\n"
+        f"{brd_content[:15000]}\n\n"
+        f"GENERATED TASKS:\n"
+        f"{task_block[:8000]}\n\n"
+        f"List all BRD requirements that have NO corresponding task. "
+        f"Return as JSON array of short strings. Return [] if fully covered."
+    )
+
+    import llm_gateway
+    if not llm_gateway.check_api_key(api_key):
+        logger.warning(f"[{project_token}] Skipping BRD coverage audit — no API key")
+        return []
+
+    try:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        response = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            timeout=60.0,
+        )
+        raw = (response or "").strip()
+        # Strip markdown fences if present
+        import re
+        raw_clean = re.sub(r"```json\s*", "", raw, flags=re.IGNORECASE)
+        raw_clean = re.sub(r"```\s*$", "", raw_clean, flags=re.IGNORECASE).strip()
+        uncovered = json.loads(raw_clean)
+        if isinstance(uncovered, list):
+            return [str(item) for item in uncovered if item]
+        return []
+    except json.JSONDecodeError:
+        logger.warning(f"[{project_token}] BRD coverage audit: LLM returned non-JSON: {str(response)[:200]}")
+        return []
+    except Exception as e:
+        logger.warning(f"[{project_token}] BRD coverage audit failed: {e}")
+        return []
