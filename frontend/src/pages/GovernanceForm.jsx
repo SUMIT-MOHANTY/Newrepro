@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { API_ENDPOINTS } from '../config';
@@ -146,6 +146,7 @@ const GovernanceForm = ({
 
     // Step state: 0 = Project Name page, 1…N = dimension steps, N+1 = review
     const [currentStep, setCurrentStep] = useState(0);
+    const lastHydratedProjectKeyRef = useRef(null);
 
     /* ── helpers ── */
     const getStoredJson = (key) => {
@@ -177,6 +178,7 @@ const GovernanceForm = ({
         const isNew = params.get('new');
         const draftProject = getDraftProject(selectedProjectKey) || selectedProject || null;
         const currentProjectName = String(draftProject?.name || '').trim();
+        
         const matchesCurrentProject = (payload) => {
             if (!payload || typeof payload !== 'object') return false;
 
@@ -189,7 +191,40 @@ const GovernanceForm = ({
             return Boolean(payloadName && currentProjectName && payloadName === currentProjectName.toLowerCase());
         };
 
-        setTimeout(() => {
+        const loadGovernanceResult = async () => {
+            try {
+                const token = localStorage.getItem('token');
+                const res = await fetch(`${API_BASE_URL}/governance/result/${selectedProjectKey}`, {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data && data.id) {
+                        if (data.project_name) setProjectName(data.project_name);
+                        if (Array.isArray(data.answers)) {
+                            const r = {};
+                            data.answers.forEach((a) => {
+                                if (a?.question_id !== undefined && a?.score !== undefined)
+                                    r[a.question_id] = { score: a.score, label: a.selected_option || '' };
+                            });
+                            setAnswers(r);
+                        }
+                        const isEditMode = sessionStorage.getItem('governanceEditMode') === 'true';
+                        if (!isEditMode) {
+                            setResult(data);
+                        } else {
+                            setResult(null);
+                        }
+                        return true;
+                    }
+                }
+            } catch (err) {
+                console.warn('Failed to load governance result inside form:', err);
+            }
+            return false;
+        };
+
+        const hydrateData = async () => {
             if (isNew) {
                 setProjectName('');
                 setAnswers({});
@@ -201,43 +236,50 @@ const GovernanceForm = ({
                 return;
             }
 
-            if (nameFromUrl) {
-                setProjectName(decodeURIComponent(nameFromUrl));
-                setCurrentStep(0);
-                // Also store it so it persists on reload
-                sessionStorage.setItem('governanceContext', JSON.stringify({ project_name: decodeURIComponent(nameFromUrl) }));
-                // Clean up the URL
-                navigate(location.pathname, { replace: true });
+            let backendLoaded = false;
+            if (selectedProjectKey) {
+                backendLoaded = await loadGovernanceResult();
             }
 
-            const savedContext = getStoredJson('governanceContext');
-            if (savedContext && !nameFromUrl && matchesCurrentProject(savedContext)) {
-                if (savedContext.project_name) setProjectName(savedContext.project_name);
-                if (Array.isArray(savedContext.answers)) {
-                    const r = {};
-                    savedContext.answers.forEach((a) => {
-                        if (a?.question_id !== undefined && a?.score !== undefined)
-                            r[a.question_id] = { score: a.score, label: a.selected_option };
-                    });
-                    setAnswers(r);
+            if (!backendLoaded) {
+                if (nameFromUrl) {
+                    setProjectName(decodeURIComponent(nameFromUrl));
+                    setCurrentStep(0);
+                    // Also store it so it persists on reload
+                    sessionStorage.setItem('governanceContext', JSON.stringify({ project_name: decodeURIComponent(nameFromUrl) }));
+                    // Clean up the URL
+                    navigate(location.pathname, { replace: true });
                 }
-            }
-            if (!nameFromUrl && currentProjectName) {
-                setProjectName(currentProjectName);
-            }
 
-            // Check if user is in edit mode (went back from result page to edit)
-            const isEditMode = sessionStorage.getItem('governanceEditMode') === 'true';
+                const savedContext = getStoredJson('governanceContext');
+                if (savedContext && !nameFromUrl && matchesCurrentProject(savedContext)) {
+                    if (savedContext.project_name) setProjectName(savedContext.project_name);
+                    if (Array.isArray(savedContext.answers)) {
+                        const r = {};
+                        savedContext.answers.forEach((a) => {
+                            if (a?.question_id !== undefined && a?.score !== undefined)
+                                r[a.question_id] = { score: a.score, label: a.selected_option || '' };
+                        });
+                        setAnswers(r);
+                    }
+                }
+                if (!nameFromUrl && currentProjectName) {
+                    setProjectName(currentProjectName);
+                }
 
-            const savedResult = getStoredJson('governanceResult');
-            // Don't restore result if user is in edit mode (they want to edit the form)
-            if (savedResult && matchesCurrentProject(savedResult) && !isEditMode) {
-                setResult(savedResult);
-            } else {
-                setResult(null);
-                // Clear edit mode flag after checking
-                if (isEditMode) {
-                    sessionStorage.removeItem('governanceEditMode');
+                // Check if user is in edit mode (went back from result page to edit)
+                const isEditMode = sessionStorage.getItem('governanceEditMode') === 'true';
+
+                const savedResult = getStoredJson('governanceResult');
+                // Don't restore result if user is in edit mode (they want to edit the form)
+                if (savedResult && matchesCurrentProject(savedResult) && !isEditMode) {
+                    setResult(savedResult);
+                } else {
+                    setResult(null);
+                    // Clear edit mode flag after checking
+                    if (isEditMode) {
+                        sessionStorage.removeItem('governanceEditMode');
+                    }
                 }
             }
 
@@ -261,7 +303,9 @@ const GovernanceForm = ({
                 setCurrentStep(0);
             }
             setIsHydrated(true);
-        }, 0);
+        };
+
+        hydrateData();
     }, [location.search, location.pathname, navigate, isGovernanceQuestionsPage, selectedProjectKey, selectedProject]);
 
     // Persist current wizard step so the global tracker can highlight

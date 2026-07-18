@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { API_ENDPOINTS, VIBE_WORKSPACE_URL, API_BASE_URL } from '../config';
 import {
@@ -539,6 +539,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const navigate = useNavigate();
     const [prerequisites, setPrerequisites] = useState([]);
     const [loading, setLoading] = useState(true);
+    const lastLoadedProjectKeyRef = useRef(null);
     const [showRedirectionConfirmation, setShowRedirectionConfirmation] = useState(false);
     const [redirectionTarget, setRedirectionTarget] = useState(null);
 
@@ -587,7 +588,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const [globalGitRepoUrl, setGlobalGitRepoUrl] = useState('');
     const [globalGitToken, setGlobalGitToken] = useState('');
     const [hasSavedGlobalGitToken, setHasSavedGlobalGitToken] = useState(false);
-    const [isLoadingGitConfig, setIsLoadingGitConfig] = useState(false);
+    const [isLoadingGitConfig, setIsLoadingGitConfig] = useState(true);
     const [analysisRepoSuggestion, setAnalysisRepoSuggestion] = useState(null);
     const [repoProvider, setRepoProvider] = useState('github');
     
@@ -608,25 +609,19 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const [selectedSkillsMdContent, setSelectedSkillsMdContent] = useState('');
     const [selectedSkillsMdName, setSelectedSkillsMdName] = useState('');
     
-    // Determine recommended mode based on governance classification
-    const recommendedMode = useMemo(() => {
-        try {
-            const raw = sessionStorage.getItem('governanceContext') || localStorage.getItem('governanceContext');
-            if (raw) {
-                const ctx = JSON.parse(raw);
-                const classification = (ctx?.classification || '').toUpperCase();
-                if (classification === 'SANDBOX') {
-                    return 'ai_first';
-                }
-            }
-        } catch { }
-        return 'coexistence';
-    }, []);
-
     const selectedProject = useMemo(
         () => projects?.find((project) => project.key === selectedProjectKey) || null,
         [projects, selectedProjectKey]
     );
+
+    // Determine recommended mode based on governance classification
+    const recommendedMode = useMemo(() => {
+        const classification = (selectedProject?.classification || '').toUpperCase();
+        if (classification === 'SANDBOX') {
+            return 'ai_first';
+        }
+        return 'coexistence';
+    }, [selectedProject]);
 
     const prefetchTaskToken = useCallback(async () => {
         if (!selectedProjectKey) return null;
@@ -714,6 +709,23 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
         }
         return '';
     });
+
+    // Sync processMode when project changes
+    useEffect(() => {
+        if (!selectedProjectKey) return;
+        const map = readProcessModeMap();
+        if (map[selectedProjectKey]) {
+            setProcessMode(map[selectedProjectKey]);
+        } else {
+            // Default to recommended mode based on classification
+            const classification = (selectedProject?.classification || '').toUpperCase();
+            if (classification === 'SANDBOX') {
+                setProcessMode('ai_first');
+            } else {
+                setProcessMode('coexistence');
+            }
+        }
+    }, [selectedProjectKey, selectedProject]);
 
     useEffect(() => {
         if (selectedProjectKey) {
@@ -811,10 +823,12 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     useEffect(() => {
         let isMounted = true;
         const loadGlobalGitConfig = async () => {
+            setIsLoadingGitConfig(true);
             if (!selectedProjectKey) {
                 setGlobalGitRepoUrl('');
                 setGlobalGitToken('');
                 setHasSavedGlobalGitToken(false);
+                setIsLoadingGitConfig(false);
                 return;
             }
             try {
@@ -887,9 +901,16 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
     // Load analysis data for the selected project
     useEffect(() => {
+        // Immediately clear previous project states when switching
+        setPrerequisites([]);
+        setGlobalGitRepoUrl('');
+        setRepoProvider('');
+        setAnalysisRepoSuggestion(null);
+        setIsLoadingGitConfig(true);
+        setError('');
+
         const loadAnalysis = async () => {
             setLoading(true);
-            setError('');
 
             if (!selectedProjectKey) {
                 setError('No project selected. Please select a project from the sidebar.');
@@ -1628,7 +1649,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     };
 
     /* ── Loading State ── */
-    if (loading) {
+    if (loading || isLoadingGitConfig) {
         return (
             <div className="flex items-center justify-center min-h-screen bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
                 <div className="flex flex-col items-center gap-5">
@@ -1637,8 +1658,12 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         <div className="absolute inset-0 w-14 h-14 border-4 border-transparent border-b-indigo-400 rounded-full animate-spin" style={{ animationDirection: 'reverse', animationDuration: '1.5s' }} />
                     </div>
                     <div className="text-center">
-                        <p className="text-app-text-label font-semibold text-sm tracking-wide">Analyzing prerequisites…</p>
-                        <p className="text-app-text-light text-xs mt-1">Extracting requirements from AI analysis</p>
+                        <p className="text-app-text-label font-semibold text-sm tracking-wide">
+                            {isLoadingGitConfig ? "Retrieving git configuration…" : "Analyzing prerequisites…"}
+                        </p>
+                        <p className="text-app-text-light text-xs mt-1">
+                            {isLoadingGitConfig ? "Checking project repository settings" : "Extracting requirements from AI analysis"}
+                        </p>
                     </div>
                 </div>
             </div>
@@ -2309,6 +2334,28 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                             <p className="text-sm text-app-text-muted mb-4">
                                 Provide one global repository (GitHub or Azure DevOps) here. All agents in this project will use these credentials. PAT is optional for public repositories.
                             </p>
+
+                            {(!globalGitRepoUrl || !globalGitRepoUrl.trim()) ? (
+                                <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-900/30 dark:border-amber-800 p-4 flex items-start gap-3">
+                                    <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
+                                    <div>
+                                        <p className="text-sm font-semibold text-amber-800 dark:text-amber-200">No git repository configured</p>
+                                        <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
+                                            This project has no Git repository settings saved. Please enter a repository URL below.
+                                        </p>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/20 dark:border-emerald-900/30 dark:border-emerald-800 p-4 flex items-start gap-3">
+                                    <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 mt-0.5 flex-shrink-0" />
+                                    <div>
+                                        <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">Git repository configured</p>
+                                        <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-0.5">
+                                            Current repository: <span className="font-mono break-all">{globalGitRepoUrl}</span>
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
                             
                             {shouldShowRepoSuggestion && (
                                 <div className="mb-4 rounded-xl border border-app-primary-ring bg-app-primary-light/80 p-4">

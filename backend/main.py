@@ -59,6 +59,7 @@ import knowledge_graph_service as kg_service
 import master_task_manager
 import master_coordination_service
 import analysis_job_manager
+import rsa_utils
 
 # Cache for agent status to reduce database load
 _agent_status_cache: Dict[str, Dict[str, Any]] = {}
@@ -5560,10 +5561,20 @@ async def get_governance_history(
     Get submission history for the current user.
     """
     organization_name = _normalized_text(getattr(current_user, "organization_name", None))
+
+    # Base filter: exclude archived projects
+    not_archived = or_(
+        models.GovernanceResponse.is_archived == None,
+        models.GovernanceResponse.is_archived == False
+    )
+
     if not organization_name:
         responses = (
             db.query(models.GovernanceResponse)
-            .filter(models.GovernanceResponse.owner_id == current_user.id)
+            .filter(
+                models.GovernanceResponse.owner_id == current_user.id,
+                not_archived
+            )
             .order_by(models.GovernanceResponse.submission_date.desc())
             .all()
         )
@@ -5571,7 +5582,10 @@ async def get_governance_history(
         if current_user.is_org_admin:
             responses = (
                 db.query(models.GovernanceResponse)
-                .filter(func.lower(models.GovernanceResponse.organization_name) == organization_name.lower())
+                .filter(
+                    func.lower(models.GovernanceResponse.organization_name) == organization_name.lower(),
+                    not_archived
+                )
                 .order_by(models.GovernanceResponse.submission_date.desc())
                 .all()
             )
@@ -5583,6 +5597,7 @@ async def get_governance_history(
                 db.query(models.GovernanceResponse)
                 .filter(
                     func.lower(models.GovernanceResponse.organization_name) == organization_name.lower(),
+                    not_archived,
                     or_(
                         models.GovernanceResponse.owner_id == current_user.id,
                         models.GovernanceResponse.project_token.in_(associated_tokens)
@@ -5958,7 +5973,7 @@ async def delete_governance_project(
     db: Session = Depends(get_db),
 ):
     """
-    Permanently delete a project and all locally stored project-scoped data.
+    Archive (soft-delete) a project — hides it from the UI but keeps all data in the database.
     """
     query = db.query(models.GovernanceResponse).filter(
         models.GovernanceResponse.owner_id == current_user.id
@@ -5973,38 +5988,12 @@ async def delete_governance_project(
         raise HTTPException(status_code=404, detail="Project not found")
 
     project_token = _normalize_project_token(governance.project_token or str(governance.id))
-    user_documents = db.query(models.Document).filter(
-        models.Document.owner_id == current_user.id
-    ).all()
-    linked_document_ids = [
-        doc.id for doc in user_documents if _is_document_linked_to_governance(doc, governance)
-    ]
+    archived_project_name = governance.project_name or "Untitled Project"
+    archived_project_token = governance.project_token or str(governance.id)
+    archived_result_id = governance.id
 
-    deleted_documents = 0
-    if linked_document_ids:
-        deleted_documents = db.query(models.Document).filter(
-            models.Document.owner_id == current_user.id,
-            models.Document.id.in_(linked_document_ids),
-        ).delete(synchronize_session=False)
-
-    deleted_agent_credentials = 0
-    deleted_agent_records = 0
-
-    if project_token:
-        deleted_agent_credentials = db.query(models.AgentCredential).filter(
-            models.AgentCredential.owner_id == current_user.id,
-            models.AgentCredential.project_token == project_token,
-        ).delete(synchronize_session=False)
-
-        deleted_agent_records = db.query(models.Agent).filter(
-            models.Agent.project_token == project_token
-        ).delete(synchronize_session=False)
-
-    deleted_project_name = governance.project_name or "Untitled Project"
-    deleted_project_token = governance.project_token or str(governance.id)
-    deleted_result_id = governance.id
-
-    db.delete(governance)
+    # Soft-delete: set is_archived flag instead of deleting records
+    governance.is_archived = True
     db.commit()
 
     cleanup_warnings: List[str] = []
@@ -6030,13 +6019,10 @@ async def delete_governance_project(
             cleanup_warnings.append(f"Knowledge graph cleanup failed: {exc}")
 
     response: Dict[str, Any] = {
-        "status": "deleted",
-        "result_id": deleted_result_id,
-        "project_token": deleted_project_token,
-        "project_name": deleted_project_name,
-        "deleted_documents": deleted_documents,
-        "deleted_agent_credentials": deleted_agent_credentials,
-        "deleted_agent_records": deleted_agent_records,
+        "status": "archived",
+        "result_id": archived_result_id,
+        "project_token": archived_project_token,
+        "project_name": archived_project_name,
     }
     if cleanup_warnings:
         response["warnings"] = cleanup_warnings
@@ -15031,12 +15017,23 @@ def get_public_bournai_metrics(
 ):
     """
     Public API endpoint to query BournAI model token usage and cost metrics.
-    Requires salt_key validation in the JSON payload body.
+    Requires salt_key that is RSA-encrypted/signed and verified using the
+    RSA public key configured in settings.
     """
     import datetime
     
+    # Verify the salt_key using RSA-2048 public key decryption
+    # The external service encrypts the known salt value with their private key,
+    # and we decrypt it here and compare against the expected salt.
     expected_salt = settings.metrics_api_salt
-    if not req.salt_key or req.salt_key != expected_salt:
+    
+    if not expected_salt:
+        raise HTTPException(status_code=500, detail="Server configuration error: METRICS_API_SALT not set")
+    
+    if not req.salt_key:
+        raise HTTPException(status_code=401, detail="Unauthorized: Missing salt_key")
+    
+    if not rsa_utils.decrypt_and_verify(req.salt_key, expected_salt=expected_salt):
         raise HTTPException(status_code=401, detail="Unauthorized: Invalid salt_key")
         
     start_dt = None
@@ -15072,17 +15069,60 @@ def get_public_bournai_metrics(
         
     logs = query.all()
     
-    # 3. Sum up values
+    # 3. Build organization lookups to map logs to their organizations
+    user_org_list = db.query(models.User.id, models.User.organization_name).all()
+    user_orgs = {u_id: org for u_id, org in user_org_list if org}
+
+    project_org_list = db.query(models.GovernanceResponse.project_token, models.GovernanceResponse.organization_name).all()
+    project_orgs = {p_token: org for p_token, org in project_org_list if org}
+
+    # 4. Sum up values globally and by organization
     total_prompt = 0
     total_completion = 0
     total_cost = 0.0
     request_count = len(logs)
-    
+
+    org_metrics = {}
+
     for l in logs:
-        total_prompt += (l.prompt_tokens or 0)
-        total_completion += (l.completion_tokens or 0)
-        total_cost += (l.cost or 0.0)
+        # Resolve organization
+        org_name = None
+        if l.project_token and l.project_token in project_orgs:
+            org_name = project_orgs[l.project_token]
+        elif l.user_id and l.user_id in user_orgs:
+            org_name = user_orgs[l.user_id]
         
+        org_key = str(org_name).strip() if org_name else "Unknown / Shared"
+
+        if org_key not in org_metrics:
+            org_metrics[org_key] = {
+                "request_count": 0,
+                "total_prompt_tokens": 0,
+                "total_completion_tokens": 0,
+                "total_tokens": 0,
+                "total_cost_usd": 0.0
+            }
+
+        p_tok = l.prompt_tokens or 0
+        c_tok = l.completion_tokens or 0
+        c_val = l.cost or 0.0
+
+        # Global sum
+        total_prompt += p_tok
+        total_completion += c_tok
+        total_cost += c_val
+
+        # Org sum
+        org_metrics[org_key]["request_count"] += 1
+        org_metrics[org_key]["total_prompt_tokens"] += p_tok
+        org_metrics[org_key]["total_completion_tokens"] += c_tok
+        org_metrics[org_key]["total_tokens"] += (p_tok + c_tok)
+        org_metrics[org_key]["total_cost_usd"] += c_val
+
+    # Round costs to 6 decimal places for readability
+    for org_key in org_metrics:
+        org_metrics[org_key]["total_cost_usd"] = round(org_metrics[org_key]["total_cost_usd"], 6)
+
     return {
         "model": "BournAI",
         "query_parameters": {
@@ -15090,11 +15130,12 @@ def get_public_bournai_metrics(
             "start_date": req.start_date,
             "end_date": req.end_date
         },
-        "metrics": {
+        "global_metrics": {
             "request_count": request_count,
             "total_prompt_tokens": total_prompt,
             "total_completion_tokens": total_completion,
             "total_tokens": total_prompt + total_completion,
             "total_cost_usd": round(total_cost, 6)
-        }
+        },
+        "organizations": org_metrics
     }

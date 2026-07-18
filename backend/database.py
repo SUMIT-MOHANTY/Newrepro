@@ -36,6 +36,9 @@ with engine.connect() as conn:
             if "dest_repo_token" not in columns:
                 print("Migrating database: Adding dest_repo_token column to governance_responses")
                 conn.execute(text("ALTER TABLE governance_responses ADD COLUMN dest_repo_token VARCHAR"))
+            if "is_archived" not in columns:
+                print("Migrating database: Adding is_archived column to governance_responses")
+                conn.execute(text("ALTER TABLE governance_responses ADD COLUMN is_archived BOOLEAN DEFAULT 0"))
     except Exception as e:
         print(f"Database migration check skipped: {e}")
         

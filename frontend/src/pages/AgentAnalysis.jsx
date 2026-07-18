@@ -649,7 +649,7 @@ export default function AgentAnalysis({
 
     // CRITICAL FIX: Update cache whenever state changes for the current project
     useEffect(() => {
-        if (selectedProjectKey && result) {
+        if (selectedProjectKey && result && selectedProjectKey === lastLoadedProjectRef.current) {
             resultCacheRef.current[selectedProjectKey] = {
                 result,
                 aiQuestions,
@@ -661,29 +661,135 @@ export default function AgentAnalysis({
         }
     }, [selectedProjectKey, result, aiQuestions, userAnswers, userFeedback, completedStages, chatMessages]);
 
-    // Load governance context from storage
+    // Sync governance context and repo context dynamically when selectedProjectKey changes
     useEffect(() => {
-        const storedContext = sessionStorage.getItem('governanceContext') || localStorage.getItem('governanceContext');
-        if (storedContext) {
-            try {
-                setGovernanceContext(JSON.parse(storedContext));
-            } catch { }
+        if (!selectedProjectKey) {
+            setGovernanceContext(null);
+            setRepoContext(null);
+            return;
         }
-    }, []);
 
-    // Load repo context from storage
-    useEffect(() => {
-        const storedRepoContext = sessionStorage.getItem('repoContext') || localStorage.getItem('repoContext');
-        if (storedRepoContext) {
-            try {
-                const parsed = JSON.parse(storedRepoContext);
-                console.log('Loaded repo context from storage:', parsed);
-                setRepoContext(parsed);
-            } catch (err) {
-                console.warn('Failed to parse repo context from storage:', err);
+        const syncContexts = async () => {
+            let govCtxLoaded = false;
+            let repoCtxLoaded = false;
+
+            // 1. Try to extract from the selected project's latest document analysis
+            if (selectedProject?.latestDocument) {
+                try {
+                    const parsedAnalysis = parseStoredDocumentAnalysis(selectedProject.latestDocument);
+                    if (parsedAnalysis?.governanceContext) {
+                        setGovernanceContext(parsedAnalysis.governanceContext);
+                        govCtxLoaded = true;
+                    }
+                    if (parsedAnalysis?.repoContextMeta) {
+                        setRepoContext(parsedAnalysis.repoContextMeta);
+                        repoCtxLoaded = true;
+                    }
+                } catch (e) {
+                    console.warn('Failed to parse contexts from latest document:', e);
+                }
             }
-        }
-    }, []);
+
+            // 2. If governance context was not in document, fetch from governance API
+            if (!govCtxLoaded && (selectedProject?.governanceResultId || selectedProjectKey)) {
+                try {
+                    const identifier = selectedProject?.governanceResultId || selectedProjectKey;
+                    const res = await fetch(`${API_BASE_URL}/governance/result/${identifier}`, {
+                        headers: { Authorization: `Bearer ${token}` }
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data && data.id) {
+                            const normalizedDimensionScores = {
+                                business_value: data.dimension_scores?.business_value ?? 0,
+                                data_sensitivity: data.dimension_scores?.data_sensitivity ?? 0,
+                                integration_complexity: data.dimension_scores?.integration_complexity ?? 0,
+                                operational_impact: data.dimension_scores?.operational_impact ?? 0,
+                                ai_risk: data.dimension_scores?.ai_risk ?? 0,
+                                ownership: data.dimension_scores?.ownership ?? 0,
+                            };
+                            const formattedAnswers = Array.isArray(data.answers)
+                                ? data.answers.map((answer) => ({
+                                    question_id: answer.question_id,
+                                    score: answer.score,
+                                    selected_option: answer.selected_option || '',
+                                }))
+                                : [];
+                            const fallbackDesc = (cls) => {
+                                if (cls === 'SANDBOX') return 'Sandbox Approved - Low governance required';
+                                if (cls === 'CONTROLLED_SANDBOX') return 'Controlled Sandbox (Fusion) - Standard template required';
+                                if (cls === 'ENTERPRISE') return 'Enterprise Build - Full IT oversight required';
+                                return 'Governance classification unavailable';
+                            };
+                            
+                            const govCtx = {
+                                project_name: data.project_name || '',
+                                result_id: data.id || null,
+                                submission_date: data.submission_date,
+                                classification: data.classification,
+                                classification_description: data.classification_description || fallbackDesc(data.classification),
+                                weighted_score: data.weighted_score,
+                                recommendation: data.recommendation,
+                                hard_stops: data.hard_stops || [],
+                                answers: formattedAnswers,
+                                dimension_scores: normalizedDimensionScores,
+                            };
+                            setGovernanceContext(govCtx);
+                            govCtxLoaded = true;
+                        }
+                    }
+                } catch (e) {
+                    console.warn('Failed to fetch governance context for project:', e);
+                }
+            }
+
+            // 3. If repo context was not in document, fetch from git-config API
+            if (!repoCtxLoaded) {
+                try {
+                    const configRes = await fetch(`${API_BASE_URL}/api/projects/${selectedProjectKey}/git-config`, {
+                        headers: { Authorization: `Bearer ${token}` }
+                    });
+                    if (configRes.ok) {
+                        const configData = await configRes.json();
+                        if (configData && configData.source_repo_url) {
+                            setRepoContext({
+                                repo: configData.source_repo_url,
+                                provider: (configData.source_repo_url.includes('dev.azure.com') || configData.source_repo_url.includes('visualstudio.com')) ? 'azure-devops' : 'github',
+                                context: ''
+                            });
+                            repoCtxLoaded = true;
+                        }
+                    }
+                } catch (e) {
+                    console.warn('Failed to fetch git-config for project:', e);
+                }
+            }
+
+            // Fallback: If absolutely nothing found, load from sessionStorage as a last resort
+            if (!govCtxLoaded) {
+                const storedContext = sessionStorage.getItem('governanceContext') || localStorage.getItem('governanceContext');
+                if (storedContext) {
+                    try {
+                        setGovernanceContext(JSON.parse(storedContext));
+                    } catch { }
+                } else {
+                    setGovernanceContext(null);
+                }
+            }
+            if (!repoCtxLoaded) {
+                const storedRepoContext = sessionStorage.getItem('repoContext') || localStorage.getItem('repoContext');
+                if (storedRepoContext) {
+                    try {
+                        setRepoContext(JSON.parse(storedRepoContext));
+                    } catch { }
+                } else {
+                    setRepoContext(null);
+                }
+            }
+        };
+
+        syncContexts();
+    }, [selectedProjectKey, selectedProject, projects, token]);
 
     const persistHistoryDocument = useCallback(async (payload, documentId = null) => {
         const response = await fetch(
@@ -1357,18 +1463,29 @@ export default function AgentAnalysis({
         const isSwitchingProjects = lastLoadedProjectRef.current && lastLoadedProjectRef.current !== selectedProjectKey;
 
         // If switching projects, first check if we have cached data for the new project
-        if (isSwitchingProjects && resultCacheRef.current[selectedProjectKey]) {
-            console.log('Restoring cached analysis for project:', selectedProjectKey);
-            const cached = resultCacheRef.current[selectedProjectKey];
-            setResult(cached.result);
-            setAiQuestions(cached.aiQuestions || []);
-            setUserAnswers(cached.userAnswers || {});
-            setUserFeedback(cached.userFeedback || '');
-            setCompletedStages(cached.completedStages || {});
-            setChatMessages(cached.chatMessages || []);
-            setLoading(false);
-            lastLoadedProjectRef.current = selectedProjectKey;
-            return;
+        if (isSwitchingProjects) {
+            if (resultCacheRef.current[selectedProjectKey]) {
+                console.log('Restoring cached analysis for project:', selectedProjectKey);
+                const cached = resultCacheRef.current[selectedProjectKey];
+                setResult(cached.result);
+                setAiQuestions(cached.aiQuestions || []);
+                setUserAnswers(cached.userAnswers || {});
+                setUserFeedback(cached.userFeedback || '');
+                setCompletedStages(cached.completedStages || {});
+                setChatMessages(cached.chatMessages || []);
+                setLoading(false);
+                lastLoadedProjectRef.current = selectedProjectKey;
+                return;
+            } else {
+                // Not cached: clear all states to show loading/empty for the new project
+                setResult(null);
+                setAiQuestions([]);
+                setUserAnswers({});
+                setUserFeedback('');
+                setCompletedStages({});
+                setChatMessages([]);
+                setError('');
+            }
         }
 
         const loadAnalysis = async () => {

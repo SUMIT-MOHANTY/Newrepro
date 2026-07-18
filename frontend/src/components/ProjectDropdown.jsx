@@ -1,12 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ChevronDown, Search, FolderOpen, Check, Trash2, Share2 } from 'lucide-react';
+import { ChevronDown, Search, FolderOpen, Check, Share2 } from 'lucide-react';
 
 export default function ProjectDropdown({
     projects = [],
     selectedKey,
     onSelect,
-    onDelete = null,
-    deletingKey = '',
+
     className = '',
     theme = 'light',
 }) {
@@ -124,7 +123,6 @@ export default function ProjectDropdown({
                         ) : (
                             filtered.map((project) => {
                                 const isSelected = project.key === selectedKey;
-                                const canDelete = Boolean(project.projectToken || project.governanceResultId);
                                 return (
                                     <div key={project.key} className="flex items-stretch border-l-3 border-l-transparent hover:bg-app-bg-hover">
                                         <button
@@ -169,26 +167,7 @@ export default function ProjectDropdown({
                                             </div>
                                         </button>
 
-                                        {typeof onDelete === 'function' && canDelete && (
-                                            <button
-                                                type="button"
-                                                disabled={deletingKey === project.key}
-                                                onClick={(e) => {
-                                                    e.preventDefault();
-                                                    e.stopPropagation();
-                                                    onDelete(project);
-                                                }}
-                                                className={`px-3 border-l border-app-border transition-colors ${
-                                                    deletingKey === project.key
-                                                        ? 'text-app-text-muted cursor-not-allowed'
-                                                        : 'text-app-status-error hover:bg-app-status-errorBg hover:text-app-status-error'
-                                                }`}
-                                                title={deletingKey === project.key ? 'Deleting project...' : 'Delete project'}
-                                                aria-label={`Delete ${project.name || 'project'}`}
-                                            >
-                                                <Trash2 className="w-4 h-4" />
-                                            </button>
-                                        )}
+
                                     </div>
                                 );
                             })

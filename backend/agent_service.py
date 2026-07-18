@@ -6168,37 +6168,43 @@ def _ensure_agent_runtime_image() -> Dict[str, Any]:
             "error": f"Missing agent runtime blueprint: {AGENT_RUNTIME_DOCKERFILE}",
         }
 
-    inspect = subprocess.run(
-        ["docker", "image", "inspect", AGENT_RUNTIME_IMAGE],
-        capture_output=True,
-        text=True,
-        timeout=20,
-    )
-    if inspect.returncode == 0:
-        return {"success": True, "image": AGENT_RUNTIME_IMAGE, "built": False}
+    try:
+        inspect = subprocess.run(
+            ["docker", "image", "inspect", AGENT_RUNTIME_IMAGE],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if inspect.returncode == 0:
+            return {"success": True, "image": AGENT_RUNTIME_IMAGE, "built": False}
 
-    build = subprocess.run(
-        [
-            "docker",
-            "build",
-            "-t",
-            AGENT_RUNTIME_IMAGE,
-            "-f",
-            AGENT_RUNTIME_DOCKERFILE,
-            AGENT_RUNTIME_BUILD_CONTEXT,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=1800,
-    )
-    if build.returncode != 0:
-        error_tail = (build.stderr or build.stdout or "").strip()
+        build = subprocess.run(
+            [
+                "docker",
+                "build",
+                "-t",
+                AGENT_RUNTIME_IMAGE,
+                "-f",
+                AGENT_RUNTIME_DOCKERFILE,
+                AGENT_RUNTIME_BUILD_CONTEXT,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=1800,
+        )
+        if build.returncode != 0:
+            error_tail = (build.stderr or build.stdout or "").strip()
+            return {
+                "success": False,
+                "error": f"Agent runtime image build failed: {error_tail[-1200:]}",
+            }
+
+        return {"success": True, "image": AGENT_RUNTIME_IMAGE, "built": True}
+    except Exception as e:
         return {
             "success": False,
-            "error": f"Agent runtime image build failed: {error_tail[-1200:]}",
+            "error": f"Docker check failed or timed out: {e}",
         }
-
-    return {"success": True, "image": AGENT_RUNTIME_IMAGE, "built": True}
 
 
 def _verify_container_toolchain(container_name: str) -> Dict[str, Any]:

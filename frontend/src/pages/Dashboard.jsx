@@ -543,7 +543,26 @@ const Dashboard = ({
     const setSelectedProjectKey = propSetSelectedProjectKey || setInternalSelectedProjectKey;
 
     // -- Per-Project State Management --
-    const [projectStates, setProjectStates] = useState({});
+    const [projectStates, setProjectStates] = useState(() => {
+        try {
+            const saved = sessionStorage.getItem('brd_project_states');
+            if (saved) {
+                const parsed = JSON.parse(saved);
+                // Reset file fields since File objects cannot be persisted as JSON
+                Object.keys(parsed).forEach(key => {
+                    if (parsed[key]) {
+                        parsed[key].files = [];
+                        parsed[key].linkedFiles = [];
+                        parsed[key].skillFiles = [];
+                    }
+                });
+                return parsed;
+            }
+        } catch (e) {
+            console.error('Failed to load project states from session storage', e);
+        }
+        return {};
+    });
 
     // -- Local Skills Viewer Modal States --
     const [showSkillsViewer, setShowSkillsViewer] = useState(false);
@@ -615,6 +634,27 @@ const Dashboard = ({
     const setError = (v) => setProjectState(selectedProjectKey, { error: typeof v === 'function' ? v(activeState.error) : v });
     const setUserFeedback = (v) => setProjectState(selectedProjectKey, { userFeedback: typeof v === 'function' ? v(activeState.userFeedback) : v });
     const setUserAnswers = (v) => setProjectState(selectedProjectKey, { userAnswers: typeof v === 'function' ? v(activeState.userAnswers) : v });
+    
+    // Persist project input state to sessionStorage so it survives route navigation
+    useEffect(() => {
+        try {
+            const statesToSave = {};
+            Object.keys(projectStates).forEach(key => {
+                if (projectStates[key]) {
+                    const { files, linkedFiles, skillFiles, ...rest } = projectStates[key];
+                    statesToSave[key] = {
+                        ...rest,
+                        files: [],
+                        linkedFiles: [],
+                        skillFiles: []
+                    };
+                }
+            });
+            sessionStorage.setItem('brd_project_states', JSON.stringify(statesToSave));
+        } catch (e) {
+            console.error('Failed to save project states to session storage', e);
+        }
+    }, [projectStates]);
 
     const location = useLocation();
 
@@ -1694,6 +1734,53 @@ const Dashboard = ({
         }
         loadGovernanceContextForProject(selectedProject.governanceResultId);
     }, [selectedProject, governanceContext, loadGovernanceContextForProject]);
+
+    // Sync repoContext state when selectedProjectKey changes
+    useEffect(() => {
+        if (!selectedProjectKey) {
+            setRepoContext(null);
+            return;
+        }
+
+        const syncRepoContext = async () => {
+            try {
+                const token = localStorage.getItem('token');
+                const configRes = await fetch(`${API_BASE_URL}/api/projects/${selectedProjectKey}/git-config`, {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+
+                if (configRes.ok) {
+                    const configData = await configRes.json();
+                    if (configData && configData.source_repo_url) {
+                        const nextRepoContext = {
+                            repo: configData.source_repo_url,
+                            provider: (configData.source_repo_url.includes('dev.azure.com') || configData.source_repo_url.includes('visualstudio.com')) ? 'azure-devops' : 'github',
+                            context: '',
+                            fromLink: true
+                        };
+                        setRepoContext(nextRepoContext);
+                        return;
+                    }
+                }
+            } catch (e) {
+                console.warn('Failed to sync repo context in dashboard:', e);
+            }
+
+            // Fallback: load from storage
+            const storedRepoContext = sessionStorage.getItem('repoContext') || localStorage.getItem('repoContext');
+            if (storedRepoContext) {
+                try {
+                    setRepoContext(JSON.parse(storedRepoContext));
+                } catch {
+                    setRepoContext(null);
+                }
+            } else {
+                setRepoContext(null);
+            }
+        };
+
+        syncRepoContext();
+    }, [selectedProjectKey]);
 
 
     const loadHistoryItem = (doc, taskKey = selectedProjectKey) => {
