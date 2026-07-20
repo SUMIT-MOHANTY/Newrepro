@@ -13623,6 +13623,12 @@ async def generate_tasks_locally(
             "detected_tech_stack": detected_tech_stack,
         }
     
+    except ValueError as val_err:
+        logger.warning(f"Task generation validation error: {val_err}")
+        raise HTTPException(
+            status_code=400,
+            detail=str(val_err)
+        )
     except Exception as e:
         logger.error(f"Task generation failed: {e}")
         raise HTTPException(
@@ -14301,6 +14307,13 @@ async def auto_generate_project_tasks(
             if parsed_analysis:
                 analysis_report = parsed_analysis
             break
+
+        if not analysis_report and not analysis_payload:
+            display_name = f'"{project_name}"' if project_name and project_name != request.project_token else "this project"
+            raise HTTPException(
+                status_code=400,
+                detail=f"No requirement document or BRD analysis found for {display_name}. Please upload project documents and generate Agent Analysis first before creating tasks."
+            )
 
         project_data = (
             project_info.get("project")

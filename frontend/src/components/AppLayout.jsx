@@ -626,6 +626,16 @@ export default function AppLayout({ children }) {
         if (!selectedProjectKey || selectedProjectKey === lastSyncedProjectKeyRef.current) return;
         lastSyncedProjectKeyRef.current = selectedProjectKey;
 
+        // Immediately clear previous project's transient context before fetching target project's context
+        sessionStorage.removeItem('governanceContext');
+        sessionStorage.removeItem('governanceResult');
+        sessionStorage.removeItem('repoContext');
+        sessionStorage.removeItem('analysisResult');
+        localStorage.removeItem('governanceContext');
+        localStorage.removeItem('governanceResult');
+        localStorage.removeItem('repoContext');
+        localStorage.removeItem('analysisResult');
+
         const syncProjectStorage = async () => {
             const token = localStorage.getItem('token');
             if (!token) return;
@@ -635,7 +645,7 @@ export default function AppLayout({ children }) {
                 const projectFromList = projects.find((project) => project.key === selectedProjectKey);
                 const identifier = projectFromList?.governanceResultId || selectedProjectKey;
 
-                // 1. Fetch governance result from backend
+                // 1. Fetch governance result from backend for selected project
                 const govRes = await fetch(`${API_BASE_URL}/governance/result/${identifier}`, {
                     headers: { Authorization: `Bearer ${token}` }
                 });
@@ -680,8 +690,8 @@ export default function AppLayout({ children }) {
 
                         sessionStorage.setItem('governanceContext', JSON.stringify(govCtx));
                         sessionStorage.setItem('governanceResult', JSON.stringify(data));
-
-                        // Trigger storage event to notify other components/hooks of storage changes
+                        localStorage.setItem('governanceContext', JSON.stringify(govCtx));
+                        localStorage.setItem('governanceResult', JSON.stringify(data));
                         window.dispatchEvent(new Event('storage'));
                     }
                 }
@@ -690,7 +700,7 @@ export default function AppLayout({ children }) {
             }
 
             try {
-                // 2. Fetch repo git config from backend
+                // 2. Fetch repo git config from backend for selected project
                 const configRes = await fetch(`${API_BASE_URL}/api/projects/${selectedProjectKey}/git-config`, {
                     headers: { Authorization: `Bearer ${token}` }
                 });
@@ -701,18 +711,12 @@ export default function AppLayout({ children }) {
                         const repoContextObj = {
                             repo: configData.source_repo_url,
                             provider: (configData.source_repo_url.includes('dev.azure.com') || configData.source_repo_url.includes('visualstudio.com')) ? 'azure-devops' : 'github',
-                            context: '' // Left empty until actual handoff/analysis
+                            context: ''
                         };
                         sessionStorage.setItem('repoContext', JSON.stringify(repoContextObj));
-                        window.dispatchEvent(new Event('storage'));
-                    } else {
-                        sessionStorage.removeItem('repoContext');
+                        localStorage.setItem('repoContext', JSON.stringify(repoContextObj));
                         window.dispatchEvent(new Event('storage'));
                     }
-                } else {
-                    sessionStorage.removeItem('repoContext');
-                    localStorage.removeItem('repoContext');
-                    window.dispatchEvent(new Event('storage'));
                 }
             } catch (e) {
                 console.warn('Failed to sync repo storage for project:', e);
@@ -1027,8 +1031,14 @@ export default function AppLayout({ children }) {
         localStorage.removeItem('governancePassed');
         localStorage.removeItem('governanceResult');
         localStorage.removeItem('governanceContext');
+        localStorage.removeItem('repoContext');
+        localStorage.removeItem('analysisResult');
         sessionStorage.removeItem('governanceResult');
         sessionStorage.removeItem('governanceContext');
+        sessionStorage.removeItem('repoContext');
+        sessionStorage.removeItem('analysisResult');
+        sessionStorage.removeItem('dashboard_showing_results');
+        window.dispatchEvent(new Event('storage'));
         navigate('/new-project?new=' + Date.now());
     }, [navigate]);
 

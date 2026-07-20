@@ -1375,19 +1375,10 @@ def _build_project_context(
         except Exception:
             continue
     
-    # Fallback to latest document if no project-specific document found
     if not document:
-        logger.warning(f"No document found with project_token {project_token}, using latest document")
-        if org_name:
-            document = db.query(Document).filter(
-                Document.owner_id.in_(org_user_ids_doc),
-                Document.analysis_result.isnot(None)
-            ).order_by(Document.upload_date.desc()).first()
-        else:
-            document = db.query(Document).filter(
-                Document.owner_id == user_id,
-                Document.analysis_result.isnot(None)
-            ).order_by(Document.upload_date.desc()).first()
+        proj_name = context.get("project_name")
+        display_name = f'"{proj_name}"' if proj_name and proj_name != project_token else "this project"
+        raise ValueError(f"No requirement document or BRD analysis found for {display_name}. Please upload project documents and generate Agent Analysis first before creating tasks.")
     
     brd_analysis_structure = ""
     if document and document.analysis_result:
