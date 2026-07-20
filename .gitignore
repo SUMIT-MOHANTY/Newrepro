@@ -127,3 +127,5 @@ backend/seed_*
 backend/logs_*
 backend/interactive_dashboard_report.html
 vibecoding/interactive_dashboard_report.html
+backend/apply_*
+backend/agent_logs_live.json
