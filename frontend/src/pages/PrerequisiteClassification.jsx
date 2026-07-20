@@ -888,8 +888,10 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
             }
             try {
                 const token = localStorage.getItem('token');
-                if (!token) return;
-                setIsLoadingGitConfig(true);
+                if (!token) {
+                    if (isMounted) setIsLoadingGitConfig(false);
+                    return;
+                }
 
                 // 1. Try project-wise git-config endpoint first (Destination Repository)
                 const configRes = await fetch(`${API_BASE_URL}/api/projects/${selectedProjectKey}/git-config`, {
@@ -897,13 +899,11 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 });
                 if (configRes.ok) {
                     const configData = await configRes.json().catch(() => ({}));
-                    if (configData.dest_repo_url) {
-                        if (!isMounted) return;
-                        setGlobalGitRepoUrl(configData.dest_repo_url);
-                        setHasSavedGlobalGitToken(Boolean(configData.dest_repo_token));
-                        setGlobalGitToken('');
-                        return;
-                    }
+                    if (!isMounted) return;
+                    setGlobalGitRepoUrl(configData.dest_repo_url || '');
+                    setHasSavedGlobalGitToken(Boolean(configData.dest_repo_token));
+                    setGlobalGitToken('');
+                    return;
                 }
 
                 // 2. Legacy fallback
@@ -961,7 +961,6 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
         setGlobalGitRepoUrl('');
         setRepoProvider('');
         setAnalysisRepoSuggestion(null);
-        setIsLoadingGitConfig(true);
         setError('');
 
         const loadAnalysis = async () => {
@@ -2379,22 +2378,22 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                             </p>
 
                             {(!globalGitRepoUrl || !globalGitRepoUrl.trim()) ? (
-                                <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-900/30 dark:border-amber-800 p-4 flex items-start gap-3">
+                                <div className="mb-4 rounded-xl border border-amber-300 dark:border-amber-700/80 bg-amber-500/10 dark:bg-amber-950/40 p-4 flex items-start gap-3">
                                     <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
                                     <div>
-                                        <p className="text-sm font-semibold text-amber-800 dark:text-amber-200">No git repository configured</p>
-                                        <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
+                                        <p className="text-sm font-extrabold text-amber-900 dark:text-amber-100">No git repository configured</p>
+                                        <p className="text-xs font-medium text-amber-800 dark:text-amber-200 mt-1 leading-relaxed">
                                             This project has no Git repository settings saved. Please enter a repository URL below.
                                         </p>
                                     </div>
                                 </div>
                             ) : (
-                                <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/20 dark:border-emerald-900/30 dark:border-emerald-800 p-4 flex items-start gap-3">
+                                <div className="mb-4 rounded-xl border border-emerald-300 dark:border-emerald-700/80 bg-emerald-500/10 dark:bg-emerald-950/40 p-4 flex items-start gap-3">
                                     <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 mt-0.5 flex-shrink-0" />
                                     <div>
-                                        <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">Git repository configured</p>
-                                        <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-0.5">
-                                            Current repository: <span className="font-mono break-all">{globalGitRepoUrl}</span>
+                                        <p className="text-sm font-extrabold text-emerald-900 dark:text-emerald-100">Git repository configured</p>
+                                        <p className="text-xs font-medium text-emerald-800 dark:text-emerald-200 mt-1 leading-relaxed">
+                                            Current repository: <span className="font-mono font-bold break-all">{globalGitRepoUrl}</span>
                                         </p>
                                     </div>
                                 </div>

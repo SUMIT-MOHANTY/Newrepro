@@ -108,52 +108,63 @@ async def sync_single_log(db_session, log: models.NXDuneSyncLog) -> bool:
         return False
 
 
+async def trigger_nxdune_sync_now(db_session, project_token: Optional[str] = None) -> dict:
+    """
+    Manual, one-time sync trigger for pending NXDune logs.
+    Executes a single pass over unsynced logs without automatic retry loops.
+    """
+    logger.info(f"[ManualSync] Executing one-time NXDune sync for project={project_token}...")
+    
+    query = db_session.query(models.NXDuneSyncLog).filter(
+        models.NXDuneSyncLog.success == False,
+        models.NXDuneSyncLog.permanently_failed == False
+    )
+    if project_token:
+        query = query.filter(models.NXDuneSyncLog.project_token == project_token)
+        
+    pending_logs = query.order_by(models.NXDuneSyncLog.created_at.asc()).limit(50).all()
+    
+    if not pending_logs:
+        return {
+            "status": "success",
+            "message": "No pending logs to sync.",
+            "total": 0,
+            "succeeded": 0,
+            "failed": 0
+        }
+        
+    succeeded_count = 0
+    failed_count = 0
+    
+    for log in pending_logs:
+        success = await sync_single_log(db_session, log)
+        log.success = success
+        log.retry_count = (log.retry_count or 0) + 1
+        log.last_retry_at = datetime.utcnow()
+        
+        if success:
+            succeeded_count += 1
+        else:
+            failed_count += 1
+            if log.retry_count >= 3:
+                log.permanently_failed = True
+                
+        db_session.commit()
+        await asyncio.sleep(0.05)
+        
+    return {
+        "status": "completed",
+        "message": f"Sync completed. {succeeded_count} succeeded, {failed_count} failed out of {len(pending_logs)} pending logs.",
+        "total": len(pending_logs),
+        "succeeded": succeeded_count,
+        "failed": failed_count
+    }
+
+
 async def run_nxdune_sync_worker():
     """
-    Background worker loop that polls for unsynced logs and syncs them to NXDune.
-    Runs continuously with a delay between poll runs.
+    Background worker loop - Disabled by default to prevent performance impact when NXDune is offline.
+    Manual syncing is available via the Plugins page button or POST /api/nxdune/sync-now.
     """
-    logger.info("[SyncWorker] Starting NXDune background synchronization worker...")
-    
-    poll_interval_seconds = 10.0
-    
-    while True:
-        try:
-            db = SessionLocal()
-            try:
-                # Fetch pending sync logs that are not permanently failed
-                pending_logs = db.query(models.NXDuneSyncLog).filter(
-                    models.NXDuneSyncLog.success == False,
-                    models.NXDuneSyncLog.permanently_failed == False
-                ).order_by(models.NXDuneSyncLog.created_at.asc()).limit(20).all()
-                
-                if pending_logs:
-                    logger.info(f"[SyncWorker] Found {len(pending_logs)} pending sync logs to process.")
-                    
-                    for log in pending_logs:
-                        success = await sync_single_log(db, log)
-                        
-                        log.success = success
-                        log.retry_count = (log.retry_count or 0) + 1
-                        log.last_retry_at = datetime.utcnow()
-                        
-                        # Cap retries at 5 attempts
-                        if not success and log.retry_count >= 5:
-                            log.permanently_failed = True
-                            logger.error(f"[SyncWorker] Log {log.id} (op={log.operation}) has failed 5 times. Marking permanently failed.")
-                            
-                        db.commit()
-                        
-                        # Yield control to allow other tasks to run
-                        await asyncio.sleep(0.1)
-            except Exception as loop_err:
-                db.rollback()
-                logger.error(f"[SyncWorker] Error during sync poll execution: {loop_err}")
-            finally:
-                db.close()
-                
-        except Exception as outer_err:
-            logger.error(f"[SyncWorker] Outer loop exception: {outer_err}")
-            
-        # Wait before next poll
-        await asyncio.sleep(poll_interval_seconds)
+    logger.info("[SyncWorker] Automatic NXDune background worker is disabled to protect system performance. Use manual sync on Plugins page.")
+    return

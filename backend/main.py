@@ -171,21 +171,16 @@ async def lifespan(app: FastAPI):
     # Initialize job manager
     await analysis_job_manager.initialize_job_manager()
     
-    # Import and start background sync engine
-    from local_sync_service import run_nxdune_sync_worker
-    sync_task = asyncio.create_task(run_nxdune_sync_worker())
-
     # Start background auto-capture logs loop
     from capture_agent_logs import auto_capture_loop
     log_task = asyncio.create_task(auto_capture_loop())
     
     yield
     
-    # Cancel sync engine, log capture task, and shutdown job manager
-    sync_task.cancel()
+    # Cancel log capture task and shutdown job manager
     log_task.cancel()
     try:
-        await asyncio.gather(sync_task, log_task, return_exceptions=True)
+        await asyncio.gather(log_task, return_exceptions=True)
     except Exception:
         pass
     await analysis_job_manager.shutdown_job_manager()
@@ -5460,17 +5455,22 @@ async def get_project_git_config(
     db: Session = Depends(get_db),
 ):
     project_token = _normalize_project_token(project_token)
-    db_response = db.query(models.GovernanceResponse).filter(
+    row = db.query(
+        models.GovernanceResponse.source_repo_url,
+        models.GovernanceResponse.source_repo_token,
+        models.GovernanceResponse.dest_repo_url,
+        models.GovernanceResponse.dest_repo_token,
+    ).filter(
         models.GovernanceResponse.project_token == project_token
     ).first()
-    if not db_response:
+    if not row:
         raise HTTPException(status_code=404, detail="Project not found")
         
     return schemas.ProjectGitConfigResponse(
-        source_repo_url=db_response.source_repo_url,
-        source_repo_token=db_response.source_repo_token,
-        dest_repo_url=db_response.dest_repo_url,
-        dest_repo_token=db_response.dest_repo_token,
+        source_repo_url=row.source_repo_url,
+        source_repo_token=row.source_repo_token,
+        dest_repo_url=row.dest_repo_url,
+        dest_repo_token=row.dest_repo_token,
     )
 
 
@@ -5785,6 +5785,45 @@ async def get_governance_result(
         client_id=response.client_id,
         client_secret=response.client_secret,
     )
+
+
+# ─── NXDune Manual Sync Endpoints ───────────────────────────────────────────────
+@app.post("/api/nxdune/sync-now")
+async def manual_nxdune_sync(
+    project_token: Optional[str] = None,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Manually trigger a one-time sync of pending logs to NXDune.
+    Executes without any automatic background retry loop.
+    """
+    from local_sync_service import trigger_nxdune_sync_now
+    result = await trigger_nxdune_sync_now(db, project_token=project_token)
+    return result
+
+@app.get("/api/nxdune/sync-status")
+async def get_nxdune_sync_status(
+    project_token: Optional[str] = None,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get status counts of NXDune sync logs."""
+    query = db.query(models.NXDuneSyncLog)
+    if project_token:
+        query = query.filter(models.NXDuneSyncLog.project_token == project_token)
+        
+    total = query.count()
+    pending = query.filter(models.NXDuneSyncLog.success == False, models.NXDuneSyncLog.permanently_failed == False).count()
+    succeeded = query.filter(models.NXDuneSyncLog.success == True).count()
+    failed = query.filter(models.NXDuneSyncLog.permanently_failed == True).count()
+    
+    return {
+        "total": total,
+        "pending": pending,
+        "succeeded": succeeded,
+        "failed": failed
+    }
 
 
 # ─── VibeCoding Handoff ─────────────────────────────────────────────────────────
