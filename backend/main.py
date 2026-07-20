@@ -824,23 +824,59 @@ async def brd_chat(
     import llm_gateway
     import json
     from config import settings
+    # Look up GovernanceResponse for project context
+    gov = None
+    if str(payload.project_token).isdigit():
+        gov = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.id == int(payload.project_token)
+        ).first()
+    if not gov:
+        gov = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.project_token == payload.project_token
+        ).first()
 
     # Fetch document/BRD content — org-scoped so all org members can see project docs
-    token_pattern = f'%"project_token": "{payload.project_token}"%'
     org_name = _normalized_text(getattr(current_user, "organization_name", None))
     if org_name:
         org_user_ids = db.query(models.User.id).filter(
             func.lower(models.User.organization_name) == org_name.lower()
         ).scalar_subquery()
-        doc = db.query(models.Document).filter(
-            models.Document.owner_id.in_(org_user_ids),
-            models.Document.analysis_result.like(token_pattern)
-        ).order_by(models.Document.upload_date.desc()).first()
+        user_docs = db.query(models.Document).filter(
+            models.Document.owner_id.in_(org_user_ids)
+        ).order_by(models.Document.upload_date.desc()).all()
     else:
-        doc = db.query(models.Document).filter(
-            models.Document.owner_id == current_user.id,
-            models.Document.analysis_result.like(token_pattern)
-        ).order_by(models.Document.upload_date.desc()).first()
+        user_docs = db.query(models.Document).filter(
+            models.Document.owner_id == current_user.id
+        ).order_by(models.Document.upload_date.desc()).all()
+
+    doc = None
+    # 1. Try matching document using governance linkage
+    for d in user_docs:
+        if gov and _is_document_linked_to_governance(d, gov):
+            doc = d
+            break
+        if d.analysis_result:
+            try:
+                parsed = json.loads(d.analysis_result)
+                if isinstance(parsed, dict):
+                    p_tok = parsed.get("project_token") or (parsed.get("projectMeta") or {}).get("project_token")
+                    r_id = (parsed.get("governanceContext") or {}).get("result_id") or (parsed.get("projectMeta") or {}).get("governance_result_id")
+                    if p_tok and str(p_tok) == str(payload.project_token):
+                        doc = d
+                        break
+                    if r_id and str(r_id) == str(payload.project_token):
+                        doc = d
+                        break
+            except Exception:
+                pass
+
+    # 2. Fallback: string pattern match in analysis_result
+    if not doc:
+        token_str = str(payload.project_token)
+        for d in user_docs:
+            if d.analysis_result and token_str in d.analysis_result:
+                doc = d
+                break
 
     brd_content = doc.full_content if doc else ""
     analysis_report = ""
@@ -849,18 +885,25 @@ async def brd_chat(
             analysis_data = json.loads(doc.analysis_result)
             if isinstance(analysis_data, dict):
                 analysis_report = analysis_data.get("analysis", "")
-        except:
+        except Exception:
             pass
 
-    system_prompt = f"""You are a senior BRD Refinement Assistant and requirements engineer.
+    # Fallback to GovernanceResponse recommendation if analysis_report is empty
+    if not analysis_report and gov and gov.recommendation:
+        analysis_report = str(gov.recommendation).strip()
+
+    project_name = (gov.project_name if gov else None) or payload.project_token
+
+    system_prompt = f"""You are a senior BRD Refinement Assistant and requirements engineer for project "{project_name}".
 You are helping the user analyze, clarify, and plan improvements to their Business Requirement Document (BRD) and its generated AI Action Plan/Analysis report.
 
 Your goal is to have a back-and-forth planning conversation with the user. Answer their questions, identify potential edge cases, help them flesh out business logic, and refine requirement details.
 
 CRITICAL RULES:
-1. Do NOT write that the document has been updated or changed. You cannot modify the document yourself in this conversational mode.
-2. If the user wants to apply or write the discussed changes to the BRD, instruct them to type "now update the plan in brd" or click the "Apply to BRD" button.
-3. Be clear, professional, and SDLC-focused.
+1. The BRD and AI Action Plan for this project are ALREADY GENERATED and loaded into context. Do NOT ask the user to share, upload, or paste the BRD again.
+2. Do NOT claim that the document has been updated or saved directly. You cannot modify the document yourself in this conversational mode.
+3. If the user wants to apply or write the discussed changes to the BRD, instruct them to type "now update the plan in brd" or click the "Apply to BRD" button.
+4. Be clear, professional, helpful, and SDLC-focused.
 
 CONTEXT INFO:
 """
