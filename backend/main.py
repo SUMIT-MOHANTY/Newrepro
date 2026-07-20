@@ -279,10 +279,15 @@ async def log_user_activities(request: Request, call_next):
         current_user_id_var.reset(token_user)
         current_project_token_var.reset(token_proj)
 
-    # 2. Log user activity to user_activity_logs (skip static, heartbeat, or log-polling paths to prevent db bloat)
+    # 2. Log user activity to user_activity_logs (skip static, heartbeat, or log-polling paths to prevent db bloat & connection pool exhaustion)
     path = request.url.path
     # Ignore patterns
-    if not any(pat in path for pat in ["/static", "/favicon", "/assets", "/api/agent/tasks-list", "/api/agent/status", "/metrics", "/health"]):
+    skip_patterns = [
+        "/static", "/favicon", "/assets", "/metrics", "/health",
+        "/api/agent/tasks-list", "/api/agent/status", "/agents",
+        "/git-config", "/history", "/progress", "/stream", "/nxdune", "/claude-md-files", "/skills-md-files"
+    ]
+    if not any(pat in path for pat in skip_patterns):
         # Create an action description
         action = f"{request.method} {path}"
         
