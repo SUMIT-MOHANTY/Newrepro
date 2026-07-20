@@ -1,13 +1,10 @@
 import asyncio
 import logging
 from typing import Dict, Any, Optional
-from datetime import datetime
 
+from integrated_agent_coordinator import coordinator as integrated_coordinator
 from agent_coordination_service import (
     coordination_service,
-    update_agent_coordination_status,
-    request_coordination_file_lock,
-    release_coordination_file_lock,
     get_agent_coordination_view
 )
 
@@ -15,7 +12,9 @@ logger = logging.getLogger(__name__)
 
 
 class CoordinatedAgentWrapper:
-    """Wrapper that adds coordination capabilities to existing agents"""
+    """Wrapper that adds coordination capabilities to existing agents.
+    All coordination operations route through IntegratedCoordinator
+    which syncs all 6 systems atomically."""
     
     def __init__(self, agent_id: str, project_token: str):
         self.agent_id = agent_id
@@ -27,9 +26,7 @@ class CoordinatedAgentWrapper:
         original_run_agent_func,
         **kwargs
     ) -> Dict[str, Any]:
-        """Run agent with coordination awareness"""
-        
-        # Initialize coordination callbacks
+        """Run agent with full coordination. All operations route through IntegratedCoordinator."""
         self.coordination_callbacks = {
             "on_file_access": self._handle_file_access,
             "on_progress_update": self._handle_progress_update,
@@ -37,48 +34,55 @@ class CoordinatedAgentWrapper:
             "on_communication": self._handle_agent_communication,
             "on_status_change": self._handle_status_change
         }
-        
+
         try:
-            # Pre-execution coordination setup
             await self._pre_execution_setup()
-            
-            # Update status to working
-            await update_agent_coordination_status(
-                self.project_token, 
-                self.agent_id, 
-                "working",
-                kwargs.get("assigned_task")
+
+            assigned_task = kwargs.get("assigned_task")
+            await integrated_coordinator.on_agent_status_change(
+                self.project_token, self.agent_id, "working",
+                task_info=assigned_task
             )
-            
-            # Run the original agent function with coordination hooks
+
             result = await self._run_with_coordination_hooks(
-                original_run_agent_func, 
-                **kwargs
+                original_run_agent_func, **kwargs
             )
-            
-            # Post-execution coordination cleanup
+
             await self._post_execution_cleanup(result)
-            
-            # Update final status
+
             final_status = "completed" if result.get("success") else "failed"
-            await update_agent_coordination_status(
-                self.project_token, 
-                self.agent_id, 
-                final_status
+            await integrated_coordinator.on_agent_status_change(
+                self.project_token, self.agent_id, final_status,
+                task_info=assigned_task,
+                progress=100 if result.get("success") else 0
             )
-            
+
+            if result.get("success") and assigned_task:
+                await integrated_coordinator.on_agent_ready(
+                    self.project_token, self.agent_id,
+                    what_is_ready=assigned_task.get("title", "")
+                )
+                files = result.get("files_created", [])
+                if files:
+                    await integrated_coordinator.on_agent_files_created(
+                        self.project_token, self.agent_id, files
+                    )
+
             return result
-            
+
         except Exception as exc:
             logger.exception(f"Coordinated agent execution failed for {self.agent_id}")
-            
-            # Update status to failed
-            await update_agent_coordination_status(
-                self.project_token, 
-                self.agent_id, 
-                "failed"
+
+            await integrated_coordinator.on_agent_status_change(
+                self.project_token, self.agent_id, "failed",
+                task_info=kwargs.get("assigned_task")
             )
-            
+            await integrated_coordinator.on_agent_blocked(
+                self.project_token, self.agent_id,
+                reason=str(exc),
+                needs=f"Fix for: {kwargs.get('assigned_task', {}).get('title', 'unknown')}"
+            )
+
             return {
                 "success": False,
                 "agent_id": self.agent_id,
@@ -87,229 +91,95 @@ class CoordinatedAgentWrapper:
             }
     
     async def _pre_execution_setup(self):
-        """Setup coordination before agent execution"""
-        
-        # Update status to indicate we're starting
-        await update_agent_coordination_status(
-            self.project_token, 
-            self.agent_id, 
-            "initializing",
-            {"message": "Setting up coordination"}
-        )
-        
-        # Get current coordination view
+        """Setup coordination before agent execution."""
         coord_view = await get_agent_coordination_view(
-            self.project_token, 
-            self.agent_id
+            self.project_token, self.agent_id
         )
-        
+
         if coord_view:
-            # Check for any blocking conditions
             my_status = coord_view.get("my_status", {})
             dependencies_waiting = my_status.get("dependencies_waiting", [])
-            
+
             if dependencies_waiting:
-                logger.info(f"🔄 Agent {self.agent_id} waiting for dependencies: {dependencies_waiting}")
-                await update_agent_coordination_status(
-                    self.project_token, 
-                    self.agent_id, 
-                    "waiting_dependency",
-                    {"dependencies": dependencies_waiting}
+                logger.info(f"Agent {self.agent_id} waiting for deps: {dependencies_waiting}")
+                await integrated_coordinator.on_agent_status_change(
+                    self.project_token, self.agent_id, "blocked",
+                    task_info={"blocked_on": dependencies_waiting}
                 )
-                # Could implement waiting logic here
-            
-            # Log coordination context
+
             other_agents = coord_view.get("other_agents", {})
             active_agents = [
-                aid for aid, info in other_agents.items() 
+                aid for aid, info in other_agents.items()
                 if info.get("status") == "working"
             ]
-            
             if active_agents:
-                logger.info(f"🤝 Agent {self.agent_id} starting with {len(active_agents)} other active agents: {active_agents}")
+                logger.info(f"Agent {self.agent_id} starting with {len(active_agents)} active peers")
             else:
-                logger.info(f"🚀 Agent {self.agent_id} starting as the only active agent")
-                
-            # Check for available file locks
-            available_files = coord_view.get("available_files", [])
-            locked_files = coord_view.get("locked_files", {})
-            
-            if locked_files:
-                logger.info(f"🔒 Agent {self.agent_id} sees {len(locked_files)} locked files: {list(locked_files.keys())[:3]}")
-            
-            # Check for pending sync points
-            pending_syncs = coord_view.get("pending_sync_points", {})
-            if pending_syncs:
-                logger.info(f"⏳ Agent {self.agent_id} sees {len(pending_syncs)} pending sync points: {list(pending_syncs.keys())}")
-        
-        # Mark as ready to work
-        await update_agent_coordination_status(
-            self.project_token, 
-            self.agent_id, 
-            "ready",
-            {"message": "Coordination setup complete"}
-        )
+                logger.info(f"Agent {self.agent_id} starting as the only active agent")
     
     async def _run_with_coordination_hooks(
-        self, 
-        original_run_agent_func, 
-        **kwargs
+        self, original_run_agent_func, **kwargs
     ) -> Dict[str, Any]:
-        """Run agent with coordination monitoring and file locking"""
-        
+        """Run agent with coordination monitoring and unified file locking."""
         assigned_task = kwargs.get("assigned_task")
-        
-        # Update status to working
-        await update_agent_coordination_status(
-            self.project_token, 
-            self.agent_id, 
-            "working",
-            assigned_task
-        )
-        
+
         # Predict files this task will work on
         predicted_files = []
         if assigned_task:
-            task_desc = (assigned_task.get("description", "") or "").lower()
-            task_title = (assigned_task.get("title", "") or "").lower()
-            task_combined = f"{task_title} {task_desc}"
-            
-            # Detect tech stack from task context
-            is_spring = any(w in task_combined for w in ("spring", "java", "maven", "gradle", "pom.xml", ".java", "jpa", "hibernate"))
-            is_dotnet = any(w in task_combined for w in (".net", "c#", "csharp", ".csproj", "asp.net"))
-            is_python = any(w in task_combined for w in ("python", "fastapi", "flask", "django", "uvicorn"))
-            is_node = any(w in task_combined for w in ("node", "express", "npm", "typescript", "javascript"))
-            
-            # Simple file prediction based on task content + stack
-            if "dockerfile" in task_combined or "docker" in task_combined:
+            task_combined = (
+                str(assigned_task.get("description", "") or "") + " " +
+                str(assigned_task.get("title", "") or "")
+            ).lower()
+
+            if "docker" in task_combined:
                 predicted_files = ["Dockerfile", "docker-compose.yml", ".dockerignore"]
             elif "api" in task_combined or "endpoint" in task_combined:
-                if is_spring:
-                    predicted_files = ["src/main/java/controller/", "src/main/java/service/", "src/main/resources/application.yml"]
-                elif is_dotnet:
-                    predicted_files = ["Controllers/", "Services/", "Program.cs"]
-                elif is_node:
-                    predicted_files = ["src/routes/", "src/controllers/", "package.json"]
-                else:
-                    predicted_files = ["app.py", "main.py", "routes.py", "api.py"]
-            elif "frontend" in task_combined or "react" in task_combined:
+                predicted_files = ["app.py", "main.py", "routes.py"]
+            elif "frontend" in task_combined or "react" in task_combined or "ui" in task_combined:
                 predicted_files = ["src/App.jsx", "src/components/", "package.json"]
             elif "database" in task_combined or "schema" in task_combined:
-                if is_spring:
-                    predicted_files = ["src/main/java/model/", "src/main/java/repository/", "src/main/resources/application.yml"]
-                elif is_dotnet:
-                    predicted_files = ["Models/", "Data/", "Migrations/"]
-                else:
-                    predicted_files = ["models.py", "schema.sql", "migrations/"]
+                predicted_files = ["models.py", "schema.sql", "migrations/"]
             elif "auth" in task_combined:
-                if is_spring:
-                    predicted_files = ["src/main/java/config/SecurityConfig.java", "src/main/java/service/AuthService.java"]
-                elif is_dotnet:
-                    predicted_files = ["Controllers/AuthController.cs", "Services/AuthService.cs"]
-                else:
-                    predicted_files = ["auth.py", "middleware.py", "config.py"]
-        
-        # Request file locks for predicted files
+                predicted_files = ["auth.py", "middleware.py", "config.py"]
+
+        # Unified file locking via IntegratedCoordinator
         locked_files = []
         for file_path in predicted_files:
-            try:
-                lock_result = await request_coordination_file_lock(
-                    self.project_token, self.agent_id, file_path, "write"
-                )
-                if lock_result.get("success"):
-                    locked_files.append(file_path)
-                    logger.info(f"🔒 Agent {self.agent_id} locked file: {file_path}")
-                else:
-                    logger.info(f"⚠️ Agent {self.agent_id} couldn't lock {file_path}: {lock_result.get('error', 'unknown')}")
-            except Exception as lock_err:
-                logger.warning(f"File lock request failed for {file_path}: {lock_err}")
-        
-        # Send coordination message about task start
+            granted = await integrated_coordinator.on_agent_file_locked(
+                self.project_token, self.agent_id, file_path
+            )
+            if granted:
+                locked_files.append(file_path)
+
         if assigned_task:
-            try:
-                from agent_coordination_service import coordination_service
-                await coordination_service.send_agent_message(
-                    self.project_token, self.agent_id, None,  # Broadcast to all
-                    {
-                        "type": "task_start",
-                        "message": f"Starting task: {assigned_task.get('title', 'Unknown task')}",
-                        "task_details": {
-                            "title": assigned_task.get("title"),
-                            "description": assigned_task.get("description", "")[:200],
-                            "predicted_files": predicted_files
-                        }
-                    }
-                )
-            except Exception as msg_err:
-                logger.warning(f"Failed to send task start message: {msg_err}")
-        
-        # Start coordination monitoring task
-        monitor_task = asyncio.create_task(
-            self._coordination_monitor()
-        )
-        
-        # Initialize result to a safe default to prevent UnboundLocalError if execution is cancelled
+            await integrated_coordinator.on_agent_status_change(
+                self.project_token, self.agent_id, "in_progress",
+                task_info=assigned_task, progress=0
+            )
+
+        monitor_task = asyncio.create_task(self._coordination_monitor())
         result = {"success": False, "tasks_completed": 0, "failed_tasks": 0}
-        
+
         try:
-            # Run the original agent function
             result = await original_run_agent_func(**kwargs)
-            
-            # Send completion message
             success = result.get("success", False)
-            tasks_completed = result.get("tasks_completed", 0)
-            failed_tasks = result.get("failed_tasks", 0)
-            
-            try:
-                from agent_coordination_service import coordination_service
-                await coordination_service.send_agent_message(
-                    self.project_token, self.agent_id, None,  # Broadcast to all
-                    {
-                        "type": "task_complete",
-                        "message": f"{'Completed' if success else 'Failed'} {tasks_completed} task(s)" + 
-                                 (f" ({failed_tasks} failed)" if failed_tasks > 0 else ""),
-                        "result_summary": {
-                            "success": success,
-                            "tasks_completed": tasks_completed,
-                            "failed_tasks": failed_tasks,
-                            "duration": result.get("total_duration", 0)
-                        }
-                    }
-                )
-            except Exception as msg_err:
-                logger.warning(f"Failed to send task completion message: {msg_err}")
-            
+            await integrated_coordinator.on_agent_status_change(
+                self.project_token, self.agent_id,
+                "completed" if success else "failed",
+                task_info=assigned_task,
+                progress=100 if success else 0,
+            )
             return result
-            
         finally:
-            # Stop monitoring
             monitor_task.cancel()
             try:
                 await monitor_task
             except asyncio.CancelledError:
                 pass
-            
-            # Release all file locks
             for file_path in locked_files:
-                try:
-                    await release_coordination_file_lock(
-                        self.project_token, self.agent_id, file_path
-                    )
-                    logger.info(f"🔓 Agent {self.agent_id} released file: {file_path}")
-                except Exception as release_err:
-                    logger.warning(f"Failed to release file lock for {file_path}: {release_err}")
-            
-            # Update final status
-            final_status = "completed" if result.get("success", False) else "error"
-            await update_agent_coordination_status(
-                self.project_token, 
-                self.agent_id, 
-                final_status,
-                {
-                    "tasks_completed": result.get("tasks_completed", 0),
-                    "failed_tasks": result.get("failed_tasks", 0)
-                }
-            )
+                await integrated_coordinator.on_agent_file_released(
+                    self.project_token, self.agent_id, file_path
+                )
     
     async def _coordination_monitor(self):
         """Background monitoring of coordination state"""
@@ -333,9 +203,9 @@ class CoordinatedAgentWrapper:
                     sync_points = coord_view.get("sync_points", {})
                     for sync_name, sync_info in sync_points.items():
                         if sync_info.get("status") == "completed":
-                            await self._handle_sync_point_completed(sync_name, sync_info)
-                
-                await asyncio.sleep(3)  # Check every 3 seconds
+                            logger.info(f"Agent {self.agent_id}: sync point {sync_name} completed")
+
+                await asyncio.sleep(3)
                 
             except asyncio.CancelledError:
                 break
@@ -344,89 +214,29 @@ class CoordinatedAgentWrapper:
                 await asyncio.sleep(5)
     
     async def _post_execution_cleanup(self, result: Dict[str, Any]):
-        """Cleanup coordination after agent execution"""
-        
-        # Release any file locks held by this agent
-        coord_view = await get_agent_coordination_view(
-            self.project_token, 
-            self.agent_id
-        )
-        
-        if coord_view:
-            my_locks = coord_view.get("my_status", {}).get("file_locks", [])
-            for file_path in my_locks:
-                await release_coordination_file_lock(
-                    self.project_token, 
-                    self.agent_id, 
-                    file_path
-                )
-        
-        # Update shared context with results
+        """Cleanup after agent execution."""
         if result.get("success"):
-            context_updates = {
-                "completed_tasks": {
-                    self.agent_id: {
-                        "completed_at": datetime.utcnow().isoformat(),
-                        "tasks_completed": result.get("tasks_completed", 0),
-                        "duration": result.get("duration", 0)
-                    }
-                }
-            }
-            
-            await coordination_service.update_shared_context(
-                self.project_token,
-                self.agent_id,
-                context_updates
-            )
+            files = result.get("files_created", [])
+            if files:
+                await integrated_coordinator.on_agent_files_created(
+                    self.project_token, self.agent_id, files
+                )
     
     # Coordination event handlers
     
     async def _handle_file_access(self, file_path: str, access_type: str = "write"):
-        """Handle file access coordination"""
-        
-        # Request file lock
-        lock_result = await request_coordination_file_lock(
-            self.project_token,
-            self.agent_id,
-            file_path,
-            access_type
+        """Handle file access through unified locking."""
+        return await integrated_coordinator.on_agent_file_locked(
+            self.project_token, self.agent_id, file_path
         )
-        
-        if not lock_result.get("success"):
-            # File is locked by another agent
-            locked_by = lock_result.get("locked_by")
-            logger.warning(f"Agent {self.agent_id} blocked: file {file_path} locked by {locked_by}")
-            
-            # Could implement waiting or alternative strategy here
-            return False
-        
-        return True
     
     async def _handle_progress_update(self, progress_info: Dict[str, Any]):
-        """Handle progress update coordination"""
-        
-        # Update coordination system with progress
-        await update_agent_coordination_status(
-            self.project_token,
-            self.agent_id,
-            "working",
-            progress_info
+        """Handle progress update via coordinator."""
+        await integrated_coordinator.on_agent_status_change(
+            self.project_token, self.agent_id, "working",
+            task_info=progress_info,
+            progress=progress_info.get("progress", 0)
         )
-        
-        # Broadcast progress to other agents if significant milestone
-        progress = progress_info.get("progress", 0)
-        if progress in [25, 50, 75, 90]:  # Milestone progress points
-            await coordination_service.send_agent_message(
-                self.project_token,
-                self.agent_id,
-                None,  # Broadcast to all
-                {
-                    "type": "progress_milestone",
-                    "progress": progress,
-                    "task": progress_info.get("task_title", ""),
-                    "message": f"Reached {progress}% completion"
-                }
-            )
     
     async def _handle_sync_request(self, sync_type: str, data: Optional[Dict[str, Any]] = None):
         """Handle synchronization point requests"""
@@ -457,12 +267,9 @@ class CoordinatedAgentWrapper:
         )
     
     async def _handle_status_change(self, new_status: str):
-        """Handle agent status changes"""
-        
-        await update_agent_coordination_status(
-            self.project_token,
-            self.agent_id,
-            new_status
+        """Handle status changes via coordinator."""
+        await integrated_coordinator.on_agent_status_change(
+            self.project_token, self.agent_id, new_status
         )
     
     async def _handle_incoming_message(self, message: Dict[str, Any]):
@@ -483,21 +290,9 @@ class CoordinatedAgentWrapper:
             # Handle dependency resolution notifications
             logger.info(f"Agent {self.agent_id} notified that dependency {from_agent} is resolved")
     
-    async def _handle_sync_point_completed(self, sync_name: str, sync_info: Dict[str, Any]):
-        """Handle sync point completion"""
-        
-        logger.info(f"Agent {self.agent_id} notified that sync point {sync_name} is completed")
-        
-        # Could trigger specific actions based on sync point type
-        if sync_name == "architecture_review":
-            # Architecture is finalized, can proceed with implementation
-            pass
-        elif sync_name == "integration_checkpoint":
-            # Integration phase complete, can proceed with testing
-            pass
 
 
-# Integration function to wrap existing run_agent calls
+# ── Public wrapper function ─────────────────────────────────────────────
 async def run_coordinated_agent(
     agent_id: str,
     project_token: str,
@@ -505,22 +300,10 @@ async def run_coordinated_agent(
     **kwargs
 ) -> Dict[str, Any]:
     """
-    Wrapper function to run an agent with coordination capabilities
-    
-    Usage:
-        from coordinated_agent_wrapper import run_coordinated_agent
-        import agent_service
-        
-        result = await run_coordinated_agent(
-            agent_id="dev_agent_1",
-            project_token="project_123",
-            original_run_agent_func=agent_service.run_agent,
-            git_repo_url="https://github.com/user/repo",
-            assigned_task=task_dict,
-            continuous=True
-        )
+    Run an agent with FULL coordination (IntegratedCoordinator).
+    All status changes, file locks, and broadcasts route through
+    IntegratedCoordinator which syncs all 6 systems atomically.
     """
-    
     wrapper = CoordinatedAgentWrapper(agent_id, project_token)
     return await wrapper.run_with_coordination(
         original_run_agent_func,
@@ -530,36 +313,24 @@ async def run_coordinated_agent(
     )
 
 
-# Enhanced LangGraph integration
+# ── Backward-compatibility stub ─────────────────────────────────────────
+# Kept for modules that still import run_coordinated_agents_langgraph.
+# Routes through IntegratedCoordinator under the hood.
+
 async def run_coordinated_agents_langgraph(
     project_token: str,
     agents_config: Dict[str, Dict[str, str]],
     task_token: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Run multiple agents with full coordination through LangGraph
+    [Deprecated] Use master_coordination_service.start_coordinated_project() instead.
+    This stub delegates to IntegratedCoordinator for backward compatibility.
     """
-    
-    # Initialize coordination for the project
-    from agent_coordination_service import initialize_project_coordination
-    
-    # Get master plan (would come from your existing workflow)
-    master_plan = {}  # This would be populated from your master workspace note
-    
-    # Initialize coordination state
-    coord_state = await initialize_project_coordination(
-        project_token,
-        agents_config,
-        master_plan
-    )
-    
-    # Run the synchronized LangGraph workflow
-    from synchronized_langgraph_workflow import run_synchronized_agent_workflow
-    
-    result = await run_synchronized_agent_workflow(
-        agents_config=agents_config,
+    from integrated_agent_coordinator import coordinator
+    agents = list(agents_config.keys())
+    result = await coordinator.start_coordinated_project(
         project_token=project_token,
-        task_token=task_token
+        tasks=[],
+        agents=agents,
     )
-    
     return result

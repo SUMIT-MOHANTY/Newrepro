@@ -686,6 +686,13 @@ async def run_brownfield_agent(
         })
         logger.info(f"[BROWNFIELD][{agent_id}] {message}")
 
+    # Notify IntegratedCoordinator that a brownfield agent task is starting
+    try:
+        from integrated_agent_coordinator import coordinator as _ic
+        _ic.track_agent_event(project_token, agent_id, "running", f"Brownfield task {task_id}")
+    except Exception:
+        pass
+
     raw_seq = task.get("sequence") or task.get("seq") or task.get("task_sequence") or task.get("task_seq") or task.get("task_id") or task.get("id") or "UNKNOWN"
     if isinstance(raw_seq, int):
         task_id = f"TASK-{raw_seq:02d}"
@@ -762,6 +769,11 @@ async def run_brownfield_agent(
 
         if result.get("success"):
             _log(f"Task {task_id} completed successfully on branch '{feature_branch}'")
+            try:
+                from integrated_agent_coordinator import coordinator as _ic
+                _ic.track_agent_event(project_token, agent_id, "task_completed", f"Brownfield task {task_id} on {feature_branch}")
+            except Exception:
+                pass
         else:
             _log(f"Task {task_id} failed: {result.get('error', 'unknown error')}", "error")
 

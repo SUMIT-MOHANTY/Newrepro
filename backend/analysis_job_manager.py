@@ -117,14 +117,15 @@ class AnalysisJobManager:
     async def cleanup_old_jobs(self, max_age_hours: int = 24):
         """
         Cleanup jobs older than max_age_hours.
-        Keep completed/failed jobs for at least 1 hour to allow frontend to retrieve results.
+        Keep completed/failed jobs for at least 6 hours to allow frontend to retrieve results.
         """
         cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
-        completed_cutoff = datetime.utcnow() - timedelta(hours=1)  # Keep completed jobs for 1 hour minimum
+        completed_cutoff = datetime.utcnow() - timedelta(hours=6)  # Keep completed jobs for 6 hours minimum
         jobs_to_delete = []
         
         for job_id, job in self._jobs.items():
-            # For completed/failed jobs, use shorter retention (1 hour)
+            # For completed/failed jobs, use shorter retention (6 hours — increased from 1h to avoid
+        # losing results before the frontend can poll them, especially in slow-poll scenarios)
             if job.status in [JobStatus.COMPLETED, JobStatus.FAILED]:
                 if job.completed_at and job.completed_at < completed_cutoff:
                     jobs_to_delete.append(job_id)

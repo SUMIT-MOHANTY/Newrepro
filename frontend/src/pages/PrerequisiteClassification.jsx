@@ -728,11 +728,37 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     }, [selectedProjectKey, selectedProject]);
 
     useEffect(() => {
-        if (selectedProjectKey) {
-            const saved = localStorage.getItem(`custom_rules_${selectedProjectKey}`) || '';
-            setCustomRules(saved);
-            
-            // Load saved claude.md files
+        if (!selectedProjectKey) return;
+        let cancelled = false;
+        
+        // Load custom rules from localStorage (user-specific, no backend endpoint)
+        const saved = localStorage.getItem(`custom_rules_${selectedProjectKey}`) || '';
+        setCustomRules(saved);
+        
+        // Load claude.md files — prefer backend (org-scoped source of truth), fallback to localStorage
+        const loadClaudeMdFromBackend = async () => {
+            try {
+                const token = localStorage.getItem('token');
+                if (!token) throw new Error('No auth token');
+                const response = await fetch(API_ENDPOINTS.GOVERNANCE_CLAUDE_MD_FILES(selectedProjectKey), {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (cancelled) return;
+                if (response.ok) {
+                    const data = await response.json();
+                    if (cancelled) return;
+                    if (Array.isArray(data) && data.length > 0) {
+                        setClaudeMdFiles(data);
+                        // Sync backend data to localStorage for offline resilience
+                        localStorage.setItem(`claude_md_files_${selectedProjectKey}`, JSON.stringify(data));
+                        return; // Successfully loaded from backend
+                    }
+                }
+            } catch (e) {
+                console.warn('Failed to load claude.md files from backend:', e);
+            }
+            if (cancelled) return;
+            // Fallback: load from localStorage
             const savedClaudeFiles = localStorage.getItem(`claude_md_files_${selectedProjectKey}`);
             if (savedClaudeFiles) {
                 try {
@@ -741,8 +767,32 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     console.error('Failed to parse saved claude.md files:', e);
                 }
             }
-            
-            // Load saved skills.md files
+        };
+        
+        // Load skills.md files — prefer backend (org-scoped source of truth), fallback to localStorage
+        const loadSkillsMdFromBackend = async () => {
+            try {
+                const token = localStorage.getItem('token');
+                if (!token) throw new Error('No auth token');
+                const response = await fetch(API_ENDPOINTS.GOVERNANCE_SKILLS_MD_FILES(selectedProjectKey), {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (cancelled) return;
+                if (response.ok) {
+                    const data = await response.json();
+                    if (cancelled) return;
+                    if (Array.isArray(data) && data.length > 0) {
+                        setSkillsMdFiles(data);
+                        // Sync backend data to localStorage for offline resilience
+                        localStorage.setItem(`skills_md_files_${selectedProjectKey}`, JSON.stringify(data));
+                        return; // Successfully loaded from backend
+                    }
+                }
+            } catch (e) {
+                console.warn('Failed to load skills.md files from backend:', e);
+            }
+            if (cancelled) return;
+            // Fallback: load from localStorage
             const savedSkillsFiles = localStorage.getItem(`skills_md_files_${selectedProjectKey}`);
             if (savedSkillsFiles) {
                 try {
@@ -751,7 +801,12 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     console.error('Failed to parse saved skills.md files:', e);
                 }
             }
-        }
+        };
+        
+        loadClaudeMdFromBackend();
+        loadSkillsMdFromBackend();
+        
+        return () => { cancelled = true; };
     }, [selectedProjectKey]);
 
     useEffect(() => {
@@ -925,21 +980,9 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     return;
                 }
 
-                // Check for previously saved prerequisites for THIS project
-                // Use versioned key to bust stale cache with HTML tags
-                const PREREQ_CACHE_KEY = `prerequisites_v2_${selectedProjectKey}`;
-                const savedPrereqs = sessionStorage.getItem(PREREQ_CACHE_KEY);
-                if (savedPrereqs) {
-                    try {
-                        const parsed = JSON.parse(savedPrereqs);
-                        // Validate: reject cache if any description contains HTML tags
-                        const hasHtml = parsed.some(p => /<[a-z][\s\S]*>/i.test(p.description || ''));
-                        if (!hasHtml && parsed.length > 0) {
-                            setPrerequisites(parsed.map((p, idx) => normalizePrerequisiteItem(p, idx)));
-                            return;
-                        }
-                    } catch { /* fall through */ }
-                }
+                // Always fetch fresh prerequisites from the server to ensure org-scoped data
+                // sessionStorage cache is avoided to prevent stale data across org members
+                sessionStorage.removeItem(`prerequisites_v2_${selectedProjectKey}`);
                 // Also clear old v1 cache
                 sessionStorage.removeItem(`prerequisites_${selectedProjectKey}`);
 

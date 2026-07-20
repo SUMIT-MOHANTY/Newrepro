@@ -1,5 +1,12 @@
 """
 Master Coordination Service - Integration layer between Master Task Manager and existing system
+
+NOW INTEGRATED with IntegratedCoordinator for:
+  - Real-time agent heartbeat tracking
+  - Auto-retry on agent failure
+  - Unified file locking across all 6 systems
+  - BRD-aware task prioritization
+  - Dependency auto-resolution
 """
 
 import asyncio
@@ -8,12 +15,22 @@ from typing import Dict, List, Optional, Any
 from master_task_manager import master_task_manager
 import agent_service
 
+# Integration with all 6 coordination systems
+from integrated_agent_coordinator import coordinator as integrated_coordinator
+
 logger = logging.getLogger(__name__)
 
 class MasterCoordinationService:
     """
     Bridges the Master Task Manager with existing agent_service
     Ensures ONLY the Master controls task assignment
+
+    Now integrated with IntegratedCoordinator for:
+      - Heartbeat monitoring (detect crashed agents)
+      - Auto-retry on failure (max 3 retries)
+      - Unified file locking (prevents same-file conflicts)
+      - BRD-aware routing (prerequisites first, goals-driven)
+      - Dependency auto-resolution
     """
     
     def __init__(self):
@@ -30,28 +47,44 @@ class MasterCoordinationService:
         self, 
         project_token: str, 
         tasks: List[Dict[str, Any]], 
-        agents: List[str]
+        agents: List[str],
+        brd_analysis: Optional[Dict[str, Any]] = None,
+        brd_goals: Optional[List[str]] = None,
+        brd_prerequisites: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
-        Start a project with Master Task Manager in full control
+        Start a project with full integration across all 6 coordination systems.
+        
+        This is the entry point — it initializes the IntegratedCoordinator which
+        bridges MasterTaskManager, AgentCoordinationService, EnhancedContextService,
+        AgentCommunicationService, CoordinatedAgentWrapper, and AgentContractStore.
         """
         logger.info(f"🎯 Starting coordinated project: {project_token}")
         
-        # Initialize Master Task Manager
-        await master_task_manager.initialize_project(project_token, tasks, agents)
+        # 1. Initialize IntegratedCoordinator (bridges all 6 systems)
+        await integrated_coordinator.start_coordinated_project(
+            project_token=project_token,
+            tasks=tasks,
+            agents=agents,
+            brd_analysis=brd_analysis,
+            brd_goals=brd_goals,
+            brd_prerequisites=brd_prerequisites,
+        )
         
-        # Mark project as active
+        # 2. Mark project as active
         self.active_projects[project_token] = True
         
-        # Initialize starvation tracker for this project
+        # 3. Initialize starvation tracker for this project
         self._starvation_cycles[project_token] = {a: 0 for a in agents}
         
-        # Start the coordination loop
+        # 4. Apply BRD-aware task prioritization
+        if brd_analysis or brd_goals:
+            await self._apply_brd_task_prioritization(project_token)
+        
+        # 5. Start the coordination loop
         asyncio.create_task(self._coordination_loop(project_token))
         
-        # ── LAYER 3: Launch starvation detector ────────────────────────────
-        # Runs alongside the coordination loop as a safety net. Every 30s it
-        # checks for agents stuck in empty polling loops and force-assigns tasks.
+        # 6. Launch starvation detector (safety net for stuck agents)
         asyncio.create_task(self._starvation_detector(project_token))
         
         return {
@@ -59,8 +92,43 @@ class MasterCoordinationService:
             "project_token": project_token,
             "total_tasks": len(tasks),
             "available_agents": len(agents),
-            "message": "Master Task Manager is now controlling all agents"
+            "systems_integrated": [
+                "master_task_manager",
+                "agent_coordination_service",
+                "enhanced_context_service",
+                "agent_communication_service",
+                "coordinated_agent_wrapper",
+                "agent_contract_store",
+            ],
+            "message": "All 6 coordination systems integrated and controlling all agents",
         }
+    
+    async def _apply_brd_task_prioritization(self, project_token: str) -> None:
+        """
+        Re-prioritize tasks based on BRD analysis.
+        Prerequisite tasks get moved to the front of the queue.
+        BRD-goal-aligned tasks get priority boost.
+        """
+        try:
+            # Calculate BRD priority for each task
+            task_scores = []
+            for i, task in enumerate(master_task_manager.task_queue):
+                priority = integrated_coordinator.get_brd_aware_task_priority(project_token, task)
+                task_scores.append((priority, i, task))
+
+            # Sort by priority (descending), keeping original order for ties
+            task_scores.sort(key=lambda x: (-x[0], x[1]))
+            
+            # Rebuild queue with sorted tasks
+            master_task_manager.task_queue = [t[2] for t in task_scores]
+            
+            # Update sequence numbers
+            for idx, task in enumerate(master_task_manager.task_queue):
+                task["_brd_priority"] = task_scores[idx][0]
+                
+            logger.info(f"📊 [{project_token}] BRD-aware task prioritization applied to {len(master_task_manager.task_queue)} tasks")
+        except Exception as e:
+            logger.error(f"❌ BRD prioritization error: {e}")
     
     async def _coordination_loop(self, project_token: str):
         """
@@ -195,26 +263,79 @@ class MasterCoordinationService:
         project_token: str
     ):
         """
-        Run an agent under Master coordination
+        Run an agent under Master coordination with full integration.
+        
+        Now integrated with IntegratedCoordinator for:
+          - Real-time status sync across all 6 systems
+          - Heartbeat tracking (AgentContractStore)
+          - File lock management (unified)
+          - Progress updates to EnhancedContextService
+          - Auto-retry on failure
         """
         logger.info(f"🤖 Starting coordinated agent {agent_id} for task: {task['title']}")
         
         try:
-            # Report task start
-            await master_task_manager.report_task_progress(
-                agent_id, 
-                {"status": "in_progress", "progress": 0}
+            # ── STEP 1: Notify all systems that agent is starting ──────────
+            await integrated_coordinator.on_agent_status_change(
+                project_token, agent_id, "assigned",
+                task_info=task, progress=0
             )
             
-            # Run the actual agent work (modified to be coordinated)
+            # ── STEP 2: Predict files and acquire locks ────────────────────
+            predicted_files = self._extract_file_intents_from_task(task)
+            for file_path in predicted_files:
+                await integrated_coordinator.on_agent_file_locked(
+                    project_token, agent_id, file_path
+                )
+            
+            # ── STEP 3: Run the actual agent work ──────────────────────────
             result = await self._execute_agent_task(agent_id, task, project_token)
             
-            # Report completion
+            # ── STEP 4: On success, sync completion ────────────────────────
+            await integrated_coordinator.on_agent_status_change(
+                project_token, agent_id, "completed",
+                task_info=task, progress=100
+            )
+            
+            # Release predicted file locks
+            for file_path in predicted_files:
+                await integrated_coordinator.on_agent_file_released(
+                    project_token, agent_id, file_path
+                )
+            
+            # Register files created (if any in result)
+            files_created = (result or {}).get("files_created", [])
+            if files_created:
+                await integrated_coordinator.on_agent_files_created(
+                    project_token, agent_id, files_created
+                )
+            
+            # Signal readiness for dependency resolution
+            await integrated_coordinator.on_agent_ready(
+                project_token, agent_id,
+                what_is_ready=task.get("title", "")
+            )
+            
+            # Report completion to MasterTaskManager
             await master_task_manager.complete_task(agent_id, result)
             
         except Exception as e:
             logger.error(f"❌ Agent {agent_id} failed: {e}")
-            # Report failure
+            
+            # Report failure through IntegratedCoordinator (triggers auto-retry)
+            await integrated_coordinator.on_agent_status_change(
+                project_token, agent_id, "failed",
+                task_info=task, progress=0
+            )
+            
+            # Broadcast blocker
+            await integrated_coordinator.on_agent_blocked(
+                project_token, agent_id,
+                reason=str(e),
+                needs=f"Fix for task: {task.get('title', '')}"
+            )
+            
+            # Report failure to MasterTaskManager
             await master_task_manager.report_task_progress(
                 agent_id,
                 {"status": "failed", "error": str(e)}
@@ -249,10 +370,13 @@ class MasterCoordinationService:
             )
             return result or {}
         finally:
-            # Release any file locks this agent held
-            for file_path, holder in list(master_task_manager.file_locks.items()):
+            # Release any file locks this agent held using unified coordinator
+            state = master_task_manager
+            for file_path, holder in list(state.file_locks.items()):
                 if holder == agent_id:
-                    await master_task_manager.release_file_lock(agent_id, file_path)
+                    await integrated_coordinator.on_agent_file_released(
+                        project_token, agent_id, file_path
+                    )
     
     def _extract_file_intents_from_task(self, task: Dict[str, Any]) -> List[str]:
         """
@@ -287,17 +411,16 @@ class MasterCoordinationService:
     
     async def _wait_for_file_lock(self, agent_id: str, file_path: str, max_wait: int = 300):
         """
-        Wait for file lock to become available
+        Wait for file lock to become available.
+        Uses MasterTaskManager's native locking (no project_token available here).
         """
         waited = 0
         while waited < max_wait:
-            lock_result = await master_task_manager.request_file_lock(agent_id, file_path)
-            if lock_result["granted"]:
+            result = await master_task_manager.request_file_lock(agent_id, file_path)
+            if result.get("granted"):
                 return
-            
             await asyncio.sleep(10)
             waited += 10
-        
         raise Exception(f"Timeout waiting for file lock: {file_path}")
 
 # Global coordination service

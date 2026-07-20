@@ -17917,7 +17917,45 @@ async def _post_task_progress(task: Dict[str, Any], progress: int, additional_in
     # Update local memory state and trigger completion if progress reaches 100%
     state["task_progress_state"][task_key] = progress
     if progress == 100:
+        # ═══ WORK EVIDENCE CHECK ═══
+        # Prevent fake 100% completion when the agent hasn't actually done any work.
+        # Check: (1) has checklist with items AND none completed, (2) no files written in ledger
+        _checklist = task.get("checklist") or []
+        _ledger_entry = state.get("task_ledger", {}).get(task_key)
+        _files_written = list(_ledger_entry.files_written) if _ledger_entry else []
+        _completed_items = sum(1 for c in _checklist if isinstance(c, dict) and c.get("completed"))
+        _total_items = len(_checklist)
+        
+        _no_work_evidence = (
+            (_total_items > 0 and _completed_items == 0)  # Has checklist but nothing done
+            and not _files_written                          # No files created
+        )
+        
+        if _no_work_evidence:
+            logger.warning(
+                f"[agent_service] 🚫 WORK EVIDENCE CHECK FAILED for task {task_id}: "
+                f"checklist has {_total_items} items all incomplete, "
+                f"0 files written. Capping progress at 99% — will NOT auto-complete. "
+                f"Agent must provide work evidence before reaching 100%."
+            )
+            state["task_progress_state"][task_key] = 99
+            # Update as 99% in local DB too to persist the correction
+            _agent_for_update = task.get("assigned_agent") or task.get("_local_agent_id")
+            if resolved_project and _agent_for_update:
+                try:
+                    from local_state_manager import update_task_progress_local
+                    update_task_progress_local(
+                        project_token=resolved_project,
+                        agent_id=_agent_for_update,
+                        task_id=str(task_id),
+                        progress=99,
+                    )
+                except Exception:
+                    pass
+            return True
+        
         logger.info(f"[agent_service] Progress reached 100% locally for task {task_id}, triggering task completion...")
+        logger.info(f"[agent_service] Work evidence: {_completed_items}/{_total_items} checklist done, {len(_files_written)} files written")
         await _post_task_complete(task, project_token=resolved_project, task_token=task_token)
         
     return True
@@ -17930,6 +17968,23 @@ async def _post_task_complete(task: Dict[str, Any], project_token: Optional[str]
         logger.warning("[agent_service] Cannot complete task: no task_id found")
         return False
     resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
+    
+    # ═══ CHECKLIST VALIDATION ═══
+    # Log warning if task has checklist items but none are completed
+    _checklist = task.get("checklist") or []
+    if _checklist and isinstance(_checklist, list):
+        _completed_items = sum(1 for c in _checklist if isinstance(c, dict) and c.get("completed"))
+        _total_items = len(_checklist)
+        if _total_items > 0 and _completed_items == 0:
+            logger.warning(
+                f"[agent_service] ⚠️ Task {task_id} is being completed but NONE of its "
+                f"{_total_items} checklist items are marked as done. "
+                f"This may indicate the task was completed without actual work."
+            )
+        elif _total_items > 0:
+            logger.info(
+                f"[agent_service] Task {task_id} checklist: {_completed_items}/{_total_items} items completed"
+            )
 
     # ═══ STATUS TRANSITION GUARD ═══
     current_status = str(task.get("status") or "").strip()
@@ -19564,6 +19619,15 @@ async def _is_shared_agent(agent_id: str, project_token: Optional[str]) -> bool:
     return False
 
 
+def _notify_coordinator(agent_id: str, project_token: Optional[str], status: str, message: str = "") -> None:
+    """Safe coordinator notification for agent lifecycle events."""
+    try:
+        from integrated_agent_coordinator import coordinator as _ic
+        _ic.track_agent_event(project_token or "", agent_id, status, message)
+    except Exception:
+        pass
+
+
 async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = None,
                     assigned_task: Dict[str, Any] = None,
                     continuous: bool = False,
@@ -19702,6 +19766,9 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
     # Clear any previous run error context at start of execution
     agent["previous_run_error"] = None
 
+    # Notify IntegratedCoordinator that agent has started
+    _notify_coordinator(agent_id, project_token, "running", "run_agent started")
+
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             result = await _run_agent_once(
@@ -19716,19 +19783,21 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                 force_branch=force_branch,
             )
 
+            _notify_coordinator(agent_id, project_token, "attempt_completed", f"Attempt {attempt}/{MAX_RETRIES}")
+
             if result.get("success") or result.get("reason") == "no_tasks":
-                # Success or no tasks — no retry needed
-                # Release shared agent if acquired
-                if is_shared_agent and shared_agent_acquired:
-                    try:
-                        from shared_agent_coordinator import get_shared_agent_coordinator
-                        coordinator = await get_shared_agent_coordinator()
-                        await coordinator.release_agent(agent_id, project_token)
-                        logger.info(f"[{agent_id}] ✅ Released shared agent")
-                    except Exception as release_err:
-                        logger.error(f"[{agent_id}] Failed to release shared agent: {release_err}")
-                
-                return result
+                # Success or no tasks — no retry needed                # Release shared agent if acquired
+                    if is_shared_agent and shared_agent_acquired:
+                        try:
+                            from shared_agent_coordinator import get_shared_agent_coordinator
+                            coordinator = await get_shared_agent_coordinator()
+                            await coordinator.release_agent(agent_id, project_token)
+                            logger.info(f"[{agent_id}] ✅ Released shared agent")
+                        except Exception as release_err:
+                            logger.error(f"[{agent_id}] Failed to release shared agent: {release_err}")
+                    
+                    _notify_coordinator(agent_id, project_token, "completed", "run_agent success")
+                    return result
 
             # Agent returned failure but didn't throw — treat as retryable
             last_result = result
@@ -19782,6 +19851,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                         logger.error(f"[{agent_id}] Failed to release shared agent: {release_err}")
                 
                 logger.error(f"[{agent_id}] BLOCKED: Agent will not pick up new tasks until unblocked")
+                _notify_coordinator(agent_id, project_token, "failed", f"run_agent max retries: {error_msg[:200]}")
                 return last_result
 
         except Exception as e:
@@ -19860,6 +19930,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                         logger.error(f"[{agent_id}] Failed to release shared agent: {release_err}")
                 
                 logger.error(f"[{agent_id}] BLOCKED: Agent will not pick up new tasks until unblocked")
+                _notify_coordinator(agent_id, project_token, "failed", f"run_agent exception max retries: {error_msg[:200]}")
                 return last_result
 
     # Final release if we exit the loop normally
@@ -19872,6 +19943,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
         except Exception as release_err:
             logger.error(f"[{agent_id}] Failed to release shared agent: {release_err}")
     
+    _notify_coordinator(agent_id, project_token, "completed", "run_agent final return")
     return last_result
 
 

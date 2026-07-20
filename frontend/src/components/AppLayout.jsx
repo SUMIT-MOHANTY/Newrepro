@@ -680,8 +680,6 @@ export default function AppLayout({ children }) {
 
                         sessionStorage.setItem('governanceContext', JSON.stringify(govCtx));
                         sessionStorage.setItem('governanceResult', JSON.stringify(data));
-                        localStorage.setItem('governanceContext', JSON.stringify(govCtx));
-                        localStorage.setItem('governanceResult', JSON.stringify(data));
 
                         // Trigger storage event to notify other components/hooks of storage changes
                         window.dispatchEvent(new Event('storage'));
@@ -706,11 +704,9 @@ export default function AppLayout({ children }) {
                             context: '' // Left empty until actual handoff/analysis
                         };
                         sessionStorage.setItem('repoContext', JSON.stringify(repoContextObj));
-                        localStorage.setItem('repoContext', JSON.stringify(repoContextObj));
                         window.dispatchEvent(new Event('storage'));
                     } else {
                         sessionStorage.removeItem('repoContext');
-                        localStorage.removeItem('repoContext');
                         window.dispatchEvent(new Event('storage'));
                     }
                 } else {

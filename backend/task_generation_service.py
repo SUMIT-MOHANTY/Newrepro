@@ -7,7 +7,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Set
 from sqlalchemy.orm import Session
-from models import Task, Document, GovernanceResponse
+from models import Task, Document, GovernanceResponse, User
+from sqlalchemy import func
 import llm_gateway
 
 logger = logging.getLogger(__name__)
@@ -1314,11 +1315,25 @@ def _build_project_context(
         "project_type": "greenfield",
     }
     
-    # Get governance response
-    gov_response = db.query(GovernanceResponse).filter(
-        GovernanceResponse.project_token == project_token,
-        GovernanceResponse.owner_id == user_id
-    ).first()
+    # Get governance response — support org-scoped visibility
+    user = db.query(User).filter(User.id == user_id).first()
+    org_name = str(user.organization_name).strip().lower() if user and user.organization_name else None
+
+    if org_name:
+        # Org-scoped: find governance from any member of the same org
+        org_user_ids = db.query(User.id).filter(
+            func.lower(User.organization_name) == org_name
+        ).scalar_subquery()
+        gov_response = db.query(GovernanceResponse).filter(
+            GovernanceResponse.project_token == project_token,
+            GovernanceResponse.owner_id.in_(org_user_ids)
+        ).order_by(GovernanceResponse.id.desc()).first()
+    else:
+        # Personal scope: only this user
+        gov_response = db.query(GovernanceResponse).filter(
+            GovernanceResponse.project_token == project_token,
+            GovernanceResponse.owner_id == user_id
+        ).first()
     
     if gov_response:
         context["project_name"] = gov_response.project_name or project_token
@@ -1329,22 +1344,50 @@ def _build_project_context(
         if gov_response.project_type:
             context["project_type"] = gov_response.project_type
     
-    # Get document analysis for this specific project
-    # First try to find a document that has this project_token in its analysis_result
+    # Get document analysis for this specific project — support org-scoped visibility
     token_pattern = f'%"project_token": "{project_token}"%'
-    document = db.query(Document).filter(
-        Document.owner_id == user_id,
-        Document.analysis_result.isnot(None),
-        Document.analysis_result.like(token_pattern)
-    ).order_by(Document.upload_date.desc()).first()
+    
+    if org_name:
+        # Org-scoped: find documents from any member of the same org
+        org_user_ids_doc = db.query(User.id).filter(
+            func.lower(User.organization_name) == org_name
+        ).scalar_subquery()
+        candidate_docs = db.query(Document).filter(
+            Document.owner_id.in_(org_user_ids_doc),
+            Document.analysis_result.isnot(None),
+            Document.analysis_result.like(token_pattern)
+        ).order_by(Document.upload_date.desc()).all()
+    else:
+        # Personal scope: only this user
+        candidate_docs = db.query(Document).filter(
+            Document.owner_id == user_id,
+            Document.analysis_result.isnot(None),
+            Document.analysis_result.like(token_pattern)
+        ).order_by(Document.upload_date.desc()).all()
+    
+    document = None
+    for cand in candidate_docs:
+        try:
+            cand_parsed = json.loads(cand.analysis_result)
+            if isinstance(cand_parsed, dict) and cand_parsed.get("project_token") == project_token:
+                document = cand
+                break
+        except Exception:
+            continue
     
     # Fallback to latest document if no project-specific document found
     if not document:
         logger.warning(f"No document found with project_token {project_token}, using latest document")
-        document = db.query(Document).filter(
-            Document.owner_id == user_id,
-            Document.analysis_result.isnot(None)
-        ).order_by(Document.upload_date.desc()).first()
+        if org_name:
+            document = db.query(Document).filter(
+                Document.owner_id.in_(org_user_ids_doc),
+                Document.analysis_result.isnot(None)
+            ).order_by(Document.upload_date.desc()).first()
+        else:
+            document = db.query(Document).filter(
+                Document.owner_id == user_id,
+                Document.analysis_result.isnot(None)
+            ).order_by(Document.upload_date.desc()).first()
     
     brd_analysis_structure = ""
     if document and document.analysis_result:
@@ -2042,7 +2085,20 @@ async def generate_tasks_locally(
         for m in milestones
     ])
 
-    # ── 4. Shared BRD context block (injected into the single LLM call) ────────
+    # ── 4. Shared context block (injected into every sprint LLM call) ────────
+    gov_ctx = context.get('governance_context', {}) or {}
+    governance_block = f"""
+GOVERNANCE CONTEXT:
+====================
+Project Type:      {context.get('project_type', 'Not specified')}
+Classification:    {gov_ctx.get('classification', 'Not available')}
+Weighted Score:    {gov_ctx.get('weighted_score', 'Not available')}
+"""
+
+    raw_brd_analysis = context.get('brd_analysis', '')
+    if raw_brd_analysis and len(raw_brd_analysis) > 30000:
+        raw_brd_analysis = raw_brd_analysis[:30000] + "\n\n... [BRD Document Analysis truncated to 30,000 characters for task generation prompt length] ..."
+
     brd_block = f"""
 AVAILABLE SPRINTS (with dates):
 ================================
@@ -2056,13 +2112,14 @@ REPOSITORY STRUCTURE (from section 0.5.1):
 ==========================================
 {context.get('repository_structure', 'Not available')}
 
+{governance_block}
 CURRENT DATE: {today.strftime('%Y-%m-%d')}
 PROJECT DEADLINE: {project_deadline.strftime('%Y-%m-%d')}
 
 ===================================================================
 AGENT ACTION PLAN MARKDOWN DOCUMENT
 ===================================================================
-{context['brd_analysis'] if context['brd_analysis'] else 'No Agent Action Plan available'}
+{raw_brd_analysis if raw_brd_analysis else 'No Agent Action Plan available'}
 ===================================================================
 """
 
