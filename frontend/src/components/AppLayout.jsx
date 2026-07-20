@@ -16,7 +16,7 @@ import { useProjects, useRoadmapData, useInvalidateProjects } from '../hooks/use
 import { fetchRoadmapStep, deleteProjectByIdentifier } from '../api/projects';
 import ProjectDropdown from './ProjectDropdown';
 import RoleDropdown from './RoleDropdown';
-import { getDraftProject } from '../utils/draftProjects';
+import { getDraftProject, removeDraftProject } from '../utils/draftProjects';
 
 const DASHBOARD_ROLES = [
     { value: 'cxo', label: 'Executive Summary Dashboard', description: 'High-level executive snapshot' },
@@ -991,8 +991,8 @@ export default function AppLayout({ children }) {
 
         // Step 1: Ask for confirmation
         const confirmed = await modal.showConfirm(
-            `Are you sure you want to archive "${project.name || 'this project'}"?\n\nIt will be hidden from the project list but all data will be preserved in the database.`,
-            'Archive Project'
+            `Are you sure you want to delete "${project.name || 'this project'}"?`,
+            'Delete Project'
         );
         if (!confirmed) return;
 
@@ -1008,10 +1008,13 @@ export default function AppLayout({ children }) {
         try {
             const identifier = project.governanceResultId || project.projectToken || project.key;
             await deleteProjectByIdentifier(identifier);
+            removeDraftProject(key);
+            if (project.projectToken) removeDraftProject(project.projectToken);
+            if (project.governanceResultId) removeDraftProject(project.governanceResultId);
             invalidateProjects();
         } catch (err) {
-            console.error('Failed to archive project:', err);
-            customError('Failed to archive project: ' + (err.message || 'Unknown error'));
+            console.error('Failed to delete project:', err);
+            customError('Failed to delete project: ' + (err.message || 'Unknown error'));
         } finally {
             setDeletingProjectKey('');
         }
@@ -1469,12 +1472,12 @@ export default function AppLayout({ children }) {
                     </div>
                 )
             }
-            {/* Archiving loading overlay — non-dismissible, shown while deletingProjectKey is set */}
+            {/* Deleting loading overlay — non-dismissible, shown while deletingProjectKey is set */}
             {deletingProjectKey && (
                 <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-sm">
                     <div className="bg-app-bg-card rounded-2xl shadow-2xl border border-app-border p-8 flex flex-col items-center gap-4 min-w-[260px]">
                         <div className="w-10 h-10 border-[3px] border-app-primary border-t-transparent rounded-full animate-spin" />
-                        <p className="text-sm font-semibold text-app-text-main">Archiving project...</p>
+                        <p className="text-sm font-semibold text-app-text-main">Deleting project...</p>
                     </div>
                 </div>
             )}

@@ -79,6 +79,17 @@ export const useProjects = () => {
                     if (byName) targetKey = byName.key;
                 }
                 if (!targetKey || !projectMap.has(targetKey)) {
+                    // Do not synthesize an active project card for documents whose governance project was archived
+                    if (govPayload && Array.isArray(govPayload.submissions) && (governanceResultId || projectToken)) {
+                        const isKnownArchivedGov = !submissions.some(s => 
+                            (governanceResultId && s.id === governanceResultId) || 
+                            (projectToken && s.project_token === projectToken)
+                        );
+                        if (isKnownArchivedGov) {
+                            return;
+                        }
+                    }
+
                     targetKey = projectToken || (governanceResultId ? String(governanceResultId) : `doc-${doc.id}`);
                     if (!projectMap.has(targetKey)) {
                         projectMap.set(targetKey, {
