@@ -2224,6 +2224,12 @@ def _get_user_allowed_paths(db: Session, user: models.User) -> tuple[Optional[st
     allowed_paths = sorted({(perm.path or "").strip() for perm in (role.permissions or []) if (perm.path or "").strip()})
     return role.name, allowed_paths
 
+def _can_manage_governance(db: Session, user: models.User) -> bool:
+    if bool(getattr(user, "is_org_admin", False)):
+        return True
+    _, allowed_paths = _get_user_allowed_paths(db, user)
+    return "/governance-management" in (allowed_paths or [])
+
 @app.get("/organization/rbac/pages", response_model=list[schemas.OrganizationPage])
 def list_org_pages(
     current_user: Annotated[models.User, Depends(auth.get_current_user)],
@@ -5198,8 +5204,8 @@ async def get_all_governance_questions(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
-    if not current_user.is_org_admin:
-        raise HTTPException(status_code=403, detail="Only org admins can manage questions")
+    if not _can_manage_governance(db, current_user):
+        raise HTTPException(status_code=403, detail="Only org admins or authorized governance roles can manage questions")
     
     return db.query(models.GovernanceQuestion).order_by(models.GovernanceQuestion.order).all()
 
@@ -5209,8 +5215,8 @@ async def create_governance_question(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
-    if not current_user.is_org_admin:
-        raise HTTPException(status_code=403, detail="Only org admins can manage questions")
+    if not _can_manage_governance(db, current_user):
+        raise HTTPException(status_code=403, detail="Only org admins or authorized governance roles can manage questions")
     
     db_question = models.GovernanceQuestion(
         dimension=question.dimension,
@@ -5240,8 +5246,8 @@ async def update_governance_question(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
-    if not current_user.is_org_admin:
-        raise HTTPException(status_code=403, detail="Only org admins can manage questions")
+    if not _can_manage_governance(db, current_user):
+        raise HTTPException(status_code=403, detail="Only org admins or authorized governance roles can manage questions")
     
     db_question = db.query(models.GovernanceQuestion).filter(models.GovernanceQuestion.id == question_id).first()
     if not db_question:
@@ -5278,8 +5284,8 @@ async def delete_governance_question(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
-    if not current_user.is_org_admin:
-        raise HTTPException(status_code=403, detail="Only org admins can manage questions")
+    if not _can_manage_governance(db, current_user):
+        raise HTTPException(status_code=403, detail="Only org admins or authorized governance roles can manage questions")
     
     db_question = db.query(models.GovernanceQuestion).filter(models.GovernanceQuestion.id == question_id).first()
     if not db_question:
@@ -5628,7 +5634,13 @@ async def get_governance_history(
             .all()
         )
     else:
-        if current_user.is_org_admin:
+        role_name, allowed_paths = _get_user_allowed_paths(db, current_user)
+        can_view_org_governance = (
+            bool(getattr(current_user, "is_org_admin", False))
+            or "/governance-management" in (allowed_paths or [])
+            or "/new-project/governance" in (allowed_paths or [])
+        )
+        if can_view_org_governance:
             responses = (
                 db.query(models.GovernanceResponse)
                 .filter(
@@ -5691,7 +5703,13 @@ async def get_governance_result(
             models.GovernanceResponse.owner_id == current_user.id
         )
     else:
-        if current_user.is_org_admin:
+        role_name, allowed_paths = _get_user_allowed_paths(db, current_user)
+        can_view_org_governance = (
+            bool(getattr(current_user, "is_org_admin", False))
+            or "/governance-management" in (allowed_paths or [])
+            or "/new-project/governance" in (allowed_paths or [])
+        )
+        if can_view_org_governance:
             query = db.query(models.GovernanceResponse).filter(
                 func.lower(models.GovernanceResponse.organization_name) == organization_name.lower()
             )

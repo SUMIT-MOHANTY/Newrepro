@@ -274,7 +274,7 @@ export default function Sidebar({
                                     Billing & Activity
                                 </button>
                             )}
-                            {user?.is_org_admin && canAccess('/governance-management') && (
+                            {canAccess('/governance-management') && (
                                 <button
                                     onClick={() => {
                                         navigate('/governance-management');
