@@ -69,8 +69,8 @@ export default function AppLayout({ children }) {
     });
 
     const unifiedProjects = useMemo(() => {
-        const standard = projects.map(p => ({ ...p, type: 'standard', timestamp: new Date(p.submissionDate || p.createdAt || p.latestDocument?.upload_date || 0).getTime() }));
-        const shared = shareProjects.map(p => ({ ...p, type: 'share', key: p.project_token, name: p.project_name, timestamp: new Date(p.created_at || 0).getTime() }));
+        const standard = projects.filter(p => !p.is_archived).map(p => ({ ...p, type: 'standard', timestamp: new Date(p.submissionDate || p.createdAt || p.latestDocument?.upload_date || 0).getTime() }));
+        const shared = shareProjects.filter(p => !p.is_archived).map(p => ({ ...p, type: 'share', key: p.project_token, name: p.project_name, timestamp: new Date(p.created_at || 0).getTime() }));
         return [...standard, ...shared].sort((a, b) => b.timestamp - a.timestamp);
     }, [projects, shareProjects]);
     const [showSettings, setShowSettings] = useState(false);

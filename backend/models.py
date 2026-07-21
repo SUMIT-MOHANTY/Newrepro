@@ -580,6 +580,7 @@ class ShareProject(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     current_step = Column(Integer, default=0) # Track last visited step
+    is_archived = Column(Boolean, default=False)
     
     # Relationships
     owner = relationship("User")

@@ -80,12 +80,13 @@ export const useProjects = () => {
                 }
                 if (!targetKey || !projectMap.has(targetKey)) {
                     // Do not synthesize an active project card for documents whose governance project was archived
-                    if (govPayload && Array.isArray(govPayload.submissions) && (governanceResultId || projectToken)) {
-                        const isKnownArchivedGov = !submissions.some(s => 
+                    if (govPayload && Array.isArray(govPayload.submissions)) {
+                        const matchesActiveGov = submissions.some(s => 
                             (governanceResultId && s.id === governanceResultId) || 
-                            (projectToken && s.project_token === projectToken)
+                            (projectToken && s.project_token === projectToken) ||
+                            (normalizeProjectName(s.project_name || s.name) === normalizeProjectName(projectName))
                         );
-                        if (isKnownArchivedGov) {
+                        if (!matchesActiveGov) {
                             return;
                         }
                     }

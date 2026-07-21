@@ -4678,18 +4678,31 @@ def _share_project_query_for_user(db: Session, current_user: models.User):
     """
     Returns a SQLAlchemy query for ShareProject scoped to the user's organization if present,
     or to the individual user if no organization is specified.
-    This ensures org members can see and manage each other's share projects.
+    This ensures org members can see and manage each other's share projects,
+    while strictly filtering out any project that has been archived.
     """
     organization_name = _normalized_text(getattr(current_user, "organization_name", None))
+    not_archived_sp = or_(
+        models.ShareProject.is_archived == None,
+        models.ShareProject.is_archived == False
+    )
+    archived_gov_tokens = db.query(models.GovernanceResponse.project_token).filter(
+        models.GovernanceResponse.is_archived == True
+    ).scalar_subquery()
+
     if not organization_name:
         return db.query(models.ShareProject).filter(
-            models.ShareProject.owner_id == current_user.id
+            models.ShareProject.owner_id == current_user.id,
+            not_archived_sp,
+            ~models.ShareProject.project_token.in_(archived_gov_tokens)
         )
     org_user_ids = db.query(models.User.id).filter(
         func.lower(models.User.organization_name) == organization_name.lower()
     ).scalar_subquery()
     return db.query(models.ShareProject).filter(
-        models.ShareProject.owner_id.in_(org_user_ids)
+        models.ShareProject.owner_id.in_(org_user_ids),
+        not_archived_sp,
+        ~models.ShareProject.project_token.in_(archived_gov_tokens)
     )
 
 
@@ -6215,8 +6228,17 @@ async def delete_governance_project(
     archived_project_token = governance.project_token or str(governance.id)
     archived_result_id = governance.id
 
-    # Soft-delete: set is_archived flag instead of deleting records
+    # Soft-delete: set is_archived flag on governance and any linked share project
     governance.is_archived = True
+    if archived_project_token:
+        share_projs = db.query(models.ShareProject).filter(
+            or_(
+                models.ShareProject.project_token == archived_project_token,
+                models.ShareProject.project_token == str(archived_result_id)
+            )
+        ).all()
+        for sp in share_projs:
+            sp.is_archived = True
     db.commit()
 
     cleanup_warnings: List[str] = []

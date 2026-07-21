@@ -60,6 +60,12 @@ with engine.connect() as conn:
             if "is_archived" not in columns:
                 print("Migrating database: Adding is_archived column to governance_responses")
                 conn.execute(text("ALTER TABLE governance_responses ADD COLUMN is_archived BOOLEAN DEFAULT 0"))
+        
+        if inspector.has_table("share_projects"):
+            sp_columns = [c["name"] for c in inspector.get_columns("share_projects")]
+            if "is_archived" not in sp_columns:
+                print("Migrating database: Adding is_archived column to share_projects")
+                conn.execute(text("ALTER TABLE share_projects ADD COLUMN is_archived BOOLEAN DEFAULT 0"))
     except Exception as e:
         print(f"Database migration check skipped: {e}")
         
