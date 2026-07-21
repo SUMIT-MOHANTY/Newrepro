@@ -232,6 +232,18 @@ from fastapi import Request
 
 @app.middleware("http")
 async def log_user_activities(request: Request, call_next):
+    path = request.url.path
+    # Ignore patterns (skip static, heartbeat, or high-frequency log-polling & streaming paths to prevent DB bloat & connection pool exhaustion)
+    skip_patterns = [
+        "/static", "/favicon", "/assets", "/metrics", "/health",
+        "/api/agent/tasks-list", "/api/agent/status", "/api/agent/live-logs", "/api/logs",
+        "/agents", "/git-config", "/history", "/progress", "/stream", "/nxdune", "/claude-md-files", "/skills-md-files"
+    ]
+
+    # Fast path: skip DB queries & logging entirely for static, polling, and streaming routes
+    if any(pat in path for pat in skip_patterns):
+        return await call_next(request)
+
     # 1. Resolve user and project from auth token or request
     auth_header = request.headers.get("Authorization")
     user_id = None
@@ -279,35 +291,26 @@ async def log_user_activities(request: Request, call_next):
         current_user_id_var.reset(token_user)
         current_project_token_var.reset(token_proj)
 
-    # 2. Log user activity to user_activity_logs (skip static, heartbeat, or log-polling paths to prevent db bloat & connection pool exhaustion)
-    path = request.url.path
-    # Ignore patterns
-    skip_patterns = [
-        "/static", "/favicon", "/assets", "/metrics", "/health",
-        "/api/agent/tasks-list", "/api/agent/status", "/agents",
-        "/git-config", "/history", "/progress", "/stream", "/nxdune", "/claude-md-files", "/skills-md-files"
-    ]
-    if not any(pat in path for pat in skip_patterns):
-        # Create an action description
-        action = f"{request.method} {path}"
-        
-        # Log to db
-        db_session = SessionLocal()
-        try:
-            activity = models.UserActivityLog(
-                user_id=user_id,
-                action=action,
-                method=request.method,
-                path=path,
-                ip_address=request.client.host if request.client else None,
-                user_agent=request.headers.get("user-agent"),
-            )
-            db_session.add(activity)
-            db_session.commit()
-        except Exception as e:
-            logger.error(f"Failed to save user activity log: {e}")
-        finally:
-            db_session.close()
+    # 2. Log user activity to user_activity_logs
+    action = f"{request.method} {path}"
+    
+    # Log to db
+    db_session = SessionLocal()
+    try:
+        activity = models.UserActivityLog(
+            user_id=user_id,
+            action=action,
+            method=request.method,
+            path=path,
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+        db_session.add(activity)
+        db_session.commit()
+    except Exception as e:
+        logger.error(f"Failed to save user activity log: {e}")
+    finally:
+        db_session.close()
 
     return response
 
