@@ -288,7 +288,7 @@ For EACH major component (A, B, C, ...):
 
 ### 0.4.2 Data Models and Schemas
 - Mermaid ER diagram with ALL entities and relationships
-  **ER Diagram Syntax Rules:** Use erDiagram (no 'end' keyword needed for ER diagrams). Use proper relationship syntax: ||--o{{, }}o--||, etc. Quote attribute names if they contain spaces.
+  **ER Diagram Syntax Rules:** Use erDiagram (no 'end' keyword needed for ER diagrams). Use proper relationship syntax: ||--o{{, }}o--||, etc. Quote attribute names if they contain spaces. Attribute format: datatype attribute_name PK/FK (e.g. "int id PK", "string name", "int user_id FK"). ALWAYS place PK/FK AFTER the attribute name, NEVER before (e.g. DO NOT write "int PK id").
 - Key Relationship Rules (1-to-many, write-once constraints, etc.)
 - Validation Rules (business rules enforced at service level)
 

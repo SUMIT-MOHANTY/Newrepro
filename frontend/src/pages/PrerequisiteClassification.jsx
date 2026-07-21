@@ -596,6 +596,18 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const [isValidatingGit, setIsValidatingGit] = useState(false);
     const [gitValidationResult, setGitValidationResult] = useState(null);
     const [gitValidationError, setGitValidationError] = useState('');
+    const [gitToastVisible, setGitToastVisible] = useState(false);
+    const gitToastTimerRef = useRef(null);
+
+    // Auto-dismiss general error toast after 6 seconds
+    useEffect(() => {
+        if (error) {
+            const timer = setTimeout(() => {
+                setError('');
+            }, 6000);
+            return () => clearTimeout(timer);
+        }
+    }, [error]);
     
     // Claude.md file upload state
     const [claudeMdFiles, setClaudeMdFiles] = useState([]);
@@ -959,7 +971,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
         // Immediately clear previous project states when switching
         setPrerequisites([]);
         setGlobalGitRepoUrl('');
-        setRepoProvider('');
+        setRepoProvider('github');
         setAnalysisRepoSuggestion(null);
         setError('');
 
@@ -1270,15 +1282,44 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     }, [prerequisites]);
 
     // Validate Git connection
+    const showGitToast = useCallback((message) => {
+        setGitValidationError(message);
+        setGitToastVisible(true);
+        if (gitToastTimerRef.current) clearTimeout(gitToastTimerRef.current);
+        gitToastTimerRef.current = setTimeout(() => {
+            setGitToastVisible(false);
+            gitToastTimerRef.current = null;
+        }, 5000);
+    }, []);
+
+    const hideGitToast = useCallback(() => {
+        setGitToastVisible(false);
+        if (gitToastTimerRef.current) {
+            clearTimeout(gitToastTimerRef.current);
+            gitToastTimerRef.current = null;
+        }
+    }, []);
+
+    // Cleanup git toast timer on unmount
+    useEffect(() => {
+        return () => {
+            if (gitToastTimerRef.current) {
+                clearTimeout(gitToastTimerRef.current);
+                gitToastTimerRef.current = null;
+            }
+        };
+    }, []);
+
     const handleValidateGitConnection = useCallback(async () => {
         if (!globalGitRepoUrl.trim()) {
-            setGitValidationError('Please enter a repository URL first');
+            showGitToast('Please enter a repository URL first');
             return;
         }
 
         setIsValidatingGit(true);
         setGitValidationError('');
         setGitValidationResult(null);
+        setGitToastVisible(false);
 
         try {
             const token = localStorage.getItem('token');
@@ -1309,11 +1350,11 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
             }
         } catch (err) {
             console.error('Git validation error:', err);
-            setGitValidationError(sanitizeErrorMessage(err));
+            showGitToast(sanitizeErrorMessage(err));
         } finally {
             setIsValidatingGit(false);
         }
-    }, [globalGitRepoUrl, globalGitToken, repoProvider]);
+    }, [globalGitRepoUrl, globalGitToken, repoProvider, showGitToast]);
 
     const totalItems = prerequisites.length;
     const providedCount = prerequisites.filter(p => p.provided).length;
@@ -1920,25 +1961,6 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     </div>
                 </div>
 
-                {/* ── ERROR ── */}
-                {error && (
-                    <div className="rounded-xl bg-app-status-errorBg/80 backdrop-blur-sm p-4 border border-red-200/60 text-app-status-error mb-5 shadow-sm">
-                        <div className="flex items-start gap-3">
-                            <div className="w-8 h-8 rounded-lg bg-app-status-errorBg flex items-center justify-center flex-shrink-0">
-                                <AlertCircle className="w-4 h-4 text-app-status-error" />
-                            </div>
-                            <div className="flex-1">
-                                <div className="text-sm font-medium mb-2">{error}</div>
-                                <button
-                                    onClick={() => setError('')}
-                                    className="text-xs text-app-status-error hover:text-red-700 font-medium underline"
-                                >
-                                    Dismiss
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                )}
 
                 {/* ── INFO TIP ── */}
                 <div className="bg-app-primary-light/80 rounded-xl border border-app-primary-ring/60 p-4 mb-6 flex items-start gap-3">
@@ -2476,15 +2498,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                         </div>
                                     )}
                                     
-                                    {/* Validation Error */}
-                                    {gitValidationError && (
-                                        <div className="mt-3 p-3 rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/20 dark:border-red-800">
-                                            <div className="flex items-start gap-2">
-                                                <AlertCircle className="w-4 h-4 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
-                                                <p className="text-sm text-red-700 dark:text-red-300">{gitValidationError}</p>
-                                            </div>
-                                        </div>
-                                    )}
+
                                 </div>
                                 <div>
                                     <label className="block text-[11px] font-bold text-app-text-label mb-2 uppercase tracking-widest">
@@ -2573,6 +2587,45 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         </button>
                     </div>
                 </div>
+            </div>
+            
+            {/* Toast / Snackbar Floating Notifications Container (Top Right - clears App Header) */}
+            <div className="fixed top-20 right-6 z-[9999] flex flex-col gap-3 pointer-events-none">
+                {/* General Page Error Toast */}
+                {error && (
+                    <div className="pointer-events-auto bg-red-600/95 backdrop-blur-md border border-red-500/50 rounded-xl shadow-2xl px-4 py-3.5 min-w-[340px] max-w-md flex items-start gap-3 animate-slide-down">
+                        <AlertCircle className="w-5 h-5 text-white flex-shrink-0 mt-0.5" />
+                        <div className="flex-1 min-w-0">
+                            <p className="text-sm font-semibold text-white">Repository / Action Error</p>
+                            <p className="text-xs text-red-100 mt-0.5 leading-relaxed">{error}</p>
+                        </div>
+                        <button
+                            onClick={() => setError('')}
+                            className="text-red-200 hover:text-white transition-colors flex-shrink-0 p-1 rounded-md hover:bg-white/10"
+                            title="Dismiss"
+                        >
+                            <span className="text-lg leading-none">&times;</span>
+                        </button>
+                    </div>
+                )}
+
+                {/* Git Validation Toast / Snackbar */}
+                {gitToastVisible && gitValidationError && (
+                    <div className="pointer-events-auto bg-red-600/95 backdrop-blur-md border border-red-500/50 rounded-xl shadow-2xl px-4 py-3.5 min-w-[340px] max-w-md flex items-start gap-3 animate-slide-down">
+                        <AlertCircle className="w-5 h-5 text-white flex-shrink-0 mt-0.5" />
+                        <div className="flex-1 min-w-0">
+                            <p className="text-sm font-semibold text-white">Repository Access Error</p>
+                            <p className="text-xs text-red-100 mt-0.5 leading-relaxed">{gitValidationError}</p>
+                        </div>
+                        <button
+                            onClick={hideGitToast}
+                            className="text-red-200 hover:text-white transition-colors flex-shrink-0 p-1 rounded-md hover:bg-white/10"
+                            title="Dismiss"
+                        >
+                            <span className="text-lg leading-none">&times;</span>
+                        </button>
+                    </div>
+                )}
             </div>
         </div>
     );

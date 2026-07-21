@@ -278,7 +278,7 @@ Create Mermaid ER diagram with:
 - Use `erDiagram` (no `end` keyword needed)
 - Use proper relationship syntax: ||--o{, }}o--||, etc.
 - Quote attribute names with spaces
-- ONLY use 'PK' or 'FK' (or 'PK, FK') for key annotations. Do NOT use 'UQ', 'UK', 'NN', or other unsupported annotations.
+- ONLY use 'PK' or 'FK' (or 'PK, FK') for key annotations. Do NOT use 'UQ', 'UK', 'NN', or other unsupported annotations. Attribute format: datatype attribute_name PK/FK (e.g. "int id PK", "string name", "int user_id FK"). ALWAYS place PK/FK AFTER the attribute name, NEVER before.
 ### 2. Validation Rules
 List business validation rules:
 - Field validations

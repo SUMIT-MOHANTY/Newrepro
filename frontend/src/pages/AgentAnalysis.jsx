@@ -17,7 +17,81 @@ mermaid.initialize({
     theme: 'default',
     securityLevel: 'loose',
     fontFamily: 'inherit',
+    suppressErrorRendering: true,
 });
+
+if (typeof mermaid !== 'undefined' && mermaid.parseError) {
+    mermaid.parseError = () => {};
+}
+
+// Helper to sanitize and fix common LLM Mermaid syntax errors
+const sanitizeMermaidCode = (rawCode) => {
+    if (!rawCode || typeof rawCode !== 'string') return '';
+    let cleaned = rawCode.trim();
+
+    // 1. Strip wrapping markdown code block ticks if present
+    cleaned = cleaned.replace(/^```(?:mermaid|erDiagram|erdiagram|flowchart|graph)?\s*/i, '');
+    cleaned = cleaned.replace(/\s*```$/, '');
+    cleaned = cleaned.trim();
+
+    // 2. Fix duplicate diagram headers at the start (e.g. erDiagram\nerDiagram or graph TD\ngraph TD)
+    cleaned = cleaned.replace(/^(erDiagram|graph\s+[A-Z]+|flowchart\s+[A-Z]+|sequenceDiagram|classDiagram|stateDiagram)[\s\n]+\1/i, '$1');
+
+    // 3. Detect if this is an ER diagram
+    const isEr = cleaned.startsWith('erDiagram') ||
+                 cleaned.toLowerCase().startsWith('erdiagram') ||
+                 cleaned.includes('||--') ||
+                 cleaned.includes('}o--') ||
+                 cleaned.includes('|o--');
+
+    if (isEr) {
+        if (!cleaned.toLowerCase().startsWith('erdiagram')) {
+            cleaned = 'erDiagram\n' + cleaned;
+        }
+
+        // Deduplicate erDiagram if prepended
+        cleaned = cleaned.replace(/^erDiagram[\s\n]+erDiagram/i, 'erDiagram');
+
+        // Fix ER Diagram attribute lines:
+        // LLMs frequently output: "datatype PK column_name" instead of "datatype column_name PK"
+        // E.g. "int PK Id" -> "int Id PK"
+        // E.g. "string FK user_id" -> "string user_id FK"
+        // E.g. "uuid PK,FK org_id" -> "uuid org_id PK,FK"
+        const lines = cleaned.split('\n');
+        const fixedLines = lines.map(line => {
+            const trimmed = line.trim();
+            // Remove invalid 'end' keyword lines in erDiagrams
+            if (trimmed.toLowerCase() === 'end') return null;
+
+            // Attribute ordering check
+            // Match: indent, datatype, key(s), column_name, rest
+            const attrMatch = line.match(/^(\s*)([A-Za-z0-9_\[\]\<\>\.\(\)]+)\s+((?:PK|FK|UK)(?:\s*,?\s*(?:PK|FK|UK))*)\s+([A-Za-z0-9_]+)(.*)$/);
+            if (attrMatch) {
+                const [, indent, dataType, keys, attrName, rest] = attrMatch;
+                const cleanKeys = keys.replace(/\s+/g, '');
+                return `${indent}${dataType} ${attrName} ${cleanKeys}${rest}`;
+            }
+
+            // Also check if key comes first without datatype, e.g. "PK Id int"
+            const attrMatch2 = line.match(/^(\s*)((?:PK|FK|UK)(?:\s*,?\s*(?:PK|FK|UK))*)\s+([A-Za-z0-9_]+)\s+([A-Za-z0-9_\[\]\<\>\.\(\)]+)(.*)$/);
+            if (attrMatch2) {
+                const [, indent, keys, attrName, dataType, rest] = attrMatch2;
+                const cleanKeys = keys.replace(/\s+/g, '');
+                return `${indent}${dataType} ${attrName} ${cleanKeys}${rest}`;
+            }
+
+            return line;
+        });
+
+        cleaned = fixedLines.filter(l => l !== null).join('\n');
+    } else {
+        // Flowchart/graph fixes
+        // Fix unquoted node labels with special characters (brackets, parens)
+        cleaned = cleaned.replace(/(\w+)\[([^"\]\n]*[\(\)\{\}&\/\\#][^"\]\n]*)\]/g, '$1["$2"]');
+    }
+
+    return cleaned.trim();
+};
 
 // Improved Mermaid Diagram Component with smooth animation and expand functionality
 const MermaidDiagram = ({ code, showDownload = true }) => {
@@ -33,8 +107,9 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
         const renderDiagram = async () => {
             setIsRendering(true);
             try {
+                const sanitized = sanitizeMermaidCode(code);
                 const id = `mermaid-${Math.random().toString(36).substr(2, 9)}`;
-                const { svg: renderedSvg } = await mermaid.render(id, code);
+                const { svg: renderedSvg } = await mermaid.render(id, sanitized);
                 if (!cancelled) {
                     // Add a small delay for smooth transition effect
                     setTimeout(() => {
@@ -47,6 +122,15 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
                 }
             } catch (err) {
                 console.warn('Mermaid render error:', err);
+                // Remove any error elements or leftover SVGs injected by Mermaid into body
+                try {
+                    const errorNodes = document.querySelectorAll('[id^="dmermaid"], [id^="mermaid-"], .error-icon');
+                    errorNodes.forEach(el => {
+                        if (el && el.parentNode) el.parentNode.removeChild(el);
+                    });
+                } catch (e) {
+                    // ignore
+                }
                 if (!cancelled) {
                     setError(err.message || 'Failed to render diagram');
                     setSvg('');
@@ -154,9 +238,20 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
 
     if (error) {
         return (
-            <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm font-mono my-4">
-                <code>{code}</code>
-            </pre>
+            <div className="my-4 rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm">
+                <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-b border-gray-200">
+                    <span className="text-xs font-semibold text-gray-600 flex items-center gap-1.5">
+                        <FileText className="w-3.5 h-3.5 text-gray-500" />
+                        Diagram Source Code
+                    </span>
+                    <span className="text-[11px] text-amber-600 font-medium px-2 py-0.5 bg-amber-50 rounded border border-amber-200">
+                        Syntax Error Fallback View
+                    </span>
+                </div>
+                <pre className="p-4 bg-gray-900 text-gray-100 text-xs font-mono overflow-x-auto max-h-96">
+                    <code>{code}</code>
+                </pre>
+            </div>
         );
     }
 
@@ -2313,8 +2408,9 @@ export default function AgentAnalysis({
     // ── Helper: render a mermaid code string to a PNG data-URL ──
     const renderMermaidToPng = async (mermaidCode) => {
         try {
+            const sanitized = sanitizeMermaidCode(mermaidCode);
             const uniqueId = `pdf-mermaid-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-            const { svg } = await mermaid.render(uniqueId, mermaidCode);
+            const { svg } = await mermaid.render(uniqueId, sanitized);
 
             return await new Promise((resolve) => {
                 // Parse SVG and force high-resolution dimensions before rasterizing
@@ -2402,6 +2498,14 @@ export default function AgentAnalysis({
             });
         } catch (err) {
             console.warn('Mermaid→PNG render failed:', err);
+            try {
+                const errorNodes = document.querySelectorAll('[id^="dmermaid"], [id^="mermaid-"], .error-icon');
+                errorNodes.forEach(el => {
+                    if (el && el.parentNode) el.parentNode.removeChild(el);
+                });
+            } catch (e) {
+                // ignore
+            }
             return null;
         }
     };
@@ -2662,7 +2766,7 @@ export default function AgentAnalysis({
             while ((erMatch = erRegex.exec(rawText)) !== null) {
                 const code = erMatch[1].trim();
                 // eslint-disable-next-line no-await-in-loop
-                const imgData = await renderMermaidToPng('erDiagram\n' + code);
+                const imgData = await renderMermaidToPng(code);
                 erDiagramImages.push(imgData);
             }
         }
