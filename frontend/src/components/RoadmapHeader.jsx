@@ -160,6 +160,8 @@ const RoadmapHeader = ({ steps = [], currentStep = 0, stepStatuses, failedStep, 
         const preAnalysisSteps = ['Project Initiation', 'Governance', 'Requirement Screening'];
         if (preAnalysisSteps.includes(stepLabel)) {
             sessionStorage.removeItem('shouldStartAnalysis');
+            sessionStorage.removeItem('dashboard_showing_results');
+            sessionStorage.setItem('skipAppLayoutRedirect', 'true');
             // Also clear any analysis_started_ flags to avoid stale state
             const keysToRemove = [];
             for (let i = 0; i < sessionStorage.length; i++) {
