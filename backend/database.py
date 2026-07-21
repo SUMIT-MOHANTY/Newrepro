@@ -4,13 +4,21 @@ from sqlalchemy.orm import sessionmaker
 
 SQLALCHEMY_DATABASE_URL = "sqlite:///./sql_app.db"
 
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, 
-    connect_args={
+engine_kwargs = {
+    "pool_size": 25,
+    "max_overflow": 50,
+    "pool_timeout": 30.0,
+    "pool_recycle": 1800,
+    "pool_pre_ping": True,
+}
+
+if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
+    engine_kwargs["connect_args"] = {
         "check_same_thread": False,
         "isolation_level": None  # Autocommit mode for better cross-session visibility
     }
-)
+
+engine = create_engine(SQLALCHEMY_DATABASE_URL, **engine_kwargs)
 
 # Enable WAL mode for better concurrent access and run migrations
 with engine.connect() as conn:

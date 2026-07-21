@@ -23,7 +23,7 @@ import {
   Star,
   Ticket,
 } from 'lucide-react';
-import { API_ENDPOINTS } from '../config';
+import { API_ENDPOINTS, API_BASE_URL } from '../config';
 import nxduneLogo from '../assets/logo1.png';
 import kaktoxLogo from '../assets/Kaktox.png';
 import cloudspxLogo from '../assets/spx-logo 3.png';
@@ -253,6 +253,97 @@ function SelectorCard({ plugin, isSelected, liveData, onClick }) {
   );
 }
 
+/* ─── NXDune Manual Sync Section ──────────────────────────────── */
+function NxduneSyncSection() {
+  const [syncing, setSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState(null);
+  const [resultMessage, setResultMessage] = useState(null);
+
+  const fetchSyncStatus = useCallback(async () => {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) return;
+      const res = await fetch(`${API_BASE_URL}/api/nxdune/sync-status`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSyncStatus(data);
+      }
+    } catch (err) {
+      console.warn('Failed to fetch sync status:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSyncStatus();
+  }, [fetchSyncStatus]);
+
+  const handleManualSync = async () => {
+    setSyncing(true);
+    setResultMessage(null);
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) return;
+      const res = await fetch(`${API_BASE_URL}/api/nxdune/sync-now`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      setResultMessage(data.message || 'Sync completed successfully');
+      fetchSyncStatus();
+    } catch (err) {
+      console.error('Manual sync error:', err);
+      setResultMessage('Sync request failed. Server or endpoint unreachable.');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  return (
+    <div className="mt-4 p-4 rounded-xl border border-blue-200 dark:border-blue-800/60 bg-gradient-to-br from-blue-50/90 via-indigo-50/40 to-white dark:from-slate-800 dark:via-slate-800/90 dark:to-slate-850 shadow-sm">
+      <div className="flex items-center justify-between mb-2.5">
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 rounded-lg bg-blue-600 dark:bg-blue-500 text-white flex items-center justify-center shadow-sm">
+            <RefreshCw className="w-3.5 h-3.5" />
+          </div>
+          <span className="text-xs font-extrabold text-slate-900 dark:text-white tracking-tight">
+            Manual Data Sync
+          </span>
+        </div>
+        {syncStatus && (
+          <div className="text-[11px] font-bold px-2.5 py-1 rounded-full bg-white/90 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-700 shadow-2xs">
+            <span className="text-slate-600 dark:text-slate-300">Pending: </span>
+            <span className="text-amber-600 dark:text-amber-400 font-extrabold mr-1.5">{syncStatus.pending}</span>
+            <span className="text-slate-400">|</span>
+            <span className="text-slate-600 dark:text-slate-300 ml-1.5">Succeeded: </span>
+            <span className="text-emerald-600 dark:text-emerald-400 font-extrabold">{syncStatus.succeeded}</span>
+          </div>
+        )}
+      </div>
+      <p className="text-xs font-medium text-slate-700 dark:text-slate-200 mb-3.5 leading-relaxed">
+        Trigger a one-time manual push of unsynced task logs and messages to NXDune. No automatic background loop or retry loop will execute.
+      </p>
+      <button
+        type="button"
+        onClick={handleManualSync}
+        disabled={syncing}
+        className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl font-extrabold text-xs text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-md shadow-blue-500/20 hover:shadow-lg transition-all duration-200 cursor-pointer active:scale-[0.99] disabled:opacity-50"
+      >
+        <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+        {syncing ? 'Syncing to NXDune...' : 'Sync Data Now'}
+      </button>
+      {resultMessage && (
+        <div className="mt-2.5 p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-900 text-center shadow-2xs">
+          <p className="text-xs font-bold text-blue-700 dark:text-blue-300">
+            {resultMessage}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ─── Detail Panel ───────────────────────────────────────────── */
 function DetailPanel({ plugin, liveData, onConnect, connecting }) {
   const p = plugin.palette;
@@ -426,6 +517,9 @@ function DetailPanel({ plugin, liveData, onConnect, connecting }) {
               </div>
             </div>
           )}
+
+          {/* NXDune Manual Data Sync Section */}
+          {plugin.id === 'nxdune' && <NxduneSyncSection />}
           </div>
         )}
       </div>

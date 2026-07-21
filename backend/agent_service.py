@@ -27,6 +27,7 @@ from bootstrap_persistence import (
     guard_canonical_regeneration, get_immutable_canonical_artifacts, save_bootstrap_canonical_artifacts,
 )
 from agent_communication_hooks import broadcast_task_started, broadcast_task_completed, broadcast_task_failed, broadcast_bootstrap_waiting
+from agent_controlled_executor import call_ai_for_code_with_controlled
 import logging
 import llm_gateway
 from agent_bash_ai_integration import get_ai_bash_interface, cleanup_bash_executor
@@ -56,6 +57,42 @@ def _invalidate_cache_if_available(organization_name: str = None, project_token:
             _cache_invalidation_callback("__all__", project_token)
     except Exception as e:
         logger.warning(f"Cache invalidation failed: {e}")
+
+
+# ── Rate Limiter for External API Calls ────────────────────────────────────
+# Prevents burst calls from overwhelming NXDUNE / task-service endpoints.
+# Uses a simple sliding-window per-call-type approach with async lock.
+
+_rate_limit_state: Dict[str, float] = {}
+_rate_limit_lock = asyncio.Lock()
+
+# Minimum interval (seconds) between calls per operation type
+_RATE_LIMIT_INTERVALS: Dict[str, float] = {
+    "opt_in_task": 0.75,
+    "task_progress": 0.5,
+    "timer_log": 0.5,
+    "task_complete": 1.0,
+    "task_message": 0.5,
+    "update_task": 0.75,
+    "default": 0.5,
+}
+
+
+async def _rate_limit(operation: str = "default") -> None:
+    """
+    Enforce minimum interval between external API calls of the same type.
+
+    Call before any external HTTP request to avoid 429 / rate-limit errors.
+    Non-blocking for first call; sleeps only when needed.
+    """
+    interval = _RATE_LIMIT_INTERVALS.get(operation, _RATE_LIMIT_INTERVALS["default"])
+    async with _rate_limit_lock:
+        now = time.time()
+        last = _rate_limit_state.get(operation, 0.0)
+        wait = last + interval - now
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _rate_limit_state[operation] = time.time()
 
 
 # ── AI Response Cleaner ─────────────────────────────────────────────────────
@@ -862,6 +899,103 @@ def _build_brd_analysis_context(brd_analysis: Any, max_chars: int = 0) -> str:
     return combined
 
 
+async def _post_agent_design_context(
+    project_token: Optional[str],
+    agent_id: str,
+    task: Dict[str, Any],
+    branch: str = "",
+) -> None:
+    """
+    Post a structured design contract to the Enhanced Context Service after
+    task completion. This allows other agents to see API endpoints, DB tables,
+    files created, and other design artifacts produced by this agent.
+
+    The Enhanced Context Service maintains a rich shared state with:
+    - api_registry: [{method, path, handler, agent}]
+    - database_schema: {tables: {name: {agent, columns}}}
+    - file_ownership: {file_path: agent_id}
+    - agent_contexts: per-agent context with completed_tasks, created_files, etc.
+
+    Other agents query this via _build_peer_context_block() before they start
+    working, so they can build consistent code that integrates properly.
+    """
+    if not project_token:
+        return
+
+    from enhanced_context_service import enhanced_context_service, AgentContextUpdate
+
+    # Gather what this task built — files from ledger, hints from description
+    task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
+    task_title = task.get("title") or task.get("taskName") or ""
+    task_desc = task.get("description") or ""
+
+    # Read files_written from task ledger
+    files_written: List[str] = []
+    try:
+        state = _ensure_project_state(project_token)
+        ledger: dict = state.get("task_ledger", {})
+        entry = ledger.get(task_id)
+        if entry and entry.files_written:
+            files_written = list(entry.files_written)
+    except Exception:
+        pass
+
+    # Infer API endpoints & DB tables from task title + description keywords
+    combined_lower = (task_title + " " + task_desc).lower()
+    api_endpoints = []
+    if any(w in combined_lower for w in ("login", "register", "auth", "authenticate")):
+        api_endpoints.append({"method": "POST", "path": "/auth/login", "handler": "login"})
+        api_endpoints.append({"method": "POST", "path": "/auth/register", "handler": "register"})
+    if any(w in combined_lower for w in ("project", "projects", "kanban", "board")):
+        api_endpoints.append({"method": "GET", "path": "/projects", "handler": "list_projects"})
+        api_endpoints.append({"method": "POST", "path": "/projects", "handler": "create_project"})
+    if any(w in combined_lower for w in ("task", "tasks", "issue")):
+        api_endpoints.append({"method": "GET", "path": "/tasks", "handler": "list_tasks"})
+        api_endpoints.append({"method": "POST", "path": "/tasks", "handler": "create_task"})
+    if any(w in combined_lower for w in ("comment", "comments", "note")):
+        api_endpoints.append({"method": "GET", "path": "/comments", "handler": "list_comments"})
+        api_endpoints.append({"method": "POST", "path": "/comments", "handler": "create_comment"})
+    if any(w in combined_lower for w in ("user", "profile", "settings")):
+        api_endpoints.append({"method": "GET", "path": "/users/me", "handler": "get_profile"})
+        api_endpoints.append({"method": "PUT", "path": "/users/me", "handler": "update_profile"})
+
+    # Infer DB tables
+    db_tables = []
+    if "user" in combined_lower:
+        db_tables.append("users")
+    if "project" in combined_lower:
+        db_tables.append("projects")
+    if "task" in combined_lower:
+        db_tables.append("tasks")
+    if "comment" in combined_lower:
+        db_tables.append("comments")
+
+    # Infer shared utilities / integration points
+    shared_utils = []
+    if "auth" in combined_lower or "jwt" in combined_lower:
+        shared_utils.append("auth_middleware")
+    if "database" in combined_lower or "db" in combined_lower or "sql" in combined_lower:
+        shared_utils.append("database_config")
+
+    # Build and post the context update
+    from datetime import datetime
+    context_update = AgentContextUpdate(
+        agent_id=agent_id,
+        timestamp=datetime.utcnow().isoformat(),
+        current_task=task_title,
+        status="completed",
+        completed_tasks=[task_title],
+        created_files=files_written,
+        api_endpoints=api_endpoints,
+        database_tables=db_tables,
+        shared_utilities=shared_utils,
+        tags=["automated_context", "completion"] + [p.split("/")[-1].split(".")[0] for p in files_written[:5]],
+    )
+
+    await enhanced_context_service.update_agent_context(project_token, context_update)
+    logger.info(f"[{agent_id}] Design context posted to enhanced context: {len(api_endpoints)} API(s), {len(db_tables)} table(s), {len(files_written)} file(s)")
+
+
 async def _build_peer_context_block(
     agent_id: str,
     task: Dict[str, Any],
@@ -971,6 +1105,45 @@ async def _build_peer_context_block(
                 lines.append("")
     except Exception as _ws_err:
         logger.debug(f"Failed to inject workstream files into context block: {_ws_err}")
+
+    # ── DESIGN CONTRACTS FROM ENHANCED CONTEXT SERVICE ──────────────────────
+    # Query the shared context for API endpoints, DB tables, and utilities
+    # that other agents have already built. This helps the current agent build
+    # consistent code that integrates properly (no naming conflicts, no
+    # re-implementing existing endpoints).
+    try:
+        from enhanced_context_service import enhanced_context_service as _ecs
+        if project_token and hasattr(_ecs, 'query_context'):
+            api_result = await _ecs.query_context(project_token, "api_endpoints")
+            endpoints = api_result.get("endpoints", [])
+            # Filter to only OTHER agents' endpoints (not this agent's)
+            other_endpoints = [e for e in endpoints if e.get("agent") != agent_id]
+            if other_endpoints:
+                lines.append("\n🔌 API ENDPOINTS ALREADY REGISTERED BY OTHER AGENTS:")
+                for ep in other_endpoints[-12:]:
+                    lines.append(f"  {ep.get('method','?')} {ep.get('path','?')} → {ep.get('handler','?')} (by {ep.get('agent','?')})")
+                lines.append("")
+
+            db_result = await _ecs.query_context(project_token, "database_schema")
+            tables = db_result.get("tables", {})
+            if tables:
+                lines.append("\n🗄️ DATABASE TABLES ALREADY CREATED BY OTHER AGENTS:")
+                for tname in sorted(tables.keys())[:10]:
+                    meta = tables[tname]
+                    lines.append(f"  - {tname} (by {meta.get('agent','?')})")
+                lines.append("")
+
+            util_result = await _ecs.query_context(project_token, "shared_utilities")
+            utils = util_result.get("utilities", {})
+            other_utils = {k: v for k, v in utils.items() if v != agent_id}
+            if other_utils:
+                lines.append("\n🧰 SHARED UTILITIES PROVIDED BY OTHER AGENTS:")
+                for util_name, owner in sorted(other_utils.items())[:8]:
+                    lines.append(f"  - {util_name} (by {owner})")
+                lines.append("")
+    except Exception as _ctx_err:
+        logger.debug(f"[{agent_id}] Enhanced context query failed (non-fatal): {_ctx_err}")
+    # ─────────────────────────────────────────────────────────────────────────
 
     for entry in completed_by_peers[-8:]:
         lines.append(f"\n[{entry.agent_id}] Task: '{entry.task_title}'")
@@ -1102,10 +1275,10 @@ def mark_run_all_waiting_state(
         master_agent["progress"] = 0
         master_agent["progress_message"] = MASTER_BUILDING_MESSAGE
 
-    # NEW: start the DAG watcher background task
+    # ── Start Master Orchestrator ──
     asyncio.create_task(
-        _dag_progress_watcher(project_token),
-        name=f"dag_watcher_{project_token or 'default'}"
+        _master_orchestrator_loop(project_token),
+        name=f"master_orch_{project_token or 'default'}"
     )
 
 
@@ -1294,6 +1467,56 @@ def _task_status_is_done(status: Any) -> bool:
         "closed",
         "resolved",
     }
+
+
+# ── Valid status transitions ───────────────────────────────────────────────────
+# Key: current status (lowered) → set of allowed next statuses (lowered)
+_VALID_STATUS_TRANSITIONS: Dict[str, set] = {
+    "to do": {"on going", "in progress", "to do"},   # self is idempotent re-fetch
+    "on going": {"completed", "done", "complete", "closed", "failed", "blocked", "on going"},
+    "in progress": {"completed", "done", "complete", "closed", "failed", "blocked", "in progress"},
+    "blocked": {"on going", "in progress", "to do", "blocked"},
+    "failed": {"on going", "in progress", "to do", "failed"},
+    "completed": {"completed", "reopened"},  # NEVER allow completed→anything except reopen
+    "done": {"done", "reopened"},
+    "complete": {"complete", "reopened"},
+    "closed": {"closed", "reopened"},
+}
+
+
+def _validate_status_transition(
+    current_status: Any, new_status: Any, task_id: str = "?", agent_id: str = "?"
+) -> Optional[str]:
+    """
+    Check whether a status transition is valid.
+
+    Returns None if the transition is allowed, or a warning string if it looks
+    suspicious (e.g. trying to complete an already-completed task).
+
+    This is a soft guard — it logs but does not block execution — because
+    remote statuses can drift between calls.
+    """
+    cur = str(current_status or "").strip().lower()
+    new = str(new_status or "").strip().lower()
+
+    if not cur or not new:
+        return None  # can't validate without both sides
+
+    if cur == new:
+        return None  # idempotent — fine
+
+    allowed = _VALID_STATUS_TRANSITIONS.get(cur)
+    if allowed is None:
+        # Unknown current status — warn but allow
+        return f"Unknown current status '{cur}' for transition to '{new}' (task {task_id})"
+
+    if new not in allowed:
+        return (
+            f"SUSPICIOUS transition: '{cur}' → '{new}' is NOT in allowed set "
+            f"{allowed} (task {task_id}, agent {agent_id})"
+        )
+
+    return None  # valid transition
 
 
 def _active_owned_task_ids(project_token: Optional[str]) -> set[str]:
@@ -5070,6 +5293,22 @@ CRITICAL FOR FIX SCRIPTS (iterations > 1):
 14. Output "FIX APPLIED: <description>" for each successful modification
 15. Exit 0 ONLY if fixes were applied AND verification passes
 
+CHECKLIST VERIFICATION RULE (MANDATORY — applies to ALL stack types):
+16. The TASK DESCRIPTION below may contain a CHECKLIST section with numbered items.
+17. You MUST read each checklist item and generate a shell command that verifies it.
+18. For EVERY checklist item, output: \"[CHECKLIST: <item summary>] PASS\" or \"[CHECKLIST: <item summary>] FAIL\"
+19. If a checklist item is NOT VERIFIABLE with shell commands (e.g. \"review UX\"),
+    output: \"[CHECKLIST: <item summary>] SKIP (not verifiable via shell)\"
+20. Exit code MUST be 1 if ANY checklist item reports FAIL.
+
+API CONTRACT ENFORCEMENT (MANDATORY — applies when a TECHNICAL SPECIFICATION exists):
+21. If the TECHNICAL SPECIFICATION below contains an API CONTRACT section, you MUST verify that:
+    a. Every API endpoint your code creates MATCHES the contract (method + path exactly)
+    b. Your code does NOT create endpoints NOT in the contract (extraneous endpoints = FAIL)
+    c. Request/response schemas match the contract (check field names and types with grep)
+22. For each endpoint verification, output: \"[API-CONTRACT: <endpoint>] PASS\" or \"[API-CONTRACT: <endpoint>] FAIL\"
+23. If no API contract is provided, skip rules 21-22 silently.
+
 RESPONSE FORMAT:
 Your response must contain shell scripts in this exact format:
 
@@ -6252,6 +6491,140 @@ def _sync_local_branch_from_remote(
     return {"success": True, "base_branch": source_branch}
 
 
+
+
+
+
+# ── Master Orchestrator — Tree Enforcement ─────────────────────────────────
+# After each agent completes, validate their files against the canonical tree.
+
+async def _validate_agent_tree_compliance(
+    agent_id: str,
+    project_token: Optional[str] = None,
+    branch_name: str = "",
+) -> Dict[str, Any]:
+    """Validate agent-created files against the canonical project tree.
+
+    Returns:
+        {"status": "ok" | "violation" | "updated", "files": [...], "violations": [...]}
+    """
+    result: Dict[str, Any] = {
+        "status": "ok", "files": [], "violations": [], "additions": [],
+    }
+    if not project_token or not branch_name:
+        return result
+    state = _ensure_project_state(project_token)
+    canonical_paths: set = set()
+    try:
+        master_note_cache = state.get("master_note_cache", {})
+        workspace_tree = master_note_cache.get("workspace_tree", "")
+        if workspace_tree and isinstance(workspace_tree, str) and workspace_tree.startswith("{"):
+            tree_data = json.loads(workspace_tree)
+            _extract_tree_paths(tree_data, canonical_paths, prefix="")
+    except Exception:
+        pass
+    if not canonical_paths:
+        return result
+    ledger = state.get("task_ledger", {})
+    agent_files: List[str] = []
+    for entry in ledger.values():
+        if entry.agent_id == agent_id and entry.status == "done":
+            agent_files.extend(entry.files_written)
+    result["files"] = agent_files
+    if not agent_files:
+        return result
+
+    # ═══ FIX: Generate alternative canonical paths by stripping root wrapper prefix ═══
+    # The canonical tree JSON often has a root wrapper node (e.g., {"name":"backend",...})
+    # which creates paths like "backend/backend/manage.py" instead of "backend/manage.py".
+    # We strip the first path component ONLY for 3+ level paths (where wrapper is clear).
+    # DO NOT strip for 2-level paths (normal subdirectory like "backend/manage.py")
+    # as that would create false positives (matching wrong-level files).
+    all_canonical = set(canonical_paths)
+    for cp in list(canonical_paths):
+        parts = cp.strip("/").split("/")
+        if len(parts) > 2:
+            # Add alternative: "backend/backend/manage.py" → also match "backend/manage.py"
+            all_canonical.add("/".join(parts[1:]))
+    # ────────────────────────────────────────────────────────────────────────────────────────
+
+    for fpath in agent_files:
+        fpath_normalized = fpath.replace("\\", "/").strip().strip("/")
+        is_allowed = False
+        for canonical in all_canonical:
+            c_normalized = canonical.replace("\\", "/").strip().strip("/")
+            if fpath_normalized == c_normalized or fpath_normalized.startswith(c_normalized + "/"):
+                is_allowed = True
+                break
+        if not is_allowed:
+            filename = fpath_normalized.split("/")[-1]
+            is_likely_useful = any([
+                filename.endswith((".py", ".js", ".tsx", ".ts", ".jsx", ".go", ".rs", ".java")),
+                filename in ("README.md", "docker-compose.yml", "Dockerfile", ".gitignore", "Makefile", "package.json", "tsconfig.json"),
+                "test" in filename.lower() or "spec" in filename.lower(),
+                "config" in filename.lower() or "util" in filename.lower(),
+                "helper" in filename.lower() or "constant" in filename.lower(),
+            ])
+            if is_likely_useful:
+                result["additions"].append(fpath_normalized)
+                _log_master_agent(
+                    f"Agent {agent_id} added new useful file: {fpath_normalized} - updating tree",
+                    project_token=project_token,
+                )
+            else:
+                result["violations"].append(fpath_normalized)
+                _log_master_agent(
+                    f"Agent {agent_id} added file outside canonical tree: {fpath_normalized}",
+                    level="warning", project_token=project_token,
+                )
+    if result["violations"]:
+        result["status"] = "violation"
+    elif result["additions"]:
+        result["status"] = "updated"
+    if result["status"] == "ok":
+        _log_master_agent(f"Agent {agent_id} tree validation PASSED", project_token=project_token)
+    elif result["status"] == "updated":
+        _log_master_agent(f"Agent {agent_id} tree validation PASSED (with {len(result['additions'])} additions)", project_token=project_token)
+    elif result["status"] == "violation":
+        _log_master_agent(
+            f"Agent {agent_id} tree validation: {len(result['violations'])} file(s) outside tree: {', '.join(result['violations'][:3])}",
+            level="warning", project_token=project_token,
+        )
+    return result
+
+
+def _extract_tree_paths(node: Dict[str, Any], paths: set, prefix: str = "") -> None:
+    """Recursively extract file/directory paths from a nested JSON tree."""
+    name = node.get("name", "")
+    if not name:
+        return
+    current_path = f"{prefix}/{name}" if prefix else name
+    children = node.get("children")
+    if children and isinstance(children, list):
+        paths.add(current_path)
+        for child in children:
+            if isinstance(child, dict):
+                _extract_tree_paths(child, paths, current_path)
+    else:
+        paths.add(current_path)
+
+
+# ── Master Orchestrator — Publish task_failed event ─────────────────────
+async def _publish_agent_failed_event(
+    project_token: Optional[str],
+    agent_id: str,
+    task_title: str,
+    error: str,
+) -> None:
+    """Publish a task_failed event so the Master Orchestrator can react."""
+    try:
+        await _publish_agent_event(
+            project_token, "task_failed", agent_id,
+            task_id="", task_title=task_title, error=str(error)[:500],
+        )
+    except Exception:
+        pass
+
 async def _publish_agent_event(
     project_token: Optional[str],
     event_type: str,
@@ -6338,10 +6711,10 @@ async def _mark_repo_bootstrap_result(
         # Also persist to ProjectCanonicalState (local-first immutable store)
         # This enables guard_canonical_regeneration() to return True on restart
         try:
-            _canonical_state = state.get("master_note_payload") or {}
+            _canonical_state = state.get("master_note_cache") or {}
             _workspace_tree = _canonical_state.get("workspace_tree") or ""
-            _tech_spec = _canonical_state.get("tech_spec") or ""
-            _tech_stack = _canonical_state.get("tech_stack") or {}
+            _tech_spec = _canonical_state.get("brd_analysis_context") or ""
+            _tech_stack = _canonical_state.get("stack_profile") or {}
             if _workspace_tree or _tech_spec:
                 save_bootstrap_canonical_artifacts(
                     project_token=project_token,
@@ -6671,9 +7044,12 @@ def _log_master_agent(message: str, level: str = "info", project_token: Optional
 def _get_git_manager_creds(repo_url: Optional[str], token: Optional[str], project_token: Optional[str] = None) -> Dict[str, str]:
     project_agents = _get_agent_states(project_token)
     git_agent = project_agents.get(GIT_MANAGER_AGENT_ID) or {}
+    # ── FIX: Use passed repo_url FIRST, Git Manager's cached URL as fallback ──
+    # The passed repo_url is the actual repo where the agent pushed its work.
+    # The Git Manager's cached URL may be stale (user changed repo in settings).
     return {
-        "repo_url": git_agent.get("git_repo_url") or repo_url or "",
-        "token": git_agent.get("git_token") or token or ""
+        "repo_url": repo_url or git_agent.get("git_repo_url") or "",
+        "token": token or git_agent.get("git_token") or ""
     }
 
 
@@ -9254,6 +9630,15 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                 return
         else:
             _log_git_agent(f"Using existing shared git manager container: {container_name}", project_token=project_token)
+            # ═══ FIX: Update remote URL before fetching (repo may have changed) ═══
+            # The container was created in a previous run with OLD credentials.
+            # Without updating origin, git fetch would use the stale remote URL.
+            auth_url = _build_git_auth_url(repo_url, token)
+            subprocess.run(
+                ["docker", "exec", "-w", "/workspace", container_name,
+                 "git", "remote", "set-url", "origin", auth_url],
+                capture_output=True, text=True, timeout=15,
+            )
             # Fetch latest changes
             auth_config = _get_git_auth_config(repo_url, token)
             fetch_all_cmd = ["docker", "exec", "-w", "/workspace", container_name, "git"]
@@ -12472,24 +12857,34 @@ def is_task_in_agent_lanes(task_lane: str, agent_lanes: set) -> bool:
     """
     Returns True if the agent is allowed to work on a task with the given lane.
 
-    Strict skill-based enforcement (as per user requirement):
-    - 'general' tasks: any agent can take them (no skill restriction).
-    - Agents with ONLY 'general' lane (no skills configured): can take any task
-      for backwards compatibility with legacy/unconfigured agents.
-    - Agents with specific skill lanes: MUST match the task lane — IDLE otherwise.
-      A Frontend Dev agent stays IDLE on backend tasks indefinitely.
-      A QA agent stays IDLE on frontend/backend tasks indefinitely.
-    - This is intentional: agents work strictly within their skill boundaries.
+    3-Layer Fallback System (prevents agent starvation):
+    - Layer 1 (General = Wildcard): If the agent has "general" in its lane set,
+      it can take ANY task lane. "general" means flexible/catch-all, not
+      "unclassified only". This prevents specialised agents with a general
+      fallback from starving when tasks have varied lane assignments.
+    - Layer 2 (Unspecialized fallback): Agents with no specific lanes configured
+      can take any task (backwards compatibility for legacy agents).
+    - Layer 3 (Strict): Truly specialised agents (e.g. only "frontend" skill,
+      no "general") only match their exact lane — this is rare and intentional.
     """
     if not task_lane or task_lane == "general":
         return True  # Any agent can handle general/unclassified tasks
 
-    specific_lanes = agent_lanes - {"general"}
-    if not specific_lanes:
-        # Truly unspecialized agent (no skills configured) — backwards compat
+    # ── LAYER 1: General = Wildcard ────────────────────────────────────────
+    # If the agent has "general" in its lane list, it can take ANY task lane.
+    # This is the most common case — most agents have "general" + 1-2 specific
+    # lanes. Without this, a backend agent with "general" fallback would starve
+    # when all tasks are classified as "frontend" or "qa" or "devops".
+    if "general" in agent_lanes:
         return True
 
-    # Specialized agent: strict lane enforcement — stay IDLE if no match
+    # ── LAYER 2: Unspecialized agent (no skills configured) ─────────────────
+    specific_lanes = agent_lanes - {"general"}
+    if not specific_lanes:
+        return True
+
+    # ── LAYER 3: Strict match for fully specialised agents ─────────────────
+    # Only reached if agent has NO "general" and at least one specific lane.
     return task_lane in specific_lanes
 
 
@@ -12904,6 +13299,7 @@ async def _ai_assign_tasks_to_agents(
 5. If there's only ONE agent with matching skills for a task type, assign ALL tasks of that type to that agent
 6. If there are MULTIPLE agents with matching skills, distribute tasks evenly among them
 7. Consider the agent's specialization field as the highest priority indicator
+8. For "bootstrap", "setup", "scaffold", "infrastructure", "navigation shell", or "project scaffold" tasks: assign to the FIRST available agent that has "frontend" or "backend" in skills_tags, NOT to agents with "Testing" specialization or "qa" in skills_tags
 
 **Output Format:**
 Return ONLY a valid JSON object mapping task_id to agent_id. Example:
@@ -16977,6 +17373,53 @@ def _coerce_task_execution_order(value: Any) -> Optional[float]:
     return None
 
 
+def _normalize_sprint_id(task: Dict[str, Any]) -> Optional[str]:
+    """Extract a canonical string sprint identifier from a task dict.
+    Handles both direct string IDs and nested dict (e.g. {"id": "uuid"}).
+    Returns None if no sprint data is present."""
+    raw = task.get("sprint") or task.get("sprint_id")
+    if not raw:
+        return None
+    if isinstance(raw, dict):
+        return str(raw.get("id") or raw.get("name") or "")
+    return str(raw)
+
+
+def _compute_active_sprint(tasks: List[Dict[str, Any]]) -> Optional[str]:
+    """
+    Find the earliest sprint that still has at least one incomplete executable task.
+
+    Returns the canonical sprint id string of the first (by natural ordering)
+    sprint whose tasks are not all done, or None if every sprint is complete
+    or no sprint metadata exists.
+    """
+    sprint_tasks: Dict[str, List[Dict[str, Any]]] = {}
+    sprint_order: Dict[str, float] = {}
+
+    for t in tasks:
+        task_type = (t.get("task_type") or "").upper()
+        if task_type not in ("TASK", "BUG", "ANALYSIS", "DEVELOPMENT", "TESTING"):
+            continue
+        sid = _normalize_sprint_id(t)
+        if not sid:
+            continue
+        sid = str(sid)
+        if sid not in sprint_tasks:
+            sprint_tasks[sid] = []
+            sprint_order[sid] = _coerce_task_execution_order(sid) or float("inf")
+        sprint_tasks[sid].append(t)
+
+    if not sprint_tasks:
+        return None
+
+    # Walk sprints in natural order; return the first that is not fully done
+    for sprint_id in sorted(sprint_tasks.keys(), key=lambda _sid: sprint_order.get(_sid, float("inf"))):
+        if not all(_task_status_is_done(t.get("status")) for t in sprint_tasks[sprint_id]):
+            return sprint_id
+
+    return None  # every sprint already finished
+
+
 def _build_task_dag(tasks: List[Dict[str, Any]]) -> Dict[str, set]:
     """
     Build a dependency map from the task list.
@@ -17474,7 +17917,45 @@ async def _post_task_progress(task: Dict[str, Any], progress: int, additional_in
     # Update local memory state and trigger completion if progress reaches 100%
     state["task_progress_state"][task_key] = progress
     if progress == 100:
+        # ═══ WORK EVIDENCE CHECK ═══
+        # Prevent fake 100% completion when the agent hasn't actually done any work.
+        # Check: (1) has checklist with items AND none completed, (2) no files written in ledger
+        _checklist = task.get("checklist") or []
+        _ledger_entry = state.get("task_ledger", {}).get(task_key)
+        _files_written = list(_ledger_entry.files_written) if _ledger_entry else []
+        _completed_items = sum(1 for c in _checklist if isinstance(c, dict) and c.get("completed"))
+        _total_items = len(_checklist)
+        
+        _no_work_evidence = (
+            (_total_items > 0 and _completed_items == 0)  # Has checklist but nothing done
+            and not _files_written                          # No files created
+        )
+        
+        if _no_work_evidence:
+            logger.warning(
+                f"[agent_service] 🚫 WORK EVIDENCE CHECK FAILED for task {task_id}: "
+                f"checklist has {_total_items} items all incomplete, "
+                f"0 files written. Capping progress at 99% — will NOT auto-complete. "
+                f"Agent must provide work evidence before reaching 100%."
+            )
+            state["task_progress_state"][task_key] = 99
+            # Update as 99% in local DB too to persist the correction
+            _agent_for_update = task.get("assigned_agent") or task.get("_local_agent_id")
+            if resolved_project and _agent_for_update:
+                try:
+                    from local_state_manager import update_task_progress_local
+                    update_task_progress_local(
+                        project_token=resolved_project,
+                        agent_id=_agent_for_update,
+                        task_id=str(task_id),
+                        progress=99,
+                    )
+                except Exception:
+                    pass
+            return True
+        
         logger.info(f"[agent_service] Progress reached 100% locally for task {task_id}, triggering task completion...")
+        logger.info(f"[agent_service] Work evidence: {_completed_items}/{_total_items} checklist done, {len(_files_written)} files written")
         await _post_task_complete(task, project_token=resolved_project, task_token=task_token)
         
     return True
@@ -17487,6 +17968,37 @@ async def _post_task_complete(task: Dict[str, Any], project_token: Optional[str]
         logger.warning("[agent_service] Cannot complete task: no task_id found")
         return False
     resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
+    
+    # ═══ CHECKLIST VALIDATION ═══
+    # Log warning if task has checklist items but none are completed
+    _checklist = task.get("checklist") or []
+    if _checklist and isinstance(_checklist, list):
+        _completed_items = sum(1 for c in _checklist if isinstance(c, dict) and c.get("completed"))
+        _total_items = len(_checklist)
+        if _total_items > 0 and _completed_items == 0:
+            logger.warning(
+                f"[agent_service] ⚠️ Task {task_id} is being completed but NONE of its "
+                f"{_total_items} checklist items are marked as done. "
+                f"This may indicate the task was completed without actual work."
+            )
+        elif _total_items > 0:
+            logger.info(
+                f"[agent_service] Task {task_id} checklist: {_completed_items}/{_total_items} items completed"
+            )
+
+    # ═══ STATUS TRANSITION GUARD ═══
+    current_status = str(task.get("status") or "").strip()
+    warning = _validate_status_transition(
+        current_status, "Completed", str(task_id),
+        str(task.get("assigned_agent") or task.get("_local_agent_id") or "?")
+    )
+    if warning:
+        logger.warning(f"[agent_service] {warning}")
+        # If already completed, skip silently — don't repeat work
+        if _task_status_is_done(current_status):
+            logger.info(f"[agent_service] Task {task_id} is already in done state ({current_status}) — skipping completion")
+            return True
+
     state = _ensure_project_state(resolved_project)
     ledger = state.setdefault("task_ledger", {})
     
@@ -17559,11 +18071,25 @@ async def _opt_in_task(task: Dict[str, Any], username: str,
     if not task_id:
         return False
     resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
+
+    # ═══ STATUS TRANSITION GUARD ═══
+    current_status = str(task.get("status") or "").strip()
+    warning = _validate_status_transition(
+        current_status, "On Going", str(task_id), str(username or "?")
+    )
+    if warning:
+        logger.warning(f"[agent_service] {warning}")
+        # If already completed or in-progress, skip claiming
+        if _task_status_is_done(current_status):
+            logger.info(f"[agent_service] Task {task_id} is already done ({current_status}) — skipping opt-in")
+            return False
+
     _local_agent_id = task.get("assigned_agent") or task.get("_local_agent_id")
     
     # 1. Queue sync opt-in to NXDune asynchronously
     if resolved_project:
         try:
+            await _rate_limit("opt_in_task")
             from local_state_manager import queue_nxdune_sync
             queue_nxdune_sync(
                 project_token=resolved_project,
@@ -18116,6 +18642,7 @@ async def _sync_rollup_status_for_completed_task(
                 # If all children are complete, mark parent complete
                 if children and all(_is_completed_task_status(c.get("status")) for c in children):
                     try:
+                        await _rate_limit("update_task")
                         await task_service.update_task_status(
                             task_id=int(parent_id),
                             status="Completed",
@@ -18399,13 +18926,9 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 f"[{agent_id}] Released stale claimed task ids: {', '.join(sorted(stale_claims)[:10])}"
             )
 
-        # Get current active sprint from project state (if available)
-        current_sprint_id = None
-        project_state = None
-        try:
-            project_state = _ensure_project_state(project_token)
-        except Exception:
-            pass
+        # Compute the earliest sprint that still has incomplete tasks.
+        # Tasks from later sprints are gated until all earlier-sprint tasks finish.
+        current_sprint_id = _compute_active_sprint(external_tasks)
 
         # external_tasks are already sorted above
 
@@ -18571,7 +19094,7 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                     continue
 
             if current_sprint_id:
-                task_sprint_id = t.get("sprint") or t.get("sprint_id")
+                task_sprint_id = _normalize_sprint_id(t)
                 if task_sprint_id and str(task_sprint_id) != str(current_sprint_id):
                     skip_reasons["sprint_mismatch"] += 1
                     continue
@@ -18599,43 +19122,86 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                 # Bootstrap task should NEVER be blocked by dependencies
                 # It runs first and has no prerequisites
                 if not is_bootstrap_task:
-                    # If bootstrap is pushed, skip all dependency checks — scaffold is ready
-                    _proj_key = _project_key(project_token)
-                    if not is_bootstrap_pushed(project_token):
-                        task_deps = t.get("dependencies", [])
-                        if not task_deps:
-                            linked = t.get("linked_tasks", [])
-                            if linked:
-                                executable_deps = []
-                                for lt_id in linked:
-                                    linked_task = next((ext_t for ext_t in external_tasks if str(_normalize_task_id(ext_t) or ext_t.get("external_id") or ext_t.get("id")) == str(lt_id)), None)
-                                    if linked_task:
-                                        linked_type = (linked_task.get("task_type") or "").upper()
-                                        if linked_type in ["TASK", "BUG"]:
-                                            executable_deps.append(str(lt_id))
-                                task_deps = executable_deps
+                    # ── DAG DEPENDENCY CHECK ──────────────────────────────────
+                    # ALWAYS check dependencies, not just before bootstrap pushes.
+                    # This ensures TASK-03 waits for TASK-01 and TASK-02 to complete
+                    # before an agent picks it up.
+                    task_deps = t.get("dependencies", [])
+                    if not task_deps:
+                        linked = t.get("linked_tasks", [])
+                        if linked:
+                            executable_deps = []
+                            for lt_id in linked:
+                                linked_task = next((ext_t for ext_t in external_tasks if str(_normalize_task_id(ext_t) or ext_t.get("external_id") or ext_t.get("id")) == str(lt_id)), None)
+                                if linked_task:
+                                    linked_type = (linked_task.get("task_type") or "").upper()
+                                    if linked_type in ["TASK", "BUG"]:
+                                        executable_deps.append(str(lt_id))
+                            task_deps = executable_deps
 
-                        if task_deps:
-                            live_mem.register_task_dependencies(tid, [str(d) for d in task_deps])
+                    if task_deps:
+                        live_mem.register_task_dependencies(tid, [str(d) for d in task_deps])
 
-                        if not live_mem.check_task_dependencies(tid):
-                            blocking = live_mem.get_blocking_tasks(tid)
-                            logger.info(f"[{agent_id}] Task {tid} blocked by dependencies: {blocking}")
-                            skip_reasons["dependency_blocked"] += 1
-                            continue
+                    if not live_mem.check_task_dependencies(tid):
+                        blocking = live_mem.get_blocking_tasks(tid)
+                        logger.info(f"[{agent_id}] Task {tid} blocked by dependencies: {blocking}")
+                        if agent:
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": f"⏸️ Task {tid} waiting for dependencies: {blocking}"
+                            })
+                        skip_reasons["dependency_blocked"] += 1
+                        continue
 
-                    # Skip conflict checks too if bootstrap just pushed and no tasks completed yet
-                    if not is_bootstrap_pushed(project_token) or live_mem.completed_history:
-                        blocked, reason = _check_task_conflicts(agent_id, t, live_mem, project_token=project_token)
-                        if blocked:
-                            logger.info(f"[{agent_id}] Task {tid} blocked by conflict rules: {reason}")
+                    # ── CONFLICT CHECK ─────────────────────────────────────────
+                    # Always check for file conflicts between agents
+                    blocked, reason = _check_task_conflicts(agent_id, t, live_mem, project_token=project_token)
+                    if blocked:
+                        logger.info(f"[{agent_id}] Task {tid} blocked by conflict rules: {reason}")
+                        if agent:
+                            agent["output_log"].append({
+                                "time": datetime.utcnow().isoformat(),
+                                "type": "info",
+                                "message": f"⚠️ Task {tid} conflict: {reason}"
+                            })
+                        skip_reasons["conflict_blocked"] += 1
+                        continue
+
+            else:
+                # ═══ FALLBACK DEPENDENCY CHECK (live_mem unavailable) ═══
+                # When shared memory is not available, validate dependencies
+                # directly against external task statuses so DAG order is still
+                # enforced even without the in-memory coordination layer.
+                if not is_bootstrap_task:
+                    task_deps = t.get("dependencies", [])
+                    if not task_deps:
+                        linked = t.get("linked_tasks", [])
+                        if linked:
+                            executable_deps = []
+                            for lt_id in linked:
+                                linked_task = next((ext_t for ext_t in external_tasks if str(_normalize_task_id(ext_t) or ext_t.get("external_id") or ext_t.get("id")) == str(lt_id)), None)
+                                if linked_task:
+                                    linked_type = (linked_task.get("task_type") or "").upper()
+                                    if linked_type in ["TASK", "BUG"]:
+                                        executable_deps.append(str(lt_id))
+                            task_deps = executable_deps
+
+                    if task_deps:
+                        blocking = []
+                        for dep_id in task_deps:
+                            dep_task = next((ext_t for ext_t in external_tasks if str(_normalize_task_id(ext_t) or ext_t.get("external_id") or ext_t.get("id")) == str(dep_id)), None)
+                            if dep_task and not _task_status_is_done(dep_task.get("status")):
+                                blocking.append(str(dep_id))
+                        if blocking:
+                            logger.info(f"[{agent_id}] Task {tid} blocked by dependencies (fallback check): {blocking}")
                             if agent:
                                 agent["output_log"].append({
                                     "time": datetime.utcnow().isoformat(),
                                     "type": "info",
-                                    "message": f"⚠️ Task {tid} conflict: {reason}"
+                                    "message": f"⏸️ Task {tid} waiting for dependencies: {blocking}"
                                 })
-                            skip_reasons["conflict_blocked"] += 1
+                            skip_reasons["dependency_blocked"] += 1
                             continue
 
             # ── Step 2b: Workstream Sequential Gate ──────────────────────────────
@@ -18810,6 +19376,125 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
         return None
 
 
+# ── Master Orchestrator Loop ─────────────────────────────────────────────────
+# Enhanced supervisor that monitors ALL agents, triggers incremental merge,
+# tree enforcement, and reassigns ready tasks to idle agents.
+
+async def _master_orchestrator_loop(project_token: Optional[str]) -> None:
+    """
+    Master Orchestrator — replaces _dag_progress_watcher.
+    Monitors ALL agents, detects stuck agents, triggers tree enforcement
+    and incremental merge after each completion, reassigns ready tasks.
+    """
+    state = _ensure_project_state(project_token)
+    bus: AgentEventBus = state.get("event_bus")
+    if bus is None:
+        logger.warning("[Master Orchestrator] No event bus found, exiting.")
+        return
+
+    q = await bus.subscribe()
+    _log_master_agent("Master Orchestrator started", project_token=project_token)
+    logger.info(f"[Master Orchestrator] Started for project {project_token}")
+    agent_activity: Dict[str, Dict[str, Any]] = {}
+
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(q.get(), timeout=20.0)
+                event_type = event.get("type", "")
+                agent_id = event.get("agent_id", "")
+                task_id = event.get("task_id", "")
+            except asyncio.TimeoutError:
+                event_type = "heartbeat"
+                agent_id = ""
+                task_id = ""
+
+            if event_type == "heartbeat":
+                now = time.time()
+                project_agents = state.get("agent_states", {})
+                running_agents = []
+                for aid, agt in list(project_agents.items()):
+                    if _is_system_agent_id(aid):
+                        continue
+                    status = agt.get("status", "")
+                    if status == "running":
+                        running_agents.append(aid)
+                        activity = agent_activity.get(aid, {})
+                        last_event = activity.get("last_event", 0)
+                        stuck_threshold = activity.get("stuck_threshold", 600)
+                        if last_event > 0 and (now - last_event) > stuck_threshold:
+                            _log_master_agent(f"Agent {aid} running for {(now - last_event)/60:.0f} min", level="info", project_token=project_token)
+                            activity["last_event"] = now
+                    elif status == "error":
+                        _log_master_agent(f"Agent {aid} in ERROR state", level="warning", project_token=project_token)
+                if running_agents:
+                    _log_master_agent(f"Monitoring {len(running_agents)} agent(s)", project_token=project_token)
+                continue
+
+            if event_type == "task_started":
+                task_title = event.get("task_title", "")
+                branch = event.get("branch_name", "")
+                agent_activity[agent_id] = {"last_event": time.time(), "task": task_id, "task_title": task_title, "stuck_count": 0}
+                _log_master_agent(f"Agent {agent_id} started task '{task_title}'", project_token=project_token)
+                continue
+
+            if event_type == "task_completed":
+                task_title = event.get("task_title", "")
+                branch = event.get("branch_name", "")
+                _log_master_agent(f"Agent {agent_id} completed task '{task_title}'", project_token=project_token)
+                try:
+                    await _validate_agent_tree_compliance(agent_id=agent_id, project_token=project_token, branch_name=branch)
+                except Exception:
+                    pass
+                if branch:
+                    try:
+                        project_agents = state.get("agent_states", {})
+                        agent = project_agents.get(agent_id, {})
+                        repo_url = agent.get("git_repo_url", "")
+                        token = agent.get("git_token", "")
+                        if repo_url:
+                            await _enqueue_git_merge(branch=branch, repo_url=repo_url, token=token, source_agent=agent_id, task_title=task_title, project_token=project_token)
+                            _log_master_agent(f"Enqueued merge of '{branch}'", project_token=project_token)
+                    except Exception:
+                        pass
+                dag = state.get("task_dag", {})
+                if dag:
+                    completed_ids = _ledger_get_completed_ids(project_token)
+                    in_progress_ids = _ledger_get_in_progress_ids(project_token)
+                    ready_ids = _get_ready_task_ids(dag, completed_ids, in_progress_ids)
+                    if ready_ids:
+                        _log_master_agent(f"{len(ready_ids)} task(s) unblocked", project_token=project_token)
+                        idle_agents = [aid for aid, a in state["agent_states"].items() if not _is_system_agent_id(aid) and a.get("status") == "idle" and aid != DEPLOY_AGENT_ID]
+                        if idle_agents:
+                            ttv = get_project_task_token(project_token)
+                            for aid, rid in zip(idle_agents, ready_ids):
+                                try:
+                                    assigned = await _master_assign_task_to_agent(rid, aid, agent_name=state["agent_states"][aid].get("name"), project_token=project_token, task_token=ttv)
+                                    if assigned:
+                                        _log_master_agent(f"Assigned '{rid}' to {aid}", project_token=project_token)
+                                except Exception as e:
+                                    logger.warning(f"[Master] Assign {rid} failed: {e}")
+                continue
+
+            if event_type == "task_failed":
+                task_title = event.get("task_title", "")
+                error = event.get("error", "")
+                _log_master_agent(f"Agent {agent_id} FAILED on '{task_title}'", level="error", project_token=project_token)
+                continue
+
+    except asyncio.CancelledError:
+        _log_master_agent("Master Orchestrator stopped", project_token=project_token)
+        raise
+    except Exception as e:
+        logger.error(f"[Master Orchestrator] Fatal: {e}")
+        raise
+    finally:
+        try:
+            await bus.unsubscribe(q)
+        except Exception:
+            pass
+
+
 # ── DAG Progress Watcher ──────────────────────────────────────────────────────
 
 async def _dag_progress_watcher(project_token: Optional[str]) -> None:
@@ -18932,6 +19617,15 @@ async def _is_shared_agent(agent_id: str, project_token: Optional[str]) -> bool:
         True if agent is shared, False if dedicated or system
     """
     return False
+
+
+def _notify_coordinator(agent_id: str, project_token: Optional[str], status: str, message: str = "") -> None:
+    """Safe coordinator notification for agent lifecycle events."""
+    try:
+        from integrated_agent_coordinator import coordinator as _ic
+        _ic.track_agent_event(project_token or "", agent_id, status, message)
+    except Exception:
+        pass
 
 
 async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = None,
@@ -19072,6 +19766,9 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
     # Clear any previous run error context at start of execution
     agent["previous_run_error"] = None
 
+    # Notify IntegratedCoordinator that agent has started
+    _notify_coordinator(agent_id, project_token, "running", "run_agent started")
+
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             result = await _run_agent_once(
@@ -19086,19 +19783,21 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                 force_branch=force_branch,
             )
 
+            _notify_coordinator(agent_id, project_token, "attempt_completed", f"Attempt {attempt}/{MAX_RETRIES}")
+
             if result.get("success") or result.get("reason") == "no_tasks":
-                # Success or no tasks — no retry needed
-                # Release shared agent if acquired
-                if is_shared_agent and shared_agent_acquired:
-                    try:
-                        from shared_agent_coordinator import get_shared_agent_coordinator
-                        coordinator = await get_shared_agent_coordinator()
-                        await coordinator.release_agent(agent_id, project_token)
-                        logger.info(f"[{agent_id}] ✅ Released shared agent")
-                    except Exception as release_err:
-                        logger.error(f"[{agent_id}] Failed to release shared agent: {release_err}")
-                
-                return result
+                # Success or no tasks — no retry needed                # Release shared agent if acquired
+                    if is_shared_agent and shared_agent_acquired:
+                        try:
+                            from shared_agent_coordinator import get_shared_agent_coordinator
+                            coordinator = await get_shared_agent_coordinator()
+                            await coordinator.release_agent(agent_id, project_token)
+                            logger.info(f"[{agent_id}] ✅ Released shared agent")
+                        except Exception as release_err:
+                            logger.error(f"[{agent_id}] Failed to release shared agent: {release_err}")
+                    
+                    _notify_coordinator(agent_id, project_token, "completed", "run_agent success")
+                    return result
 
             # Agent returned failure but didn't throw — treat as retryable
             last_result = result
@@ -19152,6 +19851,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                         logger.error(f"[{agent_id}] Failed to release shared agent: {release_err}")
                 
                 logger.error(f"[{agent_id}] BLOCKED: Agent will not pick up new tasks until unblocked")
+                _notify_coordinator(agent_id, project_token, "failed", f"run_agent max retries: {error_msg[:200]}")
                 return last_result
 
         except Exception as e:
@@ -19230,6 +19930,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
                         logger.error(f"[{agent_id}] Failed to release shared agent: {release_err}")
                 
                 logger.error(f"[{agent_id}] BLOCKED: Agent will not pick up new tasks until unblocked")
+                _notify_coordinator(agent_id, project_token, "failed", f"run_agent exception max retries: {error_msg[:200]}")
                 return last_result
 
     # Final release if we exit the loop normally
@@ -19242,6 +19943,7 @@ async def run_agent(agent_id: str, git_repo_url: str = None, git_token: str = No
         except Exception as release_err:
             logger.error(f"[{agent_id}] Failed to release shared agent: {release_err}")
     
+    _notify_coordinator(agent_id, project_token, "completed", "run_agent final return")
     return last_result
 
 
@@ -19515,6 +20217,15 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
 
     # Set agent to running (or idle if no task in continuous mode)
     if task:
+        # Broadcast task started via communication hooks (Phase 4)
+        try:
+            await broadcast_task_started(
+                project_token=project_token or "",
+                agent_id=agent_id,
+                task=task or {},
+            )
+        except Exception:
+            pass  # Non-critical
         agent["status"] = "running"
     else:
         # Continuous mode with no initial task — check if bootstrap is pending
@@ -21080,7 +21791,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 )
                 task_description_with_checklist = error_context_text + task_description_with_checklist
 
-            generated_code, thought = await _call_ai_for_code(
+            generated_code, thought = await call_ai_for_code_with_controlled(
                 canonical_files_prefix + task_description_with_checklist, agent["type"],
                 code_context=jit_context,
                 system_prompt_override=dynamic_system_prompt,
@@ -21243,7 +21954,7 @@ echo "Created X files"
 NOW GENERATE THE COMPLETE SCRIPT:"""
 
                 try:
-                    generated_code, thought = await _call_ai_for_code(
+                    generated_code, thought = await call_ai_for_code_with_controlled(
                         retry_prompt, agent["type"],
                         code_context=jit_context,
                         system_prompt_override=dynamic_system_prompt,
@@ -21721,7 +22432,7 @@ set -e
 cd {project_root}
 """
                                 
-                                fix_code, fix_thought = await _call_ai_for_code(
+                                fix_code, fix_thought = await call_ai_for_code_with_controlled(
                                     fix_prompt,
                                     agent["type"],
                                     tech_spec=task.get("_tech_spec", ""),
@@ -21884,6 +22595,16 @@ Agent {agent_id} will proceed to next available task.
                                 # DO NOT mark agent as blocked - allow it to continue with next task
                                 agent["status"] = "idle"
                                 agent["progress"] = 0
+                                # Broadcast task failure (Phase 4)
+                                try:
+                                    await broadcast_task_failed(
+                                        project_token=project_token or "",
+                                        agent_id=agent_id,
+                                        task=task or {},
+                                        error="Task failed after max self-healing attempts",
+                                    )
+                                except Exception:
+                                    pass  # Non-critical
                                 agent["current_task"] = None
                                 
                                 logger.info(f"[{agent_id}] Task handed over to master agent. Agent will pick next task.")
@@ -21931,6 +22652,16 @@ Agent {agent_id} will proceed to next available task.
                     })
                     
                     # DO NOT mark agent as blocked - allow it to continue with next task
+                    # Broadcast task failure (Phase 4)
+                    try:
+                        await broadcast_task_failed(
+                            project_token=project_token or "",
+                            agent_id=agent_id,
+                            task=task or {},
+                            error="Self-review did not pass after max fix iterations",
+                        )
+                    except Exception:
+                        pass  # Non-critical
                     agent["status"] = "idle"
                     agent["progress"] = 0
                     agent["current_task"] = None
@@ -22131,7 +22862,7 @@ Agent {agent_id} will proceed to next available task.
 
                     # Generate and execute code
                     lt_checklist_items = linked_task.get("checklist") or []
-                    lt_code, thought = await _call_ai_for_code(
+                    lt_code, thought = await call_ai_for_code_with_controlled(
                         linked_task.get("description", lt_title), 
                         agent["type"], 
                         code_context=lt_jit_context,
@@ -22910,11 +23641,35 @@ Be extremely specific. Every field name must be exact. This is the single source
 
             # ═══ CRITICAL FIX: Clear current_task and resume_pending_task IMMEDIATELY after completion ═══
             # This prevents the agent from re-executing the same task
+            _completed_task_branch = agent.get("current_task", {}).get("_local_branch", "") if agent.get("current_task") else ""
             agent["current_task"] = None
             agent["resume_pending_task"] = False
             agent["status"] = "idle"  # Set to idle so it can pick up next task
             agent["progress"] = 100
             agent["progress_message"] = "Task completed"
+            # Broadcast task completion via communication hooks (Phase 4)
+            try:
+                await broadcast_task_completed(
+                    project_token=project_token or "",
+                    agent_id=agent_id,
+                    task=task or {},
+                    result={"files_created": [], "branch": _completed_task_branch},
+                )
+            except Exception:
+                pass  # Non-critical
+
+            # ── POST DESIGN CONTEXT TO ENHANCED CONTEXT SERVICE ──────────────
+            # Share structured design context (API endpoints, DB tables, files)
+            # so other agents can see what was built and build consistent code.
+            try:
+                await _post_agent_design_context(
+                    project_token=project_token,
+                    agent_id=agent_id,
+                    task=task or {},
+                    branch=_completed_task_branch,
+                )
+            except Exception:
+                pass  # Non-critical
 
             # Always set progress to 100% and complete task when build succeeds
             # Git push failures won't prevent task completion
@@ -22996,22 +23751,46 @@ Be extremely specific. Every field name must be exact. This is the single source
             task_progress_state.pop(task_key, None)
             timer_log_state.pop(task_key, None)
 
-            # DO NOT release claimed IDs for successfully completed tasks.
-            # If the external API fails to mark the task as "completed",
-            # _pick_next_task would re-pick it, causing duplicate execution.
-            # IDs are only discarded on error/abort (see error handler below).
+            # ═══ TASK COMPLETION ACCOUNTING ═══
+            # Only count SUCCESSFUL tasks as completed.  Failed tasks must
+            # release their claim so another agent (or the same agent on retry)
+            # can pick them up.
+            if result["exit_code"] == 0:
+                completed_tasks.append(task)
+                # DO NOT release claimed IDs for successfully completed tasks.
+                # If the external API fails to mark the task as "completed",
+                # _pick_next_task would re-pick it, causing duplicate execution.
+            else:
+                # FAILED TASK — release claim so it can be reassigned
+                task_id_for_claim = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
+                if task_id_for_claim:
+                    claimed_task_ids.discard(task_id_for_claim)
+                    # Also mark the task as blocked in external system so master supervisor knows
+                    try:
+                        from task_service import task_service
+                        await task_service.update_task_tags({
+                            "task_id": int(task_id_for_claim),
+                            "tags": ["blocked"]
+                        }, task_token=task_token)
+                    except Exception:
+                        pass
+                agent["output_log"].append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "warning",
+                    "message": f"⚠️ Task claim released — master supervisor may reassign to another agent"
+                })
 
-            completed_tasks.append(task)
             all_results.append({
                 "task": task["title"],
                 "exit_code": result["exit_code"],
                 "duration": elapsed,
             })
 
+            exit_status_label = "completed" if result["exit_code"] == 0 else "FAILED"
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "info",
-                "message": f"✅ Task '{task['title']}' completed in {elapsed}s (exit={result['exit_code']})"
+                "message": f"{'✅' if result['exit_code'] == 0 else '❌'} Task '{task['title']}' {exit_status_label} in {elapsed}s (exit={result['exit_code']})"
             })
             # ═══ REMOVED DUPLICATE: progress and progress_message already set above ═══
 
@@ -24785,19 +25564,32 @@ async def _master_detect_agent_failures(
         # Check for stuck agents (running too long)
         if agent_status == "running" and last_run:
             try:
-                # Dynamic SLA timeout based on days_left
-                # 1 day = 86400 seconds, fallback to 1800s if days_left is 0 or missing
+                # ── DYNAMIC TIMEOUT BASED ON TASK COMPLEXITY ──
+                # Base: 30 min per task-wallet point (30 min for wallet=1, 4h for wallet=8).
+                # Cap at 4 hours max, floor at 30 min.
+                task_wallet = 1
                 days_left = 0
                 if isinstance(current_task, dict):
+                    try:
+                        task_wallet = int(current_task.get("task_wallet", 1) or 1)
+                    except (ValueError, TypeError):
+                        pass
                     try:
                         days_left = int(current_task.get("days_left", 0))
                     except (ValueError, TypeError):
                         pass
-                
-                # If they have a deadline, give them up to that deadline incrementally
-                # Otherwise, stick to the strict 30 min (1800s) hard limit
-                dynamic_threshold = max((days_left * 86400) // 24, stuck_threshold_seconds) if days_left > 0 else stuck_threshold_seconds
-                
+
+                # Wallet-aware base threshold: 30 min × wallet points
+                wallet_timeout = max(1800, min(task_wallet * 1800, 14400))  # 30min–4h range
+
+                # Deadline pressure: if deadline is close, be tighter
+                if days_left > 0:
+                    # days_left-based: 1h per day remaining (min 30 min)
+                    deadline_timeout = max(days_left * 3600, stuck_threshold_seconds)
+                    dynamic_threshold = min(wallet_timeout, deadline_timeout)
+                else:
+                    dynamic_threshold = wallet_timeout
+
                 last_run_time = datetime.fromisoformat(last_run.replace("Z", "+00:00"))
                 if last_run_time.tzinfo is None:
                     last_run_time = last_run_time.replace(tzinfo=timezone.utc)
@@ -24805,7 +25597,10 @@ async def _master_detect_agent_failures(
                 
                 if elapsed > dynamic_threshold:
                     failure_info["failure_type"] = "stuck"
-                    failure_info["failure_reason"] = f"Agent running for {elapsed:.0f} seconds (>{stuck_threshold_seconds}s threshold)"
+                    failure_info["failure_reason"] = (
+                        f"Agent running for {elapsed:.0f}s "
+                        f"(>{dynamic_threshold:.0f}s dynamic threshold — wallet={task_wallet}, days_left={days_left})"
+                    )
                     failed_agents.append(failure_info)
             except Exception:
                 pass
@@ -25601,7 +26396,60 @@ async def _master_supervisor_loop(
                 # If bootstrap is not pushed, ONLY the bootstrap task can be assigned.
                 # If the bootstrap task is not available (already in progress or claimed), do not assign anything.
                 available_tasks = bootstrap_tasks
-            
+
+                # ═══ BOOTSTRAP FAILURE RECOVERY ═══
+                # If bootstrap task is stuck (claimed/assigned but agent is failing),
+                # forcibly reclaim it so another agent can take over.
+                if not available_tasks:
+                    # Find TASK-00 from ALL external tasks (not just available ones)
+                    task00 = None
+                    for ext_t in external_tasks:
+                        _maybe_bt = (
+                            str(_normalize_task_id(ext_t) or ext_t.get("external_id") or ext_t.get("id") or "").strip().upper() == "TASK-00"
+                            or "project bootstrap" in str(ext_t.get("title") or ext_t.get("taskName") or "").strip().lower()
+                        )
+                        if _maybe_bt:
+                            task00 = ext_t
+                            break
+
+                    if task00 and not _task_status_is_done(task00.get("status")):
+                        task00_tid = str(_normalize_task_id(task00) or task00.get("external_id") or task00.get("id") or "")
+                        # Check if task is claimed by a stuck/failing agent
+                        if task00_tid in claimed_task_ids:
+                            _log_master_agent(
+                                f"🚨 Bootstrap task {task00_tid} is claimed but not progressing. Reclaiming for reassignment.",
+                                level="warning",
+                                project_token=project_token,
+                            )
+                            claimed_task_ids.discard(task00_tid)
+                            available_tasks = [task00]
+                        else:
+                            # Task exists but wasn't in available_tasks — may be incorrectly filtered
+                            available_tasks = [task00]
+
+            # ═══ SPRINT GATE ═══
+            # After bootstrap completes, enforce sprint-level ordering:
+            # only tasks from the earliest incomplete sprint are available.
+            # This prevents Sprint 2 tasks from being worked on while Sprint 1
+            # tasks are still unfinished.
+            if available_tasks and is_bootstrap_pushed(project_token):
+                active_sprint = _compute_active_sprint(external_tasks)
+                if active_sprint:
+                    gated_tasks = []
+                    for t in available_tasks:
+                        task_sid = _normalize_sprint_id(t)
+                        if task_sid and str(task_sid) == str(active_sprint):
+                            gated_tasks.append(t)
+                    if gated_tasks:
+                        if len(gated_tasks) < len(available_tasks):
+                            _log_master_agent(
+                                f"🔄 Sprint gate: {len(gated_tasks)}/{len(available_tasks)} tasks available in active sprint {active_sprint}",
+                                project_token=project_token,
+                            )
+                        available_tasks = gated_tasks
+                    # If no tasks match the active sprint but there ARE available tasks,
+                    # it means all sprint tasks are done — allow remaining tasks through.
+
             # Log supervisor status every iteration
             _log_master_agent(
                 f"📊 Supervisor Check #{iteration}: {len(idle_agents)} idle agent(s), {len(available_tasks)} available task(s)",
@@ -25925,6 +26773,48 @@ Follow the specific instructions to avoid repeating the same failures.
                         level="warning",
                         project_token=project_token,
                     )
+                    
+                    # ═══ STUCK AGENT TASK REASSIGNMENT ═══
+                    # If the agent has been running too long on a task, reassign it
+                    # so the project doesn't stall indefinitely.
+                    if current_task:
+                        try:
+                            task_id = str(_normalize_task_id(current_task) or current_task.get("external_id") or current_task.get("id") or "")
+                            if task_id:
+                                # Mark task as blocked in external system
+                                from task_service import task_service
+                                await task_service.update_task_tags({
+                                    "task_id": int(task_id),
+                                    "tags": ["blocked"]
+                                }, task_token=task_token)
+                                
+                                # Release claim so another agent can pick it up
+                                claimed_task_ids.discard(task_id)
+                                
+                                agent_ref = project_agents.get(agent_id)
+                                if agent_ref:
+                                    agent_ref["current_task"] = None
+                                    agent_ref["status"] = "idle"
+                                    agent_ref["progress_message"] = f"Recovered from stuck state — task {task_id} released"
+                                    agent_ref["output_log"].append({
+                                        "time": datetime.utcnow().isoformat(),
+                                        "type": "warning",
+                                        "message": f"⚠️ Master Agent: Unstuck — task {task_id} released for reassignment ({failure_reason})"
+                                    })
+                                
+                                _log_master_agent(
+                                    f"🔄 Stuck agent {agent_id} reset — task {task_id} released for reassignment",
+                                    project_token=project_token,
+                                )
+                                await _post_task_message(
+                                    current_task,
+                                    f"⚠️ Master Agent: Previous agent was stuck ({failure_reason}). Task released for reassignment.",
+                                    project_token=project_token,
+                                    task_token=task_token,
+                                )
+                        except Exception as stuck_err:
+                            logger.warning(f"[Master Agent] Failed to reassign stuck agent {agent_id} task: {stuck_err}")
+                    
                     total_interventions += 1
                 elif failure_type == "idle_too_long":
                     _log_master_agent(
@@ -25964,6 +26854,60 @@ Follow the specific instructions to avoid repeating the same failures.
                             project_token=project_token,
                         )
                     total_interventions += 1
+            
+            # ═══ ORPHAN BLOCKED-TASK DETECTION ═══
+            # Scan for tasks tagged "blocked" that have no active agent working
+            # on them.  These are orphaned by agent failures or stuck-timeout.  The
+            # master supervisor releases their claim so they can be reassigned.
+            try:
+                orphan_count = 0
+                for t in external_tasks:
+                    task_tags = (t.get("tags") or [])
+                    if isinstance(task_tags, str):
+                        task_tags = [tag.strip() for tag in task_tags.split(",")]
+                    is_blocked = "blocked" in [str(tag).lower().strip() for tag in task_tags]
+                    if not is_blocked:
+                        continue
+                    task_tid = str(_normalize_task_id(t) or t.get("external_id") or t.get("id") or "")
+                    if not task_tid:
+                        continue
+                    # Check if any agent is actively working on this task
+                    active_agent = None
+                    for aid, ainfo in project_agents.items():
+                        if _is_system_agent_id(aid):
+                            continue
+                        cur_task = ainfo.get("current_task")
+                        if isinstance(cur_task, dict):
+                            cur_tid = str(_normalize_task_id(cur_task) or cur_task.get("external_id") or cur_task.get("id") or "")
+                            if cur_tid == task_tid and ainfo.get("status") == "running":
+                                active_agent = aid
+                                break
+                    if active_agent:
+                        continue  # Someone IS working on it — leave it alone
+                    # ORPHAN DETECTED — release claim and unblock for reassignment
+                    claimed_task_ids.discard(task_tid)
+                    try:
+                        from task_service import task_service
+                        await task_service.update_task_tags({
+                            "task_id": int(task_tid),
+                            "tags": ["unblocked"]
+                        }, task_token=task_token)
+                    except Exception:
+                        pass
+                    orphan_count += 1
+                    _log_master_agent(
+                        f"🔓 Orphan blocked task {task_tid} ('{t.get('title', 'Untitled')[:40]}') released for reassignment",
+                        project_token=project_token,
+                    )
+                if orphan_count > 0:
+                    _log_master_agent(
+                        f"🔄 Released {orphan_count} orphan blocked task(s) for reassignment",
+                        level="warning",
+                        project_token=project_token,
+                    )
+            except Exception as orphan_err:
+                logger.warning(f"[Master Agent] Orphan task scan failed: {orphan_err}")
+            # ═══ END ORPHAN DETECTION ═══
             
             # Check integration branch readiness
             if iteration % 10 == 0:  # Check every 10 iterations (5 minutes)

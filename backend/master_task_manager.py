@@ -209,6 +209,37 @@ class MasterTaskManager:
         # For large agent pools, assign multiple tasks simultaneously
         assignments_made = []
         max_parallel_assignments = min(len(idle_agents), len(available_tasks), 10)  # Max 10 at once
+
+        # ── FILE CONFLICT DETECTION ────────────────────────────────────────────
+        # Before assigning, check which available tasks would conflict with
+        # tasks that are already in progress. Two tasks conflict if they target
+        # the same file or module (e.g. both modify "backend/models.py").
+        # Conflicting tasks are deferred to avoid merge hell.
+        already_assigned = [
+            t for t in self.task_queue
+            if t.get("status") in ("assigned", "in_progress")
+        ]
+        deferred_tasks = []
+        safe_tasks = []
+        for t in available_tasks:
+            t_file_hints = self._extract_file_hints(t)
+            has_conflict = False
+            for assigned in already_assigned:
+                a_file_hints = self._extract_file_hints(assigned)
+                if t_file_hints & a_file_hints:
+                    has_conflict = True
+                    logger.info(
+                        f"⏸️ Deferring task '{t.get('title')}' — file conflict with "
+                        f"'{assigned.get('title')}' (overlap: {t_file_hints & a_file_hints})"
+                    )
+                    break
+            if has_conflict:
+                deferred_tasks.append(t)
+            else:
+                safe_tasks.append(t)
+        # Re-prioritize: safe tasks first, deferred tasks later
+        available_tasks = safe_tasks + deferred_tasks
+        # ───────────────────────────────────────────────────────────────────────
         
         for i in range(max_parallel_assignments):
             if i >= len(available_tasks) or i >= len(idle_agents):
@@ -267,6 +298,48 @@ class MasterTaskManager:
         return (task_type in capabilities.get("primary", []) or 
                 task_type in capabilities.get("secondary", []))
     
+    def _extract_file_hints(self, task: Dict[str, Any]) -> set:
+        """Extract file/module hints from a task to detect conflicts.
+
+        Returns a set of normalized file paths or module names that this task
+        will likely touch. Two tasks with overlapping hint sets should NOT be
+        assigned in parallel to avoid merge conflicts.
+        """
+        hints: set = set()
+
+        # Check explicit file fields
+        for key in ("affected_files", "file_paths", "files", "target_files", "paths"):
+            raw = task.get(key)
+            if isinstance(raw, list):
+                for item in raw:
+                    if isinstance(item, str) and item.strip():
+                        hints.add(item.strip().lower())
+            elif isinstance(raw, str) and raw.strip():
+                hints.add(raw.strip().lower())
+
+        # Predict from title + description
+        combined = (
+            str(task.get("title") or "") + " " +
+            str(task.get("taskName") or "") + " " +
+            str(task.get("description") or "")
+        ).lower()
+
+        # Module-level hints (backend/ vs frontend/ level granularity)
+        if "backend" in combined or "model" in combined or "service" in combined:
+            hints.add("backend/")
+        if "frontend" in combined or "screen" in combined or "component" in combined or "ui" in combined:
+            hints.add("frontend/")
+        if "database" in combined or "schema" in combined or "migration" in combined or "sql" in combined:
+            hints.add("backend/models")
+        if "api" in combined or "route" in combined or "endpoint" in combined:
+            hints.add("backend/routes")
+        if "test" in combined or "jest" in combined or "pytest" in combined or "e2e" in combined:
+            hints.add("tests/")
+        if "docker" in combined or "deploy" in combined or "ci" in combined:
+            hints.add("deploy/")
+
+        return hints
+
     def _task_dependencies_met(self, task: Dict[str, Any]) -> bool:
         """Check if task's DIRECT dependencies are satisfied.
 

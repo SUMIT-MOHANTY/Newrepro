@@ -728,11 +728,37 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     }, [selectedProjectKey, selectedProject]);
 
     useEffect(() => {
-        if (selectedProjectKey) {
-            const saved = localStorage.getItem(`custom_rules_${selectedProjectKey}`) || '';
-            setCustomRules(saved);
-            
-            // Load saved claude.md files
+        if (!selectedProjectKey) return;
+        let cancelled = false;
+        
+        // Load custom rules from localStorage (user-specific, no backend endpoint)
+        const saved = localStorage.getItem(`custom_rules_${selectedProjectKey}`) || '';
+        setCustomRules(saved);
+        
+        // Load claude.md files — prefer backend (org-scoped source of truth), fallback to localStorage
+        const loadClaudeMdFromBackend = async () => {
+            try {
+                const token = localStorage.getItem('token');
+                if (!token) throw new Error('No auth token');
+                const response = await fetch(API_ENDPOINTS.GOVERNANCE_CLAUDE_MD_FILES(selectedProjectKey), {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (cancelled) return;
+                if (response.ok) {
+                    const data = await response.json();
+                    if (cancelled) return;
+                    if (Array.isArray(data) && data.length > 0) {
+                        setClaudeMdFiles(data);
+                        // Sync backend data to localStorage for offline resilience
+                        localStorage.setItem(`claude_md_files_${selectedProjectKey}`, JSON.stringify(data));
+                        return; // Successfully loaded from backend
+                    }
+                }
+            } catch (e) {
+                console.warn('Failed to load claude.md files from backend:', e);
+            }
+            if (cancelled) return;
+            // Fallback: load from localStorage
             const savedClaudeFiles = localStorage.getItem(`claude_md_files_${selectedProjectKey}`);
             if (savedClaudeFiles) {
                 try {
@@ -741,8 +767,32 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     console.error('Failed to parse saved claude.md files:', e);
                 }
             }
-            
-            // Load saved skills.md files
+        };
+        
+        // Load skills.md files — prefer backend (org-scoped source of truth), fallback to localStorage
+        const loadSkillsMdFromBackend = async () => {
+            try {
+                const token = localStorage.getItem('token');
+                if (!token) throw new Error('No auth token');
+                const response = await fetch(API_ENDPOINTS.GOVERNANCE_SKILLS_MD_FILES(selectedProjectKey), {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (cancelled) return;
+                if (response.ok) {
+                    const data = await response.json();
+                    if (cancelled) return;
+                    if (Array.isArray(data) && data.length > 0) {
+                        setSkillsMdFiles(data);
+                        // Sync backend data to localStorage for offline resilience
+                        localStorage.setItem(`skills_md_files_${selectedProjectKey}`, JSON.stringify(data));
+                        return; // Successfully loaded from backend
+                    }
+                }
+            } catch (e) {
+                console.warn('Failed to load skills.md files from backend:', e);
+            }
+            if (cancelled) return;
+            // Fallback: load from localStorage
             const savedSkillsFiles = localStorage.getItem(`skills_md_files_${selectedProjectKey}`);
             if (savedSkillsFiles) {
                 try {
@@ -751,7 +801,12 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     console.error('Failed to parse saved skills.md files:', e);
                 }
             }
-        }
+        };
+        
+        loadClaudeMdFromBackend();
+        loadSkillsMdFromBackend();
+        
+        return () => { cancelled = true; };
     }, [selectedProjectKey]);
 
     useEffect(() => {
@@ -833,8 +888,10 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
             }
             try {
                 const token = localStorage.getItem('token');
-                if (!token) return;
-                setIsLoadingGitConfig(true);
+                if (!token) {
+                    if (isMounted) setIsLoadingGitConfig(false);
+                    return;
+                }
 
                 // 1. Try project-wise git-config endpoint first (Destination Repository)
                 const configRes = await fetch(`${API_BASE_URL}/api/projects/${selectedProjectKey}/git-config`, {
@@ -842,13 +899,11 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 });
                 if (configRes.ok) {
                     const configData = await configRes.json().catch(() => ({}));
-                    if (configData.dest_repo_url) {
-                        if (!isMounted) return;
-                        setGlobalGitRepoUrl(configData.dest_repo_url);
-                        setHasSavedGlobalGitToken(Boolean(configData.dest_repo_token));
-                        setGlobalGitToken('');
-                        return;
-                    }
+                    if (!isMounted) return;
+                    setGlobalGitRepoUrl(configData.dest_repo_url || '');
+                    setHasSavedGlobalGitToken(Boolean(configData.dest_repo_token));
+                    setGlobalGitToken('');
+                    return;
                 }
 
                 // 2. Legacy fallback
@@ -906,7 +961,6 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
         setGlobalGitRepoUrl('');
         setRepoProvider('');
         setAnalysisRepoSuggestion(null);
-        setIsLoadingGitConfig(true);
         setError('');
 
         const loadAnalysis = async () => {
@@ -925,21 +979,9 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     return;
                 }
 
-                // Check for previously saved prerequisites for THIS project
-                // Use versioned key to bust stale cache with HTML tags
-                const PREREQ_CACHE_KEY = `prerequisites_v2_${selectedProjectKey}`;
-                const savedPrereqs = sessionStorage.getItem(PREREQ_CACHE_KEY);
-                if (savedPrereqs) {
-                    try {
-                        const parsed = JSON.parse(savedPrereqs);
-                        // Validate: reject cache if any description contains HTML tags
-                        const hasHtml = parsed.some(p => /<[a-z][\s\S]*>/i.test(p.description || ''));
-                        if (!hasHtml && parsed.length > 0) {
-                            setPrerequisites(parsed.map((p, idx) => normalizePrerequisiteItem(p, idx)));
-                            return;
-                        }
-                    } catch { /* fall through */ }
-                }
+                // Always fetch fresh prerequisites from the server to ensure org-scoped data
+                // sessionStorage cache is avoided to prevent stale data across org members
+                sessionStorage.removeItem(`prerequisites_v2_${selectedProjectKey}`);
                 // Also clear old v1 cache
                 sessionStorage.removeItem(`prerequisites_${selectedProjectKey}`);
 
@@ -2336,22 +2378,22 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                             </p>
 
                             {(!globalGitRepoUrl || !globalGitRepoUrl.trim()) ? (
-                                <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-900/30 dark:border-amber-800 p-4 flex items-start gap-3">
+                                <div className="mb-4 rounded-xl border border-amber-300 dark:border-amber-700/80 bg-amber-500/10 dark:bg-amber-950/40 p-4 flex items-start gap-3">
                                     <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
                                     <div>
-                                        <p className="text-sm font-semibold text-amber-800 dark:text-amber-200">No git repository configured</p>
-                                        <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
+                                        <p className="text-sm font-extrabold text-amber-900 dark:text-amber-100">No git repository configured</p>
+                                        <p className="text-xs font-medium text-amber-800 dark:text-amber-200 mt-1 leading-relaxed">
                                             This project has no Git repository settings saved. Please enter a repository URL below.
                                         </p>
                                     </div>
                                 </div>
                             ) : (
-                                <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/20 dark:border-emerald-900/30 dark:border-emerald-800 p-4 flex items-start gap-3">
+                                <div className="mb-4 rounded-xl border border-emerald-300 dark:border-emerald-700/80 bg-emerald-500/10 dark:bg-emerald-950/40 p-4 flex items-start gap-3">
                                     <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 mt-0.5 flex-shrink-0" />
                                     <div>
-                                        <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">Git repository configured</p>
-                                        <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-0.5">
-                                            Current repository: <span className="font-mono break-all">{globalGitRepoUrl}</span>
+                                        <p className="text-sm font-extrabold text-emerald-900 dark:text-emerald-100">Git repository configured</p>
+                                        <p className="text-xs font-medium text-emerald-800 dark:text-emerald-200 mt-1 leading-relaxed">
+                                            Current repository: <span className="font-mono font-bold break-all">{globalGitRepoUrl}</span>
                                         </p>
                                     </div>
                                 </div>

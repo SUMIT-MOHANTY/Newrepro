@@ -223,30 +223,74 @@ def is_bootstrap_pushed(project_token: str) -> bool:
     except Exception as pt_err:
         logger.warning(f"Failed to check project type in is_bootstrap_pushed: {pt_err}")
 
+    # ── Priority 0.5: STALE RESET CHECK ────────────────────────────────────
+    # If the bootstrap task exists in agent_task_ownerships with status='pending',
+    # the user has reset the tasks and wants bootstrap to re-run.
+    # Without this check, a stale BootstrapState record from a previous run
+    # would keep returning True even though the task was reset.
+    try:
+        import models
+        db = SessionLocal()
+        try:
+            task_ownership = db.query(models.AgentTaskOwnership).filter(
+                models.AgentTaskOwnership.project_token == project_token,
+                models.AgentTaskOwnership.task_id.like(f"%TASK-00%"),
+            ).first()
+            if task_ownership and task_ownership.status == "pending":
+                logger.info(
+                    f"[Bootstrap] TASK-00 in agent_task_ownerships has status='pending' "
+                    f"— tasks were reset, treating bootstrap as NOT pushed for {project_token}"
+                )
+                return False
+        finally:
+            db.close()
+    except Exception as stale_err:
+        logger.warning(f"Failed to check stale bootstrap state: {stale_err}")
+
     # ── Priority 1: ProjectCanonicalState (local-first, most authoritative) ─
     try:
         from local_state_manager import get_canonical_state
         cs = get_canonical_state(project_token)
         if cs and cs.get("bootstrap_branch") is not None:
-            return True
+            # ═══ FIX: Verify the canonical tree actually has real content ═══
+            # If bootstrap was "pushed" but has no meaningful file structure,
+            # treat it as NOT pushed so agents re-bootstrap.
+            canonical_tree = cs.get("canonical_tree") or ""
+            if isinstance(canonical_tree, str) and len(canonical_tree.strip()) > 80:
+                # Minimum: a tree with a root node that has at least some children
+                return True
+            else:
+                logger.info(
+                    f"[Bootstrap] canonical_tree too small/empty ({len(canonical_tree)} chars) — "
+                    f"treating bootstrap as NOT pushed for {project_token}"
+                )
     except Exception as e:
         logger.warning(f"get_canonical_state check failed: {e}")
 
     # ── Priority 2: BootstrapState table (legacy, still written) ────────────
     state = get_bootstrap_state(project_token)
     if state.get("pushed", False) and state.get("bootstrap_branch") is not None:
-        # Write-through so future calls hit Priority 1 (faster path)
-        try:
-            from local_state_manager import save_canonical_state
-            save_canonical_state(
-                project_token=project_token,
-                canonical_tree=state.get("workspace_tree"),
-                bootstrap_branch=state.get("bootstrap_branch"),
-                agent_id="bootstrap_recovery",
+        # ═══ FIX: Verify the workspace tree actually has real content ═══
+        # Same check as Priority 1 — prevents stale "pushed" flags from blocking re-bootstrap
+        workspace_tree = state.get("workspace_tree") or ""
+        if isinstance(workspace_tree, str) and len(workspace_tree.strip()) > 80:
+            # Write-through so future calls hit Priority 1 (faster path)
+            try:
+                from local_state_manager import save_canonical_state
+                save_canonical_state(
+                    project_token=project_token,
+                    canonical_tree=workspace_tree,
+                    bootstrap_branch=state.get("bootstrap_branch"),
+                    agent_id="bootstrap_recovery",
+                )
+            except Exception:
+                pass
+            return True
+        else:
+            logger.info(
+                f"[Bootstrap] Priority 2 workspace_tree too small/empty ({len(workspace_tree)} chars) — "
+                f"treating bootstrap as NOT pushed for {project_token}"
             )
-        except Exception:
-            pass
-        return True
 
     # ── Priority 3: Task table (recovery for pre-migration data) ────────────
     db = SessionLocal()

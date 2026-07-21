@@ -77,11 +77,6 @@ class Settings(BaseSettings):
     nxdune_org_create_auth_token: Optional[str] = None
     nxdune_org_create_timeout_seconds: int = 20
 
-    # Task Management API
-    task_api_base_url: str = "https://01e5-49-42-156-24.ngrok-free.app"
-    task_api_client_id: str = "proj_240_4aba49b2"
-    task_api_client_secret: str = "IKaVcrdkLSxOAnE_q1PFcol7p_Bq3heoEj-uuxTyaKE"
-
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

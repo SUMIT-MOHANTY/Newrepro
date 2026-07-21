@@ -27,7 +27,7 @@ import ipaddress
 from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Optional, List, Dict, Any
+from typing import Annotated, Optional, List, Dict, Any, Union
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
@@ -171,17 +171,17 @@ async def lifespan(app: FastAPI):
     # Initialize job manager
     await analysis_job_manager.initialize_job_manager()
     
-    # Import and start background sync engine
-    from local_sync_service import run_nxdune_sync_worker
-    sync_task = asyncio.create_task(run_nxdune_sync_worker())
+    # Start background auto-capture logs loop
+    from capture_agent_logs import auto_capture_loop
+    log_task = asyncio.create_task(auto_capture_loop())
     
     yield
     
-    # Cancel sync engine and shutdown job manager
-    sync_task.cancel()
+    # Cancel log capture task and shutdown job manager
+    log_task.cancel()
     try:
-        await sync_task
-    except asyncio.CancelledError:
+        await asyncio.gather(log_task, return_exceptions=True)
+    except Exception:
         pass
     await analysis_job_manager.shutdown_job_manager()
 
@@ -279,10 +279,15 @@ async def log_user_activities(request: Request, call_next):
         current_user_id_var.reset(token_user)
         current_project_token_var.reset(token_proj)
 
-    # 2. Log user activity to user_activity_logs (skip static, heartbeat, or log-polling paths to prevent db bloat)
+    # 2. Log user activity to user_activity_logs (skip static, heartbeat, or log-polling paths to prevent db bloat & connection pool exhaustion)
     path = request.url.path
     # Ignore patterns
-    if not any(pat in path for pat in ["/static", "/favicon", "/assets", "/api/agent/tasks-list", "/api/agent/status", "/metrics", "/health"]):
+    skip_patterns = [
+        "/static", "/favicon", "/assets", "/metrics", "/health",
+        "/api/agent/tasks-list", "/api/agent/status", "/agents",
+        "/git-config", "/history", "/progress", "/stream", "/nxdune", "/claude-md-files", "/skills-md-files"
+    ]
+    if not any(pat in path for pat in skip_patterns):
         # Create an action description
         action = f"{request.method} {path}"
         
@@ -573,10 +578,18 @@ async def analyze_document_with_ai(
                 pass
                 
         if not repo_url:
-            cred = db.query(models.AgentCredential).filter(
-                models.AgentCredential.project_token == project_token,
-                models.AgentCredential.owner_id == current_user.id
-            ).first()
+            cred_query = db.query(models.AgentCredential).filter(
+                models.AgentCredential.project_token == project_token
+            )
+            org_name = _normalized_text(getattr(current_user, "organization_name", None))
+            if org_name:
+                org_ids = db.query(models.User.id).filter(
+                    func.lower(models.User.organization_name) == org_name.lower()
+                ).scalar_subquery()
+                cred_query = cred_query.filter(models.AgentCredential.owner_id.in_(org_ids))
+            else:
+                cred_query = cred_query.filter(models.AgentCredential.owner_id == current_user.id)
+            cred = cred_query.first()
             if cred:
                 repo_url = cred.git_repo_url
                 repo_token = cred.git_token
@@ -811,13 +824,59 @@ async def brd_chat(
     import llm_gateway
     import json
     from config import settings
+    # Look up GovernanceResponse for project context
+    gov = None
+    if str(payload.project_token).isdigit():
+        gov = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.id == int(payload.project_token)
+        ).first()
+    if not gov:
+        gov = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.project_token == payload.project_token
+        ).first()
 
-    # Fetch document/BRD content
-    token_pattern = f'%"project_token": "{payload.project_token}"%'
-    doc = db.query(models.Document).filter(
-        models.Document.owner_id == current_user.id,
-        models.Document.analysis_result.like(token_pattern)
-    ).order_by(models.Document.upload_date.desc()).first()
+    # Fetch document/BRD content — org-scoped so all org members can see project docs
+    org_name = _normalized_text(getattr(current_user, "organization_name", None))
+    if org_name:
+        org_user_ids = db.query(models.User.id).filter(
+            func.lower(models.User.organization_name) == org_name.lower()
+        ).scalar_subquery()
+        user_docs = db.query(models.Document).filter(
+            models.Document.owner_id.in_(org_user_ids)
+        ).order_by(models.Document.upload_date.desc()).all()
+    else:
+        user_docs = db.query(models.Document).filter(
+            models.Document.owner_id == current_user.id
+        ).order_by(models.Document.upload_date.desc()).all()
+
+    doc = None
+    # 1. Try matching document using governance linkage
+    for d in user_docs:
+        if gov and _is_document_linked_to_governance(d, gov):
+            doc = d
+            break
+        if d.analysis_result:
+            try:
+                parsed = json.loads(d.analysis_result)
+                if isinstance(parsed, dict):
+                    p_tok = parsed.get("project_token") or (parsed.get("projectMeta") or {}).get("project_token")
+                    r_id = (parsed.get("governanceContext") or {}).get("result_id") or (parsed.get("projectMeta") or {}).get("governance_result_id")
+                    if p_tok and str(p_tok) == str(payload.project_token):
+                        doc = d
+                        break
+                    if r_id and str(r_id) == str(payload.project_token):
+                        doc = d
+                        break
+            except Exception:
+                pass
+
+    # 2. Fallback: string pattern match in analysis_result
+    if not doc:
+        token_str = str(payload.project_token)
+        for d in user_docs:
+            if d.analysis_result and token_str in d.analysis_result:
+                doc = d
+                break
 
     brd_content = doc.full_content if doc else ""
     analysis_report = ""
@@ -826,18 +885,25 @@ async def brd_chat(
             analysis_data = json.loads(doc.analysis_result)
             if isinstance(analysis_data, dict):
                 analysis_report = analysis_data.get("analysis", "")
-        except:
+        except Exception:
             pass
 
-    system_prompt = f"""You are a senior BRD Refinement Assistant and requirements engineer.
+    # Fallback to GovernanceResponse recommendation if analysis_report is empty
+    if not analysis_report and gov and gov.recommendation:
+        analysis_report = str(gov.recommendation).strip()
+
+    project_name = (gov.project_name if gov else None) or payload.project_token
+
+    system_prompt = f"""You are a senior BRD Refinement Assistant and requirements engineer for project "{project_name}".
 You are helping the user analyze, clarify, and plan improvements to their Business Requirement Document (BRD) and its generated AI Action Plan/Analysis report.
 
 Your goal is to have a back-and-forth planning conversation with the user. Answer their questions, identify potential edge cases, help them flesh out business logic, and refine requirement details.
 
 CRITICAL RULES:
-1. Do NOT write that the document has been updated or changed. You cannot modify the document yourself in this conversational mode.
-2. If the user wants to apply or write the discussed changes to the BRD, instruct them to type "now update the plan in brd" or click the "Apply to BRD" button.
-3. Be clear, professional, and SDLC-focused.
+1. The BRD and AI Action Plan for this project are ALREADY GENERATED and loaded into context. Do NOT ask the user to share, upload, or paste the BRD again.
+2. Do NOT claim that the document has been updated or saved directly. You cannot modify the document yourself in this conversational mode.
+3. If the user wants to apply or write the discussed changes to the BRD, instruct them to type "now update the plan in brd" or click the "Apply to BRD" button.
+4. Be clear, professional, helpful, and SDLC-focused.
 
 CONTEXT INFO:
 """
@@ -2078,6 +2144,24 @@ def _org_user_ids_subquery(db: Session, organization_name: str):
         func.lower(models.User.organization_name) == org.lower()
     ).scalar_subquery()
 
+
+def _governance_query_for_user(db: Session, user: models.User):
+    """
+    Build a GovernanceResponse query scoped to the user's organization (if org exists),
+    falling back to personal-scope only if the user has no organization.
+    This ensures org members can see and act on each other's projects.
+    """
+    org = _normalized_text(getattr(user, "organization_name", None))
+    if not org:
+        return db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.owner_id == user.id
+        )
+    org_user_ids = _org_user_ids_subquery(db, org)
+    return db.query(models.GovernanceResponse).filter(
+        models.GovernanceResponse.owner_id.in_(org_user_ids)
+    )
+
+
 # --- Organization RBAC + Invites ---
 
 ORG_MANAGED_PAGES: list[schemas.OrganizationPage] = [
@@ -2182,6 +2266,12 @@ def _get_user_allowed_paths(db: Session, user: models.User) -> tuple[Optional[st
 
     allowed_paths = sorted({(perm.path or "").strip() for perm in (role.permissions or []) if (perm.path or "").strip()})
     return role.name, allowed_paths
+
+def _can_manage_governance(db: Session, user: models.User) -> bool:
+    if bool(getattr(user, "is_org_admin", False)):
+        return True
+    _, allowed_paths = _get_user_allowed_paths(db, user)
+    return "/governance-management" in (allowed_paths or [])
 
 @app.get("/organization/rbac/pages", response_model=list[schemas.OrganizationPage])
 def list_org_pages(
@@ -4513,6 +4603,25 @@ async def get_share_stats(
     }
 
 
+def _share_project_query_for_user(db: Session, current_user: models.User):
+    """
+    Returns a SQLAlchemy query for ShareProject scoped to the user's organization if present,
+    or to the individual user if no organization is specified.
+    This ensures org members can see and manage each other's share projects.
+    """
+    organization_name = _normalized_text(getattr(current_user, "organization_name", None))
+    if not organization_name:
+        return db.query(models.ShareProject).filter(
+            models.ShareProject.owner_id == current_user.id
+        )
+    org_user_ids = db.query(models.User.id).filter(
+        func.lower(models.User.organization_name) == organization_name.lower()
+    ).scalar_subquery()
+    return db.query(models.ShareProject).filter(
+        models.ShareProject.owner_id.in_(org_user_ids)
+    )
+
+
 # --- Share Project Endpoints ---
 @app.post("/api/share-projects")
 async def create_share_project(
@@ -4565,9 +4674,7 @@ async def get_share_projects(
     """
     Get all share projects for the current user
     """
-    share_projects = db.query(models.ShareProject).filter(
-        models.ShareProject.owner_id == current_user.id
-    ).order_by(models.ShareProject.created_at.desc()).all()
+    share_projects = _share_project_query_for_user(db, current_user).order_by(models.ShareProject.created_at.desc()).all()
     
     # Get document counts for each project
     result = []
@@ -4599,9 +4706,8 @@ async def get_share_project(
     """
     Get a specific share project with its documents
     """
-    share_project = db.query(models.ShareProject).filter(
-        models.ShareProject.project_token == project_token,
-        models.ShareProject.owner_id == current_user.id
+    share_project = _share_project_query_for_user(db, current_user).filter(
+        models.ShareProject.project_token == project_token
     ).first()
     
     if not share_project:
@@ -4672,9 +4778,8 @@ async def update_share_project(
     """
     Update a share project (e.g. current_step)
     """
-    share_project = db.query(models.ShareProject).filter(
-        models.ShareProject.project_token == project_token,
-        models.ShareProject.owner_id == current_user.id
+    share_project = _share_project_query_for_user(db, current_user).filter(
+        models.ShareProject.project_token == project_token
     ).first()
     
     if not share_project:
@@ -4713,9 +4818,8 @@ async def upload_project_files(
     Upload and encrypt files immediately inside a project-isolated folder
     """
     # 1. Fetch project
-    project = db.query(models.ShareProject).filter(
-        models.ShareProject.project_token == project_token,
-        models.ShareProject.owner_id == current_user.id
+    project = _share_project_query_for_user(db, current_user).filter(
+        models.ShareProject.project_token == project_token
     ).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -4840,9 +4944,8 @@ async def delete_share_project(
     """
     Delete a share project and all its associated documents
     """
-    share_project = db.query(models.ShareProject).filter(
-        models.ShareProject.project_token == project_token,
-        models.ShareProject.owner_id == current_user.id
+    share_project = _share_project_query_for_user(db, current_user).filter(
+        models.ShareProject.project_token == project_token
     ).first()
     
     if not share_project:
@@ -5144,8 +5247,8 @@ async def get_all_governance_questions(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
-    if not current_user.is_org_admin:
-        raise HTTPException(status_code=403, detail="Only org admins can manage questions")
+    if not _can_manage_governance(db, current_user):
+        raise HTTPException(status_code=403, detail="Only org admins or authorized governance roles can manage questions")
     
     return db.query(models.GovernanceQuestion).order_by(models.GovernanceQuestion.order).all()
 
@@ -5155,8 +5258,8 @@ async def create_governance_question(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
-    if not current_user.is_org_admin:
-        raise HTTPException(status_code=403, detail="Only org admins can manage questions")
+    if not _can_manage_governance(db, current_user):
+        raise HTTPException(status_code=403, detail="Only org admins or authorized governance roles can manage questions")
     
     db_question = models.GovernanceQuestion(
         dimension=question.dimension,
@@ -5186,8 +5289,8 @@ async def update_governance_question(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
-    if not current_user.is_org_admin:
-        raise HTTPException(status_code=403, detail="Only org admins can manage questions")
+    if not _can_manage_governance(db, current_user):
+        raise HTTPException(status_code=403, detail="Only org admins or authorized governance roles can manage questions")
     
     db_question = db.query(models.GovernanceQuestion).filter(models.GovernanceQuestion.id == question_id).first()
     if not db_question:
@@ -5224,8 +5327,8 @@ async def delete_governance_question(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
-    if not current_user.is_org_admin:
-        raise HTTPException(status_code=403, detail="Only org admins can manage questions")
+    if not _can_manage_governance(db, current_user):
+        raise HTTPException(status_code=403, detail="Only org admins or authorized governance roles can manage questions")
     
     db_question = db.query(models.GovernanceQuestion).filter(models.GovernanceQuestion.id == question_id).first()
     if not db_question:
@@ -5400,17 +5503,22 @@ async def get_project_git_config(
     db: Session = Depends(get_db),
 ):
     project_token = _normalize_project_token(project_token)
-    db_response = db.query(models.GovernanceResponse).filter(
+    row = db.query(
+        models.GovernanceResponse.source_repo_url,
+        models.GovernanceResponse.source_repo_token,
+        models.GovernanceResponse.dest_repo_url,
+        models.GovernanceResponse.dest_repo_token,
+    ).filter(
         models.GovernanceResponse.project_token == project_token
     ).first()
-    if not db_response:
+    if not row:
         raise HTTPException(status_code=404, detail="Project not found")
         
     return schemas.ProjectGitConfigResponse(
-        source_repo_url=db_response.source_repo_url,
-        source_repo_token=db_response.source_repo_token,
-        dest_repo_url=db_response.dest_repo_url,
-        dest_repo_token=db_response.dest_repo_token,
+        source_repo_url=row.source_repo_url,
+        source_repo_token=row.source_repo_token,
+        dest_repo_url=row.dest_repo_url,
+        dest_repo_token=row.dest_repo_token,
     )
 
 
@@ -5574,7 +5682,13 @@ async def get_governance_history(
             .all()
         )
     else:
-        if current_user.is_org_admin:
+        role_name, allowed_paths = _get_user_allowed_paths(db, current_user)
+        can_view_org_governance = (
+            bool(getattr(current_user, "is_org_admin", False))
+            or "/governance-management" in (allowed_paths or [])
+            or "/new-project/governance" in (allowed_paths or [])
+        )
+        if can_view_org_governance:
             responses = (
                 db.query(models.GovernanceResponse)
                 .filter(
@@ -5637,7 +5751,13 @@ async def get_governance_result(
             models.GovernanceResponse.owner_id == current_user.id
         )
     else:
-        if current_user.is_org_admin:
+        role_name, allowed_paths = _get_user_allowed_paths(db, current_user)
+        can_view_org_governance = (
+            bool(getattr(current_user, "is_org_admin", False))
+            or "/governance-management" in (allowed_paths or [])
+            or "/new-project/governance" in (allowed_paths or [])
+        )
+        if can_view_org_governance:
             query = db.query(models.GovernanceResponse).filter(
                 func.lower(models.GovernanceResponse.organization_name) == organization_name.lower()
             )
@@ -5713,6 +5833,45 @@ async def get_governance_result(
         client_id=response.client_id,
         client_secret=response.client_secret,
     )
+
+
+# ─── NXDune Manual Sync Endpoints ───────────────────────────────────────────────
+@app.post("/api/nxdune/sync-now")
+async def manual_nxdune_sync(
+    project_token: Optional[str] = None,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Manually trigger a one-time sync of pending logs to NXDune.
+    Executes without any automatic background retry loop.
+    """
+    from local_sync_service import trigger_nxdune_sync_now
+    result = await trigger_nxdune_sync_now(db, project_token=project_token)
+    return result
+
+@app.get("/api/nxdune/sync-status")
+async def get_nxdune_sync_status(
+    project_token: Optional[str] = None,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get status counts of NXDune sync logs."""
+    query = db.query(models.NXDuneSyncLog)
+    if project_token:
+        query = query.filter(models.NXDuneSyncLog.project_token == project_token)
+        
+    total = query.count()
+    pending = query.filter(models.NXDuneSyncLog.success == False, models.NXDuneSyncLog.permanently_failed == False).count()
+    succeeded = query.filter(models.NXDuneSyncLog.success == True).count()
+    failed = query.filter(models.NXDuneSyncLog.permanently_failed == True).count()
+    
+    return {
+        "total": total,
+        "pending": pending,
+        "succeeded": succeeded,
+        "failed": failed
+    }
 
 
 # ─── VibeCoding Handoff ─────────────────────────────────────────────────────────
@@ -5970,10 +6129,8 @@ async def delete_governance_project(
     """
     Archive (soft-delete) a project — hides it from the UI but keeps all data in the database.
     """
-    query = db.query(models.GovernanceResponse).filter(
-        models.GovernanceResponse.owner_id == current_user.id
-    )
-
+    query = _governance_query_for_user(db, current_user)
+    
     if identifier.isdigit():
         governance = query.filter(models.GovernanceResponse.id == int(identifier)).first()
     else:
@@ -6025,6 +6182,9 @@ async def delete_governance_project(
     return response
 
 
+
+
+
 @app.post("/governance/{identifier}/revision-reason")
 async def update_revision_reason(
     identifier: str,
@@ -6035,9 +6195,7 @@ async def update_revision_reason(
     """
     Update the pending revision reason attached to a project.
     """
-    query = db.query(models.GovernanceResponse).filter(
-        models.GovernanceResponse.owner_id == current_user.id
-    )
+    query = _governance_query_for_user(db, current_user)
     if identifier.isdigit():
         response = query.filter(models.GovernanceResponse.id == int(identifier)).first()
     else:
@@ -6058,9 +6216,7 @@ async def mark_prerequisites_complete(
     db: Session = Depends(get_db),
 ):
     """Mark prerequisites as completed for a project."""
-    query = db.query(models.GovernanceResponse).filter(
-        models.GovernanceResponse.owner_id == current_user.id
-    )
+    query = _governance_query_for_user(db, current_user)
     if identifier.isdigit():
         governance = query.filter(models.GovernanceResponse.id == int(identifier)).first()
     else:
@@ -6083,9 +6239,7 @@ async def save_claude_md_files(
     db: Session = Depends(get_db),
 ):
     """Save claude.md files for a project (always loaded for all agents)."""
-    query = db.query(models.GovernanceResponse).filter(
-        models.GovernanceResponse.owner_id == current_user.id
-    )
+    query = _governance_query_for_user(db, current_user)
     if identifier.isdigit():
         governance = query.filter(models.GovernanceResponse.id == int(identifier)).first()
     else:
@@ -6107,9 +6261,7 @@ async def get_claude_md_files(
     db: Session = Depends(get_db),
 ):
     """Get claude.md files for a project."""
-    query = db.query(models.GovernanceResponse).filter(
-        models.GovernanceResponse.owner_id == current_user.id
-    )
+    query = _governance_query_for_user(db, current_user)
     if identifier.isdigit():
         governance = query.filter(models.GovernanceResponse.id == int(identifier)).first()
     else:
@@ -6129,9 +6281,7 @@ async def save_skills_md_files(
     db: Session = Depends(get_db),
 ):
     """Save skills.md files for a project (selectively loaded based on task relevance)."""
-    query = db.query(models.GovernanceResponse).filter(
-        models.GovernanceResponse.owner_id == current_user.id
-    )
+    query = _governance_query_for_user(db, current_user)
     if identifier.isdigit():
         governance = query.filter(models.GovernanceResponse.id == int(identifier)).first()
     else:
@@ -6153,9 +6303,7 @@ async def get_skills_md_files(
     db: Session = Depends(get_db),
 ):
     """Get skills.md files for a project."""
-    query = db.query(models.GovernanceResponse).filter(
-        models.GovernanceResponse.owner_id == current_user.id
-    )
+    query = _governance_query_for_user(db, current_user)
     if identifier.isdigit():
         governance = query.filter(models.GovernanceResponse.id == int(identifier)).first()
     else:
@@ -7524,7 +7672,7 @@ async def list_project_repos(
         # Try project-level PAT if user-level OAuth is empty
         db_pat = None
         if not access_token:
-            cred = _resolve_project_global_credential(db, current_user.id, payload.project_token)
+            cred = _resolve_project_global_credential(db, current_user, payload.project_token)
             if cred and cred.git_token:
                 db_pat = cred.git_token
         
@@ -7735,7 +7883,7 @@ async def azure_devops_repo_context(
             project_token = current_user.last_project_token
             
         if project_token:
-            cred = _resolve_project_global_credential(db, current_user.id, project_token)
+            cred = _resolve_project_global_credential(db, current_user, project_token)
             if cred and cred.git_token:
                 db_pat = cred.git_token
 
@@ -8481,14 +8629,18 @@ def _ensure_default_governance_questions(db: Session) -> None:
 def _startup_init() -> None:
     # Ensure Docker image is ready before anything else
     print("Initializing Docker runtime environment...")
-    img_res = agent_service._ensure_agent_runtime_image()
-    if img_res.get("success"):
-        if img_res.get("built"):
-            print("[OK] Docker image built successfully.")
+    try:
+        img_res = agent_service._ensure_agent_runtime_image()
+        if img_res.get("success"):
+            if img_res.get("built"):
+                print("[OK] Docker image built successfully.")
+            else:
+                print("[OK] Docker image verified (already exists).")
         else:
-            print("[OK] Docker image verified (already exists).")
-    else:
-        print(f"[ERROR] Docker initialization failed: {img_res.get('error')}")
+            print(f"[ERROR] Docker initialization failed: {img_res.get('error')}")
+    except Exception as exc:
+        print(f"[WARNING] Docker initialization check failed or timed out: {exc}")
+        print("The server will continue to start, but agent execution tasks will require Docker to be running.")
 
     agent_service.seed_sample_tasks()
     db = SessionLocal()
@@ -8512,29 +8664,44 @@ GLOBAL_GIT_CREDENTIAL_AGENT_ID = "__global_git__"
 
 def _get_project_global_credential(
     db: Session,
-    user_id: int,
+    user: Union[models.User, int],
     project_token: Optional[str],
 ) -> Optional[models.AgentCredential]:
+    if isinstance(user, int):
+        resolved_user = db.query(models.User).filter(models.User.id == user).first()
+        if not resolved_user:
+            return None
+        user = resolved_user
+
     project_token = _normalize_project_token(project_token)
     cred_query = db.query(models.AgentCredential).filter(
-        models.AgentCredential.owner_id == user_id,
         models.AgentCredential.agent_id == GLOBAL_GIT_CREDENTIAL_AGENT_ID,
     )
     if project_token:
         cred_query = cred_query.filter(models.AgentCredential.project_token == project_token)
     else:
         cred_query = cred_query.filter(models.AgentCredential.project_token.is_(None))
+    # Scope to org if user belongs to one, otherwise only current user
+    org_name = _normalized_text(getattr(user, "organization_name", None))
+    if org_name:
+        org_ids = db.query(models.User.id).filter(
+            func.lower(models.User.organization_name) == org_name.lower()
+        ).scalar_subquery()
+        cred_query = cred_query.filter(models.AgentCredential.owner_id.in_(org_ids))
+    else:
+        cred_query = cred_query.filter(models.AgentCredential.owner_id == user.id)
     return cred_query.first()
 
 
 def _list_legacy_agent_credentials(
     db: Session,
-    user_id: int,
+    user_id: Union[models.User, int],
     project_token: Optional[str],
 ) -> List[models.AgentCredential]:
+    uid = user_id.id if isinstance(user_id, models.User) else user_id
     project_token = _normalize_project_token(project_token)
     cred_query = db.query(models.AgentCredential).filter(
-        models.AgentCredential.owner_id == user_id,
+        models.AgentCredential.owner_id == uid,
         models.AgentCredential.agent_id != GLOBAL_GIT_CREDENTIAL_AGENT_ID,
     )
     if project_token:
@@ -8671,16 +8838,22 @@ def _delete_agent_record(db: Session, agent_id: str, project_token: Optional[str
 
 def _upsert_project_global_credentials(
     db: Session,
-    user_id: int,
+    user: Union[models.User, int],
     git_repo_url: Optional[str] = None,
     git_token: Optional[str] = None,
     project_token: Optional[str] = None,
 ) -> models.AgentCredential:
+    if isinstance(user, int):
+        resolved_user = db.query(models.User).filter(models.User.id == user).first()
+        if resolved_user:
+            user = resolved_user
+
     project_token = _normalize_project_token(project_token)
-    cred = _get_project_global_credential(db, user_id, project_token)
+    cred = _get_project_global_credential(db, user, project_token)
     if not cred:
+        uid = user.id if isinstance(user, models.User) else user
         cred = models.AgentCredential(
-            owner_id=user_id,
+            owner_id=uid,
             agent_id=GLOBAL_GIT_CREDENTIAL_AGENT_ID,
             project_token=project_token,
         )
@@ -8700,19 +8873,19 @@ def _upsert_project_global_credentials(
 
 def _resolve_project_global_credential(
     db: Session,
-    user_id: int,
+    user: Union[models.User, int],
     project_token: Optional[str],
 ) -> Optional[models.AgentCredential]:
     """
     Return project-wide global Git credential.
     Backfills from legacy per-agent credentials so existing users are not disrupted.
     """
-    cred = _get_project_global_credential(db, user_id, project_token)
+    cred = _get_project_global_credential(db, user, project_token)
     if cred:
         return cred
 
     legacy = sorted(
-        _list_legacy_agent_credentials(db, user_id, project_token),
+        _list_legacy_agent_credentials(db, user.id, project_token),
         key=lambda row: row.updated_at or datetime.min,
         reverse=True,
     )
@@ -8734,7 +8907,7 @@ def _resolve_project_global_credential(
 
     return _upsert_project_global_credentials(
         db,
-        user_id,
+        user,
         git_repo_url=repo_val,
         git_token=token_val,
         project_token=project_token,
@@ -8947,7 +9120,7 @@ async def list_agents(
     
     logger.info(f"[GET /agents] visible_runtime_ids after filtering: {list(visible_runtime_ids.keys())}")
 
-    global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+    global_cred = _resolve_project_global_credential(db, current_user, project_token)
     
     # Check public repo status for all agents in parallel
     import asyncio
@@ -9455,7 +9628,7 @@ async def deploy_preview(
     if request and (request.git_repo_url is not None or request.git_token is not None):
         _upsert_project_global_credentials(
             db,
-            current_user.id,
+            current_user,
             git_repo_url=git_repo_url,
             git_token=git_token,
             project_token=project_token,
@@ -9463,7 +9636,7 @@ async def deploy_preview(
 
     # Try to get credentials from request first, then fall back to saved credentials
     if not git_repo_url or not git_token:
-        global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+        global_cred = _resolve_project_global_credential(db, current_user, project_token)
         if global_cred:
             git_repo_url = git_repo_url or global_cred.git_repo_url
             git_token = git_token or global_cred.git_token
@@ -9512,7 +9685,7 @@ async def fix_preview(
 
     # Try to get credentials from request first, then fall back to saved credentials
     if not git_repo_url or not git_token:
-        global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+        global_cred = _resolve_project_global_credential(db, current_user, project_token)
         if global_cred:
             git_repo_url = git_repo_url or global_cred.git_repo_url
             git_token = git_token or global_cred.git_token
@@ -9703,7 +9876,7 @@ async def get_agent_status(
             agent_ids=[agent_id],
         )
         agent = agent_service.get_agent_status(agent_id, project_token)
-        global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+        global_cred = _resolve_project_global_credential(db, current_user, project_token)
         sanitized_agent = await _sanitize_agent_for_user_with_public_check(agent, global_cred)
         
         # Restore request agent_id (with instance suffix) so frontend maps correctly
@@ -9740,6 +9913,13 @@ async def _bg_run_agent(
         from brownfield_agent_service import is_brownfield_project, run_brownfield_agent
         from bootstrap_persistence import get_bootstrap_branch
         import agent_service
+
+        # Notify IntegratedCoordinator that agent is starting
+        try:
+            from integrated_agent_coordinator import coordinator as _ic
+            _ic.track_agent_event(project_token or "", agent_id, "starting", f"_bg_run_agent for {project_token}")
+        except Exception:
+            pass
 
         db = SessionLocal()
         project_type = "greenfield"
@@ -9807,6 +9987,13 @@ async def _bg_run_agent(
                 
                 if not continuous:
                     break
+            
+            # Notify coordinator that brownfield mode completed
+            try:
+                from integrated_agent_coordinator import coordinator as _ic
+                _ic.track_agent_event(project_token or "", agent_id, "completed", "Brownfield wrapper done")
+            except Exception:
+                pass
         else:
             logger.info(f"[{agent_id}] Running in GREENFIELD mode for project {project_token}")
             await agent_service.run_agent(
@@ -9818,8 +10005,19 @@ async def _bg_run_agent(
                 project_token=project_token,
                 task_token=x_task_token,
             )
+            # Notify coordinator that greenfield mode completed
+            try:
+                from integrated_agent_coordinator import coordinator as _ic
+                _ic.track_agent_event(project_token or "", agent_id, "completed", "Greenfield wrapper done")
+            except Exception:
+                pass
     except Exception as e:
         logger.error(f"Wrapper agent runner failed for {agent_id}: {e}")
+        try:
+            from integrated_agent_coordinator import coordinator as _ic
+            _ic.track_agent_event(project_token or "", agent_id, "failed", f"_bg_run_agent exception: {str(e)[:200]}")
+        except Exception:
+            pass
 
 
 class RunAgentRequest(BaseModel):
@@ -9834,6 +10032,7 @@ async def run_agent(
     db: Session = Depends(get_db),
     x_task_token: Optional[str] = Header(None),
     project_token: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
 ):
     """
     Trigger an idle agent to pick a pending task and start working on it.
@@ -9842,6 +10041,9 @@ async def run_agent(
     """
     project_token = _normalize_project_token(project_token)
     organization_name = _require_organization(current_user)
+    
+    # Auto-launch the log capture script to write live log files
+    _auto_launch_log_capture(authorization, project_token)
     
     # Invalidate cache since agent status will change
     _invalidate_agent_cache(organization_name, project_token)
@@ -9868,12 +10070,12 @@ async def run_agent(
     if request and (request.git_repo_url is not None or request.git_token is not None):
         _upsert_project_global_credentials(
             db,
-            current_user.id,
+            current_user,
             git_repo_url=git_repo_url,
             git_token=git_token,
             project_token=project_token,
         )
-    cred = _resolve_project_global_credential(db, current_user.id, project_token)
+    cred = _resolve_project_global_credential(db, current_user, project_token)
 
     effective_repo = git_repo_url or (cred.git_repo_url if cred else None)
     effective_token = git_token or (cred.git_token if cred else None)
@@ -9944,6 +10146,37 @@ class RunAllRequest(BaseModel):
     source_repo_url: Optional[str] = None
 
 
+def _auto_launch_log_capture(authorization: Optional[str], project_token: Optional[str]):
+    try:
+        token = ""
+        if authorization and authorization.lower().startswith("bearer "):
+            token = authorization[7:].strip()
+        elif authorization:
+            token = authorization.strip()
+            
+        if token:
+            import subprocess
+            import sys
+            import os
+            dir_path = os.path.dirname(os.path.abspath(__file__))
+            script_path = os.path.join(dir_path, "capture_agent_logs.py")
+            if os.path.exists(script_path):
+                env = dict(os.environ)
+                env["LOGIN_TOKEN"] = token
+                env["PYTHONIOENCODING"] = "utf-8"
+                log_file = open(os.path.join(dir_path, "capture_agent_logs.log"), "w", encoding="utf-8")
+                subprocess.Popen(
+                    [sys.executable, script_path],
+                    env=env,
+                    stdout=log_file,
+                    stderr=log_file,
+                    cwd=dir_path
+                )
+                logger.info(f"🚀 Auto-launched capture_agent_logs.py for project {project_token}")
+    except Exception as e:
+        logger.warning(f"Failed to auto-launch capture_agent_logs.py: {e}")
+
+
 @app.post("/agents/run-all")
 async def run_all_agents(
     request: Optional[RunAllRequest] = None,
@@ -9951,6 +10184,7 @@ async def run_all_agents(
     db: Session = Depends(get_db),
     x_task_token: Optional[str] = Header(None),
     project_token: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
 ):
     """
     🎯 NEW COORDINATED APPROACH: Master Task Manager controls ALL agents
@@ -9958,6 +10192,9 @@ async def run_all_agents(
     """
     project_token = _normalize_project_token(project_token)
     organization_name = _require_organization(current_user)
+    
+    # Auto-launch the log capture script to write live log files
+    _auto_launch_log_capture(authorization, project_token)
     
     # Invalidate cache since agent status will change
     _invalidate_agent_cache(organization_name, project_token)
@@ -10066,7 +10303,7 @@ async def run_all_agents(
     if provided_repo or provided_token:
         _upsert_project_global_credentials(
             db,
-            current_user.id,
+            current_user,
             git_repo_url=provided_repo,
             git_token=provided_token,
             project_token=project_token,
@@ -10074,7 +10311,7 @@ async def run_all_agents(
 
     # Resolve final git credentials (from request or DB fallback)
     if not provided_repo or not provided_token:
-        saved_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+        saved_cred = _resolve_project_global_credential(db, current_user, project_token)
         if saved_cred:
             provided_repo = provided_repo or (saved_cred.git_repo_url or "").strip() or None
             provided_token = provided_token or (saved_cred.git_token or "").strip() or None
@@ -10359,12 +10596,12 @@ async def add_agent(
     if git_repo_url or git_token:
         _upsert_project_global_credentials(
             db,
-            current_user.id,
+            current_user,
             git_repo_url=git_repo_url,
             git_token=git_token,
             project_token=project_token,
         )
-    global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+    global_cred = _resolve_project_global_credential(db, current_user, project_token)
     external_agent = None
     external_error = None
     external_username = _build_external_agent_username(agent.get("id"), agent.get("name"))
@@ -10970,12 +11207,12 @@ async def update_agent(
         if repo_provided or token_provided:
             _upsert_project_global_credentials(
                 db,
-                current_user.id,
+                current_user,
                 git_repo_url=request.git_repo_url,
                 git_token=request.git_token,
                 project_token=project_token,
             )
-        global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+        global_cred = _resolve_project_global_credential(db, current_user, project_token)
         sanitized_agent = await _sanitize_agent_for_user_with_public_check(agent, global_cred)
         if sanitized_agent:
             sanitized_agent = {**sanitized_agent, "id": agent_id}
@@ -11023,12 +11260,12 @@ async def update_agent_post(
         if repo_provided or token_provided:
             _upsert_project_global_credentials(
                 db,
-                current_user.id,
+                current_user,
                 git_repo_url=request.git_repo_url,
                 git_token=request.git_token,
                 project_token=project_token,
             )
-        global_cred = _resolve_project_global_credential(db, current_user.id, project_token)
+        global_cred = _resolve_project_global_credential(db, current_user, project_token)
         sanitized_agent = await _sanitize_agent_for_user_with_public_check(agent, global_cred)
         if sanitized_agent:
             sanitized_agent = {**sanitized_agent, "id": agent_id}
@@ -11530,15 +11767,50 @@ async def post_agent_task_progress(
                 db.add(ow)
                 db.flush()
                 
-            if payload.task_progress >= 100:
+            # ═══ WORK EVIDENCE GUARD ═══
+            # When an agent reports 100% progress, verify there's evidence of actual work
+            # by checking checklist or task_data for completion markers.
+            # If no evidence, log warning and cap at 99% instead.
+            _effective_progress = payload.task_progress
+            if _effective_progress >= 100:
+                _has_work_evidence = False
+                # Check 1: Parse checklist from task.checklist (JSON string column)
+                try:
+                    _raw_checklist = getattr(task, 'checklist', None) or '[]'
+                    if isinstance(_raw_checklist, str):
+                        _parsed = json.loads(_raw_checklist)
+                    elif isinstance(_raw_checklist, list):
+                        _parsed = _raw_checklist
+                    else:
+                        _parsed = []
+                    if isinstance(_parsed, list):
+                        _completed_count = sum(1 for c in _parsed if isinstance(c, dict) and c.get("completed"))
+                        if _completed_count > 0:
+                            _has_work_evidence = True
+                except Exception:
+                    pass
+                # Check 2: Files written evidence from ownership record
+                _existing_data = dict(ow.task_data) if ow.task_data else {}
+                if _existing_data.get("files_written") or _existing_data.get("files_created"):
+                    _has_work_evidence = True
+                
+                if not _has_work_evidence:
+                    logger.warning(
+                        f"[post_agent_task_progress] 🚫 WORK EVIDENCE CHECK FAILED for task {clean_id}: "
+                        f"progress reported as {_effective_progress}% but no checklist items completed "
+                        f"and no files_written evidence. Capping to 99% to prevent fake completion."
+                    )
+                    _effective_progress = 99
+            
+            if _effective_progress >= 100:
                 ow.status = "done"
                 ow.completed_at = datetime.utcnow()
             else:
                 ow.status = "in_progress"
                 
             task_data_dict = dict(ow.task_data) if ow.task_data else {}
-            task_data_dict["task_progress"] = payload.task_progress
-            task_data_dict["taskStatus"] = "On Going" if payload.task_progress < 100 else "Completed"
+            task_data_dict["task_progress"] = _effective_progress
+            task_data_dict["taskStatus"] = "On Going" if _effective_progress < 100 else "Completed"
             ow.task_data = task_data_dict
             ow.updated_at = datetime.utcnow()
             
@@ -13394,6 +13666,12 @@ async def generate_tasks_locally(
             "detected_tech_stack": detected_tech_stack,
         }
     
+    except ValueError as val_err:
+        logger.warning(f"Task generation validation error: {val_err}")
+        raise HTTPException(
+            status_code=400,
+            detail=str(val_err)
+        )
     except Exception as e:
         logger.error(f"Task generation failed: {e}")
         raise HTTPException(
@@ -13497,7 +13775,7 @@ async def set_project_type(
     Stores the value in the GovernanceResponse table so it is available for downstream task generation.
     """
     try:
-        gov = db.query(models.GovernanceResponse).filter(
+        gov = _governance_query_for_user(db, current_user).filter(
             models.GovernanceResponse.project_token == project_token
         ).first()
         if not gov:
@@ -14072,6 +14350,13 @@ async def auto_generate_project_tasks(
             if parsed_analysis:
                 analysis_report = parsed_analysis
             break
+
+        if not analysis_report and not analysis_payload:
+            display_name = f'"{project_name}"' if project_name and project_name != request.project_token else "this project"
+            raise HTTPException(
+                status_code=400,
+                detail=f"No requirement document or BRD analysis found for {display_name}. Please upload project documents and generate Agent Analysis first before creating tasks."
+            )
 
         project_data = (
             project_info.get("project")

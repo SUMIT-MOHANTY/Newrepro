@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { API_ENDPOINTS } from '../config';
+import { API_BASE_URL, API_ENDPOINTS } from '../config';
 import { customConfirm } from '../utils/modalHelpers';
 import { Send, AlertCircle, CheckCircle2, AlertTriangle, ChevronRight, ChevronLeft, ArrowRight, Check, Loader2 } from 'lucide-react';
 import { useGovernanceQuestions, useSubmitGovernance } from '../hooks/useGovernance';
@@ -167,8 +167,6 @@ const GovernanceForm = ({
     const persistGovernanceData = (ctx, res) => {
         sessionStorage.setItem('governanceContext', JSON.stringify(ctx));
         sessionStorage.setItem('governanceResult', JSON.stringify(res));
-        localStorage.setItem('governanceContext', JSON.stringify(ctx));
-        localStorage.setItem('governanceResult', JSON.stringify(res));
     };
 
     /* ── mount ── */
@@ -469,7 +467,6 @@ const GovernanceForm = ({
                     const updatedContext = { ...savedContext };
                     delete updatedContext.result_id;
                     sessionStorage.setItem('governanceContext', JSON.stringify(updatedContext));
-                    localStorage.setItem('governanceContext', JSON.stringify(updatedContext));
                 }
             }} 
         />;

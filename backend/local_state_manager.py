@@ -77,7 +77,11 @@ def claim_task_local(
         ).first()
 
         if existing:
-            if existing.agent_id == agent_id:
+            # Allow re-claim if task was reset to pending (e.g. after admin reset)
+            if existing.status == "pending":
+                logger.info(f"[LocalState] Task {task_id} was reset to pending — allowing fresh claim by {agent_id}")
+                # Fall through to create/update below
+            elif existing.agent_id == agent_id:
                 # Already claimed by this agent — idempotent success
                 if existing.status in ("claimed", "in_progress"):
                     logger.debug(f"[LocalState] Task {task_id} re-claimed by same agent {agent_id}")
@@ -99,8 +103,8 @@ def claim_task_local(
         # Serialize task_data safely (remove non-JSON types)
         safe_task_data = _safe_json(task_data)
 
-        if existing and existing.agent_id != agent_id and existing.status in ("done", "failed"):
-            # Fresh claim on completed task — reset the record
+        if existing and (existing.status == "pending" or (existing.agent_id != agent_id and existing.status in ("done", "failed"))):
+            # Fresh claim on pending/completed task — reset the existing record
             existing.agent_id = agent_id
             existing.task_title = title
             existing.task_data = safe_task_data
@@ -154,11 +158,11 @@ def start_task_local(
         record = db.query(models.AgentTaskOwnership).filter(
             models.AgentTaskOwnership.project_token == project_token,
             models.AgentTaskOwnership.task_id == task_id,
-            models.AgentTaskOwnership.agent_id == agent_id,
         ).first()
 
         if record:
             record.status = "in_progress"
+            record.agent_id = agent_id
             record.started_at = datetime.utcnow()
             if branch_name:
                 record.branch_name = branch_name
@@ -166,7 +170,19 @@ def start_task_local(
             db.commit()
             logger.info(f"[LocalState] Task {task_id} started by {agent_id} (branch={branch_name})")
         else:
-            logger.warning(f"[LocalState] start_task_local: record not found for {task_id}/{agent_id}")
+            # Create record if somehow missing (defensive)
+            record = models.AgentTaskOwnership(
+                project_token=project_token,
+                task_id=task_id,
+                agent_id=agent_id,
+                status="in_progress",
+                claimed_at=datetime.utcnow(),
+                started_at=datetime.utcnow(),
+                branch_name=branch_name,
+            )
+            db.add(record)
+            db.commit()
+            logger.info(f"[LocalState] Task {task_id} started and created by {agent_id} (branch={branch_name})")
     except Exception as e:
         db.rollback()
         logger.error(f"[LocalState] start_task_local failed: {e}")
@@ -192,11 +208,11 @@ def complete_task_local(
         record = db.query(models.AgentTaskOwnership).filter(
             models.AgentTaskOwnership.project_token == project_token,
             models.AgentTaskOwnership.task_id == task_id,
-            models.AgentTaskOwnership.agent_id == agent_id,
         ).first()
 
         if record:
             record.status = "done"
+            record.agent_id = agent_id
             record.completed_at = datetime.utcnow()
             if files_written:
                 record.files_written = files_written
@@ -240,10 +256,10 @@ def update_task_progress_local(
         record = db.query(models.AgentTaskOwnership).filter(
             models.AgentTaskOwnership.project_token == project_token,
             models.AgentTaskOwnership.task_id == task_id,
-            models.AgentTaskOwnership.agent_id == agent_id,
         ).first()
 
         if record:
+            record.agent_id = agent_id
             task_data = dict(record.task_data or {})
             task_data["task_progress"] = progress
             record.task_data = _safe_json(task_data)
@@ -270,11 +286,11 @@ def fail_task_local(
         record = db.query(models.AgentTaskOwnership).filter(
             models.AgentTaskOwnership.project_token == project_token,
             models.AgentTaskOwnership.task_id == task_id,
-            models.AgentTaskOwnership.agent_id == agent_id,
         ).first()
 
         if record:
             record.status = "failed"
+            record.agent_id = agent_id
             record.completed_at = datetime.utcnow()
             record.error_message = error_message[:2000] if error_message else None
             record.updated_at = datetime.utcnow()
@@ -1043,12 +1059,27 @@ def get_agent_lanes_from_skills(agent_id: str, skills_tags: Any, specialization:
 def is_task_in_agent_lanes(task_lane: str, agent_lanes: Set[str]) -> bool:
     """
     Returns True if the agent is allowed to work on a task of the given lane.
-    "general" lane is always allowed for unspecialized tasks.
+
+    3-Layer Fallback System (prevents agent starvation):
+    - Layer 1 (General = Wildcard): If the agent has "general" in its lane set,
+      it can take ANY task lane. "general" means flexible/catch-all.
+    - Layer 2 (Unspecialized): Agents with only "general" configured can take
+      any task (backwards compatibility for legacy agents).
+    - Layer 3 (Strict): Truly specialised agents (no "general" lane) only match
+      their exact lane.
     """
     if not task_lane or task_lane == "general":
         return True  # Any agent can handle general tasks
-    if "general" in agent_lanes and len(agent_lanes) == 1:
-        return True  # Unspecialized agent — allow all tasks
+
+    # ── LAYER 1: General = Wildcard ────────────────────────────────────────
+    if "general" in agent_lanes:
+        return True  # General agents can pick any lane
+
+    # ── LAYER 2: Unspecialized agent (only general) ────────────────────────
+    if len(agent_lanes) == 0 or agent_lanes == {"general"}:
+        return True
+
+    # ── LAYER 3: Strict match for fully specialised agents ─────────────────
     return task_lane in agent_lanes
 
 

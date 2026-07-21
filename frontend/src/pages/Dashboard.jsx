@@ -708,7 +708,6 @@ const Dashboard = ({
     const saveRepoContextToStorage = (context) => {
         try {
             console.log('Saving repo context to storage:', context);
-            localStorage.setItem('repoContext', JSON.stringify(context));
             sessionStorage.setItem('repoContext', JSON.stringify(context));
         } catch (err) {
             console.warn('Failed to save repo context to storage:', err);
@@ -1134,8 +1133,6 @@ const Dashboard = ({
         });
         sessionStorage.setItem('governanceContext', serializedContext);
         sessionStorage.setItem('governanceResult', serializedResult);
-        localStorage.setItem('governanceContext', serializedContext);
-        localStorage.setItem('governanceResult', serializedResult);
     }, []);
 
     const extractProjectMetaFromDocument = useCallback((doc) => {
@@ -1374,9 +1371,7 @@ const Dashboard = ({
                     localStorage.setItem('governancePassed', 'true');
                 }
 
-                // Ensure latest governance context is stored in both sessionStorage and localStorage
-                localStorage.setItem('governanceResult', governanceResult);
-                localStorage.setItem('governanceContext', governanceContext);
+                // Ensure latest governance context is stored in sessionStorage
                 sessionStorage.setItem('governanceResult', governanceResult);
                 sessionStorage.setItem('governanceContext', governanceContext);
 

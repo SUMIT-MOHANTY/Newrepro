@@ -16,7 +16,7 @@ import { useProjects, useRoadmapData, useInvalidateProjects } from '../hooks/use
 import { fetchRoadmapStep, deleteProjectByIdentifier } from '../api/projects';
 import ProjectDropdown from './ProjectDropdown';
 import RoleDropdown from './RoleDropdown';
-import { getDraftProject } from '../utils/draftProjects';
+import { getDraftProject, removeDraftProject } from '../utils/draftProjects';
 
 const DASHBOARD_ROLES = [
     { value: 'cxo', label: 'Executive Summary Dashboard', description: 'High-level executive snapshot' },
@@ -626,6 +626,16 @@ export default function AppLayout({ children }) {
         if (!selectedProjectKey || selectedProjectKey === lastSyncedProjectKeyRef.current) return;
         lastSyncedProjectKeyRef.current = selectedProjectKey;
 
+        // Immediately clear previous project's transient context before fetching target project's context
+        sessionStorage.removeItem('governanceContext');
+        sessionStorage.removeItem('governanceResult');
+        sessionStorage.removeItem('repoContext');
+        sessionStorage.removeItem('analysisResult');
+        localStorage.removeItem('governanceContext');
+        localStorage.removeItem('governanceResult');
+        localStorage.removeItem('repoContext');
+        localStorage.removeItem('analysisResult');
+
         const syncProjectStorage = async () => {
             const token = localStorage.getItem('token');
             if (!token) return;
@@ -635,7 +645,7 @@ export default function AppLayout({ children }) {
                 const projectFromList = projects.find((project) => project.key === selectedProjectKey);
                 const identifier = projectFromList?.governanceResultId || selectedProjectKey;
 
-                // 1. Fetch governance result from backend
+                // 1. Fetch governance result from backend for selected project
                 const govRes = await fetch(`${API_BASE_URL}/governance/result/${identifier}`, {
                     headers: { Authorization: `Bearer ${token}` }
                 });
@@ -682,8 +692,6 @@ export default function AppLayout({ children }) {
                         sessionStorage.setItem('governanceResult', JSON.stringify(data));
                         localStorage.setItem('governanceContext', JSON.stringify(govCtx));
                         localStorage.setItem('governanceResult', JSON.stringify(data));
-
-                        // Trigger storage event to notify other components/hooks of storage changes
                         window.dispatchEvent(new Event('storage'));
                     }
                 }
@@ -692,7 +700,7 @@ export default function AppLayout({ children }) {
             }
 
             try {
-                // 2. Fetch repo git config from backend
+                // 2. Fetch repo git config from backend for selected project
                 const configRes = await fetch(`${API_BASE_URL}/api/projects/${selectedProjectKey}/git-config`, {
                     headers: { Authorization: `Bearer ${token}` }
                 });
@@ -703,20 +711,12 @@ export default function AppLayout({ children }) {
                         const repoContextObj = {
                             repo: configData.source_repo_url,
                             provider: (configData.source_repo_url.includes('dev.azure.com') || configData.source_repo_url.includes('visualstudio.com')) ? 'azure-devops' : 'github',
-                            context: '' // Left empty until actual handoff/analysis
+                            context: ''
                         };
                         sessionStorage.setItem('repoContext', JSON.stringify(repoContextObj));
                         localStorage.setItem('repoContext', JSON.stringify(repoContextObj));
                         window.dispatchEvent(new Event('storage'));
-                    } else {
-                        sessionStorage.removeItem('repoContext');
-                        localStorage.removeItem('repoContext');
-                        window.dispatchEvent(new Event('storage'));
                     }
-                } else {
-                    sessionStorage.removeItem('repoContext');
-                    localStorage.removeItem('repoContext');
-                    window.dispatchEvent(new Event('storage'));
                 }
             } catch (e) {
                 console.warn('Failed to sync repo storage for project:', e);
@@ -995,8 +995,8 @@ export default function AppLayout({ children }) {
 
         // Step 1: Ask for confirmation
         const confirmed = await modal.showConfirm(
-            `Are you sure you want to archive "${project.name || 'this project'}"?\n\nIt will be hidden from the project list but all data will be preserved in the database.`,
-            'Archive Project'
+            `Are you sure you want to delete "${project.name || 'this project'}"?`,
+            'Delete Project'
         );
         if (!confirmed) return;
 
@@ -1012,10 +1012,13 @@ export default function AppLayout({ children }) {
         try {
             const identifier = project.governanceResultId || project.projectToken || project.key;
             await deleteProjectByIdentifier(identifier);
+            removeDraftProject(key);
+            if (project.projectToken) removeDraftProject(project.projectToken);
+            if (project.governanceResultId) removeDraftProject(project.governanceResultId);
             invalidateProjects();
         } catch (err) {
-            console.error('Failed to archive project:', err);
-            customError('Failed to archive project: ' + (err.message || 'Unknown error'));
+            console.error('Failed to delete project:', err);
+            customError('Failed to delete project: ' + (err.message || 'Unknown error'));
         } finally {
             setDeletingProjectKey('');
         }
@@ -1028,8 +1031,14 @@ export default function AppLayout({ children }) {
         localStorage.removeItem('governancePassed');
         localStorage.removeItem('governanceResult');
         localStorage.removeItem('governanceContext');
+        localStorage.removeItem('repoContext');
+        localStorage.removeItem('analysisResult');
         sessionStorage.removeItem('governanceResult');
         sessionStorage.removeItem('governanceContext');
+        sessionStorage.removeItem('repoContext');
+        sessionStorage.removeItem('analysisResult');
+        sessionStorage.removeItem('dashboard_showing_results');
+        window.dispatchEvent(new Event('storage'));
         navigate('/new-project?new=' + Date.now());
     }, [navigate]);
 
@@ -1473,12 +1482,12 @@ export default function AppLayout({ children }) {
                     </div>
                 )
             }
-            {/* Archiving loading overlay — non-dismissible, shown while deletingProjectKey is set */}
+            {/* Deleting loading overlay — non-dismissible, shown while deletingProjectKey is set */}
             {deletingProjectKey && (
                 <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-sm">
                     <div className="bg-app-bg-card rounded-2xl shadow-2xl border border-app-border p-8 flex flex-col items-center gap-4 min-w-[260px]">
                         <div className="w-10 h-10 border-[3px] border-app-primary border-t-transparent rounded-full animate-spin" />
-                        <p className="text-sm font-semibold text-app-text-main">Archiving project...</p>
+                        <p className="text-sm font-semibold text-app-text-main">Deleting project...</p>
                     </div>
                 </div>
             )}

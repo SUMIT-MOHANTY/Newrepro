@@ -285,10 +285,24 @@ class SharedAgentCoordinator:
     async def get_all_shared_agents_status(self) -> List[Dict[str, Any]]:
         """Get status of all shared agents"""
         async with self._coordinator_lock:
-            return [
-                await self.get_agent_status(agent_id)
-                for agent_id in self._agent_states.keys()
-            ]
+            results = []
+            for agent_id in list(self._agent_states.keys()):
+                state = self._agent_states.get(agent_id)
+                if not state:
+                    results.append({"error": "Agent not found"})
+                    continue
+                queue = self._task_queues.get(agent_id, [])
+                results.append({
+                    "agent_id": agent_id,
+                    "status": state.status.value,
+                    "current_project": state.current_project,
+                    "current_task": state.current_task.get("title") if state.current_task else None,
+                    "locked_at": state.locked_at,
+                    "last_active": state.last_active,
+                    "queued_tasks": len(queue),
+                    "waiting_projects": self._waiting_projects.get(agent_id, [])
+                })
+            return results
 
 
 # Global singleton instance

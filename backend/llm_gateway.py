@@ -181,10 +181,13 @@ def is_brn_llama_enabled() -> bool:
 
 def resolve_url(api_url: Optional[str] = None) -> str:
     """Resolve the correct AI endpoint URL."""
+    if is_brn_llama_enabled():
+        return settings.brn_llama_url
+
     if api_url:
         url = api_url.strip()
     else:
-        url = settings.brn_llama_url if is_brn_llama_enabled() else settings.ai_api_url
+        url = settings.ai_api_url
 
     # Normalize OpenAI-compatible URLs (non-BRN) to make sure they end with chat/completions
     if not is_brn_llama_enabled() and url != settings.brn_llama_url:
@@ -196,9 +199,11 @@ def resolve_url(api_url: Optional[str] = None) -> str:
 
 def resolve_model(model: Optional[str] = None) -> str:
     """Resolve the correct model name."""
+    if is_brn_llama_enabled():
+        return settings.brn_model
     if model:
         return model
-    return settings.brn_model if is_brn_llama_enabled() else settings.ai_model
+    return settings.ai_model
 
 
 def resolve_key(api_key: Optional[str] = None) -> Optional[str]:
@@ -305,8 +310,8 @@ async def call_llm(
     """
     url = resolve_url(api_url)
     model_name = resolve_model(model)
-    # Determine format based on whether the URL is the BRN one
-    use_brn = (url == settings.brn_llama_url)
+    # Determine format based on whether BRN Llama is active or URL matches BRN
+    use_brn = is_brn_llama_enabled() or (url == settings.brn_llama_url)
 
     if use_brn:
         payload = _build_brn_payload_from_messages(messages, model_name, stream=False, **extra)
@@ -445,8 +450,8 @@ async def call_llm_streaming(
     """
     url = resolve_url(api_url)
     model_name = resolve_model(model)
-    # Determine format based on whether the URL is the BRN one
-    use_brn = (url == settings.brn_llama_url)
+    # Determine format based on whether BRN Llama is active or URL matches BRN
+    use_brn = is_brn_llama_enabled() or (url == settings.brn_llama_url)
 
     client = httpx.AsyncClient(timeout=timeout)
     response_content_buffer = []

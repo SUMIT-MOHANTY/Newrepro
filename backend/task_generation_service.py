@@ -5,9 +5,10 @@ Uses Agent Action Plan to generate structured tasks with multiple sprints and mi
 import json
 import logging
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from sqlalchemy.orm import Session
-from models import Task, Document, GovernanceResponse
+from models import Task, Document, GovernanceResponse, User
+from sqlalchemy import func
 import llm_gateway
 
 logger = logging.getLogger(__name__)
@@ -46,19 +47,30 @@ If an agent builds a button that does nothing, the task has FAILED. There are no
 
 ### NAVIGATION ARCHITECTURE REQUIREMENT
 TASK-00 MUST establish the navigation foundation that ALL frontend tasks depend on:
-  1. **React Router v6 setup** in `src/App.tsx` with ALL application routes pre-registered
-  2. **Shared Layout component** (`src/components/layout/AppLayout.tsx`) containing:
+  1. **React Router v6 setup** in the main App entry file with ALL application routes pre-registered
+  2. **Shared Layout component** (e.g. AppLayout.tsx) containing:
      - Persistent sidebar with navigation links to every major section
      - Top navigation bar with user avatar, notifications bell, and breadcrumbs
      - Main content area where page components are rendered via `<Outlet />`
-  3. **Design token file** (`src/styles/tokens.css` or `src/theme/tokens.ts`) defining:
+  3. **Design token file** (e.g. tokens.css or tokens.ts) defining:
      - Primary, secondary, accent, surface, and text color variables
      - Typography scale (display, heading, body, caption font sizes)
      - Spacing scale, border radius, shadow levels
-  4. **Global mock data store** (`src/mocks/mockData.ts`) with 5-10 realistic records per entity type, using domain-specific names, realistic values, and varied statuses
-  5. **Shared UI components** (`src/components/ui/`) — Button, Badge, Card, Modal, Table, Sidebar, etc. — used consistently by all page components
+  4. **Global mock data store** (e.g. mockData.ts) with 5-10 realistic records per entity type, using domain-specific names, realistic values, and varied statuses
+  5. **Shared UI components** (e.g. a ui/ directory) — Button, Badge, Card, Modal, Table, Sidebar, etc. — used consistently by all page components
 
 Every subsequent Sprint 1 frontend task IMPORTS from these shared foundations. No task invents its own navigation, colors, or mock data structure.
+
+### ⚠️ CRITICAL — CANONICAL PATH RULE (APPLIES TO ALL TASKS)
+The REPOSITORY STRUCTURE provided in the context is the SINGLE SOURCE OF TRUTH for all file paths.
+Every file path you write in FILE OWNERSHIP blocks, descriptions, and checklists MUST use the FULL path exactly as it appears in the canonical repository structure tree.
+
+**EXAMPLES of the rule in action:**
+- If the canonical tree shows `frontend/src/pages/`, then all frontend page paths MUST start with `frontend/src/pages/...` — NEVER bare `src/pages/...`
+- If the canonical tree shows `backend/app/models/`, then all model paths MUST start with `backend/app/models/...` — NEVER bare `app/models/...`
+- If there is NO `frontend/` wrapper in the tree (flat project), then `src/pages/...` is correct.
+
+The rule is simple: **look at the tree, use the exact prefix shown in the tree.** If the tree has a `frontend/` parent directory containing `src/`, then every frontend path MUST include `frontend/` as the prefix. No exceptions.
 
 ### DESIGN QUALITY STANDARD
 Sprint 1 prototype screens must be visually outstanding — not generic, not bare, not "bootstrap default."
@@ -242,42 +254,45 @@ Sprint 1 frontend screens with deep interactivity (modals, drawers, search, form
 ## ═══════════════════════════════════════════════════════
 
 Every task description MUST state:
-  - "This agent owns: [exact file paths from section 0.5]"
-  - "This agent must create: [list of specific files with full paths and their purpose]"
+  - "This agent owns: [exact file paths derived from the CANONICAL REPOSITORY STRUCTURE]"
+  - "This agent must create: [list of specific files with FULL canonical paths and their purpose]"
   - "This agent must NOT modify: [other folders/files]"
-  - For Sprint 1 tasks: "This agent must IMPORT from: src/components/layout/AppLayout.tsx, src/mocks/mockData.ts, src/components/ui/"
+  - For Sprint 1 tasks: "This agent must IMPORT from: [canonical path to layout], [canonical path to mockData], [canonical path to ui components]"
+
+⚠️ REMINDER: All file paths in FILE OWNERSHIP blocks MUST match the CANONICAL REPOSITORY STRUCTURE exactly.
+If the repo tree shows files under `frontend/src/`, use `frontend/src/...` — NEVER bare `src/...`.
+If the repo tree shows files under `backend/app/`, use `backend/app/...` — NEVER bare `app/...`.
+Deriving paths from the tree prevents conflicts between task descriptions and the actual project layout.
 
 **Example of GOOD Sprint 1 frontend task description (abbreviated):**
+(Note: paths below use `{fe}` as placeholder for whatever the canonical frontend root is — e.g. `frontend/` or empty if flat)
 ```
 [SCREEN STORY]
 The user arrives at the Projects Overview screen after clicking "Projects" in the sidebar.
 They see a page header "All Projects" with a "+ New Project" button in the top right.
-Below the header, a search input and status filter dropdown allow real-time filtering of the project list.
 The main content is a data table with columns: Project Name, Status (color-coded badge), Owner, Due Date, Budget Utilization (progress bar), and Actions.
 Clicking any row navigates to /projects/:id (Project Detail screen).
-Clicking "+ New Project" opens a Drawer from the right with a 3-field form (Name, Description, Due Date). On submit, a success toast "Project created" appears, the drawer closes, and the new project is optimistically prepended to the table.
+Clicking "+ New Project" opens a Drawer from the right with a 3-field form. On submit, a success toast appears.
 
 [SCREEN CONNECTIVITY]
 - Sidebar "Projects" → current page (active state)
 - Table row click → /projects/:id (Project Detail)
 - "+ New Project" button → opens ProjectCreateDrawer (right-side drawer, no navigation)
-- "View Report" action → /projects/:id/report (Project Report)
 - Breadcrumb "Home" → /dashboard
 
 [MOCK DATA SPECIFICATION]
 Entity: Project — 8 records
-Fields: id, name ("Apollo CRM Rebuild", "Nexus Dashboard v2", ...), status (Active/On Hold/Completed/At Risk), owner ("Sarah Chen", "Marcus Webb", ...), dueDate, budgetUsed (0-100), budgetTotal
+Fields: id, name, status (Active/On Hold/Completed/At Risk), owner, dueDate, budgetUsed, budgetTotal
 
 [FILE OWNERSHIP]
-This agent owns: src/pages/projects/ProjectsPage.tsx, src/pages/projects/ProjectDetailPage.tsx, src/components/projects/ProjectCreateDrawer.tsx, src/components/projects/ProjectTable.tsx
+This agent owns: {fe}src/pages/projects/ProjectsPage.tsx, {fe}src/pages/projects/ProjectDetailPage.tsx
 This agent must create:
-  - src/pages/projects/ProjectsPage.tsx (main projects list screen)
-  - src/pages/projects/ProjectDetailPage.tsx (individual project drill-down)
-  - src/components/projects/ProjectCreateDrawer.tsx (new project right-side drawer)
-  - src/components/projects/ProjectTable.tsx (data table with sort, filter, row actions)
-This agent must IMPORT from: src/components/layout/AppLayout.tsx, src/mocks/mockData.ts, src/components/ui/
-This agent must NOT modify: src/App.tsx, src/mocks/mockData.ts, src/components/layout/, src/styles/tokens.css, backend/
+  - {fe}src/pages/projects/ProjectsPage.tsx (main projects list screen)
+  - {fe}src/pages/projects/ProjectDetailPage.tsx (individual project drill-down)
+This agent must IMPORT from: {fe}src/components/layout/AppLayout.tsx, {fe}src/mocks/mockData.ts, {fe}src/components/ui/
+This agent must NOT modify: {fe}src/App.tsx, {fe}src/mocks/mockData.ts, {fe}src/components/layout/, backend/
 ```
+IMPORTANT: In your actual output, replace `{fe}` with the real canonical frontend prefix from the REPOSITORY STRUCTURE (e.g. `frontend/` if the tree shows `frontend/src/`, or nothing if `src/` is at root).
 
 ---
 
@@ -322,21 +337,22 @@ Every other task in the entire plan — Sprint 1, 2, 3, and 4 — must list "TAS
 This is enforced by the linked_tasks dependency. All Sprint 1 tasks depend on TASK-00 because they import from the files it creates (AppLayout, mockData, design tokens, UI components, App.tsx routes). An agent starting a screen task without TASK-00's output would fail immediately.
 
 **Rule 5 — TASK-00 owns the entire shared foundation. No other task may touch these files.**
-  - src/App.tsx (React Router route registry)
-  - src/components/layout/AppLayout.tsx (persistent navigation shell)
-  - src/styles/tokens.css OR src/theme/tokens.ts (design tokens)
-  - src/mocks/mockData.ts (global mock data store)
-  - src/components/ui/* (shared UI component kit)
-  - backend/main.py (entry point skeleton)
+  - The main App entry file (e.g. App.tsx — route registry)
+  - The shared Layout component (e.g. AppLayout.tsx — persistent navigation shell)
+  - The design token file (e.g. tokens.css or tokens.ts)
+  - The global mock data store (e.g. mockData.ts)
+  - The shared UI component directory (e.g. components/ui/*)
+  - The backend entry point skeleton (e.g. main.py)
 No other task in any sprint may modify these files. They are read-only after TASK-00 completes.
+⚠️ Use FULL CANONICAL PATHS from the REPOSITORY STRUCTURE when listing these in the actual task output. Never use bare relative paths like `src/App.tsx` if the canonical tree shows `frontend/src/`.
 
-### TASK-00 MANDATORY CONTENT (use this exact structure):
+### TASK-00 MANDATORY CONTENT (use this structure, with CANONICAL PATHS from the repository tree):
 
 ```json
 {
   "task_id": "TASK-00",
   "taskName": "Project Bootstrap, Navigation Shell & Shared Frontend Foundation",
-  "description": "GATEWAY TASK — All other tasks depend on this. Must complete before any other agent starts.\n\nThis task creates the entire shared foundation that every Sprint 1 frontend agent will import from. It does NOT build any feature screens — it builds the INFRASTRUCTURE that makes all screens possible.\n\n[WHAT THIS TASK BUILDS]\n1. Repository scaffold: all directories from the canonical structure, package.json, tsconfig, vite.config, tailwind.config, .env.example.\n2. React Router v6 setup in src/App.tsx: ALL application routes pre-registered with placeholder lazy-loaded components, wrapped in the AppLayout shell.\n3. AppLayout.tsx (src/components/layout/AppLayout.tsx): persistent left sidebar with navigation links to every major section, top navbar with app logo, user avatar dropdown, notifications bell, breadcrumb trail, and <Outlet /> for page content. Sidebar must be collapsible.\n4. Design token system (src/styles/tokens.css): CSS custom properties for — primary/secondary/accent colors, semantic colors (success, warning, error, info), surface/background layers, typography scale (display/heading/subheading/body/caption), spacing scale, border-radius levels, box-shadow levels. All Sprint 1 screens MUST use these tokens, never hardcoded values.\n5. Global mock data store (src/mocks/mockData.ts): exports typed arrays of 8–10 realistic mock records for EVERY entity type in the application. Use domain-appropriate names, IDs, dates, and statuses. This is the single source of truth for all Sprint 1 mock data.\n6. Shared UI component kit (src/components/ui/): Button (variants: primary, secondary, ghost, danger), Badge (color variants by status), Card, Modal, Drawer (right-side slide-in panel), DataTable (sortable, with row-click handler prop), SearchInput, Toast/notification system, LoadingSkeleton, EmptyState, PageHeader (title + subtitle + action slot).\n7. Backend entry point ONLY: backend/main.py with FastAPI app instantiation, CORS middleware, and a /health endpoint. NO database, NO models, NO business logic.\n\n[WHAT THIS TASK MUST NOT BUILD]\n- No feature screens (those are built by subsequent Sprint 1 tasks)\n- No backend database schemas, models, or API routes (Sprint 2)\n- No third-party API integrations (Sprint 2)\n\nThis agent owns: src/App.tsx, src/components/layout/, src/components/ui/, src/styles/, src/mocks/, src/theme/, backend/main.py, all config files (package.json, vite.config.ts, tailwind.config.ts, tsconfig.json)\nThis agent must NOT modify: src/pages/ (owned by individual Sprint 1 screen tasks)\nAll subsequent tasks MUST wait for this task to complete before starting.",
+  "description": "GATEWAY TASK — All other tasks depend on this. Must complete before any other agent starts.\n\nThis task creates the entire shared foundation that every Sprint 1 frontend agent will import from. It does NOT build any feature screens — it builds the INFRASTRUCTURE that makes all screens possible.\n\n[WHAT THIS TASK BUILDS]\n1. Repository scaffold: all directories from the CANONICAL REPOSITORY STRUCTURE, plus package.json, tsconfig, vite.config, tailwind.config, .env.example.\n2. React Router v6 setup in the main App entry file: ALL application routes pre-registered with placeholder lazy-loaded components, wrapped in the AppLayout shell.\n3. AppLayout.tsx: persistent left sidebar with navigation links to every major section, top navbar with app logo, user avatar dropdown, notifications bell, breadcrumb trail, and <Outlet /> for page content. Sidebar must be collapsible.\n4. Design token system: CSS custom properties for colors, typography, spacing, border-radius, box-shadow. All Sprint 1 screens MUST use these tokens, never hardcoded values.\n5. Global mock data store (e.g. mockData.ts): exports typed arrays of 8-10 realistic mock records for EVERY entity type. Use domain-appropriate names, IDs, dates, and statuses.\n6. Shared UI component kit: Button (variants: primary, secondary, ghost, danger), Badge, Card, Modal, Drawer, DataTable, SearchInput, Toast system, LoadingSkeleton, EmptyState, PageHeader.\n7. Backend entry point skeleton ONLY (e.g. main.py) with CORS middleware and a /health endpoint. NO database, NO models, NO business logic.\n\n[WHAT THIS TASK MUST NOT BUILD]\n- No feature screens (those are built by subsequent Sprint 1 tasks)\n- No backend database schemas, models, or API routes (Sprint 2)\n- No third-party API integrations (Sprint 2)\n\n⚠️ FILE OWNERSHIP: List ALL owned files using FULL CANONICAL PATHS from the REPOSITORY STRUCTURE. If the tree shows frontend/src/, use frontend/src/... not bare src/...\nAll subsequent tasks MUST wait for this task to complete before starting.",
   "task_type": "TASK",
   "priority": "high",
   "task_wallet": 8,
@@ -346,11 +362,11 @@ No other task in any sprint may modify these files. They are read-only after TAS
   "linked_tasks": [],
   "reported_by": "system",
   "checklist": [
-    { "text": "Scaffold full repository structure: all directories, package.json, tsconfig, vite.config, tailwind.config, .env.example, README", "completed": false },
-    { "text": "Build AppLayout.tsx with collapsible sidebar (all nav links), top navbar (logo, user avatar, notifications, breadcrumbs), and <Outlet /> content slot. Register all routes in src/App.tsx with React Router v6.", "completed": false },
-    { "text": "Create design token file with complete color palette (primary, accent, semantic), typography scale, spacing scale, border radius, and shadow levels. Verify tokens render correctly in browser.", "completed": false },
-    { "text": "Populate src/mocks/mockData.ts with 8–10 realistic typed records for every entity type in the application. Verify all exported arrays are importable and TypeScript-typed.", "completed": false },
-    { "text": "Build shared UI component kit: Button (all variants), Badge, Card, Modal, Drawer, DataTable, SearchInput, Toast system, LoadingSkeleton, EmptyState, PageHeader. Verify each component renders with mock props.", "completed": false }
+    { "text": "Scaffold full repository structure: all directories from canonical tree, package.json, tsconfig, vite.config, tailwind.config, .env.example, README", "completed": false },
+    { "text": "Build AppLayout.tsx with collapsible sidebar (all nav links), top navbar (logo, user avatar, notifications, breadcrumbs), and <Outlet /> content slot. Register all routes in the main App entry file with React Router v6.", "completed": false },
+    { "text": "Create design token file with complete color palette (primary, accent, semantic), typography scale, spacing scale, border radius, and shadow levels.", "completed": false },
+    { "text": "Populate global mock data store with 8-10 realistic typed records for every entity type in the application.", "completed": false },
+    { "text": "Build shared UI component kit: Button (all variants), Badge, Card, Modal, Drawer, DataTable, SearchInput, Toast system, LoadingSkeleton, EmptyState, PageHeader.", "completed": false }
   ]
 }
 ```
@@ -389,8 +405,10 @@ Sprint 4 tasks → linked_tasks: ["TASK-00", relevant Sprint 2/3 tasks]
    - Sprint 4 milestones: "QA & Testing", "Production Deployment"
 
 3. **File Path Accuracy:**
-   - Reference exact folders/modules from the repository structure (section 0.5.1 of the Agent Action Plan)
-   - Sprint 1 agents: src/ paths only. Sprint 2 agents: backend/ paths only.
+   - ALL file paths MUST be derived from the CANONICAL REPOSITORY STRUCTURE provided in the context.
+   - NEVER use bare `src/...` if the canonical tree shows the frontend source under a subdirectory like `frontend/src/...`.
+   - NEVER use bare `app/...` if the canonical tree shows the backend source under `backend/app/...`.
+   - The canonical tree is the single source of truth. Every path you output must be traceable to a node in that tree.
 
 4. **Output Format:**
    - Return ONLY a valid JSON array
@@ -412,6 +430,48 @@ Sprint 4 tasks → linked_tasks: ["TASK-00", relevant Sprint 2/3 tasks]
 ---
 
 """
+
+
+def _deduplicate_tasks(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Remove duplicate tasks from the list based on title and description keywords.
+    Preserves the first occurrence and removes subsequent near-duplicates.
+    """
+    if not tasks:
+        return tasks
+
+    seen_titles: Set[str] = set()
+    seen_task_ids: Set[str] = set()
+    deduped: List[Dict[str, Any]] = []
+
+    for task in tasks:
+        task_id = str(task.get("task_id", "")).strip()
+        title = str(task.get("taskName", "") or task.get("title", "")).strip().lower()
+        # Normalize: remove punctuation, collapse whitespace
+        import re
+        normalized = re.sub(r"[^a-z0-9\\s]", "", title)
+        normalized = re.sub(r"\\s+", " ", normalized).strip()
+
+        # Skip if we've already seen this task_id
+        if task_id and task_id in seen_task_ids:
+            logger.info(f"[DEDUP] Skipping duplicate task_id: {task_id}")
+            continue
+
+        # Skip if we've already seen a very similar title
+        if normalized and normalized in seen_titles:
+            logger.info(f"[DEDUP] Skipping duplicate title: {title} (task_id: {task_id})")
+            continue
+
+        if task_id:
+            seen_task_ids.add(task_id)
+        if normalized:
+            seen_titles.add(normalized)
+        deduped.append(task)
+
+    if len(deduped) < len(tasks):
+        logger.info(f"[DEDUP] Removed {len(tasks) - len(deduped)} duplicate tasks, {len(deduped)} remaining")
+
+    return deduped
 
 
 def _generate_sprints_and_milestones(
@@ -532,8 +592,42 @@ def _parse_task_json(content: str) -> List[Dict[str, Any]]:
         return tasks
     
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse task JSON: {e}")
-        logger.error(f"Content: {content[:500]}")
+        # ── Truncation detection & salvage ──
+        # LLM outputs can be cut off mid-response.  Detect that and try to
+        # salvage partial tasks rather than returning nothing.
+        content_stripped = content.strip()
+        truncated_indicators = (
+            not content_stripped.endswith(']')  # missing closing array bracket
+            or content_stripped.endswith(',')     # trailing comma (incomplete object)
+            or content_stripped.rfind('"') > content_stripped.rfind('}')  # string truncated mid-way
+        )
+        if truncated_indicators:
+            try:
+                salvaged = content_stripped
+                open_braces = salvaged.count('{') - salvaged.count('}')
+                open_brackets = salvaged.count('[') - salvaged.count(']')
+                if open_braces > 0 or open_brackets > 0:
+                    # Close any unterminated structures
+                    # Remove trailing comma before closing (common truncation point)
+                    while salvaged.rstrip().endswith(','):
+                        salvaged = salvaged.rstrip()[:-1]
+                    salvaged += '}' * max(open_braces, 0) + ']' * max(open_brackets, 0)
+                    tasks = json.loads(salvaged)
+                    if isinstance(tasks, list) and tasks:
+                        logger.warning(
+                            f"⚠️ LLM output was TRUNCATED — salvaged {len(tasks)} partial tasks "
+                            f"(expected at least {len(tasks) + 1} based on truncation position)"
+                        )
+                        return tasks
+            except Exception:
+                pass
+            logger.error(
+                f"LLM output TRUNCATED and could not be salvaged. "
+                f"Last 200 chars: ...{content_stripped[-200:]}"
+            )
+        else:
+            logger.error(f"Failed to parse task JSON: {e}")
+            logger.error(f"Content preview: {content[:500]}")
         return []
     except Exception as e:
         logger.error(f"Unexpected error parsing task JSON: {e}")
@@ -640,20 +734,247 @@ def _validate_task_structure(task: Dict[str, Any]) -> bool:
             logger.warning(f"Task missing critical field: {field}")
             return False
     
-    valid_types = ["EPIC", "FEATURE", "STORY", "TASK", "BUG"]
-    if task.get("task_type") not in valid_types:
-        logger.warning(f"Invalid task_type: {task.get('task_type')}")
+    normalized_type = str(task.get("task_type", "")).upper().strip()
+    valid_types = [
+        "EPIC", "FEATURE", "STORY", "TASK", "BUG",
+        "FRONTEND", "BACKEND", "INFRASTRUCTURE", "INTEGRATION",
+        "DEVOPS", "QA", "TESTING", "DOCUMENTATION", "SECURITY",
+        "PERFORMANCE", "ANALYSIS", "DATABASE", "UI", "API",
+        "CONFIG", "ENHANCEMENT", "DESIGN", "ARCHITECTURE",
+        "MIGRATION", "SETUP", "TOOLING", "FIX", "REFACTOR",
+        "FEATURE", "DEV", "OPS", "TASK", "STORY",
+        "QUALITY", "DEPLOYMENT",
+    ]
+    if normalized_type not in valid_types:
+        logger.warning(f"Invalid task_type: {task.get('task_type')} (normalized: '{normalized_type}')")
         return False
     
     # Auto-fix task_wallet if missing
     wallet = task.get("task_wallet", None)
     if wallet is None:
         task_type = task.get("task_type", "TASK")
-        defaults = {"EPIC": 9, "FEATURE": 5, "STORY": 3, "TASK": 1, "BUG": 2}
-        task["task_wallet"] = defaults.get(task_type, 1)
+        task_type_upper = str(task_type).upper().strip()
+        defaults = {
+            "EPIC": 9, "FEATURE": 5, "STORY": 3, "TASK": 1, "BUG": 2,
+            "FRONTEND": 5, "BACKEND": 5, "INFRASTRUCTURE": 8, "INTEGRATION": 3,
+            "DEVOPS": 8, "QA": 5, "TESTING": 5, "DOCUMENTATION": 2, "SECURITY": 5,
+            "PERFORMANCE": 3, "ANALYSIS": 3, "DATABASE": 5, "UI": 5, "API": 5,
+            "CONFIG": 2, "ENHANCEMENT": 3, "DESIGN": 3, "ARCHITECTURE": 8,
+            "MIGRATION": 5, "SETUP": 2, "TOOLING": 2, "FIX": 2, "REFACTOR": 3,
+            "DEV": 5, "OPS": 5,
+            "QUALITY": 5, "DEPLOYMENT": 5,
+        }
+        task["task_wallet"] = defaults.get(task_type_upper, 3)
         logger.info(f"Auto-fixed missing task_wallet → {task['task_wallet']} for {task.get('task_id')}")
     
     return True
+
+
+def _validate_task_set_completeness(
+    tasks: List[Dict[str, Any]], 
+    project_token: str = ""
+) -> List[str]:
+    """
+    Post-generation validation that checks the generated task set for:
+    - TASK-00 existence (bootstrap task)
+    - DAG connectivity (no orphan tasks with unresolvable linked_tasks)
+    - Cross-reference integrity (every linked_task ID refers to an existing task)
+    - Sprint ordering consistency (Sprint N+1 tasks only reference Sprint N or earlier)
+    - No cycles in the dependency graph
+
+    Returns a list of human-readable issue strings. Empty list = no issues.
+    """
+    issues: List[str] = []
+
+    if not tasks:
+        return ["No tasks generated at all"]
+
+    # Build lookup maps
+    task_ids: Set[str] = set()
+    task_by_id: Dict[str, Dict[str, Any]] = {}
+    sprint_order: Dict[str, float] = {}
+
+    for t in tasks:
+        tid = str(t.get("task_id", "")).strip().upper()
+        if not tid:
+            issues.append(f"Task '{t.get('taskName', t.get('title', '?'))}' has no task_id")
+            continue
+        task_ids.add(tid)
+        task_by_id[tid] = t
+
+        # Record sprint ordering for cross-sprint dependency checking
+        sprint_raw = t.get("sprint") or t.get("sprint_id") or t.get("sprint_name", "")
+        if sprint_raw:
+            sprint_str = str(sprint_raw)
+            # Try to extract numeric sprint order (Sprint 1 → 1.0)
+            import re as _re_validate
+            sprint_match = _re_validate.match(r"^\D*(\d+(?:\.\d+)?)", sprint_str)
+            if sprint_match:
+                sprint_order[tid] = float(sprint_match.group(1))
+            else:
+                sprint_order[tid] = float("inf")
+        else:
+            sprint_order[tid] = float("inf")
+
+    # ── CHECK 1: TASK-00 existence ────────────────────────────
+    if "TASK-00" not in task_ids:
+        issues.append("CRITICAL: TASK-00 (bootstrap/scaffold task) is missing — every project must have a bootstrap gateway")
+
+    # ── CHECK 2: linked_tasks cross-reference integrity ───────
+    for tid, t in task_by_id.items():
+        linked = t.get("linked_tasks", [])
+        if not isinstance(linked, list):
+            linked = []
+        for link_id in linked:
+            link_id_str = str(link_id).strip().upper()
+            if link_id_str not in task_ids:
+                issues.append(
+                    f"Task '{tid}' references linked_tasks '{link_id_str}' which does NOT exist in the task set"
+                )
+
+    # ── CHECK 3: DAG cycle detection (simple DFS) ─────────────
+    visited: Set[str] = set()
+    rec_stack: Set[str] = set()
+
+    def _has_cycle(node: str) -> bool:
+        visited.add(node)
+        rec_stack.add(node)
+        t = task_by_id.get(node)
+        if t:
+            for link_id in (t.get("linked_tasks") or []):
+                link_id_str = str(link_id).strip().upper()
+                if link_id_str not in task_ids:
+                    continue  # already caught in cross-ref check
+                if link_id_str not in visited:
+                    if _has_cycle(link_id_str):
+                        return True
+                elif link_id_str in rec_stack:
+                    return True
+        rec_stack.discard(node)
+        return False
+
+    for tid in task_ids:
+        if tid not in visited:
+            if _has_cycle(tid):
+                issues.append(f"CRITICAL: Cyclic dependency detected involving task '{tid}'")
+                break  # one cycle is enough — report once
+
+    # ── CHECK 4: Sprint ordering — ensure no task depends on a later sprint ──
+    for tid, t in task_by_id.items():
+        tid_sprint = sprint_order.get(tid, float("inf"))
+        linked = t.get("linked_tasks", [])
+        if not isinstance(linked, list):
+            linked = []
+        for link_id in linked:
+            link_id_str = str(link_id).strip().upper()
+            link_sprint = sprint_order.get(link_id_str, float("inf"))
+            # If dependency sprint > this task's sprint → forward dependency violation
+            if link_sprint > tid_sprint and link_sprint != float("inf") and tid_sprint != float("inf"):
+                issues.append(
+                    f"Task '{tid}' (sprint ~{tid_sprint}) depends on '{link_id_str}' "
+                    f"(sprint ~{link_sprint}) which is in a LATER sprint"
+                )
+
+    # ── CHECK 5: Ensure every non-TASK-00 executable task has at least one dependency ──
+    # (in complex projects, isolated tasks with no links may indicate incomplete generation)
+    if len(tasks) > 3:  # only warn for non-trivial projects
+        unlinked: List[str] = []
+        for tid, t in task_by_id.items():
+            if tid == "TASK-00":
+                continue
+            task_type = str(t.get("task_type", "")).upper()
+            if task_type not in ("TASK", "BUG", "ANALYSIS", "DEVELOPMENT", "TESTING"):
+                continue
+            linked = t.get("linked_tasks", [])
+            if not linked or (isinstance(linked, list) and len(linked) == 1 and str(linked[0]).upper() == "TASK-00"):
+                # Only warn if task ONLY depends on TASK-00 (no real dependencies)
+                pass  # actually, TASK-00 dependency is the minimum — this is ok
+            if not linked:
+                unlinked.append(tid)
+        if unlinked:
+            issues.append(
+                f"{len(unlinked)} executable tasks have NO linked_tasks at all: {', '.join(unlinked[:5])}"
+                + (f"... (+{len(unlinked)-5} more)" if len(unlinked) > 5 else "")
+            )
+
+    return issues
+
+
+def _score_task_quality(task: Dict[str, Any], task_id: str) -> Dict[str, Any]:
+    """
+    Score a single generated task on quality dimensions (0-10 scale).
+    Returns {"score": int, "warnings": [str], "level": "good"|"ok"|"poor"}.
+
+    Catches common LLM-generation problems before tasks reach agents.
+    """
+    warnings: List[str] = []
+    score = 10  # start perfect, deduct for issues
+
+    task_type = str(task.get("task_type", "")).upper()
+    desc = str(task.get("description", "") or "")
+    title = str(task.get("taskName", "") or task.get("title", "") or "")
+    checklist = task.get("checklist", []) or []
+    sprint = task.get("sprint") or task.get("sprint_id") or ""
+
+    # Only score executable tasks; containers don't need fine-grained quality
+    if task_type not in ("TASK", "BUG", "ANALYSIS", "DEVELOPMENT", "TESTING"):
+        return {"score": 10, "warnings": [], "level": "good"}
+
+    # ── Description length ──
+    desc_len = len(desc.strip())
+    if desc_len < 80:
+        score -= 3
+        warnings.append(f"Description too short ({desc_len} chars — should be 80+ for actionable context)")
+    elif desc_len < 150:
+        score -= 1
+
+    # ── File paths in description ──
+    import re as _re_q
+    file_paths = _re_q.findall(r'[a-zA-Z0-9_\-]+/[a-zA-Z0-9_\-/.]+', desc)
+    if not file_paths:
+        score -= 2
+        warnings.append("No file paths mentioned in description — agent may not know what to create")
+
+    # ── Checklist completeness ──
+    if isinstance(checklist, list):
+        if len(checklist) < 2:
+            score -= 2
+            warnings.append(f"Only {len(checklist)} checklist item(s) — should have 3+ for verification")
+    else:
+        score -= 1
+        warnings.append("Checklist is missing or not a list")
+
+    # ── Title quality ──
+    generic_titles = {"set up project", "create app", "add feature", "fix bug", "update code",
+                      "implement functionality", "write tests", "setup", "init", "misc"}
+    if title.strip().lower() in generic_titles or len(title.strip()) < 10:
+        score -= 2
+        warnings.append(f"Task title is too generic: '{title[:60]}' — should describe specific deliverable")
+
+    # ── Sprint assignment ──
+    if not sprint:
+        score -= 1
+        warnings.append("No sprint assigned — task may be executed out of order")
+
+    # ── Story-first check for frontend tasks ──
+    title_lower = title.lower()
+    desc_lower = desc.lower()
+    is_frontend = any(kw in title_lower or kw in desc_lower
+                      for kw in ("screen", "page", "component", "ui", "frontend", "modal", "dashboard"))
+    if is_frontend and task.get("sprint") and str(task.get("sprint", "")).lower().startswith("sprint 1"):
+        if "[SCREEN STORY]" not in desc and "screen story" not in desc_lower:
+            score -= 2
+            warnings.append("Sprint 1 frontend task missing [SCREEN STORY] — agent may produce isolated dead UI")
+
+    # ── Final level ──
+    if score >= 7:
+        level = "good"
+    elif score >= 4:
+        level = "ok"
+    else:
+        level = "poor"
+
+    return {"score": max(score, 0), "warnings": warnings, "level": level}
 
 
 def _generate_bootstrap_checklist(repo_structure: str, project_name: str) -> List[Dict[str, Any]]:
@@ -994,11 +1315,25 @@ def _build_project_context(
         "project_type": "greenfield",
     }
     
-    # Get governance response
-    gov_response = db.query(GovernanceResponse).filter(
-        GovernanceResponse.project_token == project_token,
-        GovernanceResponse.owner_id == user_id
-    ).first()
+    # Get governance response — support org-scoped visibility
+    user = db.query(User).filter(User.id == user_id).first()
+    org_name = str(user.organization_name).strip().lower() if user and user.organization_name else None
+
+    if org_name:
+        # Org-scoped: find governance from any member of the same org
+        org_user_ids = db.query(User.id).filter(
+            func.lower(User.organization_name) == org_name
+        ).scalar_subquery()
+        gov_response = db.query(GovernanceResponse).filter(
+            GovernanceResponse.project_token == project_token,
+            GovernanceResponse.owner_id.in_(org_user_ids)
+        ).order_by(GovernanceResponse.id.desc()).first()
+    else:
+        # Personal scope: only this user
+        gov_response = db.query(GovernanceResponse).filter(
+            GovernanceResponse.project_token == project_token,
+            GovernanceResponse.owner_id == user_id
+        ).first()
     
     if gov_response:
         context["project_name"] = gov_response.project_name or project_token
@@ -1009,22 +1344,41 @@ def _build_project_context(
         if gov_response.project_type:
             context["project_type"] = gov_response.project_type
     
-    # Get document analysis for this specific project
-    # First try to find a document that has this project_token in its analysis_result
+    # Get document analysis for this specific project — support org-scoped visibility
     token_pattern = f'%"project_token": "{project_token}"%'
-    document = db.query(Document).filter(
-        Document.owner_id == user_id,
-        Document.analysis_result.isnot(None),
-        Document.analysis_result.like(token_pattern)
-    ).order_by(Document.upload_date.desc()).first()
     
-    # Fallback to latest document if no project-specific document found
-    if not document:
-        logger.warning(f"No document found with project_token {project_token}, using latest document")
-        document = db.query(Document).filter(
+    if org_name:
+        # Org-scoped: find documents from any member of the same org
+        org_user_ids_doc = db.query(User.id).filter(
+            func.lower(User.organization_name) == org_name
+        ).scalar_subquery()
+        candidate_docs = db.query(Document).filter(
+            Document.owner_id.in_(org_user_ids_doc),
+            Document.analysis_result.isnot(None),
+            Document.analysis_result.like(token_pattern)
+        ).order_by(Document.upload_date.desc()).all()
+    else:
+        # Personal scope: only this user
+        candidate_docs = db.query(Document).filter(
             Document.owner_id == user_id,
-            Document.analysis_result.isnot(None)
-        ).order_by(Document.upload_date.desc()).first()
+            Document.analysis_result.isnot(None),
+            Document.analysis_result.like(token_pattern)
+        ).order_by(Document.upload_date.desc()).all()
+    
+    document = None
+    for cand in candidate_docs:
+        try:
+            cand_parsed = json.loads(cand.analysis_result)
+            if isinstance(cand_parsed, dict) and cand_parsed.get("project_token") == project_token:
+                document = cand
+                break
+        except Exception:
+            continue
+    
+    if not document:
+        proj_name = context.get("project_name")
+        display_name = f'"{proj_name}"' if proj_name and proj_name != project_token else "this project"
+        raise ValueError(f"No requirement document or BRD analysis found for {display_name}. Please upload project documents and generate Agent Analysis first before creating tasks.")
     
     brd_analysis_structure = ""
     if document and document.analysis_result:
@@ -1093,6 +1447,78 @@ def _build_project_context(
 # never hits max_tokens, and never produces truncated JSON.
 # ─────────────────────────────────────────────────────────────────────────────
 
+ALL_SPRINTS_SINGLE_CALL_PROMPT = """You are generating ALL tasks for the entire project in ONE response.
+
+Unlike the previous approach where tasks were split across 4 separate LLM calls (one per sprint),
+this prompt asks you to generate EVERYTHING at once — all 4 sprints, all tasks — in a single JSON array.
+
+## WHY THIS MATTERS
+- Single call eliminates duplicate tasks (the #1 problem with multi-call generation)
+- You can see the full picture and create proper dependencies between sprints
+- You can ensure no two tasks overlap in file ownership
+- You can number tasks correctly from the start (TASK-00 through TASK-NN)
+
+## SPRINT STRUCTURE (generate ALL 4 sprints)
+
+### Sprint 1 → Foundation, Navigation Shell & Fully-Linked Frontend Prototype
+- TASK-00 (mandatory first task, index 0, task_id exactly "TASK-00", linked_tasks: [], task_wallet: 8)
+  Creates: repo scaffold, React Router + ALL routes, AppLayout (collapsible sidebar + navbar),
+  design tokens (tokens.css), global mockData.ts, shared UI component kit, backend health endpoint ONLY
+- After TASK-00: one task per major screen/feature area
+- NO backend code in Sprint 1 except entry-point skeleton
+- Every Sprint 1 screen task uses the STORY-FIRST description format
+- All Sprint 1 tasks (except TASK-00) have linked_tasks: ["TASK-00"]
+
+### Sprint 2 → Backend Services, Database Setup & Core Configurations
+- SQLAlchemy DB schemas, models, JWT auth, API routes, third-party integrations
+- linked_tasks: ["TASK-00"] at minimum
+- If a Sprint 2 task depends on a specific Sprint 1 frontend task, include it too
+
+### Sprint 3 → Frontend-Backend Integration & Database Connectivity
+- Replace mockData with React Query hooks / real API calls
+- One integration task per major frontend-backend connection
+- Each Sprint 3 task links to TASK-00 + its Sprint 1 source + its Sprint 2 backend task
+
+### Sprint 4 → Testing, Polish & Production Deployment
+- Frontend tests (Vitest), backend tests (Pytest), E2E tests
+- Production deployment config (Docker, nginx, CI/CD)
+- linked_tasks: TASK-00 + relevant Sprint 2/3 tasks
+
+## CRITICAL: PROPER DEPENDENCY RESOLUTION
+- linked_tasks MUST be SPECIFIC, not just ["TASK-00"] for everything
+- Example correct dependencies:
+  TASK-00 (Bootstrap) → linked_tasks: []
+  TASK-01 (Auth UI) → linked_tasks: ["TASK-00"]
+  TASK-02 (Dashboard) → linked_tasks: ["TASK-00"]
+  TASK-03 (Auth Backend) → linked_tasks: ["TASK-00", "TASK-01"]
+  TASK-04 (Dashboard Integration) → linked_tasks: ["TASK-00", "TASK-02", "TASK-03"]
+  TASK-05 (Tests) → linked_tasks: ["TASK-00", "TASK-04"]
+
+## DUPLICATE PREVENTION RULES
+- NEVER create two tasks with the same or very similar title
+- NEVER create two tasks that own the same files
+- NEVER create two tasks with the same taskName
+- If Sprint 1 creates "Auth UI" (login page), Sprint 2 creates "Auth Backend" (API endpoints),
+  Sprint 3 creates "Auth Integration" (connecting them) — NOT another "Auth UI"
+- Every task must have a UNIQUE purpose and UNIQUE file ownership
+
+## CANONICAL PATH ENFORCEMENT
+- ALL file paths in task descriptions, FILE OWNERSHIP blocks, and checklists MUST use the FULL canonical paths from the REPOSITORY STRUCTURE provided in the context.
+- If the repository tree shows `frontend/src/`, then ALL frontend paths MUST start with `frontend/src/...` — NEVER bare `src/...`.
+- If the repository tree shows `backend/app/`, then ALL backend paths MUST start with `backend/app/...` — NEVER bare `app/...`.
+- Derive every path from the tree. Do NOT invent or assume path prefixes.
+
+## OUTPUT RULES
+- Return ONLY a valid JSON array — no markdown, no preamble, no explanation
+- First element MUST be TASK-00 (task_id exactly "TASK-00", linked_tasks: [])
+- Task IDs: TASK-00, TASK-01, TASK-02, ... sequential
+- Every task must have: task_id, taskName, description, task_type, priority, task_wallet, sprint, milestone, linked_tasks, checklist, assignedTo, reported_by
+- DESCRIPTIONS: Sprint 1 frontend tasks use the STORY-FIRST format. Sprint 2-4 tasks use concise ownership format.
+- Use the repository structure and available sprints/milestones provided in the context.
+- Generate all tasks for all 4 sprints in this single response.
+"""
+
+
 SPRINT1_GENERATION_PROMPT = """You are generating ONLY Sprint 1 tasks for a multi-sprint project plan.
 
 SPRINT 1 SCOPE: Project Bootstrap + Fully-Linked Frontend Prototype
@@ -1119,6 +1545,7 @@ OUTPUT RULES:
 - Return ONLY a valid JSON array — no markdown, no preamble, no explanation
 - First element MUST be TASK-00
 - All other Sprint 1 tasks have linked_tasks: ["TASK-00"]
+- ALL file paths MUST use FULL canonical paths from the REPOSITORY STRUCTURE (e.g. `frontend/src/...` if the tree shows `frontend/src/`, NEVER bare `src/...`)
 
 Generate Sprint 1 tasks now:"""
 
@@ -1145,6 +1572,7 @@ SPRINT 1 TASKS ALREADY GENERATED (for reference — use their task_ids in linked
 OUTPUT RULES:
 - Return ONLY a valid JSON array — no markdown, no preamble, no explanation
 - Every task linked_tasks must include "TASK-00" at minimum
+- ALL file paths MUST use FULL canonical paths from the REPOSITORY STRUCTURE (e.g. `backend/app/...` if the tree shows `backend/app/`, NEVER bare `app/...`)
 
 Generate Sprint 2 tasks now:"""
 
@@ -1180,6 +1608,7 @@ SPRINT 2 TASKS (backend APIs already built):
 OUTPUT RULES:
 - Return ONLY a valid JSON array — no markdown, no preamble, no explanation
 - Every task's linked_tasks must reference: ["TASK-00", "<Sprint1 task_id>", "<Sprint2 task_id>"]
+- ALL file paths MUST use FULL canonical paths from the REPOSITORY STRUCTURE
 
 Generate Sprint 3 tasks now:"""
 
@@ -1211,6 +1640,7 @@ PREVIOUSLY GENERATED TASKS (all sprints — for linked_tasks reference):
 OUTPUT RULES:
 - Return ONLY a valid JSON array — no markdown, no preamble, no explanation
 - Every task's linked_tasks must include "TASK-00" at minimum
+- ALL file paths MUST use FULL canonical paths from the REPOSITORY STRUCTURE
 
 Generate Sprint 4 tasks now:"""
 
@@ -1553,7 +1983,7 @@ async def generate_tasks_locally(
     Returns:
         List of generated task dictionaries
     """
-    
+
     if not llm_gateway.check_api_key(api_key):
         raise Exception("API key not configured for task generation")
 
@@ -1646,7 +2076,20 @@ async def generate_tasks_locally(
         for m in milestones
     ])
 
-    # ── 4. Shared BRD context block (injected into every sprint call) ──────────
+    # ── 4. Shared context block (injected into every sprint LLM call) ────────
+    gov_ctx = context.get('governance_context', {}) or {}
+    governance_block = f"""
+GOVERNANCE CONTEXT:
+====================
+Project Type:      {context.get('project_type', 'Not specified')}
+Classification:    {gov_ctx.get('classification', 'Not available')}
+Weighted Score:    {gov_ctx.get('weighted_score', 'Not available')}
+"""
+
+    raw_brd_analysis = context.get('brd_analysis', '')
+    if raw_brd_analysis and len(raw_brd_analysis) > 30000:
+        raw_brd_analysis = raw_brd_analysis[:30000] + "\n\n... [BRD Document Analysis truncated to 30,000 characters for task generation prompt length] ..."
+
     brd_block = f"""
 AVAILABLE SPRINTS (with dates):
 ================================
@@ -1660,154 +2103,270 @@ REPOSITORY STRUCTURE (from section 0.5.1):
 ==========================================
 {context.get('repository_structure', 'Not available')}
 
+{governance_block}
 CURRENT DATE: {today.strftime('%Y-%m-%d')}
 PROJECT DEADLINE: {project_deadline.strftime('%Y-%m-%d')}
 
 ===================================================================
 AGENT ACTION PLAN MARKDOWN DOCUMENT
 ===================================================================
-{context['brd_analysis'] if context['brd_analysis'] else 'No Agent Action Plan available'}
+{raw_brd_analysis if raw_brd_analysis else 'No Agent Action Plan available'}
 ===================================================================
 """
 
-    # ── 5. PHASED GENERATION — one LLM call per sprint ────────────────────────
+    # ── 5. PER-SPRINT SEQUENTIAL GENERATION ──────────────────────────────────
+    # Generate tasks one sprint at a time, each with a focused scope:
+    #   Sprint 1 = Frontend screens + bootstrap (story-first format)
+    #   Sprint 2 = Backend services, DB models, API routes
+    #   Sprint 3 = Frontend-Backend integration, real API wiring
+    #   Sprint 4 = Testing, polish, deployment config
+    # Previous sprints are passed as context so each sprint builds on the last.
+    # This fixes "information overload" where a single LLM call forgets entire
+    # feature areas (especially backend CRUD) because it has too much to produce.
+    logger.info(f"[{project_token}] Per-sprint sequential generation — {len(sprints)} sprints")
+
     all_tasks: List[Dict[str, Any]] = []
 
-    # ── Phase 1: Sprint 1 (TASK-00 + frontend screens) ────────────────────────
-    logger.info(f"[{project_token}] Phase 1/4 — Sprint 1 (bootstrap + frontend prototype)")
-    sprint1_tasks = await _generate_sprint_phase(
-        sprint_number=1,
-        sprint_prompt_template=SPRINT1_GENERATION_PROMPT,
-        prompt_context=brd_block,
-        api_url=api_url,
-        api_key=api_key,
-        model=model,
-        project_token=project_token,
-    )
-    task_00 = next((t for t in sprint1_tasks if t.get("task_id") == "TASK-00"), None)
-    if task_00:
-        # Ensure TASK-00 is not split, but guarantee dependencies for other tasks
-        for t in sprint1_tasks:
-            if t.get("task_id") != "TASK-00":
-                linked = t.setdefault("linked_tasks", [])
-                if "TASK-00" not in linked:
-                    linked.insert(0, "TASK-00")
-    else:
-        # Renumber starting at 1 (TASK-00 stays TASK-00)
-        sprint1_tasks = _renumber_task_ids(sprint1_tasks, start_index=1)
-        
-    # Sprint 1 tasks get sprint[0] as default
-    for t in sprint1_tasks:
-        t.setdefault("sprint",     sprints[0]["name"])
-        t.setdefault("milestone",  milestones[0]["name"])
-    all_tasks.extend(sprint1_tasks)
+    # ── Sprint 1: Frontend Prototype & Bootstrap ────────────────────────────
+    try:
+        logger.info(f"  → Generating Sprint 1 (Frontend) tasks...")
+        messages_1 = [
+            {"role": "system", "content": INTELLIGENT_TASK_GENERATION_PROMPT},
+            {"role": "user", "content": brd_block + "\n\n" + SPRINT1_GENERATION_PROMPT},
+        ]
+        response_1 = await llm_gateway.call_llm_and_extract(
+            messages=messages_1, api_url=api_url, api_key=api_key,
+            model=model, timeout=180.0,
+        )
+        tasks_1 = _parse_task_json(response_1)
+        if tasks_1:
+            all_tasks.extend(tasks_1)
+            logger.info(f"[{project_token}] Sprint 1 generated {len(tasks_1)} tasks")
+        else:
+            logger.warning(f"[{project_token}] Sprint 1 generated 0 tasks")
+    except Exception as e:
+        logger.error(f"[{project_token}] Sprint 1 generation failed: {e}")
 
-    next_index = max(
-        (int(t["task_id"].replace("TASK-", "")) for t in sprint1_tasks if t.get("task_id", "").startswith("TASK-") and not t["task_id"].startswith("TASK-00")),
-        default=0
-    ) + 1
+    # ── Sprint 2: Backend Services & Database ───────────────────────────────
+    if all_tasks:
+        sprint1_summary = _build_tasks_summary(
+            [t for t in all_tasks if "Sprint 1" in t.get("sprint", "")]
+        ) or _build_tasks_summary(all_tasks)
+        try:
+            logger.info(f"  → Generating Sprint 2 (Backend) tasks...")
+            formatted_prompt_2 = SPRINT2_GENERATION_PROMPT.format(
+                start_index=len(all_tasks),
+                sprint1_summary=sprint1_summary,
+            )
+            messages_2 = [
+                {"role": "system", "content": INTELLIGENT_TASK_GENERATION_PROMPT},
+                {"role": "user", "content": brd_block + "\n\n" + formatted_prompt_2},
+            ]
+            response_2 = await llm_gateway.call_llm_and_extract(
+                messages=messages_2, api_url=api_url, api_key=api_key,
+                model=model, timeout=180.0,
+            )
+            tasks_2 = _parse_task_json(response_2)
+            if tasks_2:
+                all_tasks.extend(tasks_2)
+                logger.info(f"[{project_token}] Sprint 2 generated {len(tasks_2)} tasks")
+            else:
+                logger.warning(f"[{project_token}] Sprint 2 generated 0 tasks")
+        except Exception as e:
+            logger.error(f"[{project_token}] Sprint 2 generation failed: {e}")
 
-    # ── Phase 2: Sprint 2 (backend services) ──────────────────────────────────
-    sprint1_summary = _build_tasks_summary(sprint1_tasks)
-    logger.info(f"[{project_token}] Phase 2/4 — Sprint 2 (backend services) — next task index: TASK-{next_index:02d}")
-    sprint2_prompt = SPRINT2_GENERATION_PROMPT.replace(
-        "{start_index}", f"{next_index:02d}"
-    ).replace(
-        "{sprint1_summary}", sprint1_summary
-    )
-    sprint2_tasks = await _generate_sprint_phase(
-        sprint_number=2,
-        sprint_prompt_template=sprint2_prompt,
-        prompt_context=brd_block,
-        api_url=api_url,
-        api_key=api_key,
-        model=model,
-        project_token=project_token,
-    )
-    sprint2_tasks = _renumber_task_ids(sprint2_tasks, start_index=next_index)
-    for t in sprint2_tasks:
-        t.setdefault("sprint",    sprints[1]["name"])
-        t.setdefault("milestone", milestones[1]["name"])
-        # Guarantee TASK-00 is always in linked_tasks
-        linked = t.setdefault("linked_tasks", [])
-        if "TASK-00" not in linked:
-            linked.insert(0, "TASK-00")
-        t["linked_tasks"] = linked
-    all_tasks.extend(sprint2_tasks)
+    # ── Sprint 3: Frontend-Backend Integration ──────────────────────────────
+    if all_tasks:
+        s1 = [t for t in all_tasks if "Sprint 1" in t.get("sprint", "")]
+        s2 = [t for t in all_tasks if "Sprint 2" in t.get("sprint", "")]
+        s1_summary = _build_tasks_summary(s1) if s1 else _build_tasks_summary(all_tasks)
+        s2_summary = _build_tasks_summary(s2) if s2 else "No Sprint 2 tasks generated yet."
+        try:
+            logger.info(f"  → Generating Sprint 3 (Integration) tasks...")
+            formatted_prompt_3 = SPRINT3_GENERATION_PROMPT.format(
+                start_index=len(all_tasks),
+                sprint1_summary=s1_summary,
+                sprint2_summary=s2_summary,
+            )
+            messages_3 = [
+                {"role": "system", "content": INTELLIGENT_TASK_GENERATION_PROMPT},
+                {"role": "user", "content": brd_block + "\n\n" + formatted_prompt_3},
+            ]
+            response_3 = await llm_gateway.call_llm_and_extract(
+                messages=messages_3, api_url=api_url, api_key=api_key,
+                model=model, timeout=180.0,
+            )
+            tasks_3 = _parse_task_json(response_3)
+            if tasks_3:
+                all_tasks.extend(tasks_3)
+                logger.info(f"[{project_token}] Sprint 3 generated {len(tasks_3)} tasks")
+            else:
+                logger.warning(f"[{project_token}] Sprint 3 generated 0 tasks")
+        except Exception as e:
+            logger.error(f"[{project_token}] Sprint 3 generation failed: {e}")
 
-    next_index = max(
-        (int(t["task_id"].replace("TASK-", "")) for t in sprint2_tasks if t.get("task_id", "").startswith("TASK-") and not t["task_id"].startswith("TASK-00")),
-        default=next_index - 1
-    ) + 1
-
-    # ── Phase 3: Sprint 3 (integration) ───────────────────────────────────────
-    sprint2_summary = _build_tasks_summary(sprint2_tasks)
-    logger.info(f"[{project_token}] Phase 3/4 — Sprint 3 (integration) — next task index: TASK-{next_index:02d}")
-    sprint3_prompt = SPRINT3_GENERATION_PROMPT.replace(
-        "{start_index}", f"{next_index:02d}"
-    ).replace(
-        "{sprint1_summary}", sprint1_summary
-    ).replace(
-        "{sprint2_summary}", sprint2_summary
-    )
-    sprint3_tasks = await _generate_sprint_phase(
-        sprint_number=3,
-        sprint_prompt_template=sprint3_prompt,
-        prompt_context=brd_block,
-        api_url=api_url,
-        api_key=api_key,
-        model=model,
-        project_token=project_token,
-    )
-    sprint3_tasks = _renumber_task_ids(sprint3_tasks, start_index=next_index)
-    for t in sprint3_tasks:
-        t.setdefault("sprint",    sprints[2]["name"])
-        t.setdefault("milestone", milestones[2]["name"])
-        # Guarantee TASK-00 is always in linked_tasks
-        linked = t.setdefault("linked_tasks", [])
-        if "TASK-00" not in linked:
-            linked.insert(0, "TASK-00")
-        t["linked_tasks"] = linked
-    all_tasks.extend(sprint3_tasks)
-
-    next_index = max(
-        (int(t["task_id"].replace("TASK-", "")) for t in sprint3_tasks if t.get("task_id", "").startswith("TASK-") and not t["task_id"].startswith("TASK-00")),
-        default=next_index - 1
-    ) + 1
-
-    # ── Phase 4: Sprint 4 (testing & deployment) ──────────────────────────────
-    all_previous_summary = _build_tasks_summary(sprint1_tasks + sprint2_tasks + sprint3_tasks)
-    logger.info(f"[{project_token}] Phase 4/4 — Sprint 4 (testing & deployment) — next task index: TASK-{next_index:02d}")
-    sprint4_prompt = SPRINT4_GENERATION_PROMPT.replace(
-        "{start_index}", f"{next_index:02d}"
-    ).replace(
-        "{all_previous_summary}", all_previous_summary
-    )
-    sprint4_tasks = await _generate_sprint_phase(
-        sprint_number=4,
-        sprint_prompt_template=sprint4_prompt,
-        prompt_context=brd_block,
-        api_url=api_url,
-        api_key=api_key,
-        model=model,
-        project_token=project_token,
-    )
-    sprint4_tasks = _renumber_task_ids(sprint4_tasks, start_index=next_index)
-    for t in sprint4_tasks:
-        t.setdefault("sprint",    sprints[3]["name"])
-        t.setdefault("milestone", milestones[3]["name"])
-        # Guarantee TASK-00 is always in linked_tasks
-        linked = t.setdefault("linked_tasks", [])
-        if "TASK-00" not in linked:
-            linked.insert(0, "TASK-00")
-        t["linked_tasks"] = linked
-    all_tasks.extend(sprint4_tasks)
-
-    logger.info(f"[{project_token}] All phases complete — {len(all_tasks)} total tasks before validation")
+    # ── Sprint 4: Testing & Deployment ──────────────────────────────────────
+    if all_tasks:
+        all_summary = _build_tasks_summary(all_tasks)
+        try:
+            logger.info(f"  → Generating Sprint 4 (Testing) tasks...")
+            formatted_prompt_4 = SPRINT4_GENERATION_PROMPT.format(
+                start_index=len(all_tasks),
+                all_previous_summary=all_summary,
+            )
+            messages_4 = [
+                {"role": "system", "content": INTELLIGENT_TASK_GENERATION_PROMPT},
+                {"role": "user", "content": brd_block + "\n\n" + formatted_prompt_4},
+            ]
+            response_4 = await llm_gateway.call_llm_and_extract(
+                messages=messages_4, api_url=api_url, api_key=api_key,
+                model=model, timeout=180.0,
+            )
+            tasks_4 = _parse_task_json(response_4)
+            if tasks_4:
+                all_tasks.extend(tasks_4)
+                logger.info(f"[{project_token}] Sprint 4 generated {len(tasks_4)} tasks")
+            else:
+                logger.warning(f"[{project_token}] Sprint 4 generated 0 tasks")
+        except Exception as e:
+            logger.error(f"[{project_token}] Sprint 4 generation failed: {e}")
 
     if not all_tasks:
-        logger.error("No tasks generated across any sprint phase")
+        logger.error(f"[{project_token}] No tasks generated from any sprint")
         return []
+
+    # Cross-sprint deduplication (removes any overlap between sprints)
+    before_dedup = len(all_tasks)
+    all_tasks = _deduplicate_tasks(all_tasks)
+    if len(all_tasks) < before_dedup:
+        logger.info(f"[{project_token}] Cross-sprint dedup removed {before_dedup - len(all_tasks)} tasks")
+
+    logger.info(f"[{project_token}] Per-sprint generation complete — {len(all_tasks)} tasks across all sprints")
+
+    # ── 5b. Validate and ensure TASK-00 exists ─────────────────────────────────
+    if not all_tasks:
+        logger.error(f"[{project_token}] No tasks generated from single-call")
+        return []
+
+    # Ensure TASK-00 is the first element
+    task_00 = next((t for t in all_tasks if t.get("task_id") == "TASK-00"), None)
+    if not task_00:
+        logger.warning(f"[{project_token}] TASK-00 not found in single-call output — renumbering from 1")
+        all_tasks = _renumber_task_ids(all_tasks, start_index=1)
+        # Insert a minimal TASK-00 if truly missing
+        if not any(t.get("task_id") == "TASK-00" for t in all_tasks):
+            logger.warning(f"[{project_token}] No TASK-00 at all — adding scaffold task")
+            scaffold = {
+                "task_id": "TASK-00",
+                "taskName": "Project Bootstrap & Shared Foundation",
+                "description": "Project bootstrap: repository scaffold, navigation shell, design tokens, mock data store, and shared UI components.\nThis agent owns: all config files and shared foundation directories as defined in the canonical repository structure.",
+                "task_type": "TASK",
+                "priority": "high",
+                "task_wallet": 8,
+                "sprint": sprints[0]["name"],
+                "milestone": milestones[0]["name"],
+                "assignedTo": [],
+                "linked_tasks": [],
+                "reported_by": "system",
+                "checklist": [{"text": "Scaffold repository structure", "completed": False}]
+            }
+            all_tasks.insert(0, scaffold)
+
+    # ── 5c. DEDUPLICATE FIRST (before renumbering to keep IDs clean) ────────────
+    before_dedup = len(all_tasks)
+    all_tasks = _deduplicate_tasks(all_tasks)
+    if len(all_tasks) < before_dedup:
+        logger.info(f"[{project_token}] Dedup removed {before_dedup - len(all_tasks)} tasks")
+
+    # ── 5d. Renumber tasks sequentially (AFTER dedup, so IDs have no gaps) ─────
+    all_tasks = _renumber_task_ids(all_tasks, start_index=1)
+    sprint_map = {}
+    for s in sprints:
+        sprint_map[s["name"]] = s["name"]
+    milestone_map = {}
+    for m in milestones:
+        milestone_map[m["name"]] = m["name"]
+
+    for t in all_tasks:
+        task_sprint = t.get("sprint", "")
+        if task_sprint and task_sprint in sprint_map:
+            pass  # Keep the LLM-assigned sprint
+        else:
+            # Infer sprint from task description keywords
+            desc = str(t.get("description", "")).lower()
+            if any(kw in desc for kw in ["test", "deploy", "production", "docker"]):
+                t["sprint"] = sprints[3]["name"] if len(sprints) > 3 else sprints[-1]["name"]
+            elif any(kw in desc for kw in ["integrat", "connect", "wire", "api call"]):
+                t["sprint"] = sprints[2]["name"] if len(sprints) > 2 else sprints[-1]["name"]
+            elif any(kw in desc for kw in ["backend", "api ", "database", "model", "schema"]):
+                t["sprint"] = sprints[1]["name"] if len(sprints) > 1 else sprints[-1]["name"]
+            else:
+                t["sprint"] = sprints[0]["name"]
+        t.setdefault("milestone", milestones[0]["name"])
+
+    # ── 5f. Ensure every task has TASK-00 in linked_tasks (except TASK-00 itself) ─
+    for t in all_tasks:
+        if t.get("task_id") != "TASK-00":
+            linked = t.setdefault("linked_tasks", [])
+            if "TASK-00" not in linked:
+                linked.insert(0, "TASK-00")
+            t["linked_tasks"] = linked
+
+    logger.info(f"[{project_token}] Single-call generation complete — {len(all_tasks)} tasks after dedup")
+
+    # ── Helper: detect frontend prefix from canonical tree ────────────────────
+    def _detect_frontend_prefix(tree_text: str) -> str:
+        """
+        Scan the canonical repository tree to find the parent directory
+        that wraps 'src/' (e.g. 'frontend/'). Returns '' if src/ is at root.
+        
+        Works with any tree format:
+          ├── frontend/
+          │   ├── src/
+        """
+        import re
+        lines = tree_text.splitlines()
+
+        def _get_depth(line):
+            """Count nesting depth by counting tree connector groups (each ~4 chars)."""
+            stripped = line.rstrip()
+            if not stripped:
+                return -1
+            depth = 0
+            pos = 0
+            while pos < len(stripped):
+                chunk = stripped[pos:pos+4]
+                if chunk in ('│   ', '├── ', '└── ', '    ', '|   '):
+                    depth += 1
+                    pos += 4
+                elif stripped[pos:pos+3] in ('├──', '└──'):
+                    depth += 1
+                    pos += 3
+                    break
+                else:
+                    break
+            return depth
+
+        def _get_name(line):
+            """Extract the clean name from a tree line."""
+            return re.sub(r'^[\s│├└─\-\|]+', '', line).strip()
+
+        for i, line in enumerate(lines):
+            name = _get_name(line)
+            if name in ('src/', 'src'):
+                src_depth = _get_depth(line)
+                # Walk backwards to find parent (lower depth)
+                for j in range(i - 1, -1, -1):
+                    parent_name = _get_name(lines[j])
+                    parent_depth = _get_depth(lines[j])
+                    if parent_depth < src_depth and parent_name and parent_name not in ('.', './', ''):
+                        parent_dir = parent_name.rstrip('/') + '/'
+                        if parent_dir in ('.', './', '/'):
+                            return ''
+                        return parent_dir
+                # No parent found → src/ is at root
+                return ''
+        return ''
 
     # ── 6. Validate, enrich, inject repo structure ─────────────────────────────
     valid_tasks: List[Dict[str, Any]] = []
@@ -1836,6 +2395,26 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
         task.setdefault("planned_start", task["startdate"])
         if "deadline" not in task:
             task["deadline"] = (today + timedelta(days=min(task["task_wallet"], 7))).strftime('%Y-%m-%d')
+
+        # ── Normalize paths in description to match canonical tree ────────────
+        # Detect if the canonical repo tree has a frontend/ wrapper around src/
+        # If so, fix any bare src/ references in the description to use frontend/src/
+        if repo_structure:
+            import re
+            desc = task.get("description", "")
+            if desc:
+                fe_prefix = _detect_frontend_prefix(repo_structure)
+
+                # If we found a frontend prefix (e.g. "frontend/"), fix bare src/ paths
+                if fe_prefix:
+                    # Replace bare src/ references that are NOT already prefixed
+                    prefix_no_slash = fe_prefix.rstrip("/")
+                    desc = re.sub(
+                        r'(?<!' + re.escape(prefix_no_slash) + r'/)(?<![a-zA-Z0-9_-])(src/)',
+                        fe_prefix + r'src/',
+                        desc
+                    )
+                    task["description"] = desc
 
         # ── Inject repo structure ──────────────────────────────────────────────
         if repo_structure:
@@ -1873,11 +2452,15 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
             has_dev_check = any("run dev" in item.get("text", "").lower() or "development server" in item.get("text", "").lower() for item in checklist)
             
             # Smart file target detection from description or files
+            # Match full canonical paths: frontend/src/..., backend/..., or bare src/...
             import re
-            file_matches = re.findall(r'(src/[a-zA-Z0-9_\-/]+\.(?:tsx|jsx|ts|js|css))', task.get("description", ""))
-            primary_file = file_matches[0] if file_matches else "src/App.tsx"
+            file_matches = re.findall(r'((?:[a-zA-Z0-9_-]+/)*src/[a-zA-Z0-9_\-/]+\.(?:tsx|jsx|ts|js|css))', task.get("description", ""))
+            if not file_matches:
+                # Also try backend paths like backend/app/models.py
+                file_matches = re.findall(r'((?:[a-zA-Z0-9_-]+/)+[a-zA-Z0-9_\-/]+\.(?:py|rb|go|java|rs|php))', task.get("description", ""))
+            primary_file = file_matches[0] if file_matches else None
             
-            if not any(f"test -f {primary_file}" in item.get("text", "") for item in checklist):
+            if primary_file and not any(f"test -f {primary_file}" in item.get("text", "") for item in checklist):
                 checklist.append({
                     "text": f"Verify file exists: run `test -f {primary_file}` and verify exit code 0",
                     "completed": False
@@ -1886,7 +2469,7 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
             # --- Smart subcomponent integration check ---
             desc_text = task.get("description", "")
             title_text = task.get("taskName", "")
-            task_files = re.findall(r'(src/[a-zA-Z0-9_\-/]+\.(?:tsx|jsx|ts|js))', desc_text)
+            task_files = re.findall(r'((?:[a-zA-Z0-9_-]+/)*src/[a-zA-Z0-9_\-/]+\.(?:tsx|jsx|ts|js))', desc_text)
             
             # Find React component names mentioned in the description, excluding common React terms
             matches = set(re.findall(r'\b(Task[A-Z][a-zA-Z0-9]+|[A-Z][a-zA-Z0-9]+List|[A-Z][a-zA-Z0-9]+Item|[A-Z][a-zA-Z0-9]+Filter|[A-Z][a-zA-Z0-9]+Form|[A-Z][a-zA-Z0-9]+Stats)\b', desc_text + " " + title_text))
@@ -1938,7 +2521,199 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
     valid_tasks = first_elements + [t for t in valid_tasks if t.get("task_id") != "TASK-00"]
 
     logger.info(f"[{project_token}] ✅ Sprint-wise generation complete — {len(valid_tasks)} valid tasks")
+
+    # ── 7b. POST-GENERATION VALIDATION ──────────────────────────
+    issues = _validate_task_set_completeness(valid_tasks, project_token)
+    if issues:
+        logger.warning(f"[{project_token}] ⚠️ Task validation found {len(issues)} issues:")
+        for issue in issues:
+            logger.warning(f"[{project_token}]   → {issue}")
+
+    # ── 7b2. BRD-TASK COVERAGE CROSS-REFERENCE ─────────────────
+    # Check that all BRD requirements are covered by at least one task.
+    # This catches LLM omissions where entire feature areas are missed.
+    brd_raw = context.get("brd_analysis", "")
+    if brd_raw and len(valid_tasks) > 3:
+        try:
+            coverage_issues = await _audit_brd_task_coverage(
+                brd_content=str(brd_raw)[:20000],  # Truncate huge BRDs
+                tasks=valid_tasks,
+                project_token=project_token,
+                api_url=api_url,
+                api_key=api_key,
+                model=model,
+            )
+            if coverage_issues:
+                logger.warning(
+                    f"[{project_token}] 🚨 BRD COVERAGE GAP: {len(coverage_issues)} requirement(s) not mapped to any task!"
+                )
+                for ci in coverage_issues:
+                    logger.warning(f"[{project_token}]   ⚠️ UNCOVERED: {ci}")
+
+                # ── AUTO-FILL: Generate tasks for uncovered requirements ──────
+                logger.info(f"[{project_token}] 🔄 Auto-generating tasks for {len(coverage_issues)} uncovered requirements...")
+                try:
+                    fill_prompt = (
+                        "You are generating additional tasks to fill gaps in a project plan.\n\n"
+                        "The following BRD requirements were found to have NO corresponding task:\n"
+                        + "\n".join(f"{i+1}. {req}" for i, req in enumerate(coverage_issues)) +
+                        "\n\n"
+                        "EXISTING TASKS (do NOT duplicate any of these):\n"
+                        + _build_tasks_summary(valid_tasks) +
+                        "\n\n"
+                        "Generate ONE task per uncovered requirement. Each task must:\n"
+                        "- Have a unique task_id (starting from TASK-GAP-01, TASK-GAP-02, ...)\n"
+                        "- Include: taskName, description, task_type (\"FEATURE\"), priority, "
+                        "task_wallet (3-5), sprint (infer from content), milestone, "
+                        "linked_tasks, checklist (3-5 items), assignedTo: []\n"
+                        "- linked_tasks must include \"TASK-00\" plus any relevant existing task IDs\n"
+                        "- Description must explicitly reference the BRD requirement it fulfills\n"
+                        "- Use the same repository structure as existing tasks for file paths\n"
+                        "\nReturn ONLY a valid JSON array — no markdown, no preamble, no explanation."
+                    )
+                    fill_messages = [
+                        {"role": "system", "content": "You are a precise task planner filling gaps in a project plan. Generate complete, actionable task objects."},
+                        {"role": "user", "content": fill_prompt},
+                    ]
+                    fill_response = await llm_gateway.call_llm_and_extract(
+                        messages=fill_messages,
+                        api_url=api_url,
+                        api_key=api_key,
+                        model=model,
+                        timeout=120.0,
+                    )
+                    fill_tasks = _parse_task_json(fill_response)
+                    if fill_tasks:
+                        # Validate each new task has required fields
+                        validated_fill = []
+                        for ft in fill_tasks:
+                            ft.setdefault("task_type", "FEATURE")
+                            ft.setdefault("priority", "medium")
+                            ft.setdefault("task_wallet", 3)
+                            ft.setdefault("assignedTo", [])
+                            ft.setdefault("reported_by", "system")
+                            ft.setdefault("checklist", [{"text": "Implement this feature", "completed": False}])
+                            ft.setdefault("linked_tasks", ["TASK-00"])
+                            ft["sprint"] = ft.get("sprint", "Sprint 1 - Frontend Proto & Bootstrap")
+                            ft["milestone"] = ft.get("milestone", "Frontend Screens & Bootstrap Complete")
+                            validated_fill.append(ft)
+
+                        before = len(valid_tasks)
+                        valid_tasks.extend(validated_fill)
+                        # Renumber so gap tasks get proper sequential IDs
+                        valid_tasks = _renumber_task_ids(valid_tasks, start_index=1)
+                        added = len(valid_tasks) - before
+                        logger.info(f"[{project_token}] ✅ Coverage auto-fill: added {added} new task(s)")
+                    else:
+                        logger.warning(f"[{project_token}] Coverage auto-fill returned 0 tasks — gaps remain")
+                except Exception as fill_err:
+                    logger.warning(f"[{project_token}] Coverage auto-fill failed (non-critical): {fill_err}")
+                # ── END AUTO-FILL ─────────────────────────────────────────────
+            else:
+                logger.info(f"[{project_token}] ✅ BRD coverage audit: all requirements mapped to tasks")
+        except Exception as cov_err:
+            logger.warning(f"[{project_token}] BRD coverage audit skipped (non-critical): {cov_err}")
+    # ═══ END BRD-TASK COVERAGE AUDIT ═══
+
+    # ── 7c. QUALITY SCORING ────────────────────────────────────
+    quality_stats = {"good": 0, "ok": 0, "poor": 0}
+    for t in valid_tasks:
+        tid = str(t.get("task_id", ""))
+        result = _score_task_quality(t, tid)
+        quality_stats[result["level"]] = quality_stats.get(result["level"], 0) + 1
+        if result["level"] == "poor":
+            logger.warning(
+                f"[{project_token}] 🟡 LOW-QUALITY task {tid}: score={result['score']}/10 — "
+                + "; ".join(result["warnings"])
+            )
+    if quality_stats["poor"] > 0:
+        logger.warning(
+            f"[{project_token}] 📊 Quality: {quality_stats['good']} good, "
+            f"{quality_stats['ok']} ok, {quality_stats['poor']} poor"
+        )
+
     for t in valid_tasks:
         logger.info(f"    {t['task_id']}: {t['taskName']} [{t.get('sprint', '?')}]")
 
     return valid_tasks
+
+
+async def _audit_brd_task_coverage(
+    brd_content: str,
+    tasks: List[Dict[str, Any]],
+    project_token: str = "",
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+) -> List[str]:
+    """
+    Cross-reference the BRD/Action Plan against generated tasks to detect
+    requirements that have NO corresponding task.  Returns a list of
+    uncovered requirement descriptions (empty = full coverage).
+
+    Uses a lightweight LLM call since this is a classification problem, not
+    generation.
+    """
+    if not brd_content or not tasks:
+        return []
+
+    # Build a compact task summary: one line per task
+    task_summaries: List[str] = []
+    for t in tasks:
+        tid = t.get("task_id", "?")
+        title = t.get("taskName") or t.get("title", "Untitled")
+        desc = (t.get("description") or "")[:120]
+        sprint = t.get("sprint", "?")
+        task_summaries.append(f"{tid}: [{sprint}] {title} — {desc}")
+
+    task_block = "\n".join(task_summaries)
+
+    system_prompt = (
+        "You are a precise requirements analyst. "
+        "Compare the BRD/Agent-Action-Plan to the task list and return "
+        "ONLY requirements from the BRD that are NOT covered by ANY task. "
+        "If every requirement is covered, return an empty JSON array: []. "
+        "Each uncovered item should be a short string describing the missing requirement."
+    )
+
+    user_prompt = (
+        f"BRD / AGENT ACTION PLAN (truncated):\n"
+        f"{brd_content[:15000]}\n\n"
+        f"GENERATED TASKS:\n"
+        f"{task_block[:8000]}\n\n"
+        f"List all BRD requirements that have NO corresponding task. "
+        f"Return as JSON array of short strings. Return [] if fully covered."
+    )
+
+    import llm_gateway
+    if not llm_gateway.check_api_key(api_key):
+        logger.warning(f"[{project_token}] Skipping BRD coverage audit — no API key")
+        return []
+
+    try:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        response = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            timeout=60.0,
+        )
+        raw = (response or "").strip()
+        # Strip markdown fences if present
+        import re
+        raw_clean = re.sub(r"```json\s*", "", raw, flags=re.IGNORECASE)
+        raw_clean = re.sub(r"```\s*$", "", raw_clean, flags=re.IGNORECASE).strip()
+        uncovered = json.loads(raw_clean)
+        if isinstance(uncovered, list):
+            return [str(item) for item in uncovered if item]
+        return []
+    except json.JSONDecodeError:
+        logger.warning(f"[{project_token}] BRD coverage audit: LLM returned non-JSON: {str(response)[:200]}")
+        return []
+    except Exception as e:
+        logger.warning(f"[{project_token}] BRD coverage audit failed: {e}")
+        return []
