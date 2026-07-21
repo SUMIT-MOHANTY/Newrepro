@@ -14317,9 +14317,21 @@ async def auto_generate_project_tasks(
 
         analysis_payload: Dict[str, Any] = {}
         analysis_report = str(gov_response.recommendation or "").strip() if gov_response else ""
-        user_documents = db.query(models.Document).filter(
-            models.Document.owner_id == current_user.id
-        ).order_by(models.Document.upload_date.desc()).all()
+        
+        # --- Search for documents with analysis_result (AI-analyzed documents) ---
+        # Support org-scoped visibility
+        org_name = _normalized_text(getattr(current_user, "organization_name", None))
+        if org_name:
+            org_user_ids = db.query(models.User.id).filter(
+                func.lower(models.User.organization_name) == org_name.lower()
+            ).scalar_subquery()
+            user_documents = db.query(models.Document).filter(
+                models.Document.owner_id.in_(org_user_ids)
+            ).order_by(models.Document.upload_date.desc()).all()
+        else:
+            user_documents = db.query(models.Document).filter(
+                models.Document.owner_id == current_user.id
+            ).order_by(models.Document.upload_date.desc()).all()
 
         for doc in user_documents:
             if not doc.analysis_result:

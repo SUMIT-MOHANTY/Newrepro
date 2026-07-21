@@ -1345,8 +1345,10 @@ def _build_project_context(
             context["project_type"] = gov_response.project_type
     
     # Get document analysis for this specific project — support org-scoped visibility
-    token_pattern = f'%"project_token": "{project_token}"%'
-    
+    # NOTE: We do NOT use a LIKE filter on analysis_result here because JSON can
+    # store project_token as a quoted string, unquoted number, or null.
+    # The LIKE pattern %"project_token": "VALUE"% would fail for numbers/null.
+    # Instead, we fetch all docs with analysis_result and filter in Python below.
     if org_name:
         # Org-scoped: find documents from any member of the same org
         org_user_ids_doc = db.query(User.id).filter(
@@ -1354,26 +1356,50 @@ def _build_project_context(
         ).scalar_subquery()
         candidate_docs = db.query(Document).filter(
             Document.owner_id.in_(org_user_ids_doc),
-            Document.analysis_result.isnot(None),
-            Document.analysis_result.like(token_pattern)
+            Document.analysis_result.isnot(None)
         ).order_by(Document.upload_date.desc()).all()
     else:
         # Personal scope: only this user
         candidate_docs = db.query(Document).filter(
             Document.owner_id == user_id,
-            Document.analysis_result.isnot(None),
-            Document.analysis_result.like(token_pattern)
+            Document.analysis_result.isnot(None)
         ).order_by(Document.upload_date.desc()).all()
+    
+    def _doc_matches_project(cand, proj_token, gov=None):
+        """Check if a document's analysis_result references the given project_token
+        (handles both flat keys and nested structures like projectMeta.project_token)."""
+        try:
+            cand_parsed = json.loads(cand.analysis_result)
+            if not isinstance(cand_parsed, dict):
+                return False
+            # Check flat key (handle None/null by skipping comparison)
+            pt = cand_parsed.get("project_token")
+            if pt is not None and str(pt) == str(proj_token):
+                return True
+            # Check nested paths
+            gov_ctx = cand_parsed.get("governanceContext") or {}
+            proj_meta = cand_parsed.get("projectMeta") or {}
+            # Use str() comparison to handle both string and number project_token
+            pt_meta = proj_meta.get("project_token")
+            if pt_meta is not None and str(pt_meta) == str(proj_token):
+                return True
+            pt_gov = gov_ctx.get("project_token")
+            if pt_gov is not None and str(pt_gov) == str(proj_token):
+                return True
+            # Also check governance_result_id linkage
+            if gov:
+                gr_id = proj_meta.get("governance_result_id")
+                if gr_id is not None and str(gr_id) == str(gov.id):
+                    return True
+            return False
+        except Exception:
+            return False
     
     document = None
     for cand in candidate_docs:
-        try:
-            cand_parsed = json.loads(cand.analysis_result)
-            if isinstance(cand_parsed, dict) and cand_parsed.get("project_token") == project_token:
-                document = cand
-                break
-        except Exception:
-            continue
+        if _doc_matches_project(cand, project_token, gov_response):
+            document = cand
+            break
     
     if not document:
         proj_name = context.get("project_name")
@@ -1381,6 +1407,7 @@ def _build_project_context(
         raise ValueError(f"No requirement document or BRD analysis found for {display_name}. Please upload project documents and generate Agent Analysis first before creating tasks.")
     
     brd_analysis_structure = ""
+    _raw_analysis_ok = False
     if document and document.analysis_result:
         try:
             analysis = json.loads(document.analysis_result)
@@ -1388,18 +1415,29 @@ def _build_project_context(
             if not raw_analysis and isinstance(analysis, str):
                 raw_analysis = analysis
             
-            context["brd_analysis"] = raw_analysis
-            
-            # Extract repository structure from section 0.5.1
-            raw_struct = _extract_repository_structure(raw_analysis)
-            brd_analysis_structure = clean_repository_structure_string(raw_struct)
-            
-            if "project_type" in analysis:
-                context["project_type"] = analysis["project_type"]
-            elif "metrics" in analysis and isinstance(analysis.get("metrics"), dict) and "project_type" in analysis["metrics"]:
-                context["project_type"] = analysis["metrics"]["project_type"]
+            if raw_analysis and raw_analysis.strip():
+                _raw_analysis_ok = True
+                context["brd_analysis"] = raw_analysis
+                
+                # Extract repository structure from section 0.5.1
+                raw_struct = _extract_repository_structure(raw_analysis)
+                brd_analysis_structure = clean_repository_structure_string(raw_struct)
+                
+                if "project_type" in analysis:
+                    context["project_type"] = analysis["project_type"]
+                elif "metrics" in analysis and isinstance(analysis.get("metrics"), dict) and "project_type" in analysis["metrics"]:
+                    context["project_type"] = analysis["metrics"]["project_type"]
         except Exception as e:
             logger.warning(f"Failed to parse document analysis: {e}")
+    
+    # Check AFTER the try/except so the error isn't swallowed
+    if not _raw_analysis_ok:
+        proj_name = context.get("project_name")
+        display_name = f'"{proj_name}"' if proj_name and proj_name != project_token else "this project"
+        raise ValueError(
+            f"AI Agent Analysis is not yet completed for {display_name}. "
+            f"Please wait for the Agent Analysis to finish before creating tasks."
+        )
             
     # Set the fallback repository structure
     context["repository_structure"] = brd_analysis_structure
