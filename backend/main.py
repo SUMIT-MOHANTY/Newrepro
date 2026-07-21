@@ -229,38 +229,104 @@ from database import SessionLocal
 import models
 from jose import jwt
 from fastapi import Request
+import concurrent.futures
+
+# In-memory email to user_id cache to avoid DB hits on every request
+_user_id_cache: Dict[str, int] = {}
+
+# Whitelist of major application actions to log (all minor/polling APIs are ignored)
+MAJOR_ACTION_PATTERNS = [
+    # 1. Authentication & User Management
+    "/auth/login",
+    "/auth/register",
+    "/auth/logout",
+    "/auth/sso",
+    "/token",
+    # 2. Document Management
+    "/upload",
+    "/documents/upload",
+    "/documents/delete",
+    "/documents/download",
+    # 3. BRD Analysis & AI Workflows
+    "/ai/analyze",
+    "/api/agent/assistant",
+    # 4. Governance & Projects
+    "/governance/submit",
+    "/governance/projects",
+    "/governance/revision",
+    "/governance/archive",
+    # 5. Agent & Task Execution Workflows
+    "/api/agent/start",
+    "/api/agent/execute",
+    "/api/agent/nxdune/sync",
+    # 6. Shared Documents
+    "/shared-documents/create",
+    "/shared-documents/download",
+]
+
+def _is_major_action(path: str) -> bool:
+    """Check if the given request path matches any major action pattern."""
+    path_lower = path.lower()
+    return any(pat in path_lower for pat in MAJOR_ACTION_PATTERNS)
+
+def _save_activity_log_bg(
+    user_id: Optional[int],
+    action: str,
+    method: str,
+    path: str,
+    ip_address: Optional[str],
+    user_agent: Optional[str],
+):
+    """Save user activity log to DB in a background thread to prevent blocking HTTP requests."""
+    db_session = SessionLocal()
+    try:
+        activity = models.UserActivityLog(
+            user_id=user_id,
+            action=action,
+            method=method,
+            path=path,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+        db_session.add(activity)
+        db_session.commit()
+    except Exception as e:
+        logger.error(f"Failed to save user activity log: {e}")
+    finally:
+        db_session.close()
+
+# Executor pool for background activity logging
+_activity_logger_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
 @app.middleware("http")
 async def log_user_activities(request: Request, call_next):
     path = request.url.path
-    # Ignore patterns (skip static, heartbeat, or high-frequency log-polling & streaming paths to prevent DB bloat & connection pool exhaustion)
-    skip_patterns = [
-        "/static", "/favicon", "/assets", "/metrics", "/health",
-        "/api/agent/tasks-list", "/api/agent/status", "/api/agent/live-logs", "/api/logs",
-        "/agents", "/git-config", "/history", "/progress", "/stream", "/nxdune", "/claude-md-files", "/skills-md-files"
-    ]
 
-    # Fast path: skip DB queries & logging entirely for static, polling, and streaming routes
-    if any(pat in path for pat in skip_patterns):
-        return await call_next(request)
-
-    # 1. Resolve user and project from auth token or request
+    # 1. Resolve user and project from auth token without extra DB queries
     auth_header = request.headers.get("Authorization")
     user_id = None
-    email = None
     if auth_header and auth_header.startswith("Bearer "):
         try:
             token = auth_header.split(" ")[1]
             payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
-            email = payload.get("sub")
-            if email:
-                db_session = SessionLocal()
-                try:
-                    user = db_session.query(models.User).filter(models.User.email == email).first()
-                    if user:
-                        user_id = user.id
-                finally:
-                    db_session.close()
+            # Check if user_id is directly in token payload
+            user_id = payload.get("user_id") or payload.get("id")
+            if not user_id:
+                email = payload.get("sub")
+                if email:
+                    # Use in-memory cache first to avoid DB query per request
+                    if email in _user_id_cache:
+                        user_id = _user_id_cache[email]
+                    elif _is_major_action(path):
+                        # Only query DB for user_id if this is a major action step
+                        db_session = SessionLocal()
+                        try:
+                            user = db_session.query(models.User).filter(models.User.email == email).first()
+                            if user:
+                                user_id = user.id
+                                _user_id_cache[email] = user_id
+                        finally:
+                            db_session.close()
         except Exception:
             pass
 
@@ -291,28 +357,30 @@ async def log_user_activities(request: Request, call_next):
         current_user_id_var.reset(token_user)
         current_project_token_var.reset(token_proj)
 
-    # 2. Log user activity to user_activity_logs
-    action = f"{request.method} {path}"
-    
-    # Log to db
-    db_session = SessionLocal()
-    try:
-        activity = models.UserActivityLog(
-            user_id=user_id,
-            action=action,
-            method=request.method,
-            path=path,
-            ip_address=request.client.host if request.client else None,
-            user_agent=request.headers.get("user-agent"),
-        )
-        db_session.add(activity)
-        db_session.commit()
-    except Exception as e:
-        logger.error(f"Failed to save user activity log: {e}")
-    finally:
-        db_session.close()
+    # 2. Log ONLY major application steps asynchronously in background
+    if _is_major_action(path):
+        action = f"{request.method} {path}"
+        ip_addr = request.client.host if request.client else None
+        u_agent = request.headers.get("user-agent")
+        
+        # Dispatch DB write to background thread executor pool (non-blocking)
+        try:
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(
+                _activity_logger_executor,
+                _save_activity_log_bg,
+                user_id,
+                action,
+                request.method,
+                path,
+                ip_addr,
+                u_agent,
+            )
+        except Exception as e:
+            logger.error(f"Failed to dispatch user activity log background task: {e}")
 
     return response
+
 
 
 from fastapi.responses import RedirectResponse, StreamingResponse
