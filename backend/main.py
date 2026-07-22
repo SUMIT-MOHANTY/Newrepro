@@ -6245,14 +6245,15 @@ async def delete_governance_project(
         if not governance:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        # Permission check: only the project owner OR an org admin can delete
-        if governance.owner_id != current_user.id and not bool(getattr(current_user, 'is_org_admin', False)):
-            raise HTTPException(
-                status_code=403,
-                detail="You don't have permission to delete this project. Only the project owner or an organization admin can delete projects."
-            )
 
-        project_token = _normalize_project_token(governance.project_token or str(governance.id))
+    # Permission check: only the project owner OR an org admin can delete
+    if governance.owner_id != current_user.id and not bool(getattr(current_user, 'is_org_admin', False)):
+        raise HTTPException(
+            status_code=403,
+            detail="You don't have permission to delete this project. Only the project owner or an organization admin can delete projects."
+        )
+
+    project_token = _normalize_project_token(governance.project_token or str(governance.id))
     archived_project_name = governance.project_name or "Untitled Project"
     archived_project_token = governance.project_token or str(governance.id)
     archived_result_id = governance.id
