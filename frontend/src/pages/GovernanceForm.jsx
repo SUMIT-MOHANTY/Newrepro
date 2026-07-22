@@ -516,17 +516,13 @@ const GovernanceForm = ({
                 return;
             }
 
-            // CRITICAL FIX: Synchronize project with backend BEFORE navigation
-            // This prevents duplicate project creation by ensuring backend knows about the project
+            // Synchronize project with backend BEFORE navigation.
+            // The backend creates a GovernanceResponse row (project_initiated, governance_pending)
+            // so the project is persisted in the DB and survives browser clear / server restart.
             
             const projectKeyToUse = selectedProject?.projectToken || selectedProjectKey || undefined;
-            const existingDraft = getDraftProject(projectKeyToUse);
 
-            // Preserve existing credentials from draft project (most reliable source)
-            const existingClientId = existingDraft?.client_id || selectedProject?.client_id;
-            const existingClientSecret = existingDraft?.client_secret || selectedProject?.client_secret;
-
-            // Call backend to ensure project exists (creates if needed, returns existing if found)
+            // Call backend to create or ensure project exists
             const response = await fetch(API_ENDPOINTS.PROJECT_ENSURE, {
                 method: 'POST',
                 headers: {
@@ -536,8 +532,6 @@ const GovernanceForm = ({
                 body: JSON.stringify({
                     project_token: projectKeyToUse,
                     project_name: trimmedName,
-                    client_id: existingClientId || null,
-                    client_secret: existingClientSecret || null,
                 })
             });
 
@@ -556,29 +550,24 @@ const GovernanceForm = ({
 
             const backendProject = await response.json();
             
-            // Update draft project with backend-confirmed token and credentials
-            const draftProject = upsertDraftProject(createDraftProject(trimmedName, {
+            // Use the backend-generated token as the single source of truth.
+            // draft_projects is only kept as a lightweight cache; the backend DB is the primary source.
+            upsertDraftProject({
                 key: backendProject.project_token,
+                projectToken: backendProject.project_token,
+                owner_id: backendProject.owner_id || null,
+                name: trimmedName,
                 client_id: backendProject.client_id || null,
                 client_secret: backendProject.client_secret || null,
-            }));
-
-            if (!draftProject?.projectToken) {
-                setError('Unable to create the project. Please try again.');
-                setIsCreatingProject(false);
-                return;
-            }
-
-            // Wait a bit to ensure credentials are saved before navigation
-            await new Promise(resolve => setTimeout(resolve, 100));
+            });
 
             try {
-                localStorage.setItem(projectStorageKey, draftProject.key);
+                localStorage.setItem(projectStorageKey, backendProject.project_token);
             } catch {
                 // Ignore storage access errors in restricted browser contexts.
             }
 
-            setSelectedProjectKey?.(draftProject.key);
+            setSelectedProjectKey?.(backendProject.project_token);
             setIsNewProjectMode?.(false);
 
             // Set a flag to tell AppLayout to skip its automatic redirect during this navigation.

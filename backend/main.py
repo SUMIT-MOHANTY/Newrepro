@@ -5476,6 +5476,7 @@ async def ensure_project_exists(
                 'project_name': existing_by_name.project_name,
                 'client_id': existing_by_name.client_id,
                 'client_secret': existing_by_name.client_secret,
+                'owner_id': existing_by_name.owner_id,
                 'exists': True
             }
         else:
@@ -5504,6 +5505,7 @@ async def ensure_project_exists(
             return {
                 'project_token': existing.project_token,
                 'project_name': existing.project_name,
+                'owner_id': existing.owner_id,
                 'client_id': existing.client_id,
                 'client_secret': existing.client_secret,
                 'exists': True
@@ -5543,6 +5545,7 @@ async def ensure_project_exists(
         'project_name': new_project.project_name,
         'client_id': new_project.client_id,
         'client_secret': new_project.client_secret,
+        'owner_id': new_project.owner_id,
         'exists': False
     }
 
@@ -5809,10 +5812,12 @@ async def get_governance_history(
                 "project_name": r.project_name,
                 "submission_date": r.submission_date,
                 "weighted_score": r.weighted_score,
-                "classification": r.classification,
+                "classification": r.classification or 'PENDING',
                 "pending_revision_reason": r.pending_revision_reason,
                 "client_id": r.client_id,
                 "client_secret": r.client_secret,
+                # Include owner_id so frontend can distinguish pre-governance projects
+                "owner_id": r.owner_id,
             }
             for r in responses
         ]
@@ -6225,9 +6230,29 @@ async def delete_governance_project(
         governance = query.filter(models.GovernanceResponse.project_token == identifier).first()
 
     if not governance:
-        raise HTTPException(status_code=404, detail="Project not found")
+        # Fallback: try direct lookup by project_token or id (bypasses org scoping)
+        # This handles pre-governance projects that may have been created
+        # via ensure_project_exists but aren't yet visible to org-scoped queries.
+        if identifier.isdigit():
+            governance = db.query(models.GovernanceResponse).filter(
+                models.GovernanceResponse.id == int(identifier)
+            ).first()
+        else:
+            governance = db.query(models.GovernanceResponse).filter(
+                models.GovernanceResponse.project_token == identifier
+            ).first()
 
-    project_token = _normalize_project_token(governance.project_token or str(governance.id))
+        if not governance:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        # Permission check: only the project owner OR an org admin can delete
+        if governance.owner_id != current_user.id and not bool(getattr(current_user, 'is_org_admin', False)):
+            raise HTTPException(
+                status_code=403,
+                detail="You don't have permission to delete this project. Only the project owner or an organization admin can delete projects."
+            )
+
+        project_token = _normalize_project_token(governance.project_token or str(governance.id))
     archived_project_name = governance.project_name or "Untitled Project"
     archived_project_token = governance.project_token or str(governance.id)
     archived_result_id = governance.id

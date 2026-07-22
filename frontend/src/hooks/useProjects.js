@@ -39,6 +39,7 @@ export const useProjects = () => {
                     key,
                     governanceResultId: sub.id,
                     projectToken: sub.project_token,
+                    owner_id: sub.owner_id || null,
                     name: sub.project_name || `Project #${sub.id}`,
                     classification: sub.classification || 'N/A',
                     weightedScore: sub.weighted_score ?? null,

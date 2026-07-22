@@ -49,6 +49,7 @@ const buildDraftProject = (project = {}) => {
         pendingRevisionReason: project.pendingRevisionReason || null,
         client_id: project.client_id || null,
         client_secret: project.client_secret || null,
+        owner_id: project.owner_id || null,
         isDraft: true,
     };
 };

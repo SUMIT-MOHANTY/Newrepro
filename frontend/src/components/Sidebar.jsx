@@ -162,7 +162,11 @@ export default function Sidebar({
                                 <p className="text-xs text-app-text-label px-2 italic">No projects yet.</p>
                             ) : (
                                 projects.map((project) => {
-                                    const canDelete = Boolean(project.projectToken || project.governanceResultId);
+                                    // Only project owner or org admin can delete
+                                    const isOwner = user && project.owner_id && Number(project.owner_id) === Number(user.id);
+                                    const isAdmin = user?.is_org_admin === true;
+                                    const hasToken = Boolean(project.projectToken || project.governanceResultId);
+                                    const canDelete = hasToken && (isOwner || isAdmin);
                                     return (
                                         <div key={project.key || project.project_token} className="flex items-center gap-1 w-full min-w-0">
                                             <button

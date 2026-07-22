@@ -1010,8 +1010,11 @@ export default function AppLayout({ children }) {
         }
 
         try {
-            const identifier = project.governanceResultId || project.projectToken || project.key;
-            await deleteProjectByIdentifier(identifier);
+            // Use projectToken (backend token) as primary identifier; governanceResultId as secondary
+            // For pre-governance projects (no governance submitted yet), governanceResultId may exist
+            // because the backend creates a GovernanceResponse row with an auto-generated id.
+            const identifier = project.projectToken || project.governanceResultId || project.key;
+            await deleteProjectByIdentifier(String(identifier));
             removeDraftProject(key);
             if (project.projectToken) removeDraftProject(project.projectToken);
             if (project.governanceResultId) removeDraftProject(project.governanceResultId);
