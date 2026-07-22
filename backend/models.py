@@ -326,6 +326,8 @@ class GovernanceResponse(Base):
 
     # Track when prerequisites were acknowledged
     prerequisites_completed_at = Column(DateTime, nullable=True)
+    # Store raw prerequisite items, user selections, and filled inputs
+    prerequisites_data = Column(JSON, nullable=True)
 
     # Store roadmap steps data (steps, step_statuses, current_step, etc.)
     steps_data = Column(JSON, nullable=True)

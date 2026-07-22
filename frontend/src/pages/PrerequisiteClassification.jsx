@@ -1003,8 +1003,9 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 const projToken = currentProject?.projectToken || selectedProjectKey;
                 const projName = currentProject?.name || projectName;
 
-                // Fetch history to get the latest analysis for THIS specific project
-                const res = await fetch(API_ENDPOINTS.HISTORY, {
+                // Fetch history for this project token first, or fall back to history list
+                const historyUrl = projToken ? `${API_ENDPOINTS.HISTORY}?project_token=${encodeURIComponent(projToken)}` : API_ENDPOINTS.HISTORY;
+                const res = await fetch(historyUrl, {
                     headers: { Authorization: `Bearer ${token}` },
                 });
 
@@ -1022,14 +1023,16 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 const docs = await res.json();
 
                 // Find the document linked to THIS project specifically
-                const projectDoc = docs.find(doc => {
+                let projectDoc = docs.find(doc => {
+                    const topToken = doc.project_token;
+                    if (topToken && String(topToken) === String(projToken)) return true;
                     if (!doc.analysis_result) return false;
                     try {
                         const analysis = JSON.parse(doc.analysis_result);
                         const meta = analysis.projectMeta || {};
                         const govCtx = analysis.governanceContext || {};
 
-                        const docToken = meta.project_token || govCtx.project_token;
+                        const docToken = meta.project_token || govCtx.project_token || topToken;
                         const docGovId = meta.governance_result_id || govCtx.result_id;
                         const docName = meta.project_name || govCtx.project_name || '';
 
@@ -1045,6 +1048,11 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         return false;
                     }
                 });
+
+                // Fallback to currentProject.latestDocument if list query didn't find a matching document
+                if (!projectDoc && currentProject?.latestDocument?.analysis_result) {
+                    projectDoc = currentProject.latestDocument;
+                }
 
                 if (!projectDoc?.analysis_result) {
                     setError(`No analysis found for "${projName || selectedProjectKey}". Please complete Agent Analysis first.`);
@@ -1083,7 +1091,40 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
 
                 // Use structured prerequisites from AI if available, otherwise fall back to text extraction
                 const extracted = extractPrerequisitesFromAnalysis(analysisObj || projectDoc.analysis_result);
-                setPrerequisites(extracted.map((p, idx) => normalizePrerequisiteItem(p, idx)));
+                let initialPrereqs = extracted.map((p, idx) => normalizePrerequisiteItem(p, idx));
+
+                // Check if user has saved prerequisite inputs in backend DB first
+                try {
+                    const dbPrereqRes = await fetch(`${API_BASE_URL}/governance/prerequisites/${selectedProjectKey}`, {
+                        headers: { Authorization: `Bearer ${token}` }
+                    });
+                    if (dbPrereqRes.ok) {
+                        const dbData = await dbPrereqRes.json();
+                        const savedDbItems = Array.isArray(dbData?.prerequisites) ? dbData.prerequisites : [];
+                        if (savedDbItems.length > 0) {
+                            // Merge DB saved values into initialPrereqs
+                            initialPrereqs = initialPrereqs.map((p) => {
+                                const matchedSaved = savedDbItems.find(
+                                    (s) => s.id === p.id || (s.name && p.name && s.name.trim().toLowerCase() === p.name.trim().toLowerCase())
+                                );
+                                if (matchedSaved) {
+                                    return {
+                                        ...p,
+                                        provided: matchedSaved.provided ?? p.provided,
+                                        userValue: matchedSaved.userValue ?? p.userValue,
+                                        userFileName: matchedSaved.userFileName ?? p.userFileName,
+                                        containsSecret: matchedSaved.containsSecret ?? p.containsSecret,
+                                    };
+                                }
+                                return p;
+                            });
+                        }
+                    }
+                } catch (dbErr) {
+                    console.warn('Failed to load DB prerequisites:', dbErr);
+                }
+
+                setPrerequisites(initialPrereqs);
                 } catch (err) {
                     console.error('Failed to load analysis data:', err);
                     setError(sanitizeErrorMessage(err));
@@ -1096,13 +1137,31 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedProjectKey, navigate, projects, loadStoredProjectRepoSuggestion]);
 
-    // Save prerequisites to session when they change
+    // Save prerequisites to session and backend DB when they change
     useEffect(() => {
         if (prerequisites.length > 0 && selectedProjectKey) {
             sessionStorage.setItem(
                 `prerequisites_v2_${selectedProjectKey}`,
                 JSON.stringify(prerequisites)
             );
+
+            // Auto-save user selections and inputs to backend DB
+            const timer = setTimeout(() => {
+                const token = localStorage.getItem('token');
+                if (token) {
+                    const sanitizedPayload = prerequisites.map(p => sanitizePrerequisiteForAiPayload(p));
+                    fetch(`${API_BASE_URL}/governance/prerequisites/${selectedProjectKey}`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            Authorization: `Bearer ${token}`,
+                        },
+                        body: JSON.stringify({ prerequisites: sanitizedPayload }),
+                    }).catch(err => console.warn('Failed to auto-save prerequisites to DB:', err));
+                }
+            }, 800);
+
+            return () => clearTimeout(timer);
         }
     }, [prerequisites, selectedProjectKey]);
 
@@ -1489,7 +1548,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 JSON.stringify(prerequisites)
             );
 
-            // Mark prerequisites as completed on the backend
+            // Mark prerequisites as completed on the backend with payload
             try {
                 await fetch(API_ENDPOINTS.GOVERNANCE_PREREQUISITES_COMPLETE(selectedProjectKey), {
                     method: 'POST',
@@ -1497,6 +1556,10 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                         'Content-Type': 'application/json',
                         Authorization: `Bearer ${token}`,
                     },
+                    body: JSON.stringify({
+                        prerequisites: prerequisites.map(p => sanitizePrerequisiteForAiPayload(p)),
+                        custom_rules: customRules,
+                    }),
                 });
             } catch (err) {
                 console.warn('Failed to mark prerequisites as completed on backend:', err);

@@ -5958,7 +5958,53 @@ async def get_governance_result(
         answers=answers_list if answers_list else None,
         client_id=response.client_id,
         client_secret=response.client_secret,
+        prerequisites_data=response.prerequisites_data,
     )
+
+
+@app.get("/governance/prerequisites/{project_token}")
+async def get_governance_prerequisites(
+    project_token: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    gov = db.query(models.GovernanceResponse).filter(
+        models.GovernanceResponse.project_token == project_token
+    ).first()
+    if not gov:
+        return {"prerequisites": []}
+    return {"prerequisites": gov.prerequisites_data or []}
+
+
+@app.post("/governance/prerequisites/{project_token}")
+@app.post("/governance/prerequisites/complete/{project_token}")
+async def save_governance_prerequisites(
+    project_token: str,
+    payload: Optional[schemas.PrerequisitesSaveRequest] = None,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    gov = db.query(models.GovernanceResponse).filter(
+        models.GovernanceResponse.project_token == project_token
+    ).first()
+    if not gov:
+        gov = models.GovernanceResponse(
+            project_token=project_token,
+            owner_id=current_user.id,
+            organization_name=_normalized_text(getattr(current_user, "organization_name", None)),
+            project_name=f"Project {project_token[:8]}",
+            submission_date=datetime.utcnow(),
+            classification="PENDING"
+        )
+        db.add(gov)
+
+    if payload and payload.prerequisites is not None:
+        gov.prerequisites_data = payload.prerequisites
+
+    gov.prerequisites_completed_at = datetime.utcnow()
+    db.commit()
+    db.refresh(gov)
+    return {"status": "success", "prerequisites": gov.prerequisites_data or []}
 
 
 # ─── NXDune Manual Sync Endpoints ───────────────────────────────────────────────

@@ -368,9 +368,14 @@ class GovernanceResult(BaseModel):
 
     client_id: Optional[str] = None
     client_secret: Optional[str] = None
+    prerequisites_data: Optional[list] = None
     
     class Config:
         from_attributes = True
+
+class PrerequisitesSaveRequest(BaseModel):
+    prerequisites: Optional[list] = None
+    custom_rules: Optional[str] = None
 class AccessRequest(BaseModel):
     path: str
     section_name: str
