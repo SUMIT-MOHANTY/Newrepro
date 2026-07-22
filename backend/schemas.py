@@ -267,32 +267,32 @@ class GovernanceSubmission(BaseModel):
 
 class GovernanceDimensionScores(BaseModel):
     """Calculated dimension scores (each 0-10)"""
-    business_value: float
-    data_sensitivity: float
-    integration_complexity: float
-    operational_impact: float
-    ai_risk: float
-    ownership: float
+    business_value: Optional[float] = 0.0
+    data_sensitivity: Optional[float] = 0.0
+    integration_complexity: Optional[float] = 0.0
+    operational_impact: Optional[float] = 0.0
+    ai_risk: Optional[float] = 0.0
+    ownership: Optional[float] = 0.0
 
 class GovernanceResult(BaseModel):
     """Final governance scoring result"""
     id: int
     project_token: str
-    project_name: str
-    submission_date: datetime
+    project_name: Optional[str] = ""
+    submission_date: Optional[datetime] = None
     
     # Individual dimension scores (0-10)
-    dimension_scores: GovernanceDimensionScores
+    dimension_scores: Optional[GovernanceDimensionScores] = None
     
     # Weighted composite score (0-10)
-    weighted_score: float
+    weighted_score: Optional[float] = 0.0
     
     # Classification
-    classification: str  # SANDBOX, CONTROLLED_SANDBOX, ENTERPRISE
-    classification_description: str
+    classification: Optional[str] = "SANDBOX"  # SANDBOX, CONTROLLED_SANDBOX, ENTERPRISE
+    classification_description: Optional[str] = ""
     
     # Recommendation with reasoning
-    recommendation: str
+    recommendation: Optional[str] = ""
     
     # Hard stops triggered (if any)
     hard_stops: list[str] = []

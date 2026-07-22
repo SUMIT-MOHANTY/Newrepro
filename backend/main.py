@@ -5867,50 +5867,54 @@ async def get_governance_result(
     
     # Convert stored answers dict to list of GovernanceAnswer objects
     answers_list = []
-    if response.answers:
+    if response.answers and isinstance(response.answers, dict):
         for question_id, answer_data in response.answers.items():
+            try:
+                q_id_int = int(question_id)
+            except (ValueError, TypeError):
+                continue
             if isinstance(answer_data, dict):
                 answers_list.append(schemas.GovernanceAnswer(
-                    question_id=int(question_id),
+                    question_id=q_id_int,
                     score=answer_data.get('score', 0),
                     selected_option=answer_data.get(
                         'selected_option',
-                        _lookup_selected_option(int(question_id), answer_data.get('score', 0))
+                        _lookup_selected_option(q_id_int, answer_data.get('score', 0))
                     )
                 ))
             elif isinstance(answer_data, (int, float)):
                 score_value = int(answer_data)
                 answers_list.append(schemas.GovernanceAnswer(
-                    question_id=int(question_id),
+                    question_id=q_id_int,
                     score=score_value,
-                    selected_option=_lookup_selected_option(int(question_id), score_value),
+                    selected_option=_lookup_selected_option(q_id_int, score_value),
                 ))
 
     all_answers_skipped = _all_answers_skipped_from_payload(response.answers)
     classification_description = (
         ALL_SKIPPED_GOVERNANCE_MESSAGE
         if all_answers_skipped
-        else _classification_description(response.classification)
+        else _classification_description(response.classification or "")
     )
     hard_stops = [ALL_SKIPPED_HARD_STOP] if all_answers_skipped else []
 
     return schemas.GovernanceResult(
         id=response.id,
         project_token=response.project_token or str(response.id),
-        project_name=response.project_name,
+        project_name=response.project_name or "",
         submission_date=response.submission_date,
         dimension_scores=schemas.GovernanceDimensionScores(
-            business_value=response.business_value_score,
-            data_sensitivity=response.data_sensitivity_score,
-            integration_complexity=response.integration_complexity_score,
-            operational_impact=response.operational_impact_score,
-            ai_risk=response.ai_risk_score,
-            ownership=response.ownership_score,
+            business_value=response.business_value_score or 0.0,
+            data_sensitivity=response.data_sensitivity_score or 0.0,
+            integration_complexity=response.integration_complexity_score or 0.0,
+            operational_impact=response.operational_impact_score or 0.0,
+            ai_risk=response.ai_risk_score or 0.0,
+            ownership=response.ownership_score or 0.0,
         ),
-        weighted_score=response.weighted_score,
-        classification=response.classification,
+        weighted_score=response.weighted_score or 0.0,
+        classification=response.classification or "SANDBOX",
         classification_description=classification_description,
-        recommendation=response.recommendation,
+        recommendation=response.recommendation or "",
         pending_revision_reason=response.pending_revision_reason,
         hard_stops=hard_stops,
         answers=answers_list if answers_list else None,
