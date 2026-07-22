@@ -574,7 +574,8 @@ const Dashboard = ({
     const [previewMode, setPreviewMode] = useState('original');
 
     const getProjectState = (key) => {
-        const state = projectStates[key] || {
+        const hasExplicitState = Boolean(projectStates[key]);
+        let state = projectStates[key] || {
             files: [], linkedFiles: [], textInput: '', activeTab: 'upload', processing: false,
             result: null, error: '', userFeedback: '', aiQuestions: [],
             userAnswers: {}, revisionUnlocked: false, revisionReason: '',
@@ -585,10 +586,55 @@ const Dashboard = ({
             uploadedSkills: [] // Already uploaded skills from backend
         };
 
+        const proj = projects.find(p => p.key === key);
+
+        // Auto-populate textInput / urlInput from latestDocument screening_inputs if state values are empty
+        if (proj?.latestDocument) {
+            let inputs = proj.latestDocument.screening_inputs;
+            if (typeof inputs === 'string') {
+                try { inputs = JSON.parse(inputs); } catch (e) {}
+            }
+
+            let manualText = inputs?.manual_text || '';
+            let urlContent = inputs?.url_content || '';
+
+            // Fallback extraction from full_content if screening_inputs was missing keys
+            if (!manualText && proj.latestDocument.full_content && proj.latestDocument.full_content.includes('--- MANUAL TEXT INPUT ---')) {
+                try {
+                    manualText = proj.latestDocument.full_content.split('--- MANUAL TEXT INPUT ---')[1].split('---')[0].trim();
+                } catch (e) {}
+            }
+
+            if (!urlContent && proj.latestDocument.full_content && proj.latestDocument.full_content.includes('--- WEBSITE REQUIREMENTS')) {
+                try {
+                    const parts = proj.latestDocument.full_content.split('--- WEBSITE REQUIREMENTS');
+                    if (parts.length > 1) {
+                        urlContent = parts[1].split('---')[0].trim();
+                        if (urlContent.includes(')') && urlContent.includes('\n')) {
+                            urlContent = urlContent.split('\n').slice(1).join('\n').trim();
+                        }
+                    }
+                } catch (e) {}
+            }
+
+            if (!state.textInput && manualText) {
+                state = { ...state, textInput: manualText };
+                if (state.activeTab === 'upload') {
+                    state.activeTab = 'text';
+                }
+            }
+
+            if (!state.urlInput && urlContent) {
+                state = { ...state, urlInput: urlContent, urlRequirements: urlContent };
+                if (state.activeTab === 'upload' && !manualText) {
+                    state.activeTab = 'url';
+                }
+            }
+        }
+
         // Only set revisionUnlocked from backend if we don't have explicit state stored
         // This allows the state to persist after upload completion
-        const proj = projects.find(p => p.key === key);
-        if (proj?.pendingRevisionReason && !projectStates[key]) {
+        if (proj?.pendingRevisionReason && !hasExplicitState) {
             // Only apply pending revision reason if this is a fresh state (no existing state)
             return {
                 ...state,
@@ -619,7 +665,8 @@ const Dashboard = ({
         urlInput = '', urlRequirements = '', urlSource = '', urlFetchSummary = null,
         urlFetching = false,
         skillFiles = [], // Add skills files to destructuring
-        uploadedSkills = [] // Already uploaded skills from backend
+        uploadedSkills = [], // Already uploaded skills from backend
+        previousFileNames = null, // Previously uploaded file names from screening_inputs
     } = activeState;
 
     // Helpers to update active project state from UI components natively 
@@ -1063,9 +1110,13 @@ const Dashboard = ({
     })();
     const isEnterpriseProject = String(governanceContext?.classification || selectedProject?.classification || '') === 'ENTERPRISE';
 
-    // Check if governance assessment exists for current revision
+    // Check if governance assessment has been completed (not just created as PENDING placeholder)
     // Revisions should reuse the existing governance assessment from the original project
-    const hasGovernanceAssessment = Boolean(selectedProject?.governanceResultId || governanceContext?.result_id);
+    const hasPendingClassification = (cls) => !cls || ['PENDING', 'N/A', ''].includes(String(cls).toUpperCase());
+    const hasGovernanceAssessment = (
+        Boolean(selectedProject?.governanceResultId && !hasPendingClassification(selectedProject?.classification))
+        || Boolean(governanceContext?.result_id && !hasPendingClassification(governanceContext?.classification))
+    );
 
     const isEnterpriseUploadBlocked = isEnterpriseProject;
     const getEnterpriseUploadBlockMessage = () => {
@@ -1081,11 +1132,14 @@ const Dashboard = ({
         navigate('/login');
     }, [navigate]);
 
-    // Fetch history
-    const fetchHistory = useCallback(async () => {
+    // Fetch history — optionally filtered by project_token
+    const fetchHistory = useCallback(async (projectToken = null) => {
         try {
             const token = localStorage.getItem('token');
-            const res = await fetch(API_ENDPOINTS.HISTORY, {
+            const url = projectToken
+                ? `${API_ENDPOINTS.HISTORY}?project_token=${encodeURIComponent(projectToken)}`
+                : API_ENDPOINTS.HISTORY;
+            const res = await fetch(url, {
                 headers: { Authorization: `Bearer ${token}` }
             });
             if (res.status === 401) {
@@ -1190,6 +1244,7 @@ const Dashboard = ({
         taskKey = selectedProjectKey,
         repoContextState = repoContext,
         file_path = null,
+        screeningInputs = null,
     }) => {
         if (!filename || !markdown) return null;
 
@@ -1220,6 +1275,8 @@ const Dashboard = ({
                 full_content: markdown,
                 analysis_result: JSON.stringify(pendingAnalysis),
                 file_path,
+                screening_inputs: screeningInputs,
+                project_token: taskKey,
             });
 
             if (!savedDoc) return null;
@@ -1236,7 +1293,7 @@ const Dashboard = ({
                 client_id: existingDraft?.client_id || project?.client_id || null,
                 client_secret: existingDraft?.client_secret || project?.client_secret || null,
             });
-            fetchHistory();
+            fetchHistory(taskKey);
             refreshProjects?.();
             return savedDoc;
         } catch (e) {
@@ -1277,6 +1334,7 @@ const Dashboard = ({
                 full_content: newResult.extraction?.markdown,
                 analysis_result: JSON.stringify(storedAnalysis),
                 file_path: newResult.file_path || newResult.extraction?.file_path || null,
+                project_token: taskKey,
             }, newResult?.id || null);
 
             if (savedDoc) {
@@ -1299,7 +1357,7 @@ const Dashboard = ({
                     revisionUnlocked: true,  // Always keep unlocked for unlimited revisions
                     revisionReason: prev.revisionReason || ''  // Preserve revision reason for next upload
                 }));
-                fetchHistory();
+                fetchHistory(taskKey);
                 refreshProjects?.();
 
                 // Extract project type and save to localStorage + DB
@@ -1403,9 +1461,15 @@ const Dashboard = ({
                 handleLogout();
             });
 
-        fetchHistory();
         fetchGovernanceHistory();
-    }, [navigate, fetchHistory, fetchGovernanceHistory, handleLogout]);
+    }, [navigate, fetchGovernanceHistory, handleLogout]);
+
+    // Fetch history only for the selected project (not all documents upfront)
+    useEffect(() => {
+        if (selectedProjectKey) {
+            fetchHistory(selectedProjectKey);
+        }
+    }, [selectedProjectKey, fetchHistory]);
 
     const loadGovernanceContextForProject = useCallback(async (resultId) => {
         if (!resultId) return;
@@ -1729,6 +1793,95 @@ const Dashboard = ({
         }
         loadGovernanceContextForProject(selectedProject.governanceResultId);
     }, [selectedProject, governanceContext, loadGovernanceContextForProject]);
+
+    // Track which project's screening inputs have been restored to prevent
+    // re-restoring when projectStates changes (which would overwrite user edits).
+    const restoredScreeningInputsRef = useRef({});
+
+    // Restore previously saved screening inputs when viewing an existing project.
+    // When the user returns to Requirement Screening, the text they wrote, URLs they
+    // entered, and other inputs are restored from the latest document's screening_inputs.
+    useEffect(() => {
+        if (!selectedProject?.latestDocument) return;
+        
+        let inputs = selectedProject.latestDocument.screening_inputs;
+        if (typeof inputs === 'string') {
+            try { inputs = JSON.parse(inputs); } catch (e) {}
+        }
+        
+        const taskKey = selectedProjectKey;
+        if (!taskKey) return;
+        
+        // Skip if we already restored inputs for this project in this session
+        if (restoredScreeningInputsRef.current[taskKey]) return;
+        restoredScreeningInputsRef.current[taskKey] = true;
+        
+        const updates = {};
+
+        let manualText = inputs?.manual_text || '';
+        let urlContent = inputs?.url_content || '';
+
+        // Fallback extraction from full_content if screening_inputs was missing keys
+        if (!manualText && selectedProject.latestDocument.full_content && selectedProject.latestDocument.full_content.includes('--- MANUAL TEXT INPUT ---')) {
+            try {
+                manualText = selectedProject.latestDocument.full_content.split('--- MANUAL TEXT INPUT ---')[1].split('---')[0].trim();
+            } catch (e) {}
+        }
+
+        if (!urlContent && selectedProject.latestDocument.full_content && selectedProject.latestDocument.full_content.includes('--- WEBSITE REQUIREMENTS')) {
+            try {
+                const parts = selectedProject.latestDocument.full_content.split('--- WEBSITE REQUIREMENTS');
+                if (parts.length > 1) {
+                    urlContent = parts[1].split('---')[0].trim();
+                    if (urlContent.includes(')') && urlContent.includes('\n')) {
+                        urlContent = urlContent.split('\n').slice(1).join('\n').trim();
+                    }
+                }
+            } catch (e) {}
+        }
+        
+        // Restore manual text input
+        if (manualText) {
+            updates.textInput = manualText;
+        }
+        
+        // Restore URL content
+        if (urlContent) {
+            updates.urlInput = urlContent;
+            updates.urlRequirements = urlContent;
+        }
+        
+        // Restore activeTab based on which input was primarily used
+        if (manualText && !urlContent) {
+            updates.activeTab = 'text';
+        } else if (urlContent && !manualText) {
+            updates.activeTab = 'url';
+        }
+        
+        // Restore repository context unconditionally when present
+        if (inputs?.repository_context && typeof inputs.repository_context === 'object') {
+            setRepoContext(inputs.repository_context);
+        }
+        
+        // Store previously uploaded file names so the UI can display them
+        const prevFileNames = {};
+        if (Array.isArray(inputs?.uploaded_files) && inputs.uploaded_files.length > 0) {
+            prevFileNames.uploadedFiles = inputs.uploaded_files;
+        }
+        if (Array.isArray(inputs?.linked_documents) && inputs.linked_documents.length > 0) {
+            prevFileNames.linkedFiles = inputs.linked_documents;
+        }
+        if (Array.isArray(inputs?.skills_files) && inputs.skills_files.length > 0) {
+            prevFileNames.skillFiles = inputs.skills_files;
+        }
+        if (Object.keys(prevFileNames).length > 0) {
+            updates.previousFileNames = prevFileNames;
+        }
+        
+        if (Object.keys(updates).length > 0) {
+            setProjectState(taskKey, updates);
+        }
+    }, [selectedProject, selectedProjectKey]);
 
     // Sync repoContext state when selectedProjectKey changes
     useEffect(() => {
@@ -2309,6 +2462,20 @@ const Dashboard = ({
                     }
                 }
 
+                // Build structured record of raw screening inputs for persistent storage
+                const screeningInputs = {
+                    uploaded_files: hasFiles ? files.map(f => f.name) : [],
+                    linked_documents: hasLinkedFiles ? linkedFiles.map(f => f.name) : [],
+                    manual_text: hasText ? textInput : '',
+                    url_content: hasUrl ? (urlInput || urlRequirements || '') : '',
+                    repository_context: hasRepo ? {
+                        repo: repoContext.repo || null,
+                        url: repoContext.url || null,
+                        provider: repoContext.provider || null,
+                    } : null,
+                    skills_files: hasSkills ? skillFiles.map(f => f.name) : [],
+                };
+
                 await savePendingScreeningToHistory({
                     filename,
                     markdown: finalMarkdownForAnalysis,
@@ -2316,6 +2483,7 @@ const Dashboard = ({
                     taskKey,
                     repoContextState: repoContext,
                     file_path: uploadedFilePathsList.filter(Boolean).join(','),
+                    screeningInputs,
                 });
 
                 setProjectState(taskKey, {
@@ -3350,6 +3518,15 @@ const Dashboard = ({
                                                             ))}
                                                         </div>
                                                     )}
+                                                    {/* Show previously uploaded file names */}
+                                                    {previousFileNames?.uploadedFiles && previousFileNames.uploadedFiles.length > 0 && files.length === 0 && (
+                                                        <div className="mt-2 text-xs text-app-text-muted flex flex-col items-center border-t border-app-border-light/50 pt-2 w-full">
+                                                            <span className="font-semibold text-app-primary-dark/70 mb-0.5">Previously uploaded:</span>
+                                                            {previousFileNames.uploadedFiles.map((name, i) => (
+                                                                <span key={i} className="truncate max-w-[200px] text-app-text-label">{name}</span>
+                                                            ))}
+                                                        </div>
+                                                    )}
                                                     <span className="mt-1 block text-xs text-app-text-light">
                                                         PDF, DOCX, PPTX, HTML, Images, Text
                                                     </span>
@@ -3377,6 +3554,15 @@ const Dashboard = ({
                                                         <div className="mt-2 text-xs text-app-text-muted flex flex-col items-center">
                                                             {linkedFiles.map((f, i) => (
                                                                 <span key={i} className="truncate max-w-[200px]">{f.name}</span>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                    {/* Show previously linked document names */}
+                                                    {previousFileNames?.linkedFiles && previousFileNames.linkedFiles.length > 0 && linkedFiles.length === 0 && (
+                                                        <div className="mt-2 text-xs text-app-text-muted flex flex-col items-center border-t border-app-border-light/50 pt-2 w-full">
+                                                            <span className="font-semibold text-app-primary-dark/70 mb-0.5">Previously linked:</span>
+                                                            {previousFileNames.linkedFiles.map((name, i) => (
+                                                                <span key={i} className="truncate max-w-[200px] text-app-text-label">{name}</span>
                                                             ))}
                                                         </div>
                                                     )}
@@ -3465,6 +3651,15 @@ const Dashboard = ({
                                                         <span className="mt-1 block text-xs text-app-text-light">
                                                             Markdown (.md) and Text (.txt) files only (max 100MB)
                                                         </span>
+                                                        {/* Show previously uploaded skill files */}
+                                                        {previousFileNames?.skillFiles && previousFileNames.skillFiles.length > 0 && skillFiles.length === 0 && (
+                                                            <div className="mt-2 text-xs text-app-text-muted flex flex-col items-center border-t border-app-border-light/50 pt-2 w-full">
+                                                                <span className="font-semibold text-app-primary-dark/70 mb-0.5">Previously uploaded skills:</span>
+                                                                {previousFileNames.skillFiles.map((name, i) => (
+                                                                    <span key={i} className="truncate max-w-[200px] text-app-text-label">{name}</span>
+                                                                ))}
+                                                            </div>
+                                                        )}
                                                     </div>
 
                                                     {/* Info box explaining how they work */}
@@ -4012,13 +4207,15 @@ const Dashboard = ({
                                                                         </div>
                                                                     </div>
                                                                     <div className="flex items-center gap-2 flex-shrink-0 ml-1">
-                                                                        <button
-                                                                            type="button"
+                                                                        <span
+                                                                            role="button"
+                                                                            tabIndex={0}
                                                                             onClick={e => { e.stopPropagation(); setPreviewDoc(doc); }}
+                                                                            onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); setPreviewDoc(doc); } }}
                                                                             className="text-[10px] font-semibold text-app-primary hover:underline cursor-pointer"
                                                                         >
                                                                             View Content
-                                                                        </button>
+                                                                        </span>
                                                                         {isCompleted && (
                                                                             <span
                                                                                 role="button"

@@ -189,6 +189,15 @@ const GovernanceForm = ({
             return Boolean(payloadName && currentProjectName && payloadName === currentProjectName.toLowerCase());
         };
 
+        const isPendingGovernanceResult = (data) => {
+            if (!data || typeof data !== 'object') return true;
+            if (!data.classification || data.classification === 'PENDING') return true;
+            if (data.recommendation === 'Pending governance assessment') return true;
+            if (data.classification_description === 'Governance classification unavailable') return true;
+            if (!Array.isArray(data.answers) || data.answers.length === 0) return true;
+            return false;
+        };
+
         const loadGovernanceResult = async () => {
             try {
                 const token = localStorage.getItem('token');
@@ -208,7 +217,7 @@ const GovernanceForm = ({
                             setAnswers(r);
                         }
                         const isEditMode = sessionStorage.getItem('governanceEditMode') === 'true';
-                        if (!isEditMode) {
+                        if (!isEditMode && !isPendingGovernanceResult(data)) {
                             setResult(data);
                         } else {
                             setResult(null);
@@ -269,8 +278,8 @@ const GovernanceForm = ({
                 const isEditMode = sessionStorage.getItem('governanceEditMode') === 'true';
 
                 const savedResult = getStoredJson('governanceResult');
-                // Don't restore result if user is in edit mode (they want to edit the form)
-                if (savedResult && matchesCurrentProject(savedResult) && !isEditMode) {
+                // Don't restore result if user is in edit mode or if result is pending (they need to complete the form)
+                if (savedResult && matchesCurrentProject(savedResult) && !isEditMode && !isPendingGovernanceResult(savedResult)) {
                     setResult(savedResult);
                 } else {
                     setResult(null);
@@ -304,7 +313,7 @@ const GovernanceForm = ({
         };
 
         hydrateData();
-    }, [location.search, location.pathname, navigate, isGovernanceQuestionsPage, selectedProjectKey, selectedProject]);
+    }, [location.search, location.pathname, navigate, isGovernanceQuestionsPage, selectedProjectKey]);
 
     // Persist current wizard step so the global tracker can highlight
     // Project Initiation vs Governance appropriately while filling the form.

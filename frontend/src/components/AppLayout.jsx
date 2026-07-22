@@ -617,7 +617,15 @@ export default function AppLayout({ children }) {
 
         if (isOnProjectUrl && !isOnSpecialPage) {
             lastNavigatedProjectRef.current = selectedProjectKey;
-            navigate(targetRoute);
+            // CRITICAL: If the roadmap says Agent Analysis but governance is
+            // PENDING (governance questionnaire not actually completed),
+            // navigate to Requirement Screening (/dashboard) instead.
+            const govClassification = String(selectedProject?.classification || '').trim().toUpperCase();
+            const isPendingGovernance = !govClassification || ['PENDING', 'N/A', ''].includes(govClassification);
+            const effectiveRoute = (targetRoute === '/agent-analysis' && isPendingGovernance)
+                ? '/dashboard'
+                : targetRoute;
+            navigate(effectiveRoute);
         }
     }, [selectedProjectKey, roadmapDataResult, isNewProjectMode, isShareMode, location.pathname, navigate]);
 
@@ -1108,7 +1116,17 @@ export default function AppLayout({ children }) {
                 };
                 const targetRoute = stepLabelToRoute[roadmapResponse.current_step_label];
                 if (targetRoute) {
-                    navigate(targetRoute);
+                    // CRITICAL: If the roadmap says Agent Analysis but governance is
+                    // PENDING (governance questionnaire not actually completed),
+                    // redirect to Requirement Screening (/dashboard) instead.
+                    // This prevents old projects with only uploaded text (no analysis)
+                    // from being redirected to Agent Analysis prematurely.
+                    const govClassification = String(project.classification || '').trim().toUpperCase();
+                    const isPendingGovernance = !govClassification || ['PENDING', 'N/A', ''].includes(govClassification);
+                    const effectiveRoute = (targetRoute === '/agent-analysis' && isPendingGovernance)
+                        ? '/dashboard'
+                        : targetRoute;
+                    navigate(effectiveRoute);
                     return;
                 }
             }

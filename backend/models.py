@@ -275,6 +275,8 @@ class Document(Base):
     full_content = Column(String, nullable=True)    # Full markdown content
     analysis_result = Column(String, nullable=True) # JSON string of analysis
     file_path = Column(String, nullable=True)       # Path/unique name of the uploaded document on disk
+    screening_inputs = Column(JSON, nullable=True)  # Raw requirement screening inputs (uploaded_files, linked_documents, manual_text, url_content, repository_context, skills_files)
+    project_token = Column(String, index=True, nullable=True)  # Link document directly to a project
     owner_id = Column(Integer, ForeignKey("users.id"))
 
     owner = relationship("User", back_populates="documents")

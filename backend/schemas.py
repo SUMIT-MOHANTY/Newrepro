@@ -1,6 +1,7 @@
+import json
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 class UserBase(BaseModel):
     email: EmailStr
@@ -196,7 +197,69 @@ class DocumentBase(BaseModel):
     content_preview: Optional[str] = None
     full_content: Optional[str] = None
     analysis_result: Optional[str] = None
-    file_path: Optional[str] = None
+    file_path: Optional[str] = ""
+    screening_inputs: Optional[dict] = None
+    project_token: Optional[str] = None
+
+    @field_validator("file_path", mode="before")
+    @classmethod
+    def default_file_path(cls, v):
+        return "" if v is None else v
+
+    @field_validator("screening_inputs", mode="before")
+    @classmethod
+    def default_screening_inputs(cls, v, info):
+        if v is not None:
+            return v
+        
+        full_content = (info.data.get("full_content") if info.data else "") or ""
+        manual_text = ""
+        url_content = ""
+        uploaded_files = []
+        linked_documents = []
+        skills_files = []
+        repo_context = None
+
+        if "--- MANUAL TEXT INPUT ---" in full_content:
+            try:
+                manual_text = full_content.split("--- MANUAL TEXT INPUT ---")[1].split("---")[0].strip()
+            except Exception:
+                pass
+
+        if "--- WEBSITE REQUIREMENTS" in full_content:
+            try:
+                parts = full_content.split("--- WEBSITE REQUIREMENTS")
+                if len(parts) > 1:
+                    url_content = parts[1].split("---")[0].strip()
+                    if ")" in url_content and "\n" in url_content:
+                        url_content = url_content.split("\n", 1)[1].strip()
+            except Exception:
+                pass
+
+        if not manual_text and not url_content:
+            analysis_str = (info.data.get("analysis_result") if info.data else "") or ""
+            if analysis_str:
+                try:
+                    parsed_a = json.loads(analysis_str)
+                    if isinstance(parsed_a, dict) and "sections" in parsed_a and isinstance(parsed_a["sections"], list):
+                        for sec in parsed_a["sections"]:
+                            title = sec.get("title", "")
+                            content = sec.get("content", "")
+                            if title == "MANUAL TEXT INPUT" and not manual_text:
+                                manual_text = content
+                            elif "WEBSITE REQUIREMENTS" in title and not url_content:
+                                url_content = content
+                except Exception:
+                    pass
+
+        return {
+            "uploaded_files": uploaded_files,
+            "linked_documents": linked_documents,
+            "manual_text": manual_text,
+            "url_content": url_content,
+            "repository_context": repo_context,
+            "skills_files": skills_files,
+        }
 
 class DocumentCreate(DocumentBase):
     pass

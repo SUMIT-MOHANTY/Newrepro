@@ -3869,23 +3869,32 @@ def get_user_history(
     db: Session = Depends(get_db),
     skip: int = 0,
     limit: int = 20,
+    project_token: Optional[str] = None,
 ):
-    """Retrieve user's document history."""
+    """
+    Retrieve user's document history.
+    If project_token is provided, filters documents by that project.
+    Otherwise returns all documents for the organization.
+    """
     organization_name = _normalized_text(getattr(current_user, "organization_name", None))
+    
     if not organization_name:
-        return (
-            db.query(models.Document)
-            .filter(models.Document.owner_id == current_user.id)
-            .order_by(models.Document.upload_date.desc())
-            .offset(skip)
-            .limit(limit)
-            .all()
+        query = db.query(models.Document).filter(models.Document.owner_id == current_user.id)
+    else:
+        org_user_ids = _org_user_ids_subquery(db, organization_name)
+        query = db.query(models.Document).filter(models.Document.owner_id.in_(org_user_ids))
+    
+    if project_token:
+        # Filter by project_token column (new) or fallback to matching within analysis_result JSON
+        query = query.filter(
+            or_(
+                models.Document.project_token == project_token,
+                models.Document.analysis_result.contains(project_token),
+            )
         )
-
-    org_user_ids = _org_user_ids_subquery(db, organization_name)
+    
     return (
-        db.query(models.Document)
-        .filter(models.Document.owner_id.in_(org_user_ids))
+        query
         .order_by(models.Document.upload_date.desc())
         .offset(skip)
         .limit(limit)
@@ -3899,7 +3908,18 @@ def save_document_history(
     db: Session = Depends(get_db),
 ):
     """Save an analysis result to history."""
-    db_doc = models.Document(**document.dict(), owner_id=current_user.id)
+    payload = document.dict()
+    # Auto-populate project_token from analysis_result JSON if not provided
+    if not payload.get("project_token") and payload.get("analysis_result"):
+        try:
+            parsed = json.loads(payload["analysis_result"])
+            if isinstance(parsed, dict):
+                token = parsed.get("project_token") or (parsed.get("projectMeta") or {}).get("project_token")
+                if token:
+                    payload["project_token"] = token
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+    db_doc = models.Document(**payload, owner_id=current_user.id)
     db.add(db_doc)
     db.commit()
     db.refresh(db_doc)
@@ -3926,6 +3946,19 @@ def update_document_history(
     db_doc.full_content = payload.get("full_content")
     db_doc.analysis_result = payload.get("analysis_result")
     db_doc.file_path = payload.get("file_path")
+    if "screening_inputs" in payload:
+        db_doc.screening_inputs = payload.get("screening_inputs")
+    # Auto-populate project_token from analysis_result JSON if not provided in payload
+    project_token_val = payload.get("project_token")
+    if not project_token_val and payload.get("analysis_result"):
+        try:
+            parsed = json.loads(payload["analysis_result"])
+            if isinstance(parsed, dict):
+                project_token_val = parsed.get("project_token") or (parsed.get("projectMeta") or {}).get("project_token")
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+    if project_token_val:
+        db_doc.project_token = project_token_val
 
     db.add(db_doc)
     db.commit()
