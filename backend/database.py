@@ -61,8 +61,9 @@ with engine.connect() as conn:
                 print("Migrating database: Adding is_archived column to governance_responses")
                 conn.execute(text("ALTER TABLE governance_responses ADD COLUMN is_archived BOOLEAN DEFAULT 0"))
         
-        if inspector.has_table("share_projects"):
-            sp_columns = [c["name"] for c in inspector.get_columns("share_projects")]
+        sp_cursor = conn.execute(text("PRAGMA table_info(share_projects)"))
+        sp_columns = [row[1] for row in sp_cursor.fetchall()]
+        if sp_columns:
             if "is_archived" not in sp_columns:
                 print("Migrating database: Adding is_archived column to share_projects")
                 conn.execute(text("ALTER TABLE share_projects ADD COLUMN is_archived BOOLEAN DEFAULT 0"))
