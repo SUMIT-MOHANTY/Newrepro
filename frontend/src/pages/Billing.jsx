@@ -113,6 +113,8 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
             
             // Dynamic sums based on filters
             const totalCost = filteredUsers.reduce((sum, u) => sum + (u.total_cost || 0), 0);
+            const totalTokenCost = filteredUsers.reduce((sum, u) => sum + (u.token_cost || 0), 0);
+            const totalInfraCost = filteredUsers.reduce((sum, u) => sum + (u.infra_cost || 0), 0);
             const totalPromptTokens = filteredUsers.reduce((sum, u) => sum + (u.ai_usage?.reduce((s, a) => s + (a.prompt || 0), 0) || 0), 0);
             const totalCompletionTokens = filteredUsers.reduce((sum, u) => sum + (u.ai_usage?.reduce((s, a) => s + (a.completion || 0), 0) || 0), 0);
             
@@ -187,43 +189,54 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
             doc.text("1. Executive Summary KPIs", margin, cursorY);
             cursorY += 6;
             
-            // Draw KPI Boxes
-            const kpiWidth = (contentWidth - 6) / 3;
+            // Draw KPI Boxes (4 boxes)
+            const kpiWidth = (contentWidth - 9) / 4;
             const kpiHeight = 18;
             
             // Total cost box
-            doc.setFillColor(248, 250, 252); // Slate-50
-            doc.setDrawColor(226, 232, 240); // Slate-200
+            doc.setFillColor(248, 250, 252);
+            doc.setDrawColor(226, 232, 240);
             doc.roundedRect(margin, cursorY, kpiWidth, kpiHeight, 1, 1, 'FD');
             doc.setFont('helvetica', 'bold');
-            doc.setFontSize(8);
+            doc.setFontSize(7.5);
             doc.setTextColor(100, 116, 139);
-            doc.text("TOTAL COST (USD)", margin + 3, cursorY + 5);
-            doc.setFontSize(12);
+            doc.text("TOTAL SPEND (USD)", margin + 3, cursorY + 5);
+            doc.setFontSize(11);
             doc.setTextColor(16, 185, 129); // Emerald-500
             doc.text(`$${totalCost?.toFixed(2)}`, margin + 3, cursorY + 12);
             
-            // Prompt tokens box
+            // Token cost box
             doc.setFillColor(248, 250, 252);
             doc.roundedRect(margin + kpiWidth + 3, cursorY, kpiWidth, kpiHeight, 1, 1, 'FD');
             doc.setFont('helvetica', 'bold');
-            doc.setFontSize(8);
+            doc.setFontSize(7.5);
             doc.setTextColor(100, 116, 139);
-            doc.text("PROMPT TOKENS", margin + kpiWidth + 6, cursorY + 5);
-            doc.setFontSize(12);
+            doc.text("TOKEN COST (USD)", margin + kpiWidth + 6, cursorY + 5);
+            doc.setFontSize(11);
             doc.setTextColor(59, 130, 246); // Blue-500
-            doc.text(totalPromptTokens?.toLocaleString() || "0", margin + kpiWidth + 6, cursorY + 12);
-            
-            // Completion tokens box
+            doc.text(`$${totalTokenCost?.toFixed(2)}`, margin + kpiWidth + 6, cursorY + 12);
+
+            // Infra cost box
             doc.setFillColor(248, 250, 252);
             doc.roundedRect(margin + (kpiWidth * 2) + 6, cursorY, kpiWidth, kpiHeight, 1, 1, 'FD');
             doc.setFont('helvetica', 'bold');
-            doc.setFontSize(8);
+            doc.setFontSize(7.5);
             doc.setTextColor(100, 116, 139);
-            doc.text("COMPLETION TOKENS", margin + (kpiWidth * 2) + 9, cursorY + 5);
-            doc.setFontSize(12);
+            doc.text("INFRA COST ($1/HR)", margin + (kpiWidth * 2) + 9, cursorY + 5);
+            doc.setFontSize(11);
             doc.setTextColor(168, 85, 247); // Purple-500
-            doc.text(totalCompletionTokens?.toLocaleString() || "0", margin + (kpiWidth * 2) + 9, cursorY + 12);
+            doc.text(`$${totalInfraCost?.toFixed(2)}`, margin + (kpiWidth * 2) + 9, cursorY + 12);
+
+            // Total Tokens box
+            doc.setFillColor(248, 250, 252);
+            doc.roundedRect(margin + (kpiWidth * 3) + 9, cursorY, kpiWidth, kpiHeight, 1, 1, 'FD');
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(7.5);
+            doc.setTextColor(100, 116, 139);
+            doc.text("TOTAL TOKENS", margin + (kpiWidth * 3) + 12, cursorY + 5);
+            doc.setFontSize(11);
+            doc.setTextColor(15, 23, 42);
+            doc.text((totalPromptTokens + totalCompletionTokens)?.toLocaleString() || "0", margin + (kpiWidth * 3) + 12, cursorY + 12);
             
             cursorY += kpiHeight + 10;
             
@@ -262,22 +275,23 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
             doc.setFillColor(30, 58, 138);
             doc.rect(margin, cursorY, contentWidth, 7, 'F');
             doc.setFont('helvetica', 'bold');
-            doc.setFontSize(8);
+            doc.setFontSize(7.5);
             doc.setTextColor(255, 255, 255);
             
-            doc.text("Name / Email", margin + 3, cursorY + 5);
-            doc.text("Status", margin + 55, cursorY + 5);
-            doc.text("Projects", margin + 78, cursorY + 5);
-            doc.text("Sessions", margin + 98, cursorY + 5);
-            doc.text("Total Time", margin + 118, cursorY + 5);
-            doc.text("AI Tokens", margin + 140, cursorY + 5);
-            doc.text("AI Cost", margin + 165, cursorY + 5);
+            doc.text("Name / Email", margin + 2, cursorY + 5);
+            doc.text("Status", margin + 45, cursorY + 5);
+            doc.text("Sessions", margin + 63, cursorY + 5);
+            doc.text("Total Time", margin + 81, cursorY + 5);
+            doc.text("AI Tokens", margin + 102, cursorY + 5);
+            doc.text("Token Cost", margin + 125, cursorY + 5);
+            doc.text("Infra Cost", margin + 148, cursorY + 5);
+            doc.text("Total Cost", margin + 168, cursorY + 5);
             
             cursorY += 7;
             
             // Populate user rows
             doc.setFont('helvetica', 'normal');
-            doc.setFontSize(7.5);
+            doc.setFontSize(7);
             doc.setTextColor(51, 65, 85);
             
             (filteredUsers || []).forEach((u, i) => {
@@ -289,18 +303,19 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                 
                 doc.setFont('helvetica', 'bold');
                 doc.setTextColor(15, 23, 42);
-                doc.text(u.name || u.email.split('@')[0], margin + 3, cursorY + 4);
+                doc.text((u.name || u.email.split('@')[0]).slice(0, 20), margin + 2, cursorY + 4);
                 doc.setFont('helvetica', 'normal');
                 doc.setTextColor(100, 116, 139);
-                doc.text(u.email, margin + 3, cursorY + 7.5);
+                doc.text(u.email.slice(0, 24), margin + 2, cursorY + 7.5);
                 
                 doc.setTextColor(51, 65, 85);
-                doc.text(u.is_active ? "Active" : "Inactive", margin + 55, cursorY + 5.5);
-                doc.text(String(u.projects_count), margin + 78, cursorY + 5.5);
-                doc.text(String(u.session_count || 0), margin + 98, cursorY + 5.5);
-                doc.text(`${u.total_duration_hours} hrs`, margin + 118, cursorY + 5.5);
-                doc.text(u.ai_tokens?.toLocaleString() || "0", margin + 140, cursorY + 5.5);
-                doc.text(`$${u.total_cost?.toFixed(4)}`, margin + 165, cursorY + 5.5);
+                doc.text(u.is_active ? "Active" : "Inactive", margin + 45, cursorY + 5.5);
+                doc.text(String(u.session_count || 0), margin + 63, cursorY + 5.5);
+                doc.text(`${u.total_duration_hours} hrs`, margin + 81, cursorY + 5.5);
+                doc.text(u.ai_tokens?.toLocaleString() || "0", margin + 102, cursorY + 5.5);
+                doc.text(`$${(u.token_cost || 0).toFixed(4)}`, margin + 125, cursorY + 5.5);
+                doc.text(`$${(u.infra_cost || 0).toFixed(4)}`, margin + 148, cursorY + 5.5);
+                doc.text(`$${(u.total_cost || 0).toFixed(4)}`, margin + 168, cursorY + 5.5);
                 
                 // Draw bottom row border
                 doc.setDrawColor(241, 245, 249);
@@ -402,23 +417,23 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
 
             const rows = [];
 
-            // 1. Report Metadata
+            // Header
             rows.push(['ORGANIZATION UTILIZATION & BILLING REPORT']);
-            rows.push(['Organization:', orgBillingData.organization_name || 'Organization']);
-            rows.push(['Exported By:', user?.email || 'Admin']);
-            rows.push(['Export Date:', new Date().toLocaleString()]);
-            rows.push(['Date Range:', `${startDate || 'All-Time'} to ${endDate || 'Present'}`]);
+            rows.push(['Organization:', orgBillingData.organization_name || '—']);
+            rows.push(['Generated At:', new Date().toLocaleString()]);
             rows.push([]);
 
-            // 2. Summary KPIs
-            rows.push(['1. EXECUTIVE SUMMARY KPIs']);
-            rows.push(['Total Cost (USD)', `$${orgBillingData.summary?.total_cost || 0}`]);
+            // Executive Summary
+            rows.push(['EXECUTIVE SUMMARY']);
+            rows.push(['Total Token Cost (USD)', orgBillingData.summary?.total_token_cost || 0]);
+            rows.push(['Total Infra Cost (USD, $1/hr)', orgBillingData.summary?.total_infra_cost || 0]);
+            rows.push(['Total Combined Cost (USD)', orgBillingData.summary?.total_cost || 0]);
             rows.push(['Total Prompt Tokens', orgBillingData.summary?.total_prompt_tokens || 0]);
             rows.push(['Total Completion Tokens', orgBillingData.summary?.total_completion_tokens || 0]);
             rows.push(['Total Requests', orgBillingData.detailed_ai_logs?.length || 0]);
             rows.push([]);
 
-            // 3. Cost By Model
+            // 2. Cost By Model
             rows.push(['2. COST BY MODEL']);
             rows.push(['Model', 'Total Cost (USD)']);
             if (orgBillingData.summary?.cost_by_model) {
@@ -441,6 +456,8 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                 'Session Duration (Hours)',
                 'AI Tokens',
                 'Projects Created',
+                'Token Cost (USD)',
+                'Infra Cost (USD, $1/hr)',
                 'Total Cost (USD)',
                 'Last Login'
             ]);
@@ -455,6 +472,8 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                         u.total_duration_hours || 0,
                         u.ai_tokens || 0,
                         u.projects_count || 0,
+                        u.token_cost || 0,
+                        u.infra_cost || 0,
                         u.total_cost || 0,
                         u.last_login || '—'
                     ]);
@@ -505,14 +524,27 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
     const processedUsers = useMemo(() => {
         if (!orgBillingData || !orgBillingData.user_stats) return [];
         
-        let list = [...orgBillingData.user_stats];
+        let list = orgBillingData.user_stats.map(u => {
+            const bournaiUsage = u.ai_usage?.filter(a => (a.model || '').toLowerCase() === 'bournai') || [];
+            const bournaiTokenCost = bournaiUsage.reduce((s, a) => s + (a.cost || 0), 0);
+            const bournaiTokens = bournaiUsage.reduce((s, a) => s + (a.prompt || 0) + (a.completion || 0), 0);
+            const tokenCost = u.token_cost ?? bournaiTokenCost;
+            const infraCost = u.infra_cost ?? Math.max(0, (u.total_cost || 0) - (u.token_cost ?? u.ai_usage?.reduce((s, a) => s + (a.cost || 0), 0)));
+            return {
+                ...u,
+                token_cost: tokenCost,
+                infra_cost: infraCost,
+                total_cost: u.total_cost ?? (tokenCost + infraCost),
+                ai_tokens: u.ai_tokens ?? bournaiTokens
+            };
+        });
         
         // Search
         if (searchTerm) {
             const term = searchTerm.toLowerCase();
             list = list.filter(u => 
-                u.name.toLowerCase().includes(term) || 
-                u.email.toLowerCase().includes(term)
+                (u.name || '').toLowerCase().includes(term) || 
+                (u.email || '').toLowerCase().includes(term)
             );
         }
         
@@ -558,23 +590,41 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
 
     const derivedSummary = useMemo(() => {
         if (!orgBillingData) return {};
-        if (!searchTerm) return orgBillingData.summary || {};
+        const rawSummary = orgBillingData.summary || {};
+
+        const calcTokenCost = processedUsers.reduce((sum, u) => sum + (u.token_cost || 0), 0);
+        const calcInfraCost = processedUsers.reduce((sum, u) => sum + (u.infra_cost || 0), 0);
+        const calcTotalCost = processedUsers.reduce((sum, u) => sum + (u.total_cost || 0), 0);
         
-        const totalCost = processedUsers.reduce((sum, u) => sum + (u.total_cost || 0), 0);
+        if (!searchTerm) {
+            return {
+                ...rawSummary,
+                total_token_cost: rawSummary.total_token_cost ?? calcTokenCost,
+                total_infra_cost: rawSummary.total_infra_cost ?? calcInfraCost,
+                total_cost: rawSummary.total_cost ?? calcTotalCost,
+                total_prompt_tokens: rawSummary.total_prompt_tokens || 0,
+                total_completion_tokens: rawSummary.total_completion_tokens || 0,
+            };
+        }
+        
         let totalPrompt = 0;
         let totalCompletion = 0;
         const costByModel = {};
         
         processedUsers.forEach(u => {
             u.ai_usage?.forEach(a => {
-                totalPrompt += (a.prompt || 0);
-                totalCompletion += (a.completion || 0);
+                if ((a.model || '').toLowerCase() === 'bournai') {
+                    totalPrompt += (a.prompt || 0);
+                    totalCompletion += (a.completion || 0);
+                }
                 costByModel[a.model] = (costByModel[a.model] || 0) + (a.cost || 0);
             });
         });
         
         return {
-            total_cost: totalCost,
+            total_token_cost: calcTokenCost,
+            total_infra_cost: calcInfraCost,
+            total_cost: calcTotalCost,
             total_prompt_tokens: totalPrompt,
             total_completion_tokens: totalCompletion,
             cost_by_model: costByModel
@@ -760,7 +810,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                     {activeTab === 'overview' && (
                         <div className="space-y-8 animate-fade-in">
                             {/* KPI Grid */}
-                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                                 {/* Total Cost */}
                                 <div className="bg-app-bg-card border border-app-border rounded-xl p-5 hover:border-app-primary-dark transition-all shadow-sm relative overflow-hidden">
                                     <div className="flex items-center justify-between mb-3">
@@ -770,19 +820,53 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                                         </div>
                                     </div>
                                     <h3 className="text-2xl font-black text-app-text-main">
-                                        ${orgSummary.total_cost?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                        ${(orgSummary.total_cost ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                     </h3>
                                     <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 flex items-center gap-1 font-semibold">
-                                        <CheckCircle2 className="w-3 h-3" /> Cost generated by all members
+                                        <CheckCircle2 className="w-3 h-3" /> Token Cost + Infra Cost ($1/hr)
                                     </p>
                                     <div className="absolute top-0 left-0 w-1 h-full bg-emerald-500" />
+                                </div>
+
+                                {/* Token Cost */}
+                                <div className="bg-app-bg-card border border-app-border rounded-xl p-5 hover:border-app-primary-dark transition-all shadow-sm relative overflow-hidden">
+                                    <div className="flex items-center justify-between mb-3">
+                                        <span className="text-xs font-semibold text-app-text-muted uppercase tracking-wider">Token Cost (AI Usage)</span>
+                                        <div className="p-2 bg-blue-50 dark:bg-app-primary-light rounded-lg text-blue-600 dark:text-blue-450 border border-blue-200/20">
+                                            <FileText className="w-4 h-4" />
+                                        </div>
+                                    </div>
+                                    <h3 className="text-2xl font-black text-app-text-main">
+                                        ${(orgSummary.total_token_cost ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                    </h3>
+                                    <p className="text-[10px] text-app-text-label mt-1 font-medium">
+                                        Prompt + Completion token spend
+                                    </p>
+                                    <div className="absolute top-0 left-0 w-1 h-full bg-blue-500" />
+                                </div>
+
+                                {/* Infra Cost ($1/hr) */}
+                                <div className="bg-app-bg-card border border-app-border rounded-xl p-5 hover:border-app-primary-dark transition-all shadow-sm relative overflow-hidden">
+                                    <div className="flex items-center justify-between mb-3">
+                                        <span className="text-xs font-semibold text-app-text-muted uppercase tracking-wider">Infra Cost</span>
+                                        <div className="p-2 bg-purple-50 dark:bg-app-primary-light rounded-lg text-purple-650 dark:text-purple-400 border border-purple-200/20">
+                                            <Clock className="w-4 h-4" />
+                                        </div>
+                                    </div>
+                                    <h3 className="text-2xl font-black text-app-text-main">
+                                        ${(orgSummary.total_infra_cost ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                    </h3>
+                                    <p className="text-[10px] text-app-text-label mt-1 font-medium">
+                                        Calculated from active usage hours per user
+                                    </p>
+                                    <div className="absolute top-0 left-0 w-1 h-full bg-purple-500" />
                                 </div>
 
                                 {/* Prompt Tokens */}
                                 <div className="bg-app-bg-card border border-app-border rounded-xl p-5 hover:border-app-primary-dark transition-all shadow-sm relative overflow-hidden">
                                     <div className="flex items-center justify-between mb-3">
                                         <span className="text-xs font-semibold text-app-text-muted uppercase tracking-wider">Prompt Tokens</span>
-                                        <div className="p-2 bg-blue-50 dark:bg-app-primary-light rounded-lg text-blue-600 dark:text-blue-450 border border-blue-200/20">
+                                        <div className="p-2 bg-indigo-50 dark:bg-app-primary-light rounded-lg text-indigo-600 dark:text-indigo-400 border border-indigo-200/20">
                                             <FileText className="w-4 h-4" />
                                         </div>
                                     </div>
@@ -792,14 +876,14 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                                     <p className="text-[10px] text-app-text-label mt-1 font-medium">
                                         Tokens sent to AI models
                                     </p>
-                                    <div className="absolute top-0 left-0 w-1 h-full bg-blue-500" />
+                                    <div className="absolute top-0 left-0 w-1 h-full bg-indigo-500" />
                                 </div>
 
                                 {/* Completion Tokens */}
                                 <div className="bg-app-bg-card border border-app-border rounded-xl p-5 hover:border-app-primary-dark transition-all shadow-sm relative overflow-hidden">
                                     <div className="flex items-center justify-between mb-3">
                                         <span className="text-xs font-semibold text-app-text-muted uppercase tracking-wider">Completion Tokens</span>
-                                        <div className="p-2 bg-purple-50 dark:bg-app-primary-light rounded-lg text-purple-650 dark:text-purple-400 border border-purple-200/20">
+                                        <div className="p-2 bg-pink-50 dark:bg-app-primary-light rounded-lg text-pink-600 dark:text-pink-400 border border-pink-200/20">
                                             <Bot className="w-4 h-4" />
                                         </div>
                                     </div>
@@ -809,14 +893,14 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                                     <p className="text-[10px] text-app-text-label mt-1 font-medium">
                                         Tokens generated by AI models
                                     </p>
-                                    <div className="absolute top-0 left-0 w-1 h-full bg-purple-500" />
+                                    <div className="absolute top-0 left-0 w-1 h-full bg-pink-500" />
                                 </div>
 
                                 {/* Org Members */}
                                 <div className="bg-app-bg-card border border-app-border rounded-xl p-5 hover:border-app-primary-dark transition-all shadow-sm relative overflow-hidden">
                                     <div className="flex items-center justify-between mb-3">
                                         <span className="text-xs font-semibold text-app-text-muted uppercase tracking-wider">Org Members</span>
-                                        <div className="p-2 bg-indigo-50 dark:bg-app-primary-light rounded-lg text-indigo-600 dark:text-indigo-400 border border-indigo-200/20">
+                                        <div className="p-2 bg-teal-50 dark:bg-app-primary-light rounded-lg text-teal-600 dark:text-teal-400 border border-teal-200/20">
                                             <Users className="w-4 h-4" />
                                         </div>
                                     </div>
@@ -826,7 +910,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                                     <p className="text-[10px] text-app-text-label mt-1 font-medium">
                                         Active users in organization
                                     </p>
-                                    <div className="absolute top-0 left-0 w-1 h-full bg-indigo-500" />
+                                    <div className="absolute top-0 left-0 w-1 h-full bg-teal-500" />
                                 </div>
                             </div>
 
@@ -903,20 +987,26 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                                                 Sessions {userSortField === 'session_count' ? (userSortAsc ? '▲' : '▼') : '⇅'}
                                             </th>
                                             <th className="py-3.5 px-4 font-bold text-right cursor-pointer hover:text-app-primary" onClick={() => handleUserSort('total_duration_hours')}>
-                                                Total Time (Hrs) {userSortField === 'total_duration_hours' ? (userSortAsc ? '▲' : '▼') : '⇅'}
+                                                Session Time (Hrs) {userSortField === 'total_duration_hours' ? (userSortAsc ? '▲' : '▼') : '⇅'}
                                             </th>
                                             <th className="py-3.5 px-4 font-bold text-right cursor-pointer hover:text-app-primary" onClick={() => handleUserSort('ai_tokens')}>
                                                 AI Tokens {userSortField === 'ai_tokens' ? (userSortAsc ? '▲' : '▼') : '⇅'}
                                             </th>
+                                            <th className="py-3.5 px-4 font-bold text-right cursor-pointer hover:text-app-primary" onClick={() => handleUserSort('token_cost')}>
+                                                Token Cost {userSortField === 'token_cost' ? (userSortAsc ? '▲' : '▼') : '⇅'}
+                                            </th>
+                                            <th className="py-3.5 px-4 font-bold text-right cursor-pointer hover:text-app-primary" onClick={() => handleUserSort('infra_cost')}>
+                                                Infra Cost ($1/hr) {userSortField === 'infra_cost' ? (userSortAsc ? '▲' : '▼') : '⇅'}
+                                            </th>
                                             <th className="py-3.5 px-4 font-bold text-right cursor-pointer hover:text-app-primary" onClick={() => handleUserSort('total_cost')}>
-                                                AI Cost {userSortField === 'total_cost' ? (userSortAsc ? '▲' : '▼') : '⇅'}
+                                                Total Cost {userSortField === 'total_cost' ? (userSortAsc ? '▲' : '▼') : '⇅'}
                                             </th>
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-app-border bg-app-bg-card text-app-text-main">
                                         {processedUsers.length === 0 ? (
                                             <tr>
-                                                <td colSpan="9" className="py-8 px-4 text-center text-app-text-muted font-semibold">
+                                                <td colSpan="11" className="py-8 px-4 text-center text-app-text-muted font-semibold">
                                                     No organization members found matching your search.
                                                 </td>
                                             </tr>
@@ -958,8 +1048,14 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                                                     <td className="py-3.5 px-4 text-right font-mono font-semibold text-app-text-label">
                                                         {u.ai_tokens?.toLocaleString()}
                                                     </td>
+                                                    <td className="py-3.5 px-4 text-right font-mono font-semibold text-blue-600 dark:text-blue-400">
+                                                        ${(u.token_cost || 0).toLocaleString(undefined, { minimumFractionDigits: 4 })}
+                                                    </td>
+                                                    <td className="py-3.5 px-4 text-right font-mono font-semibold text-purple-600 dark:text-purple-400">
+                                                        ${(u.infra_cost || 0).toLocaleString(undefined, { minimumFractionDigits: 4 })}
+                                                    </td>
                                                     <td className="py-3.5 px-4 text-right font-mono font-bold text-emerald-600 dark:text-emerald-450">
-                                                        ${u.total_cost?.toLocaleString(undefined, { minimumFractionDigits: 4 })}
+                                                        ${(u.total_cost || 0).toLocaleString(undefined, { minimumFractionDigits: 4 })}
                                                     </td>
                                                 </tr>
                                             ))
@@ -1100,6 +1196,28 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                                                 <span>Azure DevOps Username:</span>
                                                 <span className="font-mono text-app-text-main font-bold">{selectedUserDetail.azure_devops_username}</span>
                                             </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* User Cost Breakdown Cards */}
+                                <div className="grid grid-cols-3 gap-3">
+                                    <div className="p-3 rounded-xl border border-app-border bg-blue-50/50 dark:bg-blue-950/20">
+                                        <div className="text-[10px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider">Token Cost</div>
+                                        <div className="text-base font-black text-blue-700 dark:text-blue-300 mt-0.5">
+                                            ${(selectedUserDetail.token_cost ?? 0).toFixed(4)}
+                                        </div>
+                                    </div>
+                                    <div className="p-3 rounded-xl border border-app-border bg-purple-50/50 dark:bg-purple-950/20">
+                                        <div className="text-[10px] font-bold text-purple-600 dark:text-purple-400 uppercase tracking-wider">Infra Cost ($1/hr)</div>
+                                        <div className="text-base font-black text-purple-700 dark:text-purple-300 mt-0.5">
+                                            ${(selectedUserDetail.infra_cost ?? 0).toFixed(4)}
+                                        </div>
+                                    </div>
+                                    <div className="p-3 rounded-xl border border-app-border bg-emerald-50/50 dark:bg-emerald-950/20">
+                                        <div className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Total User Cost</div>
+                                        <div className="text-base font-black text-emerald-700 dark:text-emerald-300 mt-0.5">
+                                            ${(selectedUserDetail.total_cost ?? 0).toFixed(4)}
                                         </div>
                                     </div>
                                 </div>

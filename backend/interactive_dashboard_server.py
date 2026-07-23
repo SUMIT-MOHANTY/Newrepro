@@ -741,7 +741,9 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
                             <th onclick="sortUserTable('sessions')">Sessions ⇅</th>
                             <th onclick="sortUserTable('hours')">Total Time (Hrs) ⇅</th>
                             <th onclick="sortUserTable('ai_tokens')">AI Tokens ⇅</th>
-                            <th onclick="sortUserTable('ai_cost')">AI Cost ⇅</th>
+                            <th onclick="sortUserTable('token_cost')">Token Cost ⇅</th>
+                            <th onclick="sortUserTable('infra_cost')">Infra Cost ($1/hr) ⇅</th>
+                            <th onclick="sortUserTable('total_cost')">Total Cost ⇅</th>
                         </tr>
                     </thead>
                     <tbody id="users-table-body">
@@ -934,46 +936,52 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
         function renderOverview() {
             // Render KPI cards
             const grid = document.getElementById('kpi-grid');
+            const totalTokens = (summaryData.total_prompt_tokens || 0) + (summaryData.total_completion_tokens || 0);
             grid.innerHTML = `
                 <div class="kpi-card">
                     <div class="kpi-title">Total Registered Users</div>
-                    <div class="kpi-value">${summaryData.total_users}</div>
-                    <div class="kpi-desc">${summaryData.active_users} active / ${summaryData.total_users - summaryData.active_users} inactive</div>
+                    <div class="kpi-value">${summaryData.total_users || 0}</div>
+                    <div class="kpi-desc">${summaryData.active_users || 0} active / ${(summaryData.total_users || 0) - (summaryData.active_users || 0)} inactive</div>
                 </div>
                 <div class="kpi-card">
                     <div class="kpi-title">Organizations</div>
-                    <div class="kpi-value">${summaryData.total_orgs}</div>
+                    <div class="kpi-value">${summaryData.total_orgs || 1}</div>
                     <div class="kpi-desc">Multi-tenant isolation active</div>
                 </div>
                 <div class="kpi-card">
                     <div class="kpi-title">Total Projects Created</div>
-                    <div class="kpi-value">${summaryData.total_projects}</div>
+                    <div class="kpi-value">${summaryData.total_projects || 0}</div>
                     <div class="kpi-desc">Across all workspace scopes</div>
                 </div>
                 <div class="kpi-card">
                     <div class="kpi-title">Total Active Sessions</div>
-                    <div class="kpi-value">${summaryData.total_sessions}</div>
-                    <div class="kpi-desc">Average session duration: ${summaryData.avg_session_mins} mins</div>
+                    <div class="kpi-value">${summaryData.total_sessions || 0}</div>
+                    <div class="kpi-desc">Average session duration: ${summaryData.avg_session_mins || 0} mins</div>
                 </div>
                 <div class="kpi-card">
                     <div class="kpi-title">App Time Invested</div>
-                    <div class="kpi-value">${summaryData.total_duration_hours} hrs</div>
+                    <div class="kpi-value">${summaryData.total_duration_hours || 0} hrs</div>
                     <div class="kpi-desc">Combined user engagement time</div>
                 </div>
                 <div class="kpi-card">
-                    <div class="kpi-title">Project Run Health</div>
-                    <div class="kpi-value" style="color:var(--green)">${summaryData.successful_runs}</div>
-                    <div class="kpi-desc" style="color:var(--red)">Failed: ${summaryData.failed_runs} runs</div>
-                </div>
-                <div class="kpi-card">
                     <div class="kpi-title">AI Tokens Consumed</div>
-                    <div class="kpi-value">${(summaryData.total_prompt_tokens + summaryData.total_completion_tokens >= 1000000) ? ((summaryData.total_prompt_tokens + summaryData.total_completion_tokens)/1000000).toFixed(2) + 'M' : (summaryData.total_prompt_tokens + summaryData.total_completion_tokens).toLocaleString()}</div>
-                    <div class="kpi-desc">P: ${(summaryData.total_prompt_tokens >= 1000000) ? (summaryData.total_prompt_tokens/1000000).toFixed(2) + 'M' : summaryData.total_prompt_tokens.toLocaleString()} / C: ${(summaryData.total_completion_tokens >= 1000000) ? (summaryData.total_completion_tokens/1000000).toFixed(2) + 'M' : summaryData.total_completion_tokens.toLocaleString()}</div>
+                    <div class="kpi-value">${(totalTokens >= 1000000) ? (totalTokens/1000000).toFixed(2) + 'M' : totalTokens.toLocaleString()}</div>
+                    <div class="kpi-desc">P: ${(summaryData.total_prompt_tokens >= 1000000) ? (summaryData.total_prompt_tokens/1000000).toFixed(2) + 'M' : (summaryData.total_prompt_tokens || 0).toLocaleString()} / C: ${(summaryData.total_completion_tokens >= 1000000) ? (summaryData.total_completion_tokens/1000000).toFixed(2) + 'M' : (summaryData.total_completion_tokens || 0).toLocaleString()}</div>
                 </div>
                 <div class="kpi-card">
-                    <div class="kpi-title">Total AI Spend</div>
-                    <div class="kpi-value" style="color:var(--accent)">$${summaryData.total_cost.toFixed(2)}</div>
-                    <div class="kpi-desc">Aggregate API usage costs</div>
+                    <div class="kpi-title">Token Cost (AI Usage)</div>
+                    <div class="kpi-value" style="color:var(--accent)">$${(summaryData.total_token_cost || 0).toFixed(2)}</div>
+                    <div class="kpi-desc">Prompt + Completion token spend</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-title">Infra Cost ($1/hr User-Wise)</div>
+                    <div class="kpi-value" style="color:#bc8cff">$${(summaryData.total_infra_cost || 0).toFixed(2)}</div>
+                    <div class="kpi-desc">Active usage duration per user</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-title">Total Organization Spend</div>
+                    <div class="kpi-value" style="color:var(--green)">$${(summaryData.total_cost || 0).toFixed(2)}</div>
+                    <div class="kpi-desc">Token Cost + Infra Cost ($1/hr)</div>
                 </div>
             `;
         }
@@ -1014,7 +1022,9 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
                 else if (userSortCol === 'sessions') { valA = a.sessions_count; valB = b.sessions_count; }
                 else if (userSortCol === 'hours') { valA = a.total_duration_hours; valB = b.total_duration_hours; }
                 else if (userSortCol === 'ai_tokens') { valA = a.ai_tokens; valB = b.ai_tokens; }
-                else if (userSortCol === 'ai_cost') { valA = a.ai_cost; valB = b.ai_cost; }
+                else if (userSortCol === 'token_cost') { valA = a.token_cost || 0; valB = b.token_cost || 0; }
+                else if (userSortCol === 'infra_cost') { valA = a.infra_cost || 0; valB = b.infra_cost || 0; }
+                else if (userSortCol === 'total_cost') { valA = a.total_cost || 0; valB = b.total_cost || 0; }
 
                 if (valA < valB) return userSortAsc ? -1 : 1;
                 if (valA > valB) return userSortAsc ? 1 : -1;
@@ -1029,14 +1039,16 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
                 tr.innerHTML = `
                     <td><strong>${u.name}</strong></td>
                     <td style="font-family:'JetBrains Mono', monospace; font-size:12px;">${u.email}</td>
-                    <td>🏢 ${u.organization_name}</td>
+                    <td>🏢 ${u.organization_name || 'Organization'}</td>
                     <td><span class="badge ${u.is_active ? 'badge-active' : 'badge-inactive'}">${u.is_active ? 'Active' : 'Inactive'}</span></td>
-                    <td style="font-size:12px; color:var(--text-dim)">${u.last_login}</td>
-                    <td style="font-family:'JetBrains Mono', monospace;">${u.projects_count}</td>
-                    <td style="font-family:'JetBrains Mono', monospace;">${u.sessions_count}</td>
-                    <td style="font-family:'JetBrains Mono', monospace; font-weight:600; color:var(--accent);">${u.total_duration_hours} hrs</td>
+                    <td style="font-size:12px; color:var(--text-dim)">${u.last_login || 'Never'}</td>
+                    <td style="font-family:'JetBrains Mono', monospace;">${u.projects_count || 0}</td>
+                    <td style="font-family:'JetBrains Mono', monospace;">${u.session_count || 0}</td>
+                    <td style="font-family:'JetBrains Mono', monospace; font-weight:600; color:var(--accent);">${u.total_duration_hours || 0} hrs</td>
                     <td style="font-family:'JetBrains Mono', monospace;">${u.ai_tokens ? u.ai_tokens.toLocaleString() : '0'}</td>
-                    <td style="font-family:'JetBrains Mono', monospace; font-weight:600; color:var(--yellow);">${u.ai_cost ? '$' + u.ai_cost.toFixed(2) : '$0.00'}</td>
+                    <td style="font-family:'JetBrains Mono', monospace; font-weight:600; color:var(--accent);">$${(u.token_cost || 0).toFixed(4)}</td>
+                    <td style="font-family:'JetBrains Mono', monospace; font-weight:600; color:#bc8cff;">$${(u.infra_cost || 0).toFixed(4)}</td>
+                    <td style="font-family:'JetBrains Mono', monospace; font-weight:600; color:var(--green);">$${(u.total_cost || 0).toFixed(4)}</td>
                 `;
                 body.appendChild(tr);
             });

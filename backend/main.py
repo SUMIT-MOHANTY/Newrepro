@@ -2634,6 +2634,42 @@ def get_org_billing_and_logs(
     ).all()
     org_user_ids = [u.id for u in org_users]
     org_user_map = {u.id: u for u in org_users}
+
+    # Determine organization onboarded_at timestamp (earliest activity/mapping date)
+    onboard_dates = []
+    uor_list = db.query(models.UserOrganizationRole).filter(
+        func.lower(models.UserOrganizationRole.organization_name) == organization_name.lower()
+    ).all()
+    for uor in uor_list:
+        if uor.created_at:
+            onboard_dates.append(uor.created_at)
+
+    roles_list = db.query(models.OrganizationRole).filter(
+        func.lower(models.OrganizationRole.organization_name) == organization_name.lower()
+    ).all()
+    for r in roles_list:
+        if r.created_at:
+            onboard_dates.append(r.created_at)
+
+    all_org_projects = db.query(models.GovernanceResponse).filter(
+        (models.GovernanceResponse.owner_id.in_(org_user_ids)) |
+        (func.lower(models.GovernanceResponse.organization_name) == organization_name.lower())
+    ).all()
+    for p in all_org_projects:
+        if p.submission_date:
+            onboard_dates.append(p.submission_date)
+
+    all_org_ai_logs = db.query(models.AIUsageLog).filter(
+        models.AIUsageLog.user_id.in_(org_user_ids)
+    ).all()
+    for l in all_org_ai_logs:
+        if l.created_at:
+            onboard_dates.append(l.created_at)
+
+    if onboard_dates:
+        onboarded_at_str = min(onboard_dates).isoformat()
+    else:
+        onboarded_at_str = None
     
     # 2. Get all projects in the organization
     org_projects_query = db.query(models.GovernanceResponse).filter(
@@ -2717,20 +2753,27 @@ def get_org_billing_and_logs(
             
         user_last_time[uid] = log_time
 
-    # 4. Enrich user statistics list
+    # 4. Enrich user statistics list & compute user-wise infra costs ($1/hr based on active BournAI usage duration)
+    total_token_cost = 0.0
+    total_infra_cost = 0.0
+    total_bournai_prompt_tokens = 0
+    total_bournai_completion_tokens = 0
     user_stats = []
+
     for u in org_users:
         duration_sec = user_durations.get(u.id, 0)
-        user_cost = cost_by_user.get(u.id, 0.0)
-        user_tokens = tokens_by_user.get(u.id, 0)
         session_count = user_session_count.get(u.id, 0)
         
         # Count projects created by this user
         proj_count = sum(1 for p in org_projects if p.owner_id == u.id)
         
-        # AI usage details for modal
+        # AI usage details for modal & user-wise infra cost calculation
         user_ai_logs = [log for log in ai_logs if log.user_id == u.id]
         ai_usage_by_model = {}
+        user_ai_timestamps = []
+        user_bournai_tokens = 0
+        u_token_cost = 0.0
+
         for log in user_ai_logs:
             m = log.model or "unknown"
             if m not in ai_usage_by_model:
@@ -2739,7 +2782,30 @@ def get_org_billing_and_logs(
             ai_usage_by_model[m]["prompt"] += log.prompt_tokens or 0
             ai_usage_by_model[m]["completion"] += log.completion_tokens or 0
             ai_usage_by_model[m]["cost"] += log.cost or 0.0
+
+            if log.created_at:
+                user_ai_timestamps.append(log.created_at)
+
+            is_bournai = m.lower() == "bournai"
+            if is_bournai:
+                u_token_cost += (log.cost or 0.0)
+                b_tokens = (log.prompt_tokens or 0) + (log.completion_tokens or 0)
+                user_bournai_tokens += b_tokens
+                total_bournai_prompt_tokens += (log.prompt_tokens or 0)
+                total_bournai_completion_tokens += (log.completion_tokens or 0)
             
+        # User-wise token cost & infra cost ($1.00 / hr based on overall usage duration)
+        if user_ai_timestamps:
+            u_usage_dur_sec = (max(user_ai_timestamps) - min(user_ai_timestamps)).total_seconds()
+        else:
+            u_usage_dur_sec = 0.0
+        
+        u_infra_cost = (u_usage_dur_sec / 3600.0) * 1.0  # $1/hr rate per user
+        u_total_cost = u_token_cost + u_infra_cost
+
+        total_token_cost += u_token_cost
+        total_infra_cost += u_infra_cost
+
         # Format for modal
         ai_usage_list = []
         for m, stats in ai_usage_by_model.items():
@@ -2750,7 +2816,6 @@ def get_org_billing_and_logs(
         user_projects_list = []
         for p in org_projects:
             if p.owner_id == u.id:
-                # find bootstrap state
                 b_state = db.query(models.BootstrapState).filter(
                     models.BootstrapState.project_token == p.project_token
                 ).first()
@@ -2762,7 +2827,7 @@ def get_org_billing_and_logs(
                 
         # Recent sessions for modal
         recent_sessions_list = []
-        user_activities = [l for l in activity_logs if l.user_id == u.id][-10:] # last 10 activities
+        user_activities = [l for l in activity_logs if l.user_id == u.id][-10:]
         user_activities.reverse()
         for act in user_activities:
             recent_sessions_list.append({
@@ -2794,8 +2859,11 @@ def get_org_billing_and_logs(
             "is_active": u.is_active,
             "is_org_admin": u.is_org_admin,
             "total_duration_hours": round(duration_sec / 3600, 2),
-            "total_cost": round(user_cost, 4),
-            "ai_tokens": user_tokens,
+            "usage_duration_hours": round(u_usage_dur_sec / 3600.0, 2),
+            "token_cost": round(u_token_cost, 4),
+            "infra_cost": round(u_infra_cost, 4),
+            "total_cost": round(u_total_cost, 4),
+            "ai_tokens": user_bournai_tokens,
             "projects_count": proj_count,
             "session_count": session_count,
             "last_login": u.last_login.isoformat() if u.last_login else None,
@@ -2811,11 +2879,9 @@ def get_org_billing_and_logs(
     # 5. Enrich projects list
     projects_list = []
     for p in org_projects:
-        # Get owner details
         owner = org_user_map.get(p.owner_id)
         owner_email = owner.email if owner else "—"
         
-        # Get bootstrap run status
         b_states = db.query(models.BootstrapState).filter(
             models.BootstrapState.project_token == p.project_token
         ).all()
@@ -2857,12 +2923,17 @@ def get_org_billing_and_logs(
             "cost": round(log.cost or 0.0, 6)
         })
 
+    total_combined_cost = round(total_token_cost + total_infra_cost, 4)
+
     return {
         "organization_name": organization_name,
+        "onboarded_at": onboarded_at_str,
         "summary": {
-            "total_cost": total_cost,
-            "total_prompt_tokens": total_prompt_tokens,
-            "total_completion_tokens": total_completion_tokens,
+            "total_token_cost": round(total_token_cost, 4),
+            "total_infra_cost": round(total_infra_cost, 4),
+            "total_cost": total_combined_cost,
+            "total_prompt_tokens": total_bournai_prompt_tokens,
+            "total_completion_tokens": total_bournai_completion_tokens,
             "cost_by_model": cost_by_model,
         },
         "user_stats": user_stats,
@@ -2926,7 +2997,6 @@ def download_org_billing_report(
         ai_logs_query = ai_logs_query.filter(models.AIUsageLog.created_at <= end_dt)
     ai_logs = ai_logs_query.all()
     
-    total_cost = 0.0
     total_prompt_tokens = 0
     total_completion_tokens = 0
     cost_by_model = {}
@@ -2934,7 +3004,6 @@ def download_org_billing_report(
     tokens_by_user = {}
     
     for log in ai_logs:
-        total_cost += log.cost or 0.0
         total_prompt_tokens += log.prompt_tokens or 0
         total_completion_tokens += log.completion_tokens or 0
         
@@ -2946,7 +3015,6 @@ def download_org_billing_report(
             cost_by_user[uid] = cost_by_user.get(uid, 0.0) + (log.cost or 0.0)
             tokens_by_user[uid] = tokens_by_user.get(uid, 0) + (log.prompt_tokens or 0) + (log.completion_tokens or 0)
             
-    total_cost = round(total_cost, 4)
     cost_by_model = {k: round(v, 4) for k, v in cost_by_model.items()}
     
     # Calculate session durations based on activity logs
@@ -2984,12 +3052,14 @@ def download_org_billing_report(
             
         user_last_time[uid] = log_time
 
-    # Enrich user statistics list
+    # Enrich user statistics list & calculate user-wise infra cost ($1/hr)
+    total_token_cost = 0.0
+    total_infra_cost = 0.0
     user_stats = []
     user_details_cache = {}
+
     for u in org_users:
         duration_sec = user_durations.get(u.id, 0)
-        user_cost = cost_by_user.get(u.id, 0.0)
         user_tokens = tokens_by_user.get(u.id, 0)
         session_count = user_session_count.get(u.id, 0)
         
@@ -2997,6 +3067,8 @@ def download_org_billing_report(
         
         user_ai_logs = [log for log in ai_logs if log.user_id == u.id]
         ai_usage_by_model = {}
+        user_ai_timestamps = []
+
         for log in user_ai_logs:
             m = log.model or "unknown"
             if m not in ai_usage_by_model:
@@ -3005,6 +3077,21 @@ def download_org_billing_report(
             ai_usage_by_model[m]["prompt"] += log.prompt_tokens or 0
             ai_usage_by_model[m]["completion"] += log.completion_tokens or 0
             ai_usage_by_model[m]["cost"] += log.cost or 0.0
+
+            if log.created_at:
+                user_ai_timestamps.append(log.created_at)
+
+        u_token_cost = sum(log.cost or 0.0 for log in user_ai_logs)
+        if user_ai_timestamps:
+            u_usage_dur_sec = (max(user_ai_timestamps) - min(user_ai_timestamps)).total_seconds()
+        else:
+            u_usage_dur_sec = 0.0
+
+        u_infra_cost = (u_usage_dur_sec / 3600.0) * 1.0  # $1/hr rate per user
+        u_total_cost = u_token_cost + u_infra_cost
+
+        total_token_cost += u_token_cost
+        total_infra_cost += u_infra_cost
             
         ai_usage_list = []
         for m, stats in ai_usage_by_model.items():
@@ -3055,7 +3142,10 @@ def download_org_billing_report(
             "is_active": u.is_active,
             "is_org_admin": u.is_org_admin,
             "total_duration_hours": round(duration_sec / 3600, 2),
-            "total_cost": round(user_cost, 4),
+            "usage_duration_hours": round(u_usage_dur_sec / 3600.0, 2),
+            "token_cost": round(u_token_cost, 4),
+            "infra_cost": round(u_infra_cost, 4),
+            "total_cost": round(u_total_cost, 4),
             "ai_tokens": user_tokens,
             "projects_count": proj_count,
             "session_count": session_count,
@@ -3094,7 +3184,9 @@ def download_org_billing_report(
         })
 
     summary_data = {
-        "total_cost": total_cost,
+        "total_token_cost": round(total_token_cost, 4),
+        "total_infra_cost": round(total_infra_cost, 4),
+        "total_cost": round(total_token_cost + total_infra_cost, 4),
         "total_prompt_tokens": total_prompt_tokens,
         "total_completion_tokens": total_completion_tokens,
         "cost_by_model": cost_by_model,
