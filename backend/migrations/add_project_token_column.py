@@ -10,19 +10,22 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database import engine
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
 
 def upgrade():
     """Add project_token column to documents table."""
-    with engine.connect() as conn:
-        cursor = conn.execute(text("PRAGMA table_info(documents)"))
-        columns = [row[1] for row in cursor.fetchall()]
-        
-        if "project_token" in columns:
-            print("Column 'project_token' already exists. Skipping.")
-            return
+    inspector = inspect(engine)
+    if not inspector.has_table("documents"):
+        print("Table 'documents' does not exist yet. Skipping column addition.")
+        return
 
+    columns = [col["name"] for col in inspector.get_columns("documents")]
+    if "project_token" in columns:
+        print("Column 'project_token' already exists. Skipping.")
+        return
+
+    with engine.connect() as conn:
         conn.execute(
             text("ALTER TABLE documents ADD COLUMN project_token VARCHAR NULL")
         )

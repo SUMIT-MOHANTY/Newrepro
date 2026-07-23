@@ -13,23 +13,22 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database import engine
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
 
 def upgrade():
     """Add screening_inputs column to documents table."""
-    with engine.connect() as conn:
-        # Check if column already exists
-        result = conn.execute(
-            text(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name='documents' AND column_name='screening_inputs'"
-            )
-        )
-        if result.first():
-            print("Column 'screening_inputs' already exists in 'documents' table. Skipping.")
-            return
+    inspector = inspect(engine)
+    if not inspector.has_table("documents"):
+        print("Table 'documents' does not exist yet. Skipping column addition.")
+        return
 
+    columns = [col["name"] for col in inspector.get_columns("documents")]
+    if "screening_inputs" in columns:
+        print("Column 'screening_inputs' already exists in 'documents' table. Skipping.")
+        return
+
+    with engine.connect() as conn:
         conn.execute(
             text("ALTER TABLE documents ADD COLUMN screening_inputs JSON NULL")
         )
