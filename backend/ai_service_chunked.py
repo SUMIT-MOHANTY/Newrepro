@@ -456,6 +456,13 @@ CRITICAL: If the Stage 4 tree is a "BROWNFIELD IMPACT ANALYSIS", output it exact
 **[GO / NO-GO / PROCEED WITH CAUTION]**
 [Provide recommendation based on analysis]
 
+## 0.13 Revision Delta & Impact Analysis
+(Include ONLY if document content contains multiple revisions or PREVIOUS REVISION headers)
+- **Comparison Summary**: One sentence describing how the current revision differs from previous revisions.
+- **Modified / Overridden Requirements**: Bulleted list of exact features/requirements updated or replaced from previous revisions.
+- **Newly Added Capabilities**: Bulleted list of exact new features introduced in this revision.
+- **Scope Divergence / Pivot Evaluation**: State whether this revision pivots to a completely different product domain.
+
 ---
 
 ## CRITICAL TEXT FORMATTING RULES
@@ -509,6 +516,14 @@ Return the complete Markdown report followed by a JSON block:
   "prerequisites": [...],
   "user_flow": "...",
   "implementation_structure": "...",
+  "revision_delta": {{
+    "is_revision": true,
+    "comparison_summary": "...",
+    "overridden_features": ["item 1", "item 2"],
+    "new_features": ["item 1", "item 2"],
+    "pivot_recommended": false,
+    "pivot_reason": ""
+  }},
   "architecture": {{
     "nodes": [...],
     "edges": [...]
@@ -746,8 +761,7 @@ async def analyze_document_chunked(
                     job.update_stage("stage4_implementation", stage4_data)
             except Exception as e:
                 logger.warning(f"Failed to save stage 4 result: {e}")
-        
-        # ─────────────────────────────────────────────────────────────────
+
         # STAGE 5: Final Synthesis
         # ─────────────────────────────────────────────────────────────────
         update_job_progress(85, "Stage 5: Synthesizing final report...")
@@ -807,6 +821,7 @@ async def analyze_document_chunked(
             "architecture": final_json.get("architecture"),
             "user_flow": final_json.get("user_flow"),
             "title": final_json.get("title"),
+            "revision_delta": final_json.get("revision_delta"),
             "stages": {
                 "stage1_requirements": stage1_data,
                 "stage2_architecture": stage2_data,

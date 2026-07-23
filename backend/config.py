@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     brn_temperature: float = 0.7
     # If true, use chunked multi-stage analysis to reduce payload size and improve reliability
     use_chunked_analysis: bool = True
+    # If true, use Direct AI Multimodal Vision extraction for document ingestion
+    use_direct_ai_ingestion: bool = True
 
     # GitHub OAuth
     github_client_id: Optional[str] = None

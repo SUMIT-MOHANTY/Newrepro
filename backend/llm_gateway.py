@@ -108,23 +108,30 @@ def _build_brn_payload_from_messages(
     stream: bool = False,
     **extra,
 ) -> dict:
-    """Build BRN Llama payload from OpenAI-style messages list."""
+    """Build BRN Llama payload from OpenAI-style messages list, setting top-level image fields if present."""
     parts = []
+    found_image_url = None
+
     for msg in messages:
         role = msg.get("role", "user")
         content = msg.get("content", "")
         if isinstance(content, list):
-            # Multimodal: extract text blocks only
-            text_parts = [
-                block.get("text", "")
-                for block in content
-                if isinstance(block, dict) and block.get("type") == "text"
-            ]
-            content = "\n\n".join(text_parts)
-        if role == "system":
-            parts.insert(0, content)
-        else:
-            parts.append(content)
+            for block in content:
+                if isinstance(block, dict):
+                    if block.get("type") == "text":
+                        parts.append(block.get("text", ""))
+                    elif block.get("type") == "image_url":
+                        img_val = block.get("image_url")
+                        if isinstance(img_val, dict):
+                            found_image_url = img_val.get("url")
+                        elif isinstance(img_val, str):
+                            found_image_url = img_val
+        elif isinstance(content, str):
+            if role == "system":
+                parts.insert(0, content)
+            else:
+                parts.append(content)
+
     prompt = "\n\n".join(parts)
     payload = {
         "model": model_name,
@@ -132,9 +139,14 @@ def _build_brn_payload_from_messages(
         "stream": stream,
         "agent_id": settings.brn_agent_id,
         "platform_id": settings.brn_platform_id,
-        # "max_tokens": settings.brn_max_tokens,
         "temperature": extra.get("temperature", settings.brn_temperature),
     }
+
+    if found_image_url:
+        payload["image"] = found_image_url
+        payload["images"] = [found_image_url]
+        payload["image_url"] = found_image_url
+
     return payload
 
 
@@ -177,6 +189,21 @@ def _get_openai_headers(api_key: str) -> dict:
 def is_brn_llama_enabled() -> bool:
     """Check if BRN Llama mode is active from settings."""
     return bool(getattr(settings, "use_brn_llama", False))
+
+
+def has_image_content(messages: list) -> bool:
+    """Check if any message payload contains an image_url block for multimodal vision analysis."""
+    if not isinstance(messages, list):
+        return False
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "image_url":
+                    return True
+    return False
 
 
 def resolve_url(api_url: Optional[str] = None) -> str:
@@ -332,14 +359,13 @@ async def call_llm(
     """
     url = resolve_url(api_url)
     model_name = resolve_model(model)
-    # Determine format based on whether BRN Llama is active or URL matches BRN
     use_brn = is_brn_llama_enabled() or (url == settings.brn_llama_url)
 
     if use_brn:
         payload = _build_brn_payload_from_messages(messages, model_name, stream=False, **extra)
         headers = _get_brn_headers()
     else:
-        key = api_key or settings.ai_api_key
+        key = resolve_key(api_key)
         payload = _build_openai_payload(messages, model_name, stream=False, **extra)
         headers = _get_openai_headers(key)
 
@@ -472,7 +498,6 @@ async def call_llm_streaming(
     """
     url = resolve_url(api_url)
     model_name = resolve_model(model)
-    # Determine format based on whether BRN Llama is active or URL matches BRN
     use_brn = is_brn_llama_enabled() or (url == settings.brn_llama_url)
 
     client = httpx.AsyncClient(timeout=timeout)

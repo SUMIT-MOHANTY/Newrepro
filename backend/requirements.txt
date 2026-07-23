@@ -6,7 +6,6 @@ pydantic-settings
 passlib[bcrypt]
 python-jose[cryptography]
 python-multipart
-# docling[vlm]
 httpx
 numpy
 argon2-cffi
@@ -20,7 +19,6 @@ tree-sitter-typescript
 gitpython
 networkx
 msal
-docling
 markdown
 python-docx
 pandas
