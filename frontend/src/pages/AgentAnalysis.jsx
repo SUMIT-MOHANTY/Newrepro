@@ -712,7 +712,20 @@ export default function AgentAnalysis({
     const [techniquesError, setTechniquesError] = useState('');
     const [techniquesSource, setTechniquesSource] = useState('ai_generated'); // 'uploaded' | 'ai_generated' | 'static_fallback'
     const [discussMode, setDiscussMode] = useState(false);
+    const [modeDropdownOpen, setModeDropdownOpen] = useState(false);
     const [isChatExpanded, setIsChatExpanded] = useState(false);
+
+    // Close the mode dropdown selector on click outside
+    useEffect(() => {
+        if (!modeDropdownOpen) return;
+        const handleOutsideClick = (e) => {
+            if (!e.target.closest('.mode-dropdown-container')) {
+                setModeDropdownOpen(false);
+            }
+        };
+        document.addEventListener('click', handleOutsideClick);
+        return () => document.removeEventListener('click', handleOutsideClick);
+    }, [modeDropdownOpen]);
 
     // Cache results by project key to prevent data loss when switching projects
     const resultCacheRef = useRef({});
@@ -3430,14 +3443,14 @@ export default function AgentAnalysis({
                                             </button>
                                         </div>
                                     )}
-
-                                    <div className="flex items-end gap-2">
+                                    
+                                    <div className="flex items-center gap-2">
                                         <div className="flex-1">
                                             <textarea
                                                 value={chatInput}
                                                 onChange={(e) => {
                                                     setChatInput(e.target.value);
-
+ 
                                                     // Auto expand upward
                                                     e.target.style.height = 'auto';
                                                     e.target.style.height = `${Math.min(e.target.scrollHeight, 140)}px`;
@@ -3454,7 +3467,7 @@ export default function AgentAnalysis({
                                                         : "Describe what to update in the BRD... (will rebuild BRD)"
                                                 }
                                                 rows={1}
-                                                className={`w-full px-3 py-2.5 text-xs border rounded-xl focus:ring-2 resize-none placeholder-gray-400 overflow-y-auto min-h-[42px] max-h-[140px] transition-all duration-300 ${
+                                                className={`block w-full px-3 py-2.5 text-xs border rounded-xl focus:ring-2 focus:outline-none resize-none placeholder-gray-400 overflow-y-auto min-h-[42px] max-h-[140px] transition-all duration-300 ${
                                                     discussMode
                                                         ? "border-gray-200 focus:ring-blue-500 focus:border-blue-500 bg-gray-50"
                                                         : "border-purple-200 focus:ring-purple-500 focus:border-purple-500 bg-purple-50/20 placeholder-purple-400/80"
@@ -3463,11 +3476,11 @@ export default function AgentAnalysis({
                                                 disabled={chatSending || processing}
                                             />
                                         </div>
-
+ 
                                         <button
                                             onClick={handleChatSend}
                                             disabled={!chatInput.trim() || chatSending || processing}
-                                            className={`flex-shrink-0 p-2.5 text-white rounded-xl transition-all duration-300 shadow-sm ${
+                                            className={`flex-shrink-0 h-[42px] w-[42px] flex items-center justify-center text-white rounded-xl transition-all duration-300 shadow-sm ${
                                                 discussMode
                                                     ? "bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 disabled:from-gray-200 disabled:to-gray-200 disabled:cursor-not-allowed"
                                                     : "bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 disabled:from-gray-200 disabled:to-gray-200 disabled:cursor-not-allowed"
@@ -3488,33 +3501,100 @@ export default function AgentAnalysis({
                                             </svg>
                                         </button>
                                     </div>
-
+ 
                                     {/* Bottom bar for Discuss Mode toggle */}
-                                    <div className="flex items-center justify-between mt-2.5 text-[10px] text-gray-400">
-                                        <div className="flex items-center gap-2">
+                                    <div className="flex items-center justify-between mt-1 pt-1 border-t border-gray-100/50">
+                                        <div className="relative mode-dropdown-container">
                                             <button
-                                                onClick={() => setDiscussMode(prev => !prev)}
+                                                onClick={() => setModeDropdownOpen(prev => !prev)}
                                                 disabled={chatSending || processing}
-                                                title={
+                                                className={`flex items-center gap-1.5 h-7 px-3 rounded-lg border text-[10px] font-bold shadow-xs transition-all duration-200 cursor-pointer disabled:cursor-not-allowed ${
                                                     discussMode
-                                                        ? 'Discuss mode enabled - Chat without changing BRD'
-                                                        : 'Discuss mode disabled - Sending a message will update the BRD'
-                                                }
-                                                className={`flex items-center gap-1.5 h-6 px-2.5 rounded-full text-[10px] font-bold transition-all border shadow-xs ${
-                                                    discussMode
-                                                        ? 'bg-blue-50 border-blue-200 text-blue-600'
-                                                        : 'bg-gray-50 border-gray-300 text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                                                        ? 'bg-blue-50 border-blue-200 text-blue-600 hover:bg-blue-100/70'
+                                                        : 'bg-purple-50 border-purple-200 text-purple-600 hover:bg-purple-100/70'
                                                 }`}
                                             >
-                                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                                {discussMode ? (
+                                                    <>
+                                                        <svg className="w-3.5 h-3.5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                                        </svg>
+                                                        <span>Q&A / Discuss Mode</span>
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <svg className="w-3.5 h-3.5 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                                                        </svg>
+                                                        <span>Edit BRD Mode</span>
+                                                    </>
+                                                )}
+                                                <svg className="w-2.5 h-2.5 opacity-60 ml-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                                                 </svg>
-                                                <span>Discuss</span>
                                             </button>
+ 
+                                            {modeDropdownOpen && (
+                                                <div className="absolute left-0 bottom-full mb-2 w-64 bg-white border border-gray-150 rounded-xl shadow-lg py-1.5 z-50 animate-fade-in">
+                                                    <div className="px-3 py-1 text-[9px] font-bold text-gray-400 uppercase tracking-wider">
+                                                        Select Mode
+                                                    </div>
+                                                    
+                                                    <button
+                                                        onClick={() => {
+                                                            setDiscussMode(false);
+                                                            setModeDropdownOpen(false);
+                                                        }}
+                                                        className={`w-full text-left px-3 py-2 flex items-start gap-2.5 transition-all hover:bg-purple-50/50 ${
+                                                            !discussMode ? 'bg-purple-50/20' : ''
+                                                        }`}
+                                                    >
+                                                        <div className={`mt-0.5 p-1 rounded-md ${!discussMode ? 'bg-purple-100 text-purple-600' : 'bg-gray-100 text-gray-500'}`}>
+                                                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                                                            </svg>
+                                                        </div>
+                                                        <div>
+                                                            <div className={`text-xs font-semibold ${!discussMode ? 'text-purple-900' : 'text-gray-700'}`}>
+                                                                Edit BRD Mode
+                                                            </div>
+                                                            <div className="text-[10px] text-gray-500 mt-0.5 leading-normal">
+                                                                Your prompts will directly update and rebuild the specs (takes a few minutes).
+                                                            </div>
+                                                        </div>
+                                                    </button>
+ 
+                                                    <button
+                                                        onClick={() => {
+                                                            setDiscussMode(true);
+                                                            setModeDropdownOpen(false);
+                                                        }}
+                                                        className={`w-full text-left px-3 py-2 flex items-start gap-2.5 transition-all hover:bg-blue-50/50 ${
+                                                            discussMode ? 'bg-blue-50/20' : ''
+                                                        }`}
+                                                    >
+                                                        <div className={`mt-0.5 p-1 rounded-md ${discussMode ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-500'}`}>
+                                                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                                            </svg>
+                                                        </div>
+                                                        <div>
+                                                            <div className={`text-xs font-semibold ${discussMode ? 'text-blue-900' : 'text-gray-700'}`}>
+                                                                Q&A / Discuss Mode
+                                                            </div>
+                                                            <div className="text-[10px] text-gray-500 mt-0.5 leading-normal">
+                                                                Discuss and brainstorm requirements. The conversation history can be applied to update the BRD later.
+                                                            </div>
+                                                        </div>
+                                                    </button>
+                                                </div>
+                                            )}
                                         </div>
-                                        <span>
-                                            {discussMode ? 'Conversational mode' : 'Direct update mode'}
-                                        </span>
+
+                                        <div className="flex items-center gap-1.5 text-[10px] text-gray-500 font-medium">
+                                            <span className={`w-1.5 h-1.5 rounded-full ${discussMode ? 'bg-blue-500 animate-pulse' : 'bg-purple-500 animate-pulse'}`}></span>
+                                            <span>{discussMode ? 'Conversational mode' : 'Direct update mode'}</span>
+                                        </div>
                                     </div>
                                 </div>
                             </>
