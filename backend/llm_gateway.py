@@ -227,13 +227,19 @@ def log_ai_usage(
     model_name: str,
     user_id: Optional[int] = None,
     project_token: Optional[str] = None,
+    prompt_tokens: Optional[int] = None,
+    completion_tokens: Optional[int] = None,
+    response_data: Optional[dict] = None,
 ):
     """
     Asynchronously logs AI token usage and calculations to the database.
-    Rates for BRN Llama (Sonnet 4.6 in background):
+    
+    Extracts actual token counts from the API response payload if available (e.g. usage.input_tokens / output_tokens / prompt_tokens / completion_tokens).
+    If token count is not provided by the API, falls back to character estimation (1 token = 4 characters).
+
+    Rates for BRN Llama / BournAI:
     - Input: $3.00 per 1M tokens ($0.000003 per token)
     - Output: $15.00 per 1M tokens ($0.000015 per token)
-    If token count is not provided, estimate using 1 token = 4 characters.
     """
     try:
         from database import SessionLocal
@@ -243,21 +249,37 @@ def log_ai_usage(
         u_id = user_id or current_user_id_var.get()
         p_token = project_token or current_project_token_var.get()
 
-        # Calculate input characters
-        prompt_text = ""
-        for msg in messages:
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                prompt_text += content + "\n"
-            elif isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        prompt_text += block.get("text", "") + "\n"
+        # 1. Extract actual token counts from API response payload if present
+        if response_data and isinstance(response_data, dict):
+            usage = response_data.get("usage")
+            if isinstance(usage, dict):
+                if prompt_tokens is None:
+                    p_tok = usage.get("input_tokens") if usage.get("input_tokens") is not None else usage.get("prompt_tokens")
+                    if isinstance(p_tok, int) and p_tok >= 0:
+                        prompt_tokens = p_tok
+                
+                if completion_tokens is None:
+                    c_tok = usage.get("output_tokens") if usage.get("output_tokens") is not None else usage.get("completion_tokens")
+                    if isinstance(c_tok, int) and c_tok >= 0:
+                        completion_tokens = c_tok
 
-        prompt_tokens = max(1, len(prompt_text) // 4)
-        completion_tokens = max(1, len(response_text) // 4) if response_text else 0
+        # 2. Fallback to character estimation (1 token ≈ 4 chars) if not provided by API response
+        if prompt_tokens is None:
+            prompt_text = ""
+            for msg in messages:
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    prompt_text += content + "\n"
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            prompt_text += block.get("text", "") + "\n"
+            prompt_tokens = max(1, len(prompt_text) // 4)
 
-        # Calculate cost
+        if completion_tokens is None:
+            completion_tokens = max(1, len(response_text) // 4) if response_text else 0
+
+        # Calculate cost based on rate
         cost = (prompt_tokens * 0.000003) + (completion_tokens * 0.000015)
 
         db = SessionLocal()
@@ -350,7 +372,7 @@ async def call_llm(
                 # Log usage
                 try:
                     response_text = extract_content_from_response(data)
-                    log_ai_usage(messages, response_text, model_name)
+                    log_ai_usage(messages, response_text, model_name, response_data=data)
                 except Exception as log_err:
                     logger.error(f"Failed to log AI usage inside call_llm: {log_err}")
                 

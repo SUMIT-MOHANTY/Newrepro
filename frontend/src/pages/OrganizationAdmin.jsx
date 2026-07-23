@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Building2, CheckCircle2, Copy, Eye, EyeOff, KeyRound, Loader2, Plus, Save, ShieldCheck, Trash2, Users } from 'lucide-react';
+import { AlertCircle, Building2, Calendar, CheckCircle2, Copy, Eye, EyeOff, KeyRound, Loader2, Plus, Save, ShieldCheck, Trash2, Users } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { API_ENDPOINTS } from '../config';
+import { API_BASE_URL, API_ENDPOINTS } from '../config';
 
 const PROVIDERS = [
     { value: 'azure_ad', label: 'Azure AD / Entra ID' },
@@ -49,6 +49,7 @@ export default function OrganizationAdmin({ user }) {
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
     const [updatedAt, setUpdatedAt] = useState(null);
+    const [onboardedAt, setOnboardedAt] = useState(null);
 
     /**
      * Converts a UTC datetime string from the backend to the user's
@@ -121,6 +122,15 @@ export default function OrganizationAdmin({ user }) {
                 const data = await response.json();
                 setForm(normalizeSettings(data));
                 setUpdatedAt(data.updated_at || null);
+
+                // Fetch onboarded_at date from org billing logs
+                fetch(`${API_BASE_URL}/organization/billing-logs`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                }).then(r => r.ok ? r.json() : null).then(bData => {
+                    if (bData?.onboarded_at) {
+                        setOnboardedAt(bData.onboarded_at);
+                    }
+                }).catch(() => {});
             } catch (err) {
                 setError(err.message || 'Failed to load organization settings');
             } finally {
@@ -330,9 +340,21 @@ export default function OrganizationAdmin({ user }) {
                                 Configure your identity provider once and keep auth settings centralized for your organization.
                             </p>
                         </div>
-                        <div className="px-4 py-2 rounded-xl bg-app-bg-card/10 border border-app-bg-card/20">
-                            <p className="text-[10px] uppercase tracking-wider text-app-primary-light font-bold mb-1">Organization</p>
-                            <p className="text-sm font-bold">{user?.organization_name || 'Unassigned Organization'}</p>
+                        <div className="flex items-center gap-3 flex-wrap">
+                            {onboardedAt && (
+                                <div className="px-4 py-2 rounded-xl bg-app-bg-card/10 border border-app-bg-card/20 text-left">
+                                    <p className="text-[10px] uppercase tracking-wider text-emerald-300 font-bold mb-1 flex items-center gap-1">
+                                        <Calendar className="w-3 h-3 text-emerald-400" /> Onboarded Date
+                                    </p>
+                                    <p className="text-sm font-bold text-emerald-100">
+                                        {new Date(onboardedAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
+                                    </p>
+                                </div>
+                            )}
+                            <div className="px-4 py-2 rounded-xl bg-app-bg-card/10 border border-app-bg-card/20">
+                                <p className="text-[10px] uppercase tracking-wider text-app-primary-light font-bold mb-1">Organization</p>
+                                <p className="text-sm font-bold">{user?.organization_name || 'Unassigned Organization'}</p>
+                            </div>
                         </div>
                     </div>
                 </section>
