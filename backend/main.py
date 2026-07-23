@@ -15527,13 +15527,19 @@ def get_public_bournai_metrics(
     project_org_list = db.query(models.GovernanceResponse.project_token, models.GovernanceResponse.organization_name).all()
     project_orgs = {p_token: org for p_token, org in project_org_list if org}
 
-    # 4. Sum up values globally and by organization
+    # 4. Sum up values globally and by organization/user
     total_prompt = 0
     total_completion = 0
-    total_cost = 0.0
+    total_token_cost = 0.0
+    total_infra_cost = 0.0
     request_count = len(logs)
 
     org_metrics = {}
+    # Structure: { org_key: { user_key: [timestamps] } }
+    org_user_timestamps = {}
+    org_user_token_costs = {}
+    org_user_requests = {}
+    org_user_tokens = {}
 
     for l in logs:
         # Resolve organization
@@ -15551,28 +15557,101 @@ def get_public_bournai_metrics(
                 "total_prompt_tokens": 0,
                 "total_completion_tokens": 0,
                 "total_tokens": 0,
-                "total_cost_usd": 0.0
+                "token_cost_usd": 0.0,
+                "unique_users_count": 0,
+                "usage_duration_seconds": 0.0,
+                "usage_duration_hours": 0.0,
+                "infra_cost_usd": 0.0,
+                "total_cost_usd": 0.0,
+                "user_breakdown": {}
             }
+            org_user_timestamps[org_key] = {}
+            org_user_token_costs[org_key] = {}
+            org_user_requests[org_key] = {}
+            org_user_tokens[org_key] = {}
+
+        # Distinct user key for user-wise infra cost tracking
+        if l.user_id:
+            user_key = f"user_{l.user_id}"
+        elif l.project_token:
+            user_key = f"project_{l.project_token}"
+        else:
+            user_key = "anonymous"
+
+        if user_key not in org_user_timestamps[org_key]:
+            org_user_timestamps[org_key][user_key] = []
+            org_user_token_costs[org_key][user_key] = 0.0
+            org_user_requests[org_key][user_key] = 0
+            org_user_tokens[org_key][user_key] = 0
 
         p_tok = l.prompt_tokens or 0
         c_tok = l.completion_tokens or 0
         c_val = l.cost or 0.0
 
-        # Global sum
+        # Global sum tokens & token cost
         total_prompt += p_tok
         total_completion += c_tok
-        total_cost += c_val
+        total_token_cost += c_val
 
         # Org sum
         org_metrics[org_key]["request_count"] += 1
         org_metrics[org_key]["total_prompt_tokens"] += p_tok
         org_metrics[org_key]["total_completion_tokens"] += c_tok
         org_metrics[org_key]["total_tokens"] += (p_tok + c_tok)
-        org_metrics[org_key]["total_cost_usd"] += c_val
+        org_metrics[org_key]["token_cost_usd"] += c_val
 
-    # Round costs to 6 decimal places for readability
-    for org_key in org_metrics:
-        org_metrics[org_key]["total_cost_usd"] = round(org_metrics[org_key]["total_cost_usd"], 6)
+        # User sum
+        org_user_requests[org_key][user_key] += 1
+        org_user_tokens[org_key][user_key] += (p_tok + c_tok)
+        org_user_token_costs[org_key][user_key] += c_val
+
+        if l.created_at:
+            org_user_timestamps[org_key][user_key].append(l.created_at)
+
+    # Compute duration and $1/hour infra cost USER-WISE for each organization
+    for org_key, metrics in org_metrics.items():
+        org_dur_seconds = 0.0
+        org_infra_cost = 0.0
+        user_breakdown = {}
+
+        for user_key, ts_list in org_user_timestamps.get(org_key, {}).items():
+            if ts_list:
+                min_ts = min(ts_list)
+                max_ts = max(ts_list)
+                u_dur_seconds = (max_ts - min_ts).total_seconds()
+            else:
+                u_dur_seconds = 0.0
+
+            u_dur_hours = u_dur_seconds / 3600.0
+            # $1.00 per hour infra cost per user ($1/3600 per second)
+            u_infra_cost = u_dur_hours * 1.0
+            u_tok_cost = org_user_token_costs[org_key][user_key]
+            u_total_cost = u_tok_cost + u_infra_cost
+
+            user_breakdown[user_key] = {
+                "request_count": org_user_requests[org_key][user_key],
+                "total_tokens": org_user_tokens[org_key][user_key],
+                "usage_duration_seconds": round(u_dur_seconds, 2),
+                "usage_duration_hours": round(u_dur_hours, 4),
+                "token_cost_usd": round(u_tok_cost, 6),
+                "infra_cost_usd": round(u_infra_cost, 6),
+                "total_cost_usd": round(u_total_cost, 6)
+            }
+
+            org_dur_seconds += u_dur_seconds
+            org_infra_cost += u_infra_cost
+
+        metrics["unique_users_count"] = len(user_breakdown)
+        metrics["usage_duration_seconds"] = round(org_dur_seconds, 2)
+        metrics["usage_duration_hours"] = round(org_dur_seconds / 3600.0, 4)
+        metrics["infra_cost_usd"] = round(org_infra_cost, 6)
+        metrics["token_cost_usd"] = round(metrics["token_cost_usd"], 6)
+        metrics["total_cost_usd"] = round(metrics["token_cost_usd"] + metrics["infra_cost_usd"], 6)
+        metrics["user_breakdown"] = user_breakdown
+
+        total_infra_cost += org_infra_cost
+
+    total_cost = total_token_cost + total_infra_cost
 
     return {
         "model": "BournAI",
@@ -15586,6 +15665,8 @@ def get_public_bournai_metrics(
             "total_prompt_tokens": total_prompt,
             "total_completion_tokens": total_completion,
             "total_tokens": total_prompt + total_completion,
+            "total_token_cost_usd": round(total_token_cost, 6),
+            "total_infra_cost_usd": round(total_infra_cost, 6),
             "total_cost_usd": round(total_cost, 6)
         },
         "organizations": org_metrics
