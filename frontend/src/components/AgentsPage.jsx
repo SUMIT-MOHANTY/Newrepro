@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Users, Trash2, Edit, Activity, Clock, CheckCircle, AlertCircle, RefreshCw, Filter, Server, Database, GitBranch, Bot, Globe, Plus, Upload, Code, Coffee, Zap, Triangle, Hash, Link2, Terminal, Cpu, Workflow } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 
@@ -148,6 +148,36 @@ export default function AgentsPage({ projects = [] }) {
   const [dedicatedDevToAdd, setDedicatedDevToAdd] = useState(0);
   const [quotaUpdatingKind, setQuotaUpdatingKind] = useState('');
 
+  // Toast notifications state
+  const [toast, setToast] = useState({ message: '', type: null });
+  const toastTimerRef = useRef(null);
+  const [addingTemplateName, setAddingTemplateName] = useState(null);
+
+  const showToast = useCallback((message, type = 'success') => {
+    setToast({ message, type });
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => {
+      setToast({ message: '', type: null });
+      toastTimerRef.current = null;
+    }, 4500);
+  }, []);
+
+  const hideToast = useCallback(() => {
+    setToast({ message: '', type: null });
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
+
   const [showAddAgentModal, setShowAddAgentModal] = useState(false);
   const [newAgentName, setNewAgentName] = useState('');
   const [skillsContent, setSkillsContent] = useState('');
@@ -278,6 +308,8 @@ export default function AgentsPage({ projects = [] }) {
       setNewAgentFace('');
       setNewAgentTags('');
 
+      showToast(`Agent "${newAgentName.trim()}" ${isEditing ? 'updated' : 'added'} successfully!`, 'success');
+
       // Refresh lists
       await fetchAgents();
       await fetchQuota();
@@ -286,6 +318,7 @@ export default function AgentsPage({ projects = [] }) {
       }
     } catch (err) {
       setAddAgentError(err.message || `Failed to ${isEditing ? 'update' : 'add'} custom agent`);
+      showToast(err.message || `Failed to ${isEditing ? 'update' : 'add'} custom agent`, 'error');
     } finally {
       setAddingAgent(false);
     }
@@ -295,6 +328,7 @@ export default function AgentsPage({ projects = [] }) {
   const handleQuickAddAgent = async (tmpl) => {
     setLoading(true);
     setError(null);
+    setAddingTemplateName(tmpl.name);
     const token = localStorage.getItem('token');
     try {
       const res = await fetch(`${API_ENDPOINTS.AGENTS}/skills/add`, {
@@ -314,6 +348,7 @@ export default function AgentsPage({ projects = [] }) {
       if (!res.ok) {
         throw new Error(data.detail || 'Failed to add agent');
       }
+      showToast(`Agent "${tmpl.name}" added successfully!`, 'success');
       await fetchAgents();
       await fetchQuota();
       if (activeBrownfieldProject?.project_token) {
@@ -321,8 +356,10 @@ export default function AgentsPage({ projects = [] }) {
       }
     } catch (err) {
       setError(err.message || 'Failed to add custom agent');
+      showToast(err.message || 'Failed to add custom agent', 'error');
     } finally {
       setLoading(false);
+      setAddingTemplateName(null);
     }
   };
 
@@ -446,6 +483,7 @@ export default function AgentsPage({ projects = [] }) {
       // Remove from states and refetch
       setSharedAgents((prev) => prev.filter((a) => a.id !== agentId));
       setDedicatedAgents((prev) => prev.filter((a) => a.id !== agentId));
+      showToast('Agent deleted successfully!', 'success');
       await fetchAgents();
       await fetchQuota();
       if (activeBrownfieldProject?.project_token) {
@@ -453,6 +491,7 @@ export default function AgentsPage({ projects = [] }) {
       }
     } catch (e) {
       setError(e.message);
+      showToast(e.message || 'Failed to delete agent', 'error');
     } finally {
       setDeletingId(null);
     }
@@ -581,7 +620,7 @@ export default function AgentsPage({ projects = [] }) {
 
       {/* Organization Capacity */}
       <div className="flex-shrink-0 px-4 md:px-6 py-4 border-b border-app-border-light bg-gradient-to-br from-app-bg-card/50 to-app-bg-card/30">
-        {quotaLoading ? (
+        {quotaLoading && !quota ? (
           <div className="flex items-center gap-2 text-xs text-app-text-muted py-1">
             <RefreshCw className="w-3 h-3 animate-spin" />
             <span>Loading capacity…</span>
@@ -909,7 +948,11 @@ export default function AgentsPage({ projects = [] }) {
                             disabled={loading}
                             className="ml-2 px-2.5 py-1 text-[10px] font-bold bg-app-primary hover:bg-blue-600 text-white rounded-md transition-colors flex items-center gap-1 cursor-pointer"
                           >
-                            <Plus className="w-3 h-3" />
+                            {addingTemplateName === tmpl.name ? (
+                              <RefreshCw className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <Plus className="w-3 h-3" />
+                            )}
                             <span>Quick Add</span>
                           </button>
                         </div>
@@ -922,7 +965,7 @@ export default function AgentsPage({ projects = [] }) {
           )}
 
           {/* Agents List */}
-          {!loading && !error && (
+          {!error && (filteredAgents.length > 0 || !loading) && (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {filter === 'samples' ? (
                 PREDEFINED_TEMPLATES.filter(tmpl => !tmpl.isMcp).map((tmpl) => {
@@ -1007,7 +1050,11 @@ export default function AgentsPage({ projects = [] }) {
                           disabled={loading}
                           className="py-1.5 rounded-lg bg-app-primary hover:bg-blue-600 text-white text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer shadow-sm hover:shadow"
                         >
-                          <Plus className="w-3.5 h-3.5" />
+                          {addingTemplateName === tmpl.name ? (
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Plus className="w-3.5 h-3.5" />
+                          )}
                           <span>Quick Add</span>
                         </button>
                       </div>
@@ -1088,7 +1135,11 @@ export default function AgentsPage({ projects = [] }) {
                           disabled={loading}
                           className="py-1.5 rounded-lg bg-app-primary hover:bg-blue-600 text-white text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer shadow-sm hover:shadow"
                         >
-                          <Plus className="w-3.5 h-3.5" />
+                          {addingTemplateName === tmpl.name ? (
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Plus className="w-3.5 h-3.5" />
+                          )}
                           <span>Quick Add</span>
                         </button>
                       </div>
@@ -1679,6 +1730,38 @@ export default function AgentsPage({ projects = [] }) {
 
             </form>
           </div>
+        </div>
+      )}
+
+      {/* Floating Toast Notification */}
+      {toast.message && (
+        <div className="fixed top-20 right-6 z-[9999] pointer-events-auto bg-app-bg-card border border-app-border/80 shadow-2xl rounded-2xl p-4 min-w-[340px] max-w-sm flex items-center gap-3.5 animate-slide-in-right transition-colors duration-200">
+          <div className={`flex-shrink-0 p-2 rounded-xl ${
+            toast.type === 'success' ? 'bg-emerald-500/10 text-emerald-500 dark:bg-emerald-500/20 dark:text-emerald-400' :
+            toast.type === 'error' ? 'bg-rose-500/10 text-rose-500 dark:bg-rose-500/20 dark:text-rose-400' :
+            'bg-app-primary/10 text-app-primary dark:bg-app-primary/20 dark:text-blue-400'
+          }`}>
+            {toast.type === 'success' ? (
+              <CheckCircle className="w-5 h-5 text-current" />
+            ) : toast.type === 'error' ? (
+              <AlertCircle className="w-5 h-5 text-current" />
+            ) : (
+              <Bot className="w-5 h-5 text-current" />
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-bold text-app-text-main">
+              {toast.type === 'success' ? 'Success' : toast.type === 'error' ? 'Error' : 'Notification'}
+            </p>
+            <p className="text-[11px] text-app-text-muted mt-0.5 leading-relaxed">{toast.message}</p>
+          </div>
+          <button
+            onClick={hideToast}
+            className="text-app-text-light hover:text-app-text-main transition-colors flex-shrink-0 p-1.5 rounded-lg hover:bg-app-bg-hover cursor-pointer"
+            title="Dismiss"
+          >
+            <span className="text-lg leading-none">&times;</span>
+          </button>
         </div>
       )}
 
