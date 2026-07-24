@@ -255,7 +255,7 @@ const StepNode = ({ label, status, icon, labelPosition, clickable, onClick }) =>
             iconColor: '#16a34a',
             shadow: '0 0 0 3px rgba(34,197,94,.15)',
             labelWeight: '600',
-            labelColor: '#374151',
+            labelClass: 'text-app-text-muted',
             stepColor: '#16a34a',
         },
         active: {
@@ -265,7 +265,7 @@ const StepNode = ({ label, status, icon, labelPosition, clickable, onClick }) =>
             iconColor: '#d97706',
             shadow: '0 0 0 6px rgba(245,158,11,.18), 0 0 18px rgba(245,158,11,.25)',
             labelWeight: '700',
-            labelColor: '#111827',
+            labelClass: 'text-app-text-main font-bold',
             stepColor: '#d97706',
             glow: true,
         },
@@ -276,7 +276,7 @@ const StepNode = ({ label, status, icon, labelPosition, clickable, onClick }) =>
             iconColor: '#9ca3af',
             shadow: 'none',
             labelWeight: '400',
-            labelColor: '#9ca3af',
+            labelClass: 'text-app-text-light',
             stepColor: '#9ca3af',
         },
         failed: {
@@ -286,7 +286,7 @@ const StepNode = ({ label, status, icon, labelPosition, clickable, onClick }) =>
             iconColor: '#dc2626',
             shadow: '0 0 0 4px rgba(239,68,68,.15)',
             labelWeight: '700',
-            labelColor: '#991b1b',
+            labelClass: 'text-red-500 font-semibold',
             stepColor: '#dc2626',
         },
         completedActive: {
@@ -296,7 +296,7 @@ const StepNode = ({ label, status, icon, labelPosition, clickable, onClick }) =>
             iconColor: '#16a34a',
             shadow: '0 0 0 6px rgba(34,197,94,.2), 0 0 18px rgba(34,197,94,.25)',
             labelWeight: '700',
-            labelColor: '#111827',
+            labelClass: 'text-app-text-main font-bold',
             stepColor: '#16a34a',
             glowGreen: true,
         },
@@ -307,7 +307,7 @@ const StepNode = ({ label, status, icon, labelPosition, clickable, onClick }) =>
             iconColor: '#9ca3af',
             shadow: 'none',
             labelWeight: '400',
-            labelColor: '#9ca3af',
+            labelClass: 'text-app-text-light',
             stepColor: '#9ca3af',
         },
         lockedActive: {
@@ -317,7 +317,7 @@ const StepNode = ({ label, status, icon, labelPosition, clickable, onClick }) =>
             iconColor: '#d97706',
             shadow: '0 0 0 6px rgba(245,158,11,.18)',
             labelWeight: '700',
-            labelColor: '#111827',
+            labelClass: 'text-app-text-main font-bold',
             stepColor: '#d97706',
             message: "Pending on other roles",
         },
@@ -347,10 +347,9 @@ const StepNode = ({ label, status, icon, labelPosition, clickable, onClick }) =>
             maxWidth: '90px',
             lineHeight: '1.25',
         }}>
-            <p style={{
+            <p className={c.labelClass} style={{
                 fontSize: '11px',
                 margin: 0,
-                color: c.labelColor,
                 fontWeight: c.labelWeight,
             }}>
                 {label}
