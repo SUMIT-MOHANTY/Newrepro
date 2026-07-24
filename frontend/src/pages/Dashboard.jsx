@@ -453,7 +453,7 @@ const ProcessedContentTabs = ({ sections, markdown }) => {
     if (!parsedSections || parsedSections.length === 0) {
         // Try to parse sections from markdown using the separator pattern
         if (markdown) {
-            const sectionRegex = /---\s*([A-Z\s&()]+)\s*---\s*([\s\S]*?)(?=---\s*[A-Z\s&()]+\s*---|$)/g;
+            const sectionRegex = /---\s*([a-zA-Z0-9\s&()_.:/\\-]+)\s*---\s*([\s\S]*?)(?=---\s*[a-zA-Z0-9\s&()_.:/\\-]+\s*---|$)/g;
             const tempSections = [];
             let match;
 
@@ -471,7 +471,11 @@ const ProcessedContentTabs = ({ sections, markdown }) => {
     }
 
     if (!parsedSections || parsedSections.length === 0) {
-        return <div className="text-xs text-app-text-light">No content available</div>;
+        return (
+            <div className="bg-app-bg-page rounded-lg p-4 text-xs font-mono text-app-text-label max-h-96 overflow-y-auto whitespace-pre-wrap border border-app-border-light">
+                {markdown || '(No content available)'}
+            </div>
+        );
     }
 
     const activeSection = parsedSections[activeTabIndex] || parsedSections[0];

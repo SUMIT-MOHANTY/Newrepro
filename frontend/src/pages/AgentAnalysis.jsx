@@ -470,7 +470,7 @@ const ProcessedContentTabs = ({ sections, markdown }) => {
     if (!parsedSections || parsedSections.length === 0) {
         // Try to parse sections from markdown using the separator pattern
         if (markdown) {
-            const sectionRegex = /---\s*([A-Z\s&()]+)\s*---\s*([\s\S]*?)(?=---\s*[A-Z\s&()]+\s*---|$)/g;
+            const sectionRegex = /---\s*([a-zA-Z0-9\s&()_.:/\\-]+)\s*---\s*([\s\S]*?)(?=---\s*[a-zA-Z0-9\s&()_.:/\\-]+\s*---|$)/g;
             const tempSections = [];
             let match;
 
@@ -488,7 +488,11 @@ const ProcessedContentTabs = ({ sections, markdown }) => {
     }
 
     if (!parsedSections || parsedSections.length === 0) {
-        return <div className="text-xs text-app-text-light">No content available</div>;
+        return (
+            <div className="bg-app-bg-page rounded-lg p-4 text-xs font-mono text-app-text-label max-h-96 overflow-y-auto whitespace-pre-wrap border border-app-border-light">
+                {markdown || '(No content available)'}
+            </div>
+        );
     }
 
     const activeSection = parsedSections[activeTabIndex] || parsedSections[0];
@@ -1587,6 +1591,7 @@ export default function AgentAnalysis({
                     markdown: document.full_content,
                     html: '',
                     num_pages: null,
+                    sections: pendingAnalysis?.sections || [],
                 },
                 analysis: { analysis: '', reasoning: '' },
                 revisionNumber: pendingAnalysis?.projectMeta?.revision_number || (selectedProject?.documents?.length || 1),
@@ -1721,6 +1726,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
             if (storedJobId && storedProjectKey === selectedProjectKey) {
                 console.log('Found running analysis job in localStorage, resuming polling:', storedJobId);
                 const latestDocument = selectedProject.latestDocument;
+                const storedAnalysis = parseStoredDocumentAnalysis(latestDocument);
                 const initialResult = {
                     id: latestDocument?.id,
                     filename: latestDocument?.filename || 'BRD',
@@ -1728,6 +1734,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                         markdown: latestDocument?.full_content || '',
                         html: '',
                         num_pages: null,
+                        sections: storedAnalysis?.sections || [],
                     },
                     analysis: { analysis: '', reasoning: '' },
                     revisionNumber: selectedProject.documents?.length || 1,

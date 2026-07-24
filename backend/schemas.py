@@ -229,11 +229,16 @@ class DocumentBase(BaseModel):
 
         if "--- WEBSITE REQUIREMENTS" in full_content:
             try:
-                parts = full_content.split("--- WEBSITE REQUIREMENTS")
-                if len(parts) > 1:
-                    url_content = parts[1].split("---")[0].strip()
-                    if ")" in url_content and "\n" in url_content:
-                        url_content = url_content.split("\n", 1)[1].strip()
+                start_idx = full_content.find("--- WEBSITE REQUIREMENTS")
+                if start_idx != -1:
+                    header_end_idx = full_content.find("---", start_idx + 24)
+                    if header_end_idx != -1:
+                        content_start_idx = header_end_idx + 3
+                        next_section_idx = full_content.find("---", content_start_idx)
+                        if next_section_idx != -1:
+                            url_content = full_content[content_start_idx:next_section_idx].strip()
+                        else:
+                            url_content = full_content[content_start_idx:].strip()
             except Exception:
                 pass
 
