@@ -3099,16 +3099,7 @@ export default function AgentAnalysis({
         navigate('/dashboard');
     };
 
-    if (loading) {
-        return (
-            <div className="h-full flex items-center justify-center bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
-                <div className="text-center">
-                    <Loader2 className="w-8 h-8 text-app-primary animate-spin mx-auto mb-4" />
-                    <p className="text-app-text-muted font-semibold">Loading Agent Analysis...</p>
-                </div>
-            </div>
-        );
-    }
+
 
     if (error && !result) {
         return (
@@ -3142,27 +3133,7 @@ export default function AgentAnalysis({
         );
     }
 
-    // Show loading state while analysis is being prepared or is in progress
-    if (!result && (loading || processing)) {
-        return (
-            <div className="h-full flex items-center justify-center bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
-                <div className="text-center max-w-md">
-                    <Loader2 className="w-12 h-12 text-app-primary animate-spin mx-auto mb-4" />
-                    <p className="text-app-text-main font-semibold mb-2">
-                        {progressMessage || 'Preparing analysis...'}
-                    </p>
-                    {progress > 0 && (
-                        <div className="w-full bg-gray-200 rounded-full h-2 mt-4">
-                            <div
-                                className="bg-app-primary h-2 rounded-full transition-all duration-300"
-                                style={{ width: `${progress}%` }}
-                            />
-                        </div>
-                    )}
-                </div>
-            </div>
-        );
-    }
+
 
     return (
         <div className="h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
@@ -3661,7 +3632,34 @@ export default function AgentAnalysis({
             {/* Main Content Container */}
             <div className={`transition-all duration-300 ${isSidebarOpen ? 'lg:mr-[460px]' : 'mr-0'}`}>
                 <div className="max-w-[1100px] mx-auto px-12 py-6 space-y-6">
-                    {result && (
+                    {/* If page is loading and we don't have a result yet */}
+                    {(!result && (loading || processing)) && (
+                        <div className="py-24 text-center">
+                            <Loader2 className="w-12 h-12 text-app-primary animate-spin mx-auto mb-4" />
+                            <p className="text-app-text-main font-semibold mb-2">
+                                {progressMessage || 'Preparing analysis...'}
+                            </p>
+                            {progress > 0 && (
+                                <div className="w-48 bg-gray-200 rounded-full h-2 mt-4 mx-auto overflow-hidden">
+                                    <div
+                                        className="bg-app-primary h-2 rounded-full transition-all duration-300"
+                                        style={{ width: `${progress}%` }}
+                                    />
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* If result is loaded but loading is true (switching projects/fetching updates) */}
+                    {(result && loading) && (
+                        <div className="py-24 text-center">
+                            <Loader2 className="w-8 h-8 text-app-primary animate-spin mx-auto mb-4" />
+                            <p className="text-app-text-muted font-semibold">Loading Agent Analysis...</p>
+                        </div>
+                    )}
+
+                    {/* Main Analysis Results */}
+                    {result && !loading && (
                         <div className="space-y-6 animate-fade-in-up">
                             {/* Result Header - Redesigned */}
                             <div className="bg-gradient-to-r from-white to-gray-50 rounded-2xl shadow-md border border-gray-200 overflow-hidden">
