@@ -8501,6 +8501,11 @@ async def github_repo_context(
             detail = "GitHub API rate limit exceeded. Add a valid PAT or reconnect GitHub OAuth and try again."
         elif status_code in (401, 403):
             detail = "GitHub authentication failed or access denied. Check your PAT, username/password, or OAuth access."
+        elif status_code == 409:
+            detail = (
+                "The repository is empty (contains no commits). "
+                "Please push at least one commit to the repository before attempting to use it."
+            )
         else:
             detail = f"Failed to fetch repository context from GitHub (HTTP {status_code})."
         raise HTTPException(status_code=status_code, detail=detail)
@@ -8627,6 +8632,11 @@ async def azure_devops_repo_context(
                 detail = "Azure DevOps authentication failed. Check your PAT permissions or reconnect OAuth."
             else:
                 detail = "Azure DevOps authentication failed or access denied. Provide a valid PAT or reconnect OAuth."
+        elif status_code == 409:
+            detail = (
+                "The repository is empty (contains no commits). "
+                "Please push at least one commit to the repository before attempting to use it."
+            )
         else:
             detail = f"Failed to fetch repository context from Azure DevOps (HTTP {status_code})."
         raise HTTPException(status_code=status_code, detail=detail)
