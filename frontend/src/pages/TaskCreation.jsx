@@ -312,6 +312,20 @@ function getPreviewJsonForDisplay(previewJson) {
     };
 }
 
+if (typeof document !== 'undefined') {
+    const existingStyle = document.getElementById('progress-slide-style');
+    if (!existingStyle) {
+        const styleTag = document.createElement('style');
+        styleTag.id = 'progress-slide-style';
+        styleTag.textContent = `
+            @keyframes progressSlide {
+                0% { transform: translateX(-100%); }
+                100% { transform: translateX(100%); }
+            }
+        `;
+        document.head.appendChild(styleTag);
+    }
+}
 
 export default function TaskCreation({
     projects = [],
@@ -1144,22 +1158,27 @@ export default function TaskCreation({
             <div className="h-full min-h-[70vh] bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
                 <div className="fixed inset-0 z-[300] bg-black/60 backdrop-blur-sm flex items-center justify-center px-4">
                     <div className="w-full max-w-md rounded-2xl border border-app-border bg-app-bg-card shadow-2xl p-6 text-center" style={{ filter: 'none', backdropFilter: 'none' }}>
-                        <div className="flex justify-center">
-                            <Loader2 className="w-8 h-8 text-app-primary animate-spin" />
+                        <div className="flex justify-center mb-5">
+                            <div className="w-12 h-12 rounded-xl bg-app-primary-light/50 border border-app-primary-ring flex items-center justify-center animate-pulse shadow-sm shadow-app-primary/10">
+                                <Sparkles className="w-6 h-6 text-app-primary" />
+                            </div>
                         </div>
-                        <h3 className="mt-4 text-lg font-extrabold text-app-text-main">Loading Task Creation</h3>
-                        <p className="mt-2 text-sm text-app-text-label">
+                        <h3 className="text-lg font-bold text-app-text-main">Loading Task Creation</h3>
+                        <p className="mt-2 text-sm text-app-text-label leading-relaxed">
                             {isResolvingTaskToken || isLoadingProjectInfo
                                 ? <>Fetching project information for <span className="font-semibold text-app-text-main">{selectedProject?.name || 'selected project'}</span>.</>
                                 : <>Loading the local task preview for <span className="font-semibold text-app-text-main">{selectedProject?.name || 'selected project'}</span>.</>
                             }
                         </p>
-                        <p className="mt-1 text-xs text-app-text-muted">
+                        <p className="mt-1.5 text-xs text-app-text-muted">
                             {isResolvingTaskToken || isLoadingProjectInfo
                                 ? 'Please wait while we fetch the project details...'
                                 : 'The page will open as soon as the saved preview is ready.'
                             }
                         </p>
+                        <div className="mt-5 w-28 mx-auto bg-app-border-light/40 rounded-full h-1.5 overflow-hidden relative">
+                            <div className="bg-app-primary h-full w-full rounded-full absolute inset-0 animate-[progressSlide_1.5s_infinite_linear]"></div>
+                        </div>
                     </div>
                 </div>
             </div>
