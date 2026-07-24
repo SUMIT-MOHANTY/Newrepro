@@ -632,10 +632,10 @@ const Dashboard = ({
             }
         }
 
-        // Only set revisionUnlocked from backend if we don't have explicit state stored
-        // This allows the state to persist after upload completion
-        if (proj?.pendingRevisionReason && !hasExplicitState) {
-            // Only apply pending revision reason if this is a fresh state (no existing state)
+        // Always apply revisionUnlocked when backend has pendingRevisionReason
+        // This ensures that after creating a new revision, the upload form is immediately available
+        // without requiring a page reload. No !hasExplicitState guard — the backend is source of truth.
+        if (proj?.pendingRevisionReason) {
             return {
                 ...state,
                 revisionUnlocked: true,
