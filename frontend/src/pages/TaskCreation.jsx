@@ -1603,8 +1603,8 @@ export default function TaskCreation({
                         <div className="flex justify-center mb-4">
                             <div className="relative">
                                 <div className="absolute -inset-1 rounded-full bg-app-primary/30 blur animate-ping"></div>
-                                <div className="relative w-12 h-12 rounded-full bg-indigo-50 border border-indigo-100 flex items-center justify-center text-app-primary">
-                                    <Loader2 className="w-6 h-6 animate-spin" />
+                                <div className="relative w-12 h-12 rounded-full bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-500">
+                                    <Sparkles className="w-6 h-6 text-indigo-500 animate-pulse" />
                                 </div>
                             </div>
                         </div>

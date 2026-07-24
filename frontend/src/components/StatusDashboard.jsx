@@ -2967,221 +2967,221 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 </div>
 
 
-                                <div className="hidden md:block bg-app-bg-page/50 border-b border-app-border-light px-6 py-2.5">
-                                    <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr 120px 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
-                                        <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">#</div>
-                                        <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Task Information</div>
-                                        <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Sprint</div>
-                                        <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider text-center">Completion</div>
-                                        <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Status</div>
-                                        <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Priority</div>
-                                        <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Assignees</div>
-                                        <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Wallet</div>
-                                        <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Deadline</div>
-                                    </div>
-                                </div>
-
-                                <div className="divide-y divide-app-bg-page">
-                                    {isLoadingTasks && taskList.length === 0 && (
-                                        <div className="p-6 space-y-4">
-                                            {[0, 1, 2, 3].map((row) => (
-                                                <div key={row} className="grid grid-cols-1 md:grid-cols-[40px_1fr_120px_140px_90px_80px_120px_60px_130px] gap-2 items-center">
-                                                    <Skeleton height={10} width={18} />
-                                                    <div>
-                                                        <Skeleton height={13} width="52%" />
-                                                        <div className="mt-1">
-                                                            <Skeleton height={10} width="70%" />
-                                                        </div>
-                                                    </div>
-                                                    <Skeleton height={18} width={90} />
-                                                    <Skeleton height={10} width={108} />
-                                                    <Skeleton height={18} width={72} />
-                                                    <Skeleton height={18} width={64} />
-                                                    <Skeleton height={12} width={90} />
-                                                    <Skeleton height={10} width={42} />
-                                                    <Skeleton height={10} width={90} />
-                                                </div>
-                                            ))}
-                                        </div>
-                                    )}
-                                    {taskListError && !isLoadingTasks && (
-                                        <div className="p-6 flex items-center gap-3 bg-app-status-errorBg/50">
-                                            <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
-                                            <p className="text-sm text-app-status-error font-medium">{taskListError}</p>
-                                        </div>
-                                    )}
-                                    {!isLoadingTasks && !taskListError && taskList.length === 0 && (
-                                        <div className="p-10 flex flex-col items-center justify-center gap-2 text-center">
-                                            <div className="w-14 h-14 bg-app-bg-page rounded-full flex items-center justify-center mb-2">
-                                                <ListTodo className="w-7 h-7 text-app-border" />
+                                <div className="overflow-x-auto scrollbar-thin">
+                                    <div className="min-w-0 md:min-w-[1080px] max-h-[600px] overflow-y-auto scrollbar-thin relative">
+                                        <div className="hidden md:block sticky top-0 bg-app-bg-card border-b border-app-border-light px-6 py-2.5 z-10">
+                                            <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr 120px 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
+                                                <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider w-10 truncate">#</div>
+                                                <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider min-w-0 truncate">Task Information</div>
+                                                <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Sprint</div>
+                                                <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider text-center">Completion</div>
+                                                <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider text-center">Status</div>
+                                                <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider text-center">Priority</div>
+                                                <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider text-center">Assignees</div>
+                                                <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider text-center">Wallet</div>
+                                                <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider text-center">Deadline</div>
                                             </div>
-                                            <p className="text-sm font-bold text-app-text-muted">No tasks generated yet</p>
-                                            <p className="text-xs text-app-text-light max-w-xs">Select a project and start the process from Task Creation to begin.</p>
                                         </div>
-                                    )}
-                                    {!isLoadingTasks && taskList.length > 0 && (
-                                        <div className="overflow-y-auto" style={{ maxHeight: '600px' }}>
-                                            {sortedTaskList.map((task, index) => {
-                                                const priorityStyles = { high: 'bg-app-status-errorBg text-app-status-error border-red-200', medium: 'bg-app-status-warningBg text-app-status-warning border-amber-200', low: 'bg-app-status-successBg text-app-status-success border-green-200' };
-                                                const typeStyles = { EPIC: 'bg-purple-100 text-purple-700', FEATURE: 'bg-app-primary-light text-app-primary-hover', STORY: 'bg-cyan-100 text-cyan-700', TASK: 'bg-app-bg-muted text-app-text-label', BUG: 'bg-app-status-errorBg text-app-status-error' };
-                                                const statusStyles = { 'On Going': 'bg-app-primary-light text-app-primary-hover', 'Completed': 'bg-app-status-successBg text-app-status-success', 'To Do': 'bg-app-bg-page text-app-text-label', 'In Review': 'bg-app-status-warningBg text-app-status-warning', 'Blocked': 'bg-app-status-errorBg text-app-status-error' };
-                                                const priority = (task.priority || 'medium').toLowerCase();
-                                                const taskType = (task.task_type || 'TASK').toUpperCase();
-                                                const progress = task.task_progress || 0;
-                                                const progressColor = progress >= 80 ? 'bg-app-status-success' : progress >= 40 ? 'bg-app-primary' : 'bg-app-status-warning';
-                                                const sprintLabel = getTaskSprintLabel(task);
-                                                const assignees = safeGetAssignees(task.assignedTo);
 
-                                                return (
-                                                    <div key={task.id || index} className="px-6 py-3 hover:bg-app-bg-page/70 transition-colors group">
-                                                        <div className="hidden md:grid" style={{ gridTemplateColumns: '40px 1fr 120px 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
-                                                            {/* # */}
-                                                            <div className="flex items-center gap-1.5">
-                                                                <span className="text-[10px] font-bold text-app-text-light">{(index + 1).toString().padStart(2, '0')}</span>
-                                                                {task.is_flaged && <Flag className="w-3 h-3 text-orange-400 fill-orange-400" />}
-                                                            </div>
-
-                                                            {/* Task Name & Desc */}
-                                                            <div className="min-w-0 pr-4">
-                                                                <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                                                                    <h4 className="text-sm font-bold text-app-text-main truncate" title={task.taskName}>{task.taskName || 'Untitled Task'}</h4>
-                                                                    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${typeStyles[taskType] || typeStyles.TASK}`}>{taskType}</span>
-                                                                    {task.synced_to_nxdune && (
-                                                                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400 border border-emerald-200/50 uppercase tracking-wide">
-                                                                            <CheckCircle2 className="w-2.5 h-2.5" />
-                                                                            Synced
-                                                                        </span>
-                                                                    )}
-                                                                    {task.selected && (
-                                                                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold bg-blue-100 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400 border border-blue-200/50 uppercase tracking-wide">
-                                                                            <CheckCircle2 className="w-2.5 h-2.5" />
-                                                                            Saved Locally
-                                                                        </span>
-                                                                    )}
-                                                                    {getClockedHours(task) && (
-                                                                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-bold bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-400 border border-green-200/50">
-                                                                            {getClockedHours(task)} hrs clocked
-                                                                        </span>
-                                                                    )}
-                                                                    {isCurrentlyClockedIn(task) && (
-                                                                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400 border border-amber-200/50 animate-pulse">
-                                                                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
-                                                                            Actively Clocked In
-                                                                        </span>
-                                                                    )}
-                                                                </div>
-                                                                <p className="text-xs text-app-text-light truncate max-w-[900px]" title={task.description}>{task.description || 'No description'}</p>
-                                                            </div>
-
-                                                            {/* Sprint */}
+                                        <div className="divide-y divide-app-bg-page">
+                                            {isLoadingTasks && taskList.length === 0 && (
+                                                <div className="p-6 space-y-4">
+                                                    {[0, 1, 2, 3].map((row) => (
+                                                        <div key={row} className="grid grid-cols-1 md:grid-cols-[40px_1fr_120px_140px_90px_80px_120px_60px_130px] gap-2 items-center">
+                                                            <Skeleton height={10} width={18} />
                                                             <div>
-                                                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-app-primary-light text-app-primary-hover border border-app-primary-ring">
-                                                                    {sprintLabel}
-                                                                </span>
-                                                            </div>
-
-                                                            {/* Progress */}
-                                                            <div className="flex items-center gap-3 justify-center">
-                                                                <div className="flex-1 bg-app-bg-muted rounded-full h-1.5 overflow-hidden max-w-[80px]">
-                                                                    <div className={`${progressColor} h-1.5 rounded-full transition-all duration-500`} style={{ width: `${Math.min(progress, 100)}%` }}></div>
-                                                                </div>
-                                                                <span className="text-[10px] font-bold text-app-text-label w-6">{progress}%</span>
-                                                            </div>
-
-                                                            {/* Status */}
-                                                            <div>
-                                                                <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold ${statusStyles[task.taskStatus] || 'bg-app-bg-page text-app-text-label'}`}>{task.taskStatus || 'Unknown'}</span>
-                                                            </div>
-
-                                                            {/* Priority */}
-                                                            <div>
-                                                                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border capitalize ${priorityStyles[priority] || priorityStyles.medium}`}>{priority}</span>
-                                                            </div>
-
-                                                            {/* Assignees */}
-                                                            <div className="flex items-center gap-1 overflow-hidden">
-                                                                <Users className="w-3 h-3 text-app-border flex-shrink-0" />
-                                                                <div className="flex flex-wrap gap-0.5 max-h-8 overflow-hidden">
-                                                                    {assignees.slice(0, 2).map((name, i) => (
-                                                                        <span key={i} className="inline-flex items-center px-1.5 py-0.5 bg-app-primary-light text-app-primary-hover rounded text-[9px] font-bold truncate max-w-[45px]">{name}</span>
-                                                                    ))}
-                                                                    {assignees.length > 2 && <span className="text-[9px] font-bold text-app-text-light">+{assignees.length - 2}</span>}
+                                                                <Skeleton height={13} width="52%" />
+                                                                <div className="mt-1">
+                                                                    <Skeleton height={10} width="70%" />
                                                                 </div>
                                                             </div>
-
-                                                            {/* Wallet */}
-                                                            <div className="flex items-center gap-1">
-                                                                <Wallet className="w-3 h-3 text-app-border" />
-                                                                <span className="text-[10px] font-bold text-app-text-muted">{task.task_wallet || 0}</span>
-                                                            </div>
-
-                                                            {/* Deadline */}
-                                                            <div className="flex flex-col gap-0.5">
-                                                                <div className="flex items-center gap-1 text-[10px] font-bold text-app-text-muted">
-                                                                    <Calendar className="w-3 h-3 text-app-border" />
-                                                                    <span>{task.deadline || '-'}</span>
-                                                                </div>
-                                                                {task.days_left != null && (
-                                                                    <span className={`text-[9px] font-black uppercase tracking-tighter ${task.days_left <= 3 ? 'text-app-status-error' : task.days_left <= 7 ? 'text-app-status-warning' : 'text-app-status-success'}`}>{task.days_left}d remaining</span>
-                                                                )}
-                                                            </div>
+                                                            <Skeleton height={18} width={90} />
+                                                            <Skeleton height={10} width={108} />
+                                                            <Skeleton height={18} width={72} />
+                                                            <Skeleton height={18} width={64} />
+                                                            <Skeleton height={12} width={90} />
+                                                            <Skeleton height={10} width={42} />
+                                                            <Skeleton height={10} width={90} />
                                                         </div>
-
-                                                        {/* Mobile View */}
-                                                        <div className="md:hidden space-y-2">
-                                                            <div className="flex justify-between items-start">
-                                                                <h4 className="text-sm font-bold text-app-text-main line-clamp-1">{task.taskName}</h4>
-                                                                <span className={`px-1.5 py-0.5 rounded text-[8px] font-black ${typeStyles[taskType]}`}>{taskType}</span>
-                                                            </div>
-                                                            <div className="flex flex-wrap gap-1.5">
-                                                                {task.synced_to_nxdune && (
-                                                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400 border border-emerald-200/50 uppercase tracking-wide">
-                                                                        Synced
-                                                                    </span>
-                                                                )}
-                                                                {task.selected && (
-                                                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold bg-blue-100 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400 border border-blue-200/50 uppercase tracking-wide">
-                                                                        Saved Locally
-                                                                    </span>
-                                                                )}
-                                                            </div>
-                                                            <div className="flex justify-between items-center text-[10px]">
-                                                                <div className="flex items-center gap-2">
-                                                                    <span className={`px-2 py-0.5 rounded font-bold ${statusStyles[task.taskStatus]}`}>{task.taskStatus}</span>
-                                                                    <span className="font-bold text-app-text-muted">{progress}%</span>
-                                                                </div>
-                                                                <span className="font-bold text-app-primary">${task.task_wallet || 0}</span>
-                                                            </div>
-                                                            <div className="text-[10px] text-app-text-light">
-                                                                Sprint: <span className="font-semibold text-app-text-label">{sprintLabel}</span>
-                                                            </div>
-                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                            {taskListError && !isLoadingTasks && (
+                                                <div className="p-6 flex items-center gap-3 bg-app-status-errorBg/50">
+                                                    <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
+                                                    <p className="text-sm text-app-status-error font-medium">{taskListError}</p>
+                                                </div>
+                                            )}
+                                            {!isLoadingTasks && !taskListError && taskList.length === 0 && (
+                                                <div className="p-10 flex flex-col items-center justify-center gap-2 text-center">
+                                                    <div className="w-14 h-14 bg-app-bg-page rounded-full flex items-center justify-center mb-2">
+                                                        <ListTodo className="w-7 h-7 text-app-border" />
                                                     </div>
-                                                );
-                                            })}
-                                        </div>
-                                    )}
+                                                    <p className="text-sm font-bold text-app-text-muted">No tasks generated yet</p>
+                                                    <p className="text-xs text-app-text-light max-w-xs">Select a project and start the process from Task Creation to begin.</p>
+                                                </div>
+                                            )}
+                                            {!isLoadingTasks && taskList.length > 0 &&
+                                                sortedTaskList.map((task, index) => {
+                                                        const priorityStyles = { high: 'bg-app-status-errorBg text-app-status-error border-red-200', medium: 'bg-app-status-warningBg text-app-status-warning border-amber-200', low: 'bg-app-status-successBg text-app-status-success border-green-200' };
+                                                        const typeStyles = { EPIC: 'bg-purple-100 text-purple-700', FEATURE: 'bg-app-primary-light text-app-primary-hover', STORY: 'bg-cyan-100 text-cyan-700', TASK: 'bg-app-bg-muted text-app-text-label', BUG: 'bg-app-status-errorBg text-app-status-error' };
+                                                        const statusStyles = { 'On Going': 'bg-app-primary-light text-app-primary-hover', 'Completed': 'bg-app-status-successBg text-app-status-success', 'To Do': 'bg-app-bg-page text-app-text-label', 'In Review': 'bg-app-status-warningBg text-app-status-warning', 'Blocked': 'bg-app-status-errorBg text-app-status-error' };
+                                                        const priority = (task.priority || 'medium').toLowerCase();
+                                                        const taskType = (task.task_type || 'TASK').toUpperCase();
+                                                        const progress = task.task_progress || 0;
+                                                        const progressColor = progress >= 80 ? 'bg-app-status-success' : progress >= 40 ? 'bg-app-primary' : 'bg-app-status-warning';
+                                                        const sprintLabel = getTaskSprintLabel(task);
+                                                        const assignees = safeGetAssignees(task.assignedTo);
+
+                                                        return (
+                                                            <div key={task.id || index} className="px-6 py-3 hover:bg-app-bg-page/70 transition-colors group">
+                                                                <div className="hidden md:grid" style={{ gridTemplateColumns: '40px 1fr 120px 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
+                                                                    <div className="flex items-center gap-1.5 w-10 overflow-hidden">
+                                                                        <span className="text-[10px] font-bold text-app-text-light flex-shrink-0">{(index + 1).toString().padStart(2, '0')}</span>
+                                                                        {task.is_flaged && <Flag className="w-3 h-3 text-orange-400 fill-orange-400 flex-shrink-0" />}
+                                                                    </div>
+
+                                                                    {/* Task Name & Desc */}
+                                                                    <div className="min-w-0 pr-4">
+                                                                        <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                                                                            <h4 className="text-sm font-bold text-app-text-main truncate" title={task.taskName}>{task.taskName || 'Untitled Task'}</h4>
+                                                                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${typeStyles[taskType] || typeStyles.TASK}`}>{taskType}</span>
+                                                                            {task.synced_to_nxdune && (
+                                                                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400 border border-emerald-200/50 uppercase tracking-wide">
+                                                                                    <CheckCircle2 className="w-2.5 h-2.5" />
+                                                                                    Synced
+                                                                                </span>
+                                                                            )}
+                                                                            {task.selected && (
+                                                                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold bg-blue-100 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400 border border-blue-200/50 uppercase tracking-wide">
+                                                                                    <CheckCircle2 className="w-2.5 h-2.5" />
+                                                                                    Saved Locally
+                                                                                </span>
+                                                                            )}
+                                                                            {getClockedHours(task) && (
+                                                                                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-bold bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-400 border border-green-200/50">
+                                                                                    {getClockedHours(task)} hrs clocked
+                                                                                </span>
+                                                                            )}
+                                                                            {isCurrentlyClockedIn(task) && (
+                                                                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400 border border-amber-200/50 animate-pulse">
+                                                                                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                                                                                    Actively Clocked In
+                                                                                </span>
+                                                                            )}
+                                                                        </div>
+                                                                        <p className="text-xs text-app-text-light truncate max-w-[900px]" title={task.description}>{task.description || 'No description'}</p>
+                                                                    </div>
+
+                                                                    {/* Sprint */}
+                                                                    <div>
+                                                                        <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-app-primary-light text-app-primary-hover border border-app-primary-ring">
+                                                                            {sprintLabel}
+                                                                        </span>
+                                                                    </div>
+
+                                                                    {/* Progress */}
+                                                                    <div className="flex items-center gap-3 justify-center">
+                                                                        <div className="flex-1 bg-app-bg-muted rounded-full h-1.5 overflow-hidden max-w-[80px]">
+                                                                            <div className={`${progressColor} h-1.5 rounded-full transition-all duration-500`} style={{ width: `${Math.min(progress, 100)}%` }}></div>
+                                                                        </div>
+                                                                        <span className="text-[10px] font-bold text-app-text-label w-6">{progress}%</span>
+                                                                    </div>
+
+                                                                    {/* Status */}
+                                                                    <div className="flex justify-center">
+                                                                        <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold ${statusStyles[task.taskStatus] || 'bg-app-bg-page text-app-text-label'}`}>{task.taskStatus || 'Unknown'}</span>
+                                                                    </div>
+
+                                                                    {/* Priority */}
+                                                                    <div className="flex justify-center">
+                                                                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border capitalize ${priorityStyles[priority] || priorityStyles.medium}`}>{priority}</span>
+                                                                    </div>
+
+                                                                    {/* Assignees */}
+                                                                    <div className="flex items-center justify-center gap-1 overflow-hidden">
+                                                                        <Users className="w-3 h-3 text-app-border flex-shrink-0" />
+                                                                        <div className="flex flex-wrap justify-center gap-0.5 max-h-8 overflow-hidden">
+                                                                            {assignees.slice(0, 2).map((name, i) => (
+                                                                                <span key={i} className="inline-flex items-center px-1.5 py-0.5 bg-app-primary-light text-app-primary-hover rounded text-[9px] font-bold truncate max-w-[45px]">{name}</span>
+                                                                            ))}
+                                                                            {assignees.length > 2 && <span className="text-[9px] font-bold text-app-text-light">+{assignees.length - 2}</span>}
+                                                                        </div>
+                                                                    </div>
+
+                                                                    {/* Wallet */}
+                                                                    <div className="flex items-center justify-center gap-1">
+                                                                        <Wallet className="w-3 h-3 text-app-border" />
+                                                                        <span className="text-[10px] font-bold text-app-text-muted">{task.task_wallet || 0}</span>
+                                                                    </div>
+
+                                                                    {/* Deadline */}
+                                                                    <div className="flex flex-col items-center gap-0.5 text-center">
+                                                                        <div className="flex items-center gap-1 text-[10px] font-bold text-app-text-muted">
+                                                                            <Calendar className="w-3 h-3 text-app-border" />
+                                                                            <span>{task.deadline || '-'}</span>
+                                                                        </div>
+                                                                        {task.days_left != null && (
+                                                                            <span className={`text-[9px] font-black uppercase tracking-tighter ${task.days_left <= 3 ? 'text-app-status-error' : task.days_left <= 7 ? 'text-app-status-warning' : 'text-app-status-success'}`}>{task.days_left}d remaining</span>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+
+                                                                {/* Mobile View */}
+                                                                <div className="md:hidden space-y-2">
+                                                                    <div className="flex justify-between items-start">
+                                                                        <h4 className="text-sm font-bold text-app-text-main line-clamp-1">{task.taskName}</h4>
+                                                                        <span className={`px-1.5 py-0.5 rounded text-[8px] font-black ${typeStyles[taskType]}`}>{taskType}</span>
+                                                                    </div>
+                                                                    <div className="flex flex-wrap gap-1.5">
+                                                                        {task.synced_to_nxdune && (
+                                                                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400 border border-emerald-200/50 uppercase tracking-wide">
+                                                                                Synced
+                                                                            </span>
+                                                                        )}
+                                                                        {task.selected && (
+                                                                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold bg-blue-100 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400 border border-blue-200/50 uppercase tracking-wide">
+                                                                                Saved Locally
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
+                                                                    <div className="flex justify-between items-center text-[10px]">
+                                                                        <div className="flex items-center gap-2">
+                                                                            <span className={`px-2 py-0.5 rounded font-bold ${statusStyles[task.taskStatus]}`}>{task.taskStatus}</span>
+                                                                            <span className="font-bold text-app-text-muted">{progress}%</span>
+                                                                        </div>
+                                                                        <span className="font-bold text-app-primary">${task.task_wallet || 0}</span>
+                                                                    </div>
+                                                                    <div className="text-[10px] text-app-text-light">
+                                                                        Sprint: <span className="font-semibold text-app-text-label">{sprintLabel}</span>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })}
 
 
-                                    {/* Load More Button */}
-                                    {nextPageUrl && (
-                                        <div className="px-6 py-4 flex justify-center border-t border-app-border-light">
-                                            <button
-                                                onClick={() => {
-                                                    const page = getPageFromUrl(nextPageUrl);
-                                                    if (page) fetchTasks(true, page);
-                                                }}
-                                                disabled={isLoadingMore}
-                                                className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-app-primary bg-app-primary-light border border-app-primary-ring rounded-xl hover:bg-app-primary-light hover:shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                                            >
-                                                {isLoadingMore ? (
-                                                    <><RefreshCw className="w-4 h-4 animate-spin" /> Loading more...</>
-                                                ) : (
-                                                    <><ChevronRight className="w-4 h-4" /> Load More ({taskList.length} of {totalTaskCount})</>
-                                                )}
-                                            </button>
+                                            {/* Load More Button */}
+                                            {nextPageUrl && (
+                                                <div className="px-6 py-4 flex justify-center border-t border-app-border-light">
+                                                    <button
+                                                        onClick={() => {
+                                                            const page = getPageFromUrl(nextPageUrl);
+                                                            if (page) fetchTasks(true, page);
+                                                        }}
+                                                        disabled={isLoadingMore}
+                                                        className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-semibold text-app-primary bg-app-primary-light border border-app-primary-ring rounded-xl hover:bg-app-primary-light hover:shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    >
+                                                        {isLoadingMore ? (
+                                                            <><RefreshCw className="w-4 h-4 animate-spin" /> Loading more...</>
+                                                        ) : (
+                                                            <><ChevronRight className="w-4 h-4" /> Load More ({taskList.length} of {totalTaskCount})</>
+                                                        )}
+                                                    </button>
+                                                </div>
+                                            )}
                                         </div>
-                                    )}
+                                    </div>
                                 </div>
                             </div>
                         </div>
