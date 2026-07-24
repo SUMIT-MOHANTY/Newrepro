@@ -13,6 +13,7 @@ import {
     Sparkles,
     ChevronDown,
     ChevronRight,
+    Lock,
 } from 'lucide-react';
 import { API_ENDPOINTS, API_BASE_URL } from '../config';
 import { upsertDraftProject, getDraftProject } from '../utils/draftProjects';
@@ -1190,7 +1191,7 @@ export default function TaskCreation({
             <div className={`h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/10 ${isGenerating ? 'blur-sm' : ''}`}>
                 <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
                     {/* Top Premium Gradient Banner Header */}
-                    <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-blue-950 text-white shadow-xl border border-indigo-500/10 p-6 sm:p-7">
+                    <div className="relative rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-blue-950 text-white shadow-xl border border-indigo-500/10 p-6 sm:p-7">
                         <div className="absolute top-0 right-0 w-64 h-64 bg-app-primary/10 rounded-full blur-3xl -mr-16 -mt-16 pointer-events-none"></div>
                         <div className="absolute bottom-0 left-0 w-48 h-48 bg-indigo-500/5 rounded-full blur-2xl -ml-16 -mb-16 pointer-events-none"></div>
                         
@@ -1226,13 +1227,33 @@ export default function TaskCreation({
                                     </div>
                                 )}
                             </div>
-                            <button
-                                onClick={handleStartProcess}
-                                className="group inline-flex items-center justify-center gap-2 px-6 py-3.5 text-sm font-extrabold text-white bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 rounded-xl shadow-lg shadow-emerald-500/20 active:scale-95 duration-200 shrink-0 border-0"
-                            >
-                                Start the Process
-                                <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-                            </button>
+                            <div className="relative group shrink-0">
+                                {tasks.length === 0 && (
+                                    <div className="absolute top-full right-0 mt-3 w-64 bg-slate-950/95 border border-slate-800 text-[11px] text-slate-300 rounded-xl p-3 shadow-xl backdrop-blur-md opacity-0 pointer-events-none group-hover:opacity-100 transition-all duration-200 z-50 text-center leading-relaxed">
+                                        <div className="font-bold text-white mb-0.5 flex items-center justify-center gap-1">
+                                            <Lock className="w-3 h-3 text-emerald-400" />
+                                            <span>Roadmap Required</span>
+                                        </div>
+                                        Please generate your sprint tasks below to activate the process.
+                                        <div className="absolute bottom-full right-8 border-4 border-transparent border-b-slate-950/95"></div>
+                                    </div>
+                                )}
+                                <button
+                                    onClick={handleStartProcess}
+                                    disabled={tasks.length === 0}
+                                    className={`group inline-flex items-center justify-center gap-2 px-6 py-3.5 text-sm font-extrabold text-white rounded-xl duration-200 shrink-0 border border-transparent ${
+                                        tasks.length === 0
+                                            ? 'bg-slate-900/40 border-slate-800/60 text-slate-500 cursor-default'
+                                            : 'bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 shadow-lg shadow-emerald-500/20 active:scale-95 cursor-pointer'
+                                    }`}
+                                >
+                                    {tasks.length === 0 ? <Lock className="w-3.5 h-3.5 text-slate-500 mr-0.5" /> : null}
+                                    Start the Process
+                                    {tasks.length > 0 ? (
+                                        <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                                    ) : null}
+                                </button>
+                            </div>
                         </div>
                     </div>
 
