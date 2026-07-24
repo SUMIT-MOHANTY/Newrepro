@@ -277,6 +277,7 @@ class Document(Base):
     file_path = Column(String, nullable=True)       # Path/unique name of the uploaded document on disk
     screening_inputs = Column(JSON, nullable=True)  # Raw requirement screening inputs (uploaded_files, linked_documents, manual_text, url_content, repository_context, skills_files)
     project_token = Column(String, index=True, nullable=True)  # Link document directly to a project
+    revision_version = Column(Integer, nullable=True)  # Which revision version this document belongs to (None = initial/original)
     owner_id = Column(Integer, ForeignKey("users.id"))
 
     owner = relationship("User", back_populates="documents")
@@ -312,6 +313,8 @@ class GovernanceResponse(Base):
 
     # Tracks an active request to start a new BRD revision on this project
     pending_revision_reason = Column(String, nullable=True)
+    # Current revision version counter (starts at 1, increments with each revision)
+    current_revision_version = Column(Integer, nullable=False, default=1)
 
     # dynamically generated project API credentials for external task system
     client_id = Column(String, nullable=True)
@@ -616,6 +619,30 @@ class UserActivityLog(Base):
     path = Column(String, nullable=True)
     ip_address = Column(String, nullable=True)
     user_agent = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class Revision(Base):
+    """
+    Tracks revision versions for a project.
+    Each revision snapshots the screening_inputs and document list at that point in time.
+    """
+    __tablename__ = "revisions"
+    __table_args__ = (
+        UniqueConstraint("project_token", "version_number", name="uq_revision_version"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_token = Column(String, index=True, nullable=False)
+    version_number = Column(Integer, nullable=False)  # 1, 2, 3...
+    reason = Column(String, nullable=True)  # Why this revision was created
+    
+    # Snapshot of screening_inputs at the time of revision (JSON copy)
+    screening_snapshot = Column(JSON, nullable=True)
+    # Snapshot of document IDs that were in the project at this revision
+    document_snapshots = Column(JSON, nullable=True)  # List of document IDs
+    
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 

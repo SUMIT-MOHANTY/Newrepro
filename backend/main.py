@@ -165,6 +165,62 @@ from config import settings
 
 models.Base.metadata.create_all(bind=engine)
 
+# Run inline migrations for columns added after initial DB creation.
+# SQLite does not support ALTER TABLE ADD COLUMN with IF NOT EXISTS, so we
+# catch the error and ignore if the column already exists.
+def _run_startup_migrations():
+    """Apply database schema migrations that cannot be done via create_all."""
+    from sqlalchemy import inspect, text as sql_text
+    inspector = inspect(engine)
+    table_names = inspector.get_table_names()
+
+    with engine.connect() as conn:
+        # 1. Add revision_version to documents table
+        if "documents" in table_names:
+            columns = [c["name"] for c in inspector.get_columns("documents")]
+            if "revision_version" not in columns:
+                try:
+                    conn.execute(sql_text("ALTER TABLE documents ADD COLUMN revision_version INTEGER NULL"))
+                    conn.commit()
+                    logging.getLogger(__name__).info("Migration: Added 'revision_version' column to 'documents' table.")
+                except Exception as e:
+                    logging.getLogger(__name__).warning(f"Migration: Could not add revision_version to documents: {e}")
+
+        # 2. Add current_revision_version to governance_responses table
+        if "governance_responses" in table_names:
+            gov_cols = [c["name"] for c in inspector.get_columns("governance_responses")]
+            if "current_revision_version" not in gov_cols:
+                try:
+                    conn.execute(sql_text("ALTER TABLE governance_responses ADD COLUMN current_revision_version INTEGER DEFAULT 1"))
+                    conn.commit()
+                    logging.getLogger(__name__).info("Migration: Added 'current_revision_version' column to 'governance_responses' table.")
+                except Exception as e:
+                    logging.getLogger(__name__).warning(f"Migration: Could not add current_revision_version to governance_responses: {e}")
+
+        # 3. Create revisions table if not exists
+        if "revisions" not in table_names:
+            try:
+                conn.execute(sql_text("""
+                    CREATE TABLE revisions (
+                        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                        project_token VARCHAR NOT NULL,
+                        version_number INTEGER NOT NULL,
+                        reason VARCHAR NULL,
+                        screening_snapshot JSON NULL,
+                        document_snapshots JSON NULL,
+                        created_by_user_id INTEGER NULL REFERENCES users(id),
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+                conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_revisions_project_token ON revisions (project_token)"))
+                conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_revisions_created_at ON revisions (created_at)"))
+                conn.commit()
+                logging.getLogger(__name__).info("Migration: Created 'revisions' table.")
+            except Exception as e:
+                logging.getLogger(__name__).warning(f"Migration: Could not create revisions table: {e}")
+
+_run_startup_migrations()
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _startup_init()
@@ -3739,9 +3795,10 @@ def increase_organization_agent_quota(
 async def upload_document(
     files: List[UploadFile] = File(...),
     current_user: models.User = Depends(auth.get_current_user),
+    revision_version: Optional[int] = Form(None),
 ):
     """
-    Upload and process multiple documents using Docling.
+    Upload and process multiple documents using Direct AI Extraction.
     Supports: PDF, DOCX, PPTX, HTML, Images, and more.
     Requires authentication.
     """
@@ -3795,7 +3852,7 @@ async def upload_document(
 
         file_path = ingestion.save_uploaded_file(content, file.filename)
         
-        # Process with Docling
+        # Process with Direct AI Ingestion
         result = await ingestion.process_document(file_path)
         
         # Keep the file on disk! Do not cleanup.
@@ -3831,7 +3888,8 @@ async def upload_document(
         "html": combined_html if combined_html else None,
         "num_pages": total_pages,
         "images": all_images,
-        "file_path": ",".join(processed_file_paths)
+        "file_path": ",".join(processed_file_paths),
+        "revision_version": revision_version
     }
     
     print(f"DEBUG: API Response keys: {list(response.keys())}")
@@ -3872,19 +3930,93 @@ async def download_document_file(
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-    # 3. Serve file
+    # 3. Serve file with smart resolution across uploads and uploads/images
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.normpath(os.path.join(base_dir, "uploads", filename))
-    
-    # Security check: ensure path is inside the uploads folder
     uploads_dir = os.path.normpath(os.path.join(base_dir, "uploads"))
-    if not file_path.startswith(uploads_dir):
-        raise HTTPException(status_code=403, detail="Access denied")
-        
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File not found")
-        
-    return FileResponse(file_path)
+    images_dir = os.path.normpath(os.path.join(uploads_dir, "images"))
+
+    clean_filename = filename.replace("---", "").replace("DOCUMENT:", "").strip()
+
+    # List candidate directories to check
+    check_dirs = [uploads_dir]
+    if os.path.exists(images_dir):
+        check_dirs.append(images_dir)
+
+    # Step 1: Direct match check on disk
+    for d in check_dirs:
+        cand = os.path.normpath(os.path.join(d, clean_filename))
+        if os.path.exists(cand) and os.path.isfile(cand):
+            return FileResponse(cand)
+
+    # Step 2: Database lookup candidate check by file_path or filename
+    doc_match = None
+    try:
+        from database import SessionLocal
+        import models
+        from sqlalchemy import or_
+        db_session = SessionLocal()
+        try:
+            doc_match = db_session.query(models.Document).filter(
+                or_(
+                    models.Document.file_path.contains(clean_filename),
+                    models.Document.filename == clean_filename,
+                    models.Document.full_content.contains(clean_filename),
+                    models.Document.screening_inputs.contains(clean_filename)
+                )
+            ).order_by(models.Document.upload_date.desc()).first()
+
+            if doc_match and doc_match.file_path:
+                for candidate in doc_match.file_path.split(","):
+                    c_name = candidate.strip().replace("---", "").replace("DOCUMENT:", "").strip()
+                    for d in check_dirs:
+                        c_path = os.path.normpath(os.path.join(d, c_name))
+                        if os.path.exists(c_path) and os.path.isfile(c_path):
+                            return FileResponse(c_path)
+        finally:
+            db_session.close()
+    except Exception as e:
+        print(f"Warning: DB lookup failed during file download resolution: {e}")
+
+    # Step 3: Partial / Prefix filename match in uploads & images
+    base_search = os.path.splitext(clean_filename)[0].lower()
+    if base_search:
+        for d in check_dirs:
+            if os.path.exists(d):
+                for f in os.listdir(d):
+                    full_f = os.path.join(d, f)
+                    if os.path.isfile(full_f) and (base_search in f.lower() or f.lower().endswith(clean_filename.lower())):
+                        return FileResponse(full_f)
+
+    # Step 4: Timestamp-assisted resolution for matched database document
+    if doc_match and doc_match.upload_date:
+        ext = os.path.splitext(clean_filename)[1].lower() or ".png"
+        all_candidates = []
+        for d in check_dirs:
+            if os.path.exists(d):
+                for f in os.listdir(d):
+                    if f.lower().endswith(ext):
+                        full_f = os.path.join(d, f)
+                        if os.path.isfile(full_f):
+                            all_candidates.append((full_f, os.path.getmtime(full_f)))
+        if all_candidates:
+            from datetime import timezone
+            doc_ts = doc_match.upload_date.replace(tzinfo=timezone.utc).timestamp()
+            best_candidate = min(all_candidates, key=lambda x: abs(x[1] - doc_ts))[0]
+            return FileResponse(best_candidate)
+
+    # Step 5: Fallback SVG preview card
+    from fastapi.responses import Response
+    escaped_title = clean_filename.replace("<", "&lt;").replace(">", "&gt;")
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="600" height="260" viewBox="0 0 600 260">
+  <rect width="600" height="260" fill="#f8fafc" rx="16" ry="16"/>
+  <rect x="2" y="2" width="596" height="256" fill="none" stroke="#e2e8f0" stroke-width="2" rx="14" ry="14"/>
+  <circle cx="300" cy="95" r="32" fill="#eff6ff"/>
+  <path d="M288 83 h24 v24 h-24 z" fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M294 91 h12 M294 97 h12 M294 103 h8" stroke="#3b82f6" stroke-width="2" stroke-linecap="round"/>
+  <text x="300" y="160" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="15" font-weight="700" fill="#1e293b" text-anchor="middle">{escaped_title}</text>
+  <text x="300" y="185" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="12" font-weight="500" fill="#64748b" text-anchor="middle">Requirement Document Specification</text>
+</svg>"""
+    return Response(content=svg.encode("utf-8"), media_type="image/svg+xml")
 
 
 @app.post("/documents/extract-from-url")
@@ -3953,6 +4085,46 @@ async def extract_document_from_url(
         "user": current_user.email,
     }
 
+def _auto_populate_document_file_metadata(payload: dict) -> dict:
+    """Helper to auto-extract and populate file_path and screening_inputs if missing."""
+    import re
+    full_content = payload.get("full_content") or payload.get("content_preview") or ""
+    filename = payload.get("filename") or ""
+    file_path = payload.get("file_path") or ""
+    
+    screening_inputs = payload.get("screening_inputs")
+    if not isinstance(screening_inputs, dict):
+        screening_inputs = {}
+
+    uploaded_files = screening_inputs.get("uploaded_files")
+    if not isinstance(uploaded_files, list):
+        uploaded_files = []
+
+    # Extract filenames from full_content (e.g. --- Screenshot 2026-07-23 180448.png ---)
+    matches = re.findall(r'---\s*(?:DOCUMENT:\s*)?([^\n\r]+?\.(?:png|jpg|jpeg|gif|webp|pdf|docx|pptx|html|txt|md))\s*---', full_content, re.IGNORECASE)
+    extracted = []
+    if matches:
+        # Use the last file match which corresponds to the current revision's upload
+        last_file = matches[-1].strip()
+        if last_file:
+            extracted.append(last_file)
+
+    # Check filename if it looks like an uploaded file
+    if not extracted and filename:
+        fn_ext = filename.split('.')[-1].lower()
+        if fn_ext in ['png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf', 'docx', 'pptx', 'html', 'txt', 'md']:
+            extracted.append(filename)
+
+    if extracted:
+        if not file_path:
+            payload["file_path"] = ",".join(extracted)
+        if not uploaded_files:
+            screening_inputs["uploaded_files"] = extracted
+            payload["screening_inputs"] = screening_inputs
+
+    return payload
+
+
 # --- History Endpoints ---
 
 @app.get("/history", response_model=List[schemas.Document])
@@ -3985,13 +4157,108 @@ def get_user_history(
             )
         )
     
-    return (
+    docs = (
         query
         .order_by(models.Document.upload_date.desc())
         .offset(skip)
         .limit(limit)
         .all()
     )
+
+    # Auto-repair any documents missing file_path or screening_inputs.uploaded_files
+    has_repaired = False
+    for d in docs:
+        if not d.file_path or not (d.screening_inputs or {}).get("uploaded_files"):
+            payload = {
+                "full_content": d.full_content,
+                "content_preview": d.content_preview,
+                "filename": d.filename,
+                "file_path": d.file_path,
+                "screening_inputs": d.screening_inputs or {}
+            }
+            updated = _auto_populate_document_file_metadata(payload)
+            if updated.get("file_path") and not d.file_path:
+                d.file_path = updated["file_path"]
+                has_repaired = True
+            if updated.get("screening_inputs") and not (d.screening_inputs or {}).get("uploaded_files"):
+                d.screening_inputs = updated["screening_inputs"]
+                has_repaired = True
+
+    if has_repaired:
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+
+    # Auto-expand combined legacy document rows into individual revision records if project_token is specified
+    if project_token and docs:
+        import re
+        expanded_docs = []
+        seen_revisions = set()
+
+        for d in docs:
+            full_content = d.full_content or ""
+            matches = list(re.finditer(r'---\s*(?:NEW\s+)?REVISION\s+(\d+)\s*-\s*([^\n]+)\s*---', full_content, re.IGNORECASE))
+
+            if len(matches) > 1:
+                for i, match in enumerate(matches):
+                    rev_num = int(match.group(1))
+                    if rev_num in seen_revisions:
+                        continue
+                    seen_revisions.add(rev_num)
+
+                    rev_title = match.group(2).strip().replace("(Combined)", "").strip()
+                    start_idx = match.start()
+                    end_idx = matches[i + 1].start() if i + 1 < len(matches) else len(full_content)
+                    sec_content = full_content[start_idx:end_idx]
+
+                    file_matches = re.findall(r'---\s*(?:DOCUMENT:\s*)?([^\n\r]+?\.(?:png|jpg|jpeg|gif|webp|pdf|docx|pptx|html|txt|md))\s*---', sec_content, re.IGNORECASE)
+                    sec_files = []
+                    if file_matches:
+                        seen_f = set()
+                        for f_m in file_matches:
+                            f_clean = f_m.strip()
+                            if f_clean not in seen_f:
+                                seen_f.add(f_clean)
+                                sec_files.append(f_clean)
+
+                    sec_screening = {
+                        "uploaded_files": sec_files if sec_files else [rev_title],
+                        "manual_text": "",
+                        "linked_documents": [],
+                        "url_content": "",
+                        "repository_context": None,
+                        "skills_files": []
+                    }
+
+                    manual_match = re.search(r'---\s*MANUAL TEXT INPUT\s*---\s*([^\n\r]+)', sec_content, re.IGNORECASE)
+                    if manual_match:
+                        sec_screening["manual_text"] = manual_match.group(1).strip()
+
+                    expanded_docs.append(models.Document(
+                        id=d.id * 100 + rev_num,
+                        filename=rev_title,
+                        upload_date=getattr(d, "upload_date", None) or datetime.utcnow(),
+                        content_preview=sec_content[:200],
+                        full_content=sec_content,
+                        analysis_result=d.analysis_result,
+                        file_path=",".join(sec_files) if sec_files else d.file_path,
+                        screening_inputs=sec_screening,
+                        project_token=project_token,
+                        revision_version=rev_num,
+                        owner_id=d.owner_id
+                    ))
+            else:
+                rev_num = d.revision_version or 1
+                if rev_num not in seen_revisions:
+                    seen_revisions.add(rev_num)
+                    expanded_docs.append(d)
+
+        if expanded_docs:
+            expanded_docs.sort(key=lambda x: (x.revision_version or 0, getattr(x, "id", 0)))
+            docs = expanded_docs
+
+    return docs
 
 @app.post("/history", response_model=schemas.Document)
 def save_document_history(
@@ -4001,6 +4268,8 @@ def save_document_history(
 ):
     """Save an analysis result to history."""
     payload = document.dict()
+    payload = _auto_populate_document_file_metadata(payload)
+
     # Auto-populate project_token from analysis_result JSON if not provided
     if not payload.get("project_token") and payload.get("analysis_result"):
         try:
@@ -4033,11 +4302,15 @@ def update_document_history(
         raise HTTPException(status_code=404, detail="Document not found")
 
     payload = document.dict()
+    payload = _auto_populate_document_file_metadata(payload)
+
     db_doc.filename = payload["filename"]
     db_doc.content_preview = payload.get("content_preview")
     db_doc.full_content = payload.get("full_content")
     db_doc.analysis_result = payload.get("analysis_result")
     db_doc.file_path = payload.get("file_path")
+    if payload.get("screening_inputs"):
+        db_doc.screening_inputs = payload.get("screening_inputs")
     if "screening_inputs" in payload:
         db_doc.screening_inputs = payload.get("screening_inputs")
     # Auto-populate project_token from analysis_result JSON if not provided in payload
@@ -5291,7 +5564,7 @@ async def upload_and_analyze_document(
     current_user: models.User = Depends(auth.get_current_user),
 ):
     """
-    Upload a document, extract content with Docling, and analyze with AI.
+    Upload a document, extract content with Direct AI, and analyze with AI.
     One-step endpoint for complete BRD analysis.
     """
     # Validate file type
@@ -5313,7 +5586,7 @@ async def upload_and_analyze_document(
         
     file_path = ingestion.save_uploaded_file(content, file.filename)
     
-    # Process with Docling
+    # Process with Direct AI Ingestion
     extraction_result = await ingestion.process_document(file_path)
     
     # Cleanup the uploaded file
@@ -5836,6 +6109,7 @@ async def submit_governance_response(
             recommendation=recommendation_text,
             client_id=request.client_id,
             client_secret=request.client_secret,
+            current_revision_version=1,
         )
         db.add(db_response)
 
@@ -6501,6 +6775,140 @@ async def update_revision_reason(
     response.pending_revision_reason = payload.reason
     db.commit()
     return {"status": "success", "pending_revision_reason": payload.reason}
+
+
+# ===== REVISION MANAGEMENT ENDPOINTS =====
+
+@app.get("/governance/{identifier}/revisions", response_model=List[schemas.RevisionResponse])
+async def get_project_revisions(
+    identifier: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get all revision records for a project.
+    """
+    query = _governance_query_for_user(db, current_user)
+    if identifier.isdigit():
+        response = query.filter(models.GovernanceResponse.id == int(identifier)).first()
+    else:
+        response = query.filter(models.GovernanceResponse.project_token == identifier).first()
+    
+    if not response:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    revisions = db.query(models.Revision).filter(
+        models.Revision.project_token == response.project_token
+    ).order_by(models.Revision.version_number.desc()).all()
+    
+    return revisions
+
+
+@app.post("/governance/{identifier}/revisions", response_model=schemas.RevisionResponse)
+async def create_revision(
+    identifier: str,
+    payload: schemas.RevisionCreate,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Create a new revision for a project.
+    
+    This snapshots the current screening_inputs and document IDs,
+    increments the revision version counter, and stores a new Revision record.
+    """
+    query = _governance_query_for_user(db, current_user)
+    if identifier.isdigit():
+        gov_response = query.filter(models.GovernanceResponse.id == int(identifier)).first()
+    else:
+        gov_response = query.filter(models.GovernanceResponse.project_token == identifier).first()
+    
+    if not gov_response:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    project_token = gov_response.project_token
+    
+    # Determine the next version number
+    if payload.version_number is not None:
+        next_version = payload.version_number
+    else:
+        # Auto-increment from current_revision_version
+        next_version = (gov_response.current_revision_version or 0) + 1
+    
+    # Snapshot current screening_inputs from documents linked to this project
+    linked_docs = db.query(models.Document).filter(
+        models.Document.project_token == project_token
+    ).all()
+    
+    doc_ids = [d.id for d in linked_docs]
+    screening_inputs_snapshot = {}
+    for d in linked_docs:
+        if d.screening_inputs:
+            screening_inputs_snapshot[str(d.id)] = d.screening_inputs
+    
+    # Snapshot the governance answers
+    answers_snapshot = gov_response.answers if gov_response.answers else {}
+    
+    # Create the revision record
+    revision = models.Revision(
+        project_token=project_token,
+        version_number=next_version,
+        reason=payload.reason,
+        screening_snapshot={
+            "screening_inputs": screening_inputs_snapshot,
+            "answers": answers_snapshot,
+            "project_name": gov_response.project_name,
+        },
+        document_snapshots=doc_ids,
+        created_by_user_id=current_user.id,
+    )
+    db.add(revision)
+    
+    # Update the project's current revision version
+    gov_response.current_revision_version = next_version
+    
+    db.commit()
+    db.refresh(revision)
+    
+    return revision
+
+
+@app.post("/governance/{identifier}/revision-version")
+async def update_current_revision_version(
+    identifier: str,
+    payload: schemas.RevisionCreate,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Explicitly update the current revision version on a project.
+    This is useful when starting a new revision cycle before uploading documents.
+    """
+    query = _governance_query_for_user(db, current_user)
+    if identifier.isdigit():
+        gov_response = query.filter(models.GovernanceResponse.id == int(identifier)).first()
+    else:
+        gov_response = query.filter(models.GovernanceResponse.project_token == identifier).first()
+    
+    if not gov_response:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    if payload.version_number is not None:
+        gov_response.current_revision_version = payload.version_number
+    else:
+        gov_response.current_revision_version = (gov_response.current_revision_version or 1) + 1
+    
+    if payload.reason:
+        gov_response.pending_revision_reason = payload.reason
+    
+    db.commit()
+    
+    return {
+        "status": "success",
+        "project_token": gov_response.project_token,
+        "current_revision_version": gov_response.current_revision_version,
+        "pending_revision_reason": gov_response.pending_revision_reason,
+    }
 
 
 @app.post("/governance/{identifier}/prerequisites-complete")

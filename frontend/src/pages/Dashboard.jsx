@@ -632,10 +632,10 @@ const Dashboard = ({
             }
         }
 
-        // Only set revisionUnlocked from backend if we don't have explicit state stored
-        // This allows the state to persist after upload completion
-        if (proj?.pendingRevisionReason && !hasExplicitState) {
-            // Only apply pending revision reason if this is a fresh state (no existing state)
+        // Always apply revisionUnlocked when backend has pendingRevisionReason
+        // This ensures that after creating a new revision, the upload form is immediately available
+        // without requiring a page reload. No !hasExplicitState guard — the backend is source of truth.
+        if (proj?.pendingRevisionReason) {
             return {
                 ...state,
                 revisionUnlocked: true,
@@ -1277,6 +1277,7 @@ const Dashboard = ({
                 file_path,
                 screening_inputs: screeningInputs,
                 project_token: taskKey,
+                revision_version: nextRevisionNumber,  // Tag with revision version
             });
 
             if (!savedDoc) return null;
@@ -1302,22 +1303,20 @@ const Dashboard = ({
         }
     }, [selectedProjectKey, projects, revisionReason, repoContext, persistHistoryDocument, fetchHistory, refreshProjects]);
 
-    // Save history
+    // Save history — ALWAYS creates a NEW document per revision (never updates existing)
     const saveToHistory = async (newResult, taskKey = selectedProjectKey, analysisRepoContext = repoContext) => {
         if (!newResult?.filename) return;
 
         try {
             const project = projects.find((p) => p.key === taskKey);
             const currentRevisionCount = project?.documents?.length || 0;
-            const hasExistingDocument = Boolean(newResult?.id);
-            const nextRevisionNumber = newResult?.revisionNumber
-                || (hasExistingDocument ? Math.max(currentRevisionCount, 1) : currentRevisionCount + 1);
+            const nextRevisionNumber = newResult?.revisionNumber || currentRevisionCount + 1;
             const repoContextMeta = newResult?.analysis?.repoContextMeta || buildRepoContextMeta(analysisRepoContext);
             const storedAnalysis = {
                 ...(newResult.analysis || {}),
                 governanceContext: governanceContext || null,
                 repoContextMeta: repoContextMeta || null,
-                sections: newResult.extraction?.sections || [], // Store structured sections
+                sections: newResult.extraction?.sections || [],
                 projectMeta: {
                     project_name: project?.name || governanceContext?.project_name || 'Project',
                     project_token: project?.projectToken || taskKey || null,
@@ -1328,6 +1327,8 @@ const Dashboard = ({
                 }
             };
 
+            // IMPORTANT: Always POST (create new) for each revision — never pass documentId.
+            // Each revision creates its own document with only its own content.
             const savedDoc = await persistHistoryDocument({
                 filename: newResult.filename,
                 content_preview: `${newResult.extraction?.markdown?.substring(0, 200) || ''}...`,
@@ -1335,10 +1336,10 @@ const Dashboard = ({
                 analysis_result: JSON.stringify(storedAnalysis),
                 file_path: newResult.file_path || newResult.extraction?.file_path || null,
                 project_token: taskKey,
-            }, newResult?.id || null);
+                revision_version: nextRevisionNumber,  // Tag this document with its revision version
+            }, null);  // Always null = POST (create new), never PUT (update)
 
             if (savedDoc) {
-                // CRITICAL: Preserve existing credentials when updating draft project
                 const existingDraft = getDraftProject(taskKey);
                 upsertDraftProject({
                     key: taskKey,
@@ -1346,26 +1347,21 @@ const Dashboard = ({
                     status: 'analysis_complete',
                     latestRevision: nextRevisionNumber,
                     submissionDate: new Date().toISOString(),
-                    // Preserve credentials from existing draft
                     client_id: existingDraft?.client_id || project?.client_id || null,
                     client_secret: existingDraft?.client_secret || project?.client_secret || null,
                 });
-                // FIXED: Always keep revisionUnlocked true for unlimited revision creation
-                // User can create new revisions without any restrictions after analysis
                 setProjectState(taskKey, prev => ({
                     result: { ...prev.result, id: savedDoc.id, revisionNumber: nextRevisionNumber },
-                    revisionUnlocked: true,  // Always keep unlocked for unlimited revisions
-                    revisionReason: prev.revisionReason || ''  // Preserve revision reason for next upload
+                    revisionUnlocked: true,
+                    revisionReason: prev.revisionReason || ''
                 }));
                 fetchHistory(taskKey);
                 refreshProjects?.();
 
-                // Extract project type and save to localStorage + DB
                 const metrics = newResult?.analysis?.metrics;
                 const projectType = metrics?.project_type || metrics?.projectType || 'greenfield';
                 localStorage.setItem(`project_type_${taskKey}`, projectType);
                 
-                // If a repository context is connected, update is_brownfield flag in metadata
                 if (analysisRepoContext?.repo || analysisRepoContext?.provider) {
                     const repoMeta = repoContextMeta || buildRepoContextMeta(analysisRepoContext);
                     if (repoMeta) {
@@ -1374,7 +1370,6 @@ const Dashboard = ({
                     }
                 }
                 
-                // Call DB to set the project type
                 const userToken = localStorage.getItem('token');
                 fetch(`${API_BASE_URL}/api/agent/projects/${taskKey}/project-type`, {
                     method: 'POST',
@@ -1391,8 +1386,6 @@ const Dashboard = ({
                     console.error("Failed to auto-save project type to DB:", err);
                 });
 
-                // Always navigate to agent analysis after successful save
-                // The governance check happens in handleUpload before this
                 navigate('/agent-analysis');
             }
         } catch (e) {
@@ -1866,7 +1859,14 @@ const Dashboard = ({
         // Store previously uploaded file names so the UI can display them
         const prevFileNames = {};
         if (Array.isArray(inputs?.uploaded_files) && inputs.uploaded_files.length > 0) {
-            prevFileNames.uploadedFiles = inputs.uploaded_files;
+            const sanitized = Array.from(new Set(
+                inputs.uploaded_files
+                    .map(f => typeof f === 'string' ? f.replace(/^---\s*(?:DOCUMENT:\s*)?/, '').replace(/\s*---$/, '').trim() : '')
+                    .filter(f => f && !f.startsWith('---') && !f.startsWith('DOCUMENT:'))
+            ));
+            if (sanitized.length > 0) {
+                prevFileNames.uploadedFiles = sanitized;
+            }
         }
         if (Array.isArray(inputs?.linked_documents) && inputs.linked_documents.length > 0) {
             prevFileNames.linkedFiles = inputs.linked_documents;
@@ -2445,26 +2445,31 @@ const Dashboard = ({
                         }
                     }
 
-                    // Combine previous content with new content
-                    if (previousContentSections.length > 0) {
-                        const previousMarkdown = previousContentSections.map(section =>
-                            `\n\n--- ${section.title} ---\n\n${section.content}`
-                        ).join('');
-
-                        // Add previous content BEFORE new content so AI sees the history first
-                        finalMarkdownForAnalysis = `${previousMarkdown}\n\n--- NEW REVISION ${selectedProject.documents.length + 1} - ${filename} ---\n\n${combinedMarkdown}`;
-
-                        // Add to display sections (for UI)
-                        finalSectionsForDisplay = [
-                            ...previousContentSections,
-                            { title: `NEW REVISION ${selectedProject.documents.length + 1}`, content: combinedMarkdown }
-                        ];
-                    }
+                    // Store each revision with its clean standalone markdown and sections
+                    finalMarkdownForAnalysis = combinedMarkdown;
+                    finalSectionsForDisplay = contentSections;
                 }
+
+                // Build robust list of uploaded file names & paths
+                let resolvedUploadedFileNames = (uploadedFilePathsList.length > 0
+                    ? uploadedFilePathsList.map(p => p.split(/[/\\]/).pop())
+                    : (hasFiles ? files.map(f => f.name) : [])
+                ).filter(Boolean);
+
+                // Fallback: Check contentSections for file headers if resolvedUploadedFileNames is empty
+                if (resolvedUploadedFileNames.length === 0 && contentSections.length > 0) {
+                    contentSections.forEach(sec => {
+                        if (sec.title && sec.title.match(/\.(png|jpg|jpeg|gif|webp|pdf|docx|pptx|html|txt|md)$/i)) {
+                            resolvedUploadedFileNames.push(sec.title);
+                        }
+                    });
+                }
+
+                const resolvedFilePath = uploadedFilePathsList.filter(Boolean).join(',') || resolvedUploadedFileNames.join(',');
 
                 // Build structured record of raw screening inputs for persistent storage
                 const screeningInputs = {
-                    uploaded_files: hasFiles ? files.map(f => f.name) : [],
+                    uploaded_files: resolvedUploadedFileNames,
                     linked_documents: hasLinkedFiles ? linkedFiles.map(f => f.name) : [],
                     manual_text: hasText ? textInput : '',
                     url_content: hasUrl ? (urlInput || urlRequirements || '') : '',
@@ -2482,7 +2487,7 @@ const Dashboard = ({
                     sections: finalSectionsForDisplay,
                     taskKey,
                     repoContextState: repoContext,
-                    file_path: uploadedFilePathsList.filter(Boolean).join(','),
+                    file_path: resolvedFilePath,
                     screeningInputs,
                 });
 
@@ -3406,32 +3411,51 @@ const Dashboard = ({
                                                     <h3 className="text-xs font-bold text-app-text-main uppercase tracking-wider">Uploaded Requirement Documents</h3>
                                                 </div>
                                                 <div className="space-y-2">
-                                                    {selectedProject.documents.map((doc, idx) => {
-                                                        const parsedDoc = parseStoredDocumentAnalysis(doc);
-                                                        const revNum = parsedDoc?.projectMeta?.revision_number || (selectedProject.documents.length - idx);
-                                                        return (
-                                                            <div key={doc.id} className="flex items-center justify-between p-3 bg-app-bg-card border border-app-border-light rounded-lg hover:border-app-primary/30 transition-all shadow-sm">
-                                                                <div className="flex items-center gap-3 min-w-0">
-                                                                    <div className="w-7 h-7 rounded-full bg-app-primary/10 text-app-primary flex items-center justify-center font-bold text-[11px] flex-shrink-0">
-                                                                        R{revNum}
-                                                                    </div>
-                                                                    <div className="min-w-0">
-                                                                        <p className="text-sm font-semibold text-app-text-main truncate" title={doc.filename}>{doc.filename}</p>
-                                                                        <p className="text-[10px] text-app-text-muted mt-0.5">
-                                                                            Uploaded {doc.upload_date ? new Date(doc.upload_date).toLocaleDateString() : '—'}
-                                                                        </p>
-                                                                    </div>
-                                                                </div>
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => setPreviewDoc(doc)}
-                                                                    className="px-3 py-1.5 bg-app-bg-page hover:bg-app-bg-hover border border-app-border text-xs font-bold text-app-text-main rounded-md transition-colors shadow-sm"
-                                                                >
-                                                                    View Document
-                                                                </button>
-                                                            </div>
-                                                        );
-                                                    })}
+                                                    {(() => {
+                                                         const sortedDocs = [...selectedProject.documents].sort((a, b) => {
+                                                             const revA = a.revision_version || parseStoredDocumentAnalysis(a)?.projectMeta?.revision_number || 1;
+                                                             const revB = b.revision_version || parseStoredDocumentAnalysis(b)?.projectMeta?.revision_number || 1;
+                                                             return revA - revB;
+                                                         });
+
+                                                         return sortedDocs.map((doc, idx) => {
+                                                             const parsedDoc = parseStoredDocumentAnalysis(doc);
+                                                             const revNum = doc.revision_version || parsedDoc?.projectMeta?.revision_number || (idx + 1);
+                                                             let inputs = doc.screening_inputs;
+                                                             if (typeof inputs === 'string') {
+                                                                 try { inputs = JSON.parse(inputs); } catch (e) {}
+                                                             }
+                                                             const filesList = Array.from(new Set(
+                                                                 (inputs?.uploaded_files || [])
+                                                                     .map(f => typeof f === 'string' ? f.replace(/^---\s*(?:DOCUMENT:\s*)?/, '').replace(/\s*---$/, '').trim() : '')
+                                                                     .filter(f => f && !f.startsWith('---') && !f.startsWith('DOCUMENT:'))
+                                                             ));
+                                                             const displayFileName = filesList[0] || doc.filename || `Revision ${revNum}`;
+
+                                                             return (
+                                                                 <div key={doc.id} className="flex items-center justify-between p-3 bg-app-bg-card border border-app-border-light rounded-lg hover:border-app-primary/30 transition-all shadow-sm">
+                                                                     <div className="flex items-center gap-3 min-w-0">
+                                                                         <div className="w-7 h-7 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-[11px] flex-shrink-0 shadow-xs">
+                                                                             R{revNum}
+                                                                         </div>
+                                                                         <div className="min-w-0">
+                                                                             <p className="text-sm font-semibold text-app-text-main truncate" title={displayFileName}>{displayFileName}</p>
+                                                                             <p className="text-[10px] text-app-text-muted mt-0.5">
+                                                                                 Revision {revNum} Checkpoint Document
+                                                                             </p>
+                                                                         </div>
+                                                                     </div>
+                                                                     <button
+                                                                         type="button"
+                                                                         onClick={() => setPreviewDoc({ ...doc, filename: displayFileName })}
+                                                                         className="px-3 py-1.5 bg-app-bg-page hover:bg-app-bg-hover border border-app-border text-xs font-bold text-app-text-main rounded-md transition-colors shadow-sm"
+                                                                     >
+                                                                         View Document
+                                                                     </button>
+                                                                 </div>
+                                                             );
+                                                         });
+                                                     })()}
                                                 </div>
                                             </div>
                                         )}
@@ -3521,9 +3545,13 @@ const Dashboard = ({
                                                     {/* Show previously uploaded file names */}
                                                     {previousFileNames?.uploadedFiles && previousFileNames.uploadedFiles.length > 0 && files.length === 0 && (
                                                         <div className="mt-2 text-xs text-app-text-muted flex flex-col items-center border-t border-app-border-light/50 pt-2 w-full">
-                                                            <span className="font-semibold text-app-primary-dark/70 mb-0.5">Previously uploaded:</span>
-                                                            {previousFileNames.uploadedFiles.map((name, i) => (
-                                                                <span key={i} className="truncate max-w-[200px] text-app-text-label">{name}</span>
+                                                            <span className="font-semibold text-app-primary-dark/70 mb-0.5">Uploaded file for this revision:</span>
+                                                            {Array.from(new Set(
+                                                                previousFileNames.uploadedFiles
+                                                                    .map(name => typeof name === 'string' ? name.replace(/^---\s*(?:DOCUMENT:\s*)?/, '').replace(/\s*---$/, '').trim() : '')
+                                                                    .filter(name => name && !name.startsWith('---') && !name.startsWith('DOCUMENT:'))
+                                                            )).map((name, i) => (
+                                                                <span key={i} className="truncate max-w-[280px] text-app-text-label font-medium bg-blue-50/60 text-blue-800 px-2.5 py-1 rounded-md border border-blue-100/80 my-0.5 shadow-xs">{name}</span>
                                                             ))}
                                                         </div>
                                                     )}
@@ -4573,115 +4601,170 @@ const Dashboard = ({
 
             {/* ── DOCUMENT PREVIEW MODAL ── */}
             {previewDoc && (() => {
-                const filesToView = previewDoc.file_path ? previewDoc.file_path.split(',') : [];
+                let rawFiles = [];
+                let inputs = previewDoc.screening_inputs;
+                if (typeof inputs === 'string') { try { inputs = JSON.parse(inputs); } catch(e){} }
+                if (inputs && Array.isArray(inputs.uploaded_files) && inputs.uploaded_files.length > 0) {
+                    rawFiles = inputs.uploaded_files.flatMap(f => typeof f === 'string' ? f.split(',') : [f]);
+                } else if (previewDoc.file_path) {
+                    rawFiles = previewDoc.file_path.split(',');
+                } else if (previewDoc.filename) {
+                    rawFiles = [previewDoc.filename];
+                }
+
+                const sanitized = Array.from(new Set(
+                    rawFiles
+                        .map(f => typeof f === 'string' ? f.replace(/^---\s*(?:DOCUMENT:\s*)?/, '').replace(/\s*---$/, '').trim() : '')
+                        .filter(f => f && !f.startsWith('---') && !f.startsWith('DOCUMENT:'))
+                ));
+
+                const filesToView = sanitized.length > 0 ? sanitized : (previewDoc.filename ? [previewDoc.filename.replace(/^---\s*(?:DOCUMENT:\s*)?/, '').replace(/\s*---$/, '').trim()] : []);
                 const hasFilePath = filesToView.length > 0;
-                const activeMode = hasFilePath ? previewMode : 'parsed';
-                
+                const activeTab = previewMode || 'both'; // 'both' | 'original' | 'analysis'
+
                 return (
                     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[9999] p-4">
-                        <div className="bg-app-bg-card rounded-2xl shadow-2xl border border-app-border max-w-4xl w-full max-h-[85vh] flex flex-col">
+                        <div className="bg-app-bg-card rounded-2xl shadow-2xl border border-app-border max-w-5xl w-full max-h-[90vh] flex flex-col overflow-hidden">
                             {/* Modal Header */}
-                            <div className="flex items-center justify-between p-6 border-b border-app-border">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between p-5 border-b border-app-border gap-4 bg-app-bg-page/40">
                                 <div className="flex items-center gap-3">
-                                    <div className="w-10 h-10 rounded-xl bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center">
+                                    <div className="w-10 h-10 rounded-xl bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center flex-shrink-0">
                                         <FileText className="w-5 h-5 text-blue-600 dark:text-blue-400" />
                                     </div>
-                                    <div>
-                                        <h3 className="text-lg font-bold text-app-text-main text-left">{previewDoc.filename}</h3>
-                                        <p className="text-xs text-app-text-muted text-left">Uploaded Requirement Document Content</p>
+                                    <div className="min-w-0">
+                                        <h3 className="text-base font-bold text-app-text-main text-left truncate max-w-md">{previewDoc.filename}</h3>
+                                        <p className="text-xs text-app-text-muted text-left">Uploaded Requirement Document Content & Analysis</p>
                                     </div>
                                 </div>
-                                <button
-                                    type="button"
-                                    onClick={() => setPreviewDoc(null)}
-                                    className="w-8 h-8 rounded-lg hover:bg-app-bg-hover flex items-center justify-center transition-colors"
-                                >
-                                    <span className="text-xl text-app-text-muted">×</span>
-                                </button>
-                            </div>
-                            {/* Modal Content */}
-                            <div className="flex-1 overflow-y-auto p-6 text-left">
-                                {hasFilePath ? (
-                                    <div className="flex flex-col gap-4">
-                                        {filesToView.map((fname, idx) => {
-                                            const fileExt = fname.split('.').pop().toLowerCase();
-                                            const fileUrl = `${API_BASE_URL}/documents/download/${encodeURIComponent(fname)}?token=${localStorage.getItem('token')}`;
-                                            
-                                            return (
-                                                <div key={fname} className="flex flex-col gap-2">
-                                                    {filesToView.length > 1 && (
-                                                        <h4 className="text-sm font-bold text-app-text-main">
-                                                            Document {idx + 1}: {previewDoc.filename.split(',')[idx] || fname}
-                                                        </h4>
-                                                    )}
-                                                    
-                                                    {fileExt === 'pdf' ? (
-                                                        <iframe
-                                                            src={fileUrl}
-                                                            className="w-full h-[55vh] rounded-xl border border-app-border bg-white"
-                                                            title={fname}
-                                                        />
-                                                    ) : ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(fileExt) ? (
-                                                        <div className="flex justify-center items-center p-4 bg-app-bg-page rounded-xl border border-app-border max-h-[55vh] overflow-auto">
-                                                            <img
-                                                                src={fileUrl}
-                                                                alt={fname}
-                                                                className="max-w-full max-h-[50vh] object-contain rounded-lg shadow-md"
-                                                            />
-                                                        </div>
-                                                    ) : (
-                                                        <div className="p-8 bg-app-bg-page rounded-xl border border-app-border text-center flex flex-col items-center gap-4">
-                                                            <div className="w-16 h-16 rounded-2xl bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center text-3xl">
-                                                                📂
-                                                            </div>
-                                                            <div>
-                                                                <h4 className="text-base font-bold text-app-text-main mb-1">
-                                                                    No Direct Browser Preview
-                                                                </h4>
-                                                                <p className="text-xs text-app-text-muted max-w-md mx-auto">
-                                                                    Files of type <code>.{fileExt}</code> (like Word or PowerPoint documents) cannot be previewed natively in the browser. You can download the file directly to view its contents.
-                                                                </p>
-                                                            </div>
-                                                            <a
-                                                                href={fileUrl}
-                                                                download
-                                                                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold flex items-center gap-2 shadow-sm transition-colors"
-                                                            >
-                                                                📥 Download Original File
-                                                            </a>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                ) : (
-                                    <>
-                                        <div className="prose prose-sm dark:prose-invert max-w-none text-app-text-main font-sans">
-                                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                                {previewDoc.full_content || previewDoc.content_preview || 'No content parsed or found in this document.'}
-                                            </ReactMarkdown>
+                                
+                                {/* View Mode Tabs */}
+                                <div className="flex items-center gap-2">
+                                    {hasFilePath && (
+                                        <div className="flex items-center bg-app-bg-page p-1 rounded-xl border border-app-border">
+                                            <button
+                                                type="button"
+                                                onClick={() => setPreviewMode('both')}
+                                                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${activeTab === 'both' ? 'bg-app-primary text-white shadow-sm' : 'text-app-text-muted hover:text-app-text-main'}`}
+                                            >
+                                                🖼️ Stacked (Image + Text)
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setPreviewMode('original')}
+                                                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${activeTab === 'original' ? 'bg-app-primary text-white shadow-sm' : 'text-app-text-muted hover:text-app-text-main'}`}
+                                            >
+                                                🖼️ Image Only
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setPreviewMode('analysis')}
+                                                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${activeTab === 'analysis' ? 'bg-app-primary text-white shadow-sm' : 'text-app-text-muted hover:text-app-text-main'}`}
+                                            >
+                                                📝 Text Only
+                                            </button>
                                         </div>
-                                    </>
+                                    )}
+                                    <button
+                                        type="button"
+                                        onClick={() => setPreviewDoc(null)}
+                                        className="w-8 h-8 rounded-lg hover:bg-app-bg-hover flex items-center justify-center transition-colors text-app-text-muted hover:text-app-text-main ml-2"
+                                    >
+                                        <span className="text-xl">×</span>
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            {/* Modal Content */}
+                            <div className="flex-1 overflow-y-auto p-6 space-y-6 text-left">
+                                {/* SECTION 1: Original File / Image View */}
+                                {hasFilePath && (activeTab === 'both' || activeTab === 'original') && (
+                                    <div className="space-y-3">
+                                        <h4 className="text-xs font-bold text-app-text-muted uppercase tracking-wider flex items-center gap-1.5">
+                                            <span>🖼️ Uploaded Document / Image Preview</span>
+                                        </h4>
+                                        <div className="flex flex-col gap-4">
+                                            {filesToView.map((fname, idx) => {
+                                                const fileExt = fname.split('.').pop().toLowerCase();
+                                                const fileUrl = `${API_BASE_URL}/documents/download/${encodeURIComponent(fname)}?token=${localStorage.getItem('token')}`;
+                                                
+                                                return (
+                                                    <div key={fname} className="flex flex-col gap-2">
+                                                        {filesToView.length > 1 && (
+                                                            <h5 className="text-xs font-semibold text-app-text-main">
+                                                                File {idx + 1}: {previewDoc.filename.split(',')[idx] || fname}
+                                                            </h5>
+                                                        )}
+                                                        
+                                                        {fileExt === 'pdf' ? (
+                                                            <iframe
+                                                                src={fileUrl}
+                                                                className="w-full h-[50vh] rounded-xl border border-app-border bg-white shadow-sm"
+                                                                title={fname}
+                                                            />
+                                                        ) : ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(fileExt) ? (
+                                                            <div className="flex flex-col items-center justify-center p-4 bg-app-bg-page rounded-xl border border-app-border max-h-[55vh] overflow-auto">
+                                                                <img
+                                                                    src={fileUrl}
+                                                                    alt={fname}
+                                                                    className="max-w-full max-h-[48vh] object-contain rounded-lg shadow-md border border-app-border/40"
+                                                                />
+                                                            </div>
+                                                        ) : (
+                                                            <div className="p-6 bg-app-bg-page rounded-xl border border-app-border text-center flex flex-col items-center gap-3">
+                                                                <div className="w-12 h-12 rounded-xl bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center text-2xl">
+                                                                    📂
+                                                                </div>
+                                                                <div>
+                                                                    <h5 className="text-sm font-bold text-app-text-main mb-0.5">
+                                                                        {fname}
+                                                                    </h5>
+                                                                    <p className="text-xs text-app-text-muted">
+                                                                        Document type <code>.{fileExt}</code> can be downloaded to view directly.
+                                                                    </p>
+                                                                </div>
+                                                                <a
+                                                                    href={fileUrl}
+                                                                    download
+                                                                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold flex items-center gap-2 shadow-sm transition-colors"
+                                                                >
+                                                                    📥 Download File ({fname})
+                                                                </a>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* SECTION 2: Extracted Analysis / Content View */}
+                                {(activeTab === 'both' || activeTab === 'analysis' || !hasFilePath) && (
+                                    <div className={`space-y-3 ${hasFilePath && activeTab === 'both' ? 'border-t border-app-border/60 pt-5' : ''}`}>
+                                        <h4 className="text-xs font-bold text-app-text-muted uppercase tracking-wider flex items-center gap-1.5">
+                                            <span>📝 Extracted Content & Requirement Analysis</span>
+                                        </h4>
+                                        <div className="p-5 bg-app-bg-page rounded-xl border border-app-border font-sans max-h-[55vh] overflow-y-auto">
+                                            <div className="prose prose-sm dark:prose-invert max-w-none text-app-text-main leading-relaxed">
+                                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                                    {previewDoc.full_content || previewDoc.content_preview || 'No text content parsed or found in this document.'}
+                                                </ReactMarkdown>
+                                            </div>
+                                        </div>
+                                    </div>
                                 )}
                             </div>
                             
                             {/* Modal Footer */}
-                            <div className="flex items-center justify-between p-6 border-t border-app-border">
-                                {hasFilePath ? (
-                                    <div className="text-xs text-app-text-muted text-left">
-                                        Source: <span className="font-semibold">{filesToView.length} file(s) on server</span>
-                                    </div>
-                                ) : (
-                                    <div className="text-xs text-app-text-muted text-left">
-                                        Source: <span className="font-semibold">Text Input / URL</span>
-                                    </div>
-                                )}
+                            <div className="flex items-center justify-between p-5 border-t border-app-border bg-app-bg-page/40">
+                                <div className="text-xs text-app-text-muted text-left">
+                                    Source: <span className="font-semibold">{hasFilePath ? `${filesToView.length} file(s) on server` : 'Text Input / URL'}</span>
+                                </div>
                                 <div className="flex items-center gap-3">
                                     <button
                                         type="button"
                                         onClick={() => setPreviewDoc(null)}
-                                        className="px-4 py-2.5 text-sm font-semibold text-app-text-main bg-app-bg-page border border-app-border rounded-lg hover:bg-app-bg-hover transition-colors"
+                                        className="px-5 py-2 text-xs font-semibold text-app-text-main bg-app-bg-card border border-app-border rounded-xl hover:bg-app-bg-hover transition-colors shadow-sm"
                                     >
                                         Close
                                     </button>

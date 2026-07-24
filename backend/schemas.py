@@ -200,6 +200,7 @@ class DocumentBase(BaseModel):
     file_path: Optional[str] = ""
     screening_inputs: Optional[dict] = None
     project_token: Optional[str] = None
+    revision_version: Optional[int] = None  # Links document to a specific revision version
 
     @field_validator("file_path", mode="before")
     @classmethod
@@ -266,7 +267,7 @@ class DocumentCreate(DocumentBase):
 
 class Document(DocumentBase):
     id: int
-    upload_date: datetime
+    upload_date: Optional[datetime] = None
     owner_id: int
 
     class Config:
@@ -379,6 +380,27 @@ class PrerequisitesSaveRequest(BaseModel):
 class AccessRequest(BaseModel):
     path: str
     section_name: str
+
+# ===== REVISION MANAGEMENT =====
+
+class RevisionCreate(BaseModel):
+    """Payload for creating a new project revision."""
+    reason: Optional[str] = None
+    version_number: Optional[int] = None  # If not provided, auto-incremented
+
+class RevisionResponse(BaseModel):
+    """Response model for a single revision record."""
+    id: int
+    project_token: str
+    version_number: int
+    reason: Optional[str] = None
+    screening_snapshot: Optional[dict] = None
+    document_snapshots: Optional[list] = None
+    created_by_user_id: Optional[int] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
 
 class ProjectGitConfigRequest(BaseModel):
     source_repo_url: Optional[str] = None
