@@ -219,6 +219,42 @@ def _run_startup_migrations():
             except Exception as e:
                 logging.getLogger(__name__).warning(f"Migration: Could not create revisions table: {e}")
 
+        # 4. Add daily_emails_enabled to users table
+        if "users" in table_names:
+            user_cols = [c["name"] for c in inspector.get_columns("users")]
+            if "daily_emails_enabled" not in user_cols:
+                try:
+                    conn.execute(sql_text("ALTER TABLE users ADD COLUMN daily_emails_enabled BOOLEAN DEFAULT 1"))
+                    conn.commit()
+                    logging.getLogger(__name__).info("Migration: Added 'daily_emails_enabled' column to 'users' table.")
+                except Exception as e:
+                    logging.getLogger(__name__).warning(f"Migration: Could not add daily_emails_enabled to users: {e}")
+
+        # 5. Create daily_billing_email_logs table if not exists
+        if "daily_billing_email_logs" not in table_names:
+            try:
+                conn.execute(sql_text("""
+                    CREATE TABLE daily_billing_email_logs (
+                        id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NULL REFERENCES users(id),
+                        email VARCHAR NOT NULL,
+                        date_key VARCHAR NOT NULL,
+                        sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        status VARCHAR NOT NULL,
+                        error_message TEXT NULL,
+                        total_tokens INTEGER DEFAULT 0,
+                        total_cost FLOAT DEFAULT 0.0,
+                        is_admin_report BOOLEAN DEFAULT 0,
+                        cc_recipients TEXT NULL
+                    )
+                """))
+                conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_daily_billing_email_logs_email ON daily_billing_email_logs (email)"))
+                conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_daily_billing_email_logs_date_key ON daily_billing_email_logs (date_key)"))
+                conn.commit()
+                logging.getLogger(__name__).info("Migration: Created 'daily_billing_email_logs' table.")
+            except Exception as e:
+                logging.getLogger(__name__).warning(f"Migration: Could not create daily_billing_email_logs table: {e}")
+
 _run_startup_migrations()
 
 @asynccontextmanager
@@ -231,12 +267,17 @@ async def lifespan(app: FastAPI):
     from capture_agent_logs import auto_capture_loop
     log_task = asyncio.create_task(auto_capture_loop())
     
+    # Start background daily billing emails scheduler loop
+    from daily_billing_email_service import daily_billing_email_scheduler
+    billing_email_task = asyncio.create_task(daily_billing_email_scheduler())
+    
     yield
     
     # Cancel log capture task and shutdown job manager
     log_task.cancel()
+    billing_email_task.cancel()
     try:
-        await asyncio.gather(log_task, return_exceptions=True)
+        await asyncio.gather(log_task, billing_email_task, return_exceptions=True)
     except Exception:
         pass
     await analysis_job_manager.shutdown_job_manager()
@@ -3261,6 +3302,86 @@ def download_org_billing_report(
         media_type="text/html",
         headers={"Content-Disposition": f"attachment; filename={organization_name.replace(' ', '_')}_utilization_report.html"}
     )
+
+@app.post("/admin/billing-emails/trigger")
+async def trigger_billing_emails(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    date: Optional[str] = None,
+    email: Optional[str] = None,
+    skip_logging_run_date: bool = False,
+    dry_run: bool = False,
+    db: Session = Depends(get_db)
+):
+    """
+    Manually triggers sending daily utilization & cost email reports.
+    If 'date' is provided (format: YYYY-MM-DD), reports are sent for that date.
+    If 'email' is provided, only sends to that specific user email.
+    """
+    if not current_user.is_org_admin:
+        raise HTTPException(status_code=403, detail="Forbidden. Org admin rights required.")
+        
+    from daily_billing_email_service import send_daily_billing_emails
+    import datetime
+    
+    run_date = datetime.datetime.utcnow()
+    if date:
+        try:
+            # Parse target date and set run_date to date + 1 day so that "yesterday" of run_date matches target date
+            parsed_dt = datetime.datetime.strptime(date, "%Y-%m-%d")
+            run_date = parsed_dt + datetime.timedelta(days=1)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid date format. Expected YYYY-MM-DD.")
+            
+    try:
+        results = await send_daily_billing_emails(
+            db, run_date, target_email=email, skip_logging_run_date=skip_logging_run_date, dry_run=dry_run
+        )
+        return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to execute daily billing emails: {str(e)}")
+
+
+@app.get("/admin/billing-emails/controls")
+def get_billing_emails_controls(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)]
+):
+    """
+    Returns the current global blocklist and allowlist configurations.
+    """
+    if not current_user.is_org_admin:
+        raise HTTPException(status_code=403, detail="Forbidden. Org admin rights required.")
+        
+    from daily_billing_email_service import load_email_controls
+    return load_email_controls()
+
+
+@app.post("/admin/billing-emails/controls")
+def update_billing_emails_controls(
+    payload: dict,
+    current_user: Annotated[models.User, Depends(auth.get_current_user)]
+):
+    """
+    Updates the global blocklist, allowlist, scheduler, and template configurations.
+    """
+    if not current_user.is_org_admin:
+        raise HTTPException(status_code=403, detail="Forbidden. Org admin rights required.")
+        
+    from daily_billing_email_service import load_email_controls, save_email_controls
+    
+    controls = load_email_controls()
+    
+    # Deep merge payload recursively
+    def _deep_merge(dest: dict, source: dict) -> None:
+        for k, v in source.items():
+            if k in dest and isinstance(dest[k], dict) and isinstance(v, dict):
+                _deep_merge(dest[k], v)
+            else:
+                dest[k] = v
+                
+    _deep_merge(controls, payload)
+                
+    save_email_controls(controls)
+    return {"message": "Email delivery controls updated successfully", "controls": controls}
 
 @app.get("/organization/invites/preview", response_model=schemas.OrganizationInvitePreviewResponse)
 def preview_org_invite(

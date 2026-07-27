@@ -1,0 +1,194 @@
+<!--
+  DAILY ORGANIZATION COST & TOKEN SUMMARY — email template
+  ========================================================
+  Design: "Compute Ledger" — organization administrator report.
+-->
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="color-scheme" content="light dark">
+<meta name="supported-color-schemes" content="light dark">
+<title>Daily Organization Cost & Token Summary</title>
+<style>
+  body, table, td { -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }
+  table, td { mso-table-lspace:0pt; mso-table-rspace:0pt; }
+  img { border:0; line-height:100%; outline:none; text-decoration:none; -ms-interpolation-mode:bicubic; }
+  body { margin:0; padding:0; width:100% !important; }
+
+  .serif { font-family: Georgia, 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', serif; }
+  .sans  { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+  .mono  { font-family: 'SF Mono', SFMono-Regular, Consolas, 'Roboto Mono', Menlo, monospace; }
+
+  a.support-link { color:{{ primary_color }}; text-decoration:none; }
+
+  /* ============== DARK MODE ============== */
+  @media (prefers-color-scheme: dark) {
+    .page-bg        { background-color:{{ bg_dark }} !important; }
+    .card-bg        { background-color:{{ bg_card }} !important; }
+    .inset-bg       { background-color:{{ bg_dark }} !important; border-color:{{ primary_color }}22 !important; }
+    .header-bg      { background-color:{{ bg_card }} !important; border-color:{{ primary_color }}22 !important; }
+    .footer-bg      { background-color:{{ bg_dark }} !important; border-color:{{ primary_color }}22 !important; }
+    .rule           { border-color:{{ primary_color }}22 !important; }
+    .text-primary   { color:{{ text_main }} !important; }
+    .text-secondary { color:{{ text_muted }} !important; }
+    .accent-text    { color:{{ accent_color }} !important; }
+    .eyebrow        { color:{{ primary_color }} !important; }
+    .stat-card      { background-color:{{ bg_dark }} !important; border-color:{{ primary_color }}22 !important; }
+    .stat-label     { color:{{ text_muted }} !important; }
+    .stat-value     { color:{{ primary_color }} !important; }
+    .stat-sub       { color:{{ text_muted }} !important; }
+    .table-wrap     { border-color:{{ primary_color }}22 !important; }
+    .thead-row      { background-color:{{ bg_dark }} !important; border-color:{{ primary_color }}22 !important; }
+    .th-cell        { color:{{ text_muted }} !important; }
+    .mrow           { border-color:{{ primary_color }}11 !important; }
+    .mrow td        { color:{{ text_main }} !important; border-color:{{ primary_color }}11 !important; }
+    .mrow-cost      { color:{{ accent_color }} !important; }
+    .mrow:nth-child(even) { background-color:{{ bg_dark }}88 !important; }
+    .footnote       { color:{{ text_muted }} !important; border-color:{{ primary_color }}22 !important; }
+    a.support-link  { color:{{ primary_color }} !important; }
+    .bar-track      { background-color:{{ bg_dark }} !important; }
+    .card-shadow    { box-shadow:none !important; }
+  }
+</style>
+</head>
+<body class="page-bg" style="margin:0;padding:0;background-color:{{ bg_dark }};">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="page-bg" style="background-color:{{ bg_dark }};">
+    <tr>
+      <td align="center" style="padding:32px 16px;">
+
+        <table role="presentation" width="640" cellpadding="0" cellspacing="0" border="0" class="card-shadow" style="max-width:640px;width:100%;box-shadow:0 20px 40px -12px rgba(20,20,15,0.18);border-radius:18px;">
+
+          <!-- Accent rule -->
+          <tr>
+            <td style="height:3px;line-height:3px;font-size:0;background:linear-gradient(90deg,{{ primary_color }} 0%,{{ accent_color }} 50%,{{ primary_color }} 100%);border-radius:18px 18px 0 0;">&nbsp;</td>
+          </tr>
+
+          <!-- Header -->
+          <tr>
+            <td class="header-bg" style="background-color:{{ bg_card }};border-left:1px solid {{ primary_color }}22;border-right:1px solid {{ primary_color }}22;padding:32px 40px 28px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td valign="middle">
+                    <span class="serif text-primary" style="font-size:16px;font-weight:700;letter-spacing:-0.2px;color:{{ text_main }};">{{ company_name }}</span>
+                  </td>
+                  <td valign="middle" align="right">
+                    <span class="mono eyebrow" style="color:{{ primary_color }};font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;">Organization billing summary</span>
+                  </td>
+                </tr>
+              </table>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:22px;">
+                <tr>
+                  <td valign="top">
+                    <div class="mono eyebrow" style="color:{{ primary_color }};font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;margin-bottom:8px;">{{ org_name }} &middot; Admin Report</div>
+                    <div class="serif text-primary" style="color:{{ text_main }};font-size:26px;font-weight:700;letter-spacing:-0.3px;line-height:1.2;">Daily Cost &amp; Token Summary</div>
+                    <div class="sans text-secondary" style="color:{{ text_muted }};font-size:13px;margin-top:6px;">{{ date_str }}</div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td class="card-bg" style="background-color:{{ bg_card }};border-left:1px solid {{ primary_color }}22;border-right:1px solid {{ primary_color }}22;padding:8px 40px 36px;">
+
+              <p class="sans text-secondary" style="margin:24px 0 30px;color:{{ text_muted }};font-size:14px;line-height:1.65;">
+                Hello <strong class="text-primary" style="color:{{ text_main }};">{{ greeting }}</strong> &mdash; here is the consolidated daily token utilization and cost summary for organization <strong class="text-primary" style="color:{{ text_main }};">{{ org_name }}</strong>.
+              </p>
+
+              <!-- Summary ledger (Org Total) -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:34px;">
+                <tr>
+                  <td width="48%" valign="top" class="stat-card" style="background-color:{{ bg_dark }};border:1px solid {{ primary_color }}22;border-radius:14px;padding:20px 22px;">
+                    <div class="sans stat-label" style="color:{{ text_muted }};font-size:10px;font-weight:700;letter-spacing:1.3px;text-transform:uppercase;margin-bottom:10px;">Organization Tokens</div>
+                    <div class="mono stat-value" style="color:{{ primary_color }};font-size:26px;font-weight:700;letter-spacing:-0.5px;line-height:1;">{{ org_total_tokens }}</div>
+
+                    <!-- usage bar: prompt vs completion -->
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:16px;">
+                      <tr>
+                        <td style="border-radius:4px;overflow:hidden;">
+                          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="bar-track" style="background-color:{{ bg_card }};border-radius:4px;">
+                            <tr style="height:7px;line-height:7px;font-size:0;">
+                              <td width="{{ org_prompt_pct }}%" style="background-color:{{ primary_color }};border-radius:4px 0 0 4px;">&nbsp;</td>
+                              <td width="{{ org_completion_pct }}%" style="background-color:{{ accent_color }};border-radius:0 4px 4px 0;">&nbsp;</td>
+                            </tr>
+                          </table>
+                        </td>
+                      </tr>
+                    </table>
+                    <div class="sans stat-sub" style="color:{{ text_muted }};font-size:10px;margin-top:8px;">
+                      <span class="mono" style="color:{{ primary_color }};">&#9632;</span> {{ org_prompt_tokens }} in&nbsp;&nbsp;&nbsp;<span class="mono" style="color:{{ accent_color }};">&#9632;</span> {{ org_completion_tokens }} out
+                    </div>
+                  </td>
+                  <td width="4%">&nbsp;</td>
+                  <td width="48%" valign="top" class="stat-card" style="background-color:{{ bg_dark }};border:1px solid {{ primary_color }}22;border-radius:14px;padding:20px 22px;">
+                    <div class="sans stat-label" style="color:{{ text_muted }};font-size:10px;font-weight:700;letter-spacing:1.3px;text-transform:uppercase;margin-bottom:10px;">Organization Cost</div>
+                    <div class="mono stat-value" style="color:{{ primary_color }};font-size:26px;font-weight:700;letter-spacing:-0.5px;line-height:1;">{{ org_total_cost }}</div>
+                    <div class="sans stat-sub" style="color:{{ text_muted }};font-size:11px;margin-top:32px;">Avg. <span class="mono">{{ org_avg_cost_per_1k }}</span> / 1K tokens</div>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Section 1: Team Member Utilization -->
+              <div class="sans text-primary" style="color:{{ text_main }};font-size:12px;font-weight:700;letter-spacing:1.3px;text-transform:uppercase;margin:0 0 12px;">Team Member Usage</div>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="table-wrap" style="border:1px solid {{ primary_color }}22;border-radius:10px;overflow:hidden;border-collapse:separate;margin-bottom:34px;">
+                <thead>
+                  <tr class="thead-row" style="background-color:{{ bg_dark }};">
+                    <th class="sans th-cell" align="left"   style="padding:11px 14px;color:{{ text_muted }};font-size:10px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;border-bottom:1px solid {{ primary_color }}22;">Member</th>
+                    <th class="sans th-cell" align="right"  style="padding:11px 14px;color:{{ text_muted }};font-size:10px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;border-bottom:1px solid {{ primary_color }}22;width:120px;">Tokens</th>
+                    <th class="sans th-cell" align="right"  style="padding:11px 14px;color:{{ text_muted }};font-size:10px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;border-bottom:1px solid {{ primary_color }}22;width:100px;">Cost</th>
+                  </tr>
+                </thead>
+                <tbody class="mono" style="font-size:12.5px;">
+                  {{ team_rows }}
+                </tbody>
+              </table>
+
+              <!-- Section 2: Personal Utilization Breakdown -->
+              <div class="sans text-primary" style="color:{{ text_main }};font-size:12px;font-weight:700;letter-spacing:1.3px;text-transform:uppercase;margin:0 0 12px;">Your Personal Usage</div>
+
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="table-wrap" style="border:1px solid {{ primary_color }}22;border-radius:10px;overflow:hidden;border-collapse:separate;">
+                <thead>
+                  <tr class="thead-row" style="background-color:{{ bg_dark }};">
+                    <th class="sans th-cell" align="left"   style="padding:11px 14px;color:{{ text_muted }};font-size:10px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;border-bottom:1px solid {{ primary_color }}22;">Model</th>
+                    <th class="sans th-cell" align="center" style="padding:11px 14px;color:{{ text_muted }};font-size:10px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;border-bottom:1px solid {{ primary_color }}22;">Calls</th>
+                    <th class="sans th-cell" align="right"  style="padding:11px 14px;color:{{ text_muted }};font-size:10px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;border-bottom:1px solid {{ primary_color }}22;">Prompt</th>
+                    <th class="sans th-cell" align="right"  style="padding:11px 14px;color:{{ text_muted }};font-size:10px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;border-bottom:1px solid {{ primary_color }}22;">Completion</th>
+                    <th class="sans th-cell" align="right"  style="padding:11px 14px;color:{{ text_muted }};font-size:10px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;border-bottom:1px solid {{ primary_color }}22;">Cost</th>
+                  </tr>
+                </thead>
+                <tbody class="mono" style="font-size:12.5px;">
+                  {{ admin_model_rows }}
+                </tbody>
+              </table>
+
+              <p class="sans" style="margin:24px 0 0;color:{{ text_muted }};font-size:13px;line-height:1.6;">
+                Regards,<br>
+                <strong>DSuite Product Team</strong>
+              </p>
+
+              <p class="sans footnote" style="margin:22px 0 0;color:{{ text_muted }};font-size:11px;line-height:1.6;font-style:italic;border-top:1px solid {{ primary_color }}22;padding-top:16px;">
+                Figures reflect metered API execution tokens, priced per model at time of call. Rounding may cause minor variance against your invoice.
+              </p>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td class="footer-bg rule" align="center" style="background-color:{{ bg_dark }};border:1px solid {{ primary_color }}22;border-top:none;border-radius:0 0 18px 18px;padding:22px 40px;">
+              <p class="sans" style="margin:0 0 6px;color:{{ text_muted }};font-size:11px;">&copy; {{ current_year }} {{ company_name }}. All rights reserved.</p>
+              <p class="sans" style="margin:0;color:{{ text_muted }};font-size:10px;">Automated statement. Questions &rarr; <a href="mailto:{{ support_email }}" class="support-link" style="color:{{ primary_color }};text-decoration:none;">{{ support_email }}</a></p>
+            </td>
+          </tr>
+
+        </table>
+
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

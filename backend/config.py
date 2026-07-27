@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = True
     smtp_use_ssl: bool = False
     smtp_timeout_seconds: int = 20
+    daily_billing_email_enabled: bool = True
+    daily_billing_email_hour: int = 1
     
     # Microsoft OAuth for SMTP
     microsoft_tenant_id: Optional[str] = None

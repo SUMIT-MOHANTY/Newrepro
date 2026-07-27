@@ -22,6 +22,7 @@ class User(Base):
     last_login = Column(DateTime, nullable=True)
     last_page_path = Column(String, nullable=True)  # Track last visited page
     last_project_token = Column(String, nullable=True)  # Track last active project
+    daily_emails_enabled = Column(Boolean, default=True)
 
     documents = relationship("Document", back_populates="owner")
     governance_responses = relationship("GovernanceResponse", back_populates="owner")
@@ -824,5 +825,22 @@ class AgentNote(Base):
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DailyBillingEmailLog(Base):
+    __tablename__ = "daily_billing_email_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=True)
+    email = Column(String, index=True, nullable=False)
+    date_key = Column(String, index=True, nullable=False)  # YYYY-MM-DD
+    sent_at = Column(DateTime, default=datetime.utcnow, index=True)
+    status = Column(String, index=True, nullable=False)  # "success", "failed", "skipped_by_filters"
+    error_message = Column(Text, nullable=True)
+    total_tokens = Column(Integer, default=0)
+    total_cost = Column(Float, default=0.0)
+    is_admin_report = Column(Boolean, default=False)
+    cc_recipients = Column(Text, nullable=True)  # Comma-separated list of CC'd emails
+
 
 
