@@ -770,12 +770,16 @@ async def daily_billing_email_scheduler() -> None:
                 
             now = datetime.utcnow()
             target_hour = system.get("utc_hour", settings.daily_billing_email_hour)
+            target_minute = system.get("utc_minute", 0)
             
             yesterday = now - timedelta(days=1)
             yesterday_key = yesterday.strftime("%Y-%m-%d")
             already_run = yesterday_key in controls.get("last_run_dates", [])
             
-            if now.hour == target_hour and not already_run:
+            # Construct target trigger time for today in UTC
+            scheduled_today = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+            
+            if now >= scheduled_today and not already_run:
                 logger.info(f"Triggering scheduled daily utilization reports for: {yesterday_key}")
                 
                 try:
@@ -791,7 +795,8 @@ async def daily_billing_email_scheduler() -> None:
                 except Exception as ex:
                     logger.exception(f"Exception during background scheduled utilization reports: {ex}")
             
-            await asyncio.sleep(1800)
+            # Poll configuration and time every 60 seconds for optimal efficiency
+            await asyncio.sleep(60)
             
         except asyncio.CancelledError:
             logger.info("Daily utilization email background scheduler cancelled.")
