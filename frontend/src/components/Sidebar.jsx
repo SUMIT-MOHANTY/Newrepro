@@ -265,7 +265,7 @@ export default function Sidebar({
                                     Organization Admin
                                 </button>
                             )}
-                            {user?.is_org_admin && (
+                            {(user?.is_org_admin || canAccess('/billing')) && (
                                 <button
                                     onClick={() => {
                                         navigate('/billing');

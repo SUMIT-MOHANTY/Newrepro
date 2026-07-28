@@ -243,31 +243,6 @@ const AssistantBot = () => {
     hasShownWelcomeRef.current = false;
     setIdleMessageShown(false);
     setMessages([]);
-
-    if (!context) return;
-
-    const timer = setTimeout(async () => {
-      if (hasShownWelcomeRef.current) return;
-      hasShownWelcomeRef.current = true;
-
-      const msgId = Date.now();
-      // Seed empty message to stream into
-      setMessages([{ id: msgId, type: 'bot', text: '', timestamp: new Date(), isWelcome: true }]);
-
-      const prompt = `I just navigated to the "${context.title}" page (path: ${path}). Based on the platform context you know, describe what this page is about, what I can do here, and why it matters in the workflow. Be specific and practical — no generic greetings.`;
-
-      const result = await streamToMessage(msgId, prompt, { currentStep: context.title, currentPath: path });
-
-      // If stream failed or returned nothing, use a concise fallback
-      if (!result) {
-        setMessages([{
-          id: msgId, type: 'bot', text: `You're on the **${context.title}** page.\n\n${context.description}\n\nAsk me anything about this step!`,
-          timestamp: new Date(), isWelcome: true
-        }]);
-      }
-    }, 600);
-
-    return () => clearTimeout(timer);
   }, [location.pathname]);
 
   const showPageWelcome = () => { hasShownWelcomeRef.current = false; };
