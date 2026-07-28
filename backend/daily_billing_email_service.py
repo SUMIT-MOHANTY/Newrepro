@@ -323,12 +323,11 @@ async def send_daily_billing_emails(
     if run_date is None:
         run_date = datetime.utcnow()
         
-    yesterday = run_date - timedelta(days=1)
-    date_str = yesterday.strftime("%B %d, %Y")
-    date_key = yesterday.strftime("%Y-%m-%d")
+    date_str = run_date.strftime("%B %d, %Y")
+    date_key = run_date.strftime("%Y-%m-%d")
     
-    start_dt = datetime(yesterday.year, yesterday.month, yesterday.day, 0, 0, 0)
-    end_dt = datetime(yesterday.year, yesterday.month, yesterday.day, 23, 59, 59, 999999)
+    start_dt = datetime(run_date.year, run_date.month, run_date.day, 0, 0, 0)
+    end_dt = run_date
     
     controls = load_email_controls()
     branding = controls.get("branding", {})
@@ -668,7 +667,7 @@ async def send_daily_billing_emails(
                 message["Bcc"] = bcc_header
             
             message.set_content(
-                f"Daily token utilization report for yesterday ({date_str}). Please view in an HTML-compatible client."
+                f"Daily token utilization report for today ({date_str}). Please view in an HTML-compatible client."
             )
             message.add_alternative(html, subtype="html")
             
@@ -970,15 +969,14 @@ async def daily_billing_email_scheduler() -> None:
             target_hour = system.get("utc_hour", settings.daily_billing_email_hour)
             target_minute = system.get("utc_minute", 0)
             
-            yesterday = now - timedelta(days=1)
-            yesterday_key = yesterday.strftime("%Y-%m-%d")
-            already_run = yesterday_key in controls.get("last_run_dates", [])
+            run_date_key = now.strftime("%Y-%m-%d")
+            already_run = run_date_key in controls.get("last_run_dates", [])
             
             # Construct target trigger time for today in UTC
             scheduled_today = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
             
             if now >= scheduled_today and not already_run:
-                logger.info(f"Triggering scheduled daily utilization reports for: {yesterday_key}")
+                logger.info(f"Triggering scheduled daily utilization reports for: {run_date_key}")
                 
                 try:
                     email_service.ensure_email_delivery_configured()

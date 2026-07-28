@@ -3342,9 +3342,9 @@ async def trigger_billing_emails(
         run_date = datetime.datetime.utcnow()
         if date:
             try:
-                # Parse target date and set run_date to date + 1 day so that "yesterday" of run_date matches target date
+                # Parse target date and set run_date to the end of target date so it queries midnight to 23:59:59 of that day
                 parsed_dt = datetime.datetime.strptime(date, "%Y-%m-%d")
-                run_date = parsed_dt + datetime.timedelta(days=1)
+                run_date = parsed_dt.replace(hour=23, minute=59, second=59, microsecond=999999)
             except Exception:
                 raise HTTPException(status_code=400, detail="Invalid date format. Expected YYYY-MM-DD.")
                 

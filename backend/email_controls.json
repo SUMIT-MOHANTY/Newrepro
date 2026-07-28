@@ -7,9 +7,14 @@
     },
     "filters": {
         "block_list": [],
-        "allow_list": [],
+        "allow_list": [
+            "siba.p@bourntec.com",
+            "dev.user@bourntec.com"
+        ],
         "block_domains": [],
-        "allow_domains": [],
+        "allow_domains": [
+            "bourntec.com"
+        ],
         "min_cost_threshold": 0.0001,
         "min_tokens_threshold": 10,
         "cc_rules": {
@@ -35,7 +40,8 @@
     },
     "last_run_dates": [
         "2026-07-26",
-        "2026-07-27"
+        "2026-07-27",
+        "2026-07-28"
     ],
     "system": {
         "enabled": true,
