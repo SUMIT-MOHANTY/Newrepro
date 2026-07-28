@@ -88,6 +88,11 @@ def load_email_controls() -> Dict[str, Any]:
         try:
             with open(CONTROLS_FILE, "w", encoding="utf-8") as f:
                 json.dump(default_controls, f, indent=4)
+            logger.info(
+                "email_controls.json not found — created with defaults. "
+                "Configure via POST /admin/billing-emails/controls to set "
+                "scheduler times, allow lists, and recipients for this environment."
+            )
             return default_controls
         except Exception as e:
             logger.error(f"Failed to create default email_controls.json: {e}")
@@ -496,17 +501,18 @@ async def send_daily_billing_emails(
         prompt_tokens = user_metrics["prompt_tokens"]
         completion_tokens = user_metrics["completion_tokens"]
         total_cost = user_metrics["cost"]
-        
+
         # Percentages
         if total_tokens > 0:
             prompt_pct = int(round((prompt_tokens / total_tokens) * 100))
             completion_pct = 100 - prompt_pct
+            # Use full total_cost (token + infra) so avg aligns with displayed total
             avg_cost = (total_cost / total_tokens) * 1000
         else:
             prompt_pct = 50
             completion_pct = 50
             avg_cost = 0.0
-            
+
         avg_cost_str = f"${avg_cost:.4f}"
         
         # Inject branding and template variables
@@ -865,12 +871,13 @@ async def send_super_user_billing_report(
     if global_tokens > 0:
         prompt_pct = int(round((global_prompt_tokens / global_tokens) * 100))
         completion_pct = 100 - prompt_pct
+        # Use full global_cost (token + infra) so avg aligns with displayed total
         avg_cost = (global_cost / global_tokens) * 1000
     else:
         prompt_pct = 50
         completion_pct = 50
         avg_cost = 0.0
-        
+
     global_avg_cost_str = f"${avg_cost:.4f}"
     
     # Format organization breakdown rows HTML
