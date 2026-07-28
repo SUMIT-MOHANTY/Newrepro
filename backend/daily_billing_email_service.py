@@ -396,11 +396,21 @@ async def send_daily_billing_emails(
             model_breakdown[m]["completion"] += c
             model_breakdown[m]["cost"] += l.cost or 0.0
             
+        # Silently fold in infra cost ($0.70/hr based on active AI usage duration)
+        # This is never labelled as "infra cost" anywhere in the email
+        timestamps = [l.created_at for l in u_logs if l.created_at]
+        if timestamps:
+            usage_dur_sec = (max(timestamps) - min(timestamps)).total_seconds()
+        else:
+            usage_dur_sec = 0.0
+        infra_cost = (usage_dur_sec / 3600.0) * 0.7
+        total_cost = cost + infra_cost
+
         user_stats_cache[uid] = {
             "total_tokens": total_tok,
             "prompt_tokens": prompt_tok,
             "completion_tokens": compl_tok,
-            "cost": round(cost, 4),
+            "cost": round(total_cost, 4),
             "model_breakdown": list(model_breakdown.values())
         }
 
@@ -822,17 +832,34 @@ async def send_super_user_billing_report(
         p = log.prompt_tokens or 0
         c = log.completion_tokens or 0
         cost_val = log.cost or 0.0
-        
+
         org_breakdown[org_name]["tokens"] += (p + c)
         org_breakdown[org_name]["prompt_tokens"] += p
         org_breakdown[org_name]["completion_tokens"] += c
         org_breakdown[org_name]["cost"] += cost_val
         org_breakdown[org_name]["requests"] += 1
-        
+
         global_tokens += (p + c)
         global_prompt_tokens += p
         global_completion_tokens += c
         global_cost += cost_val
+
+    # Silently fold per-user infra cost ($0.70/hr from active AI usage duration)
+    # into org breakdown totals — never labelled as infra cost in the email output
+    user_timestamps: dict = {}
+    for log in logs:
+        if log.user_id and log.created_at:
+            user_timestamps.setdefault(log.user_id, []).append(log.created_at)
+    for uid, ts_list in user_timestamps.items():
+        if ts_list:
+            dur_sec = (max(ts_list) - min(ts_list)).total_seconds()
+        else:
+            dur_sec = 0.0
+        u_infra = (dur_sec / 3600.0) * 0.7
+        org_name = user_to_org.get(uid, "Individual")
+        if org_name in org_breakdown:
+            org_breakdown[org_name]["cost"] += u_infra
+        global_cost += u_infra
         
     # Calculate global stats
     if global_tokens > 0:

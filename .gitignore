@@ -7,6 +7,7 @@ __pycache__/
 *.pyc
 backend/snyk
 backend/shared_documents*
+backend/email_controls.json
 
 
 frontend/snyk
