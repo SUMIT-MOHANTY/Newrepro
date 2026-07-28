@@ -264,6 +264,11 @@ export default function AppLayout({ children }) {
             })
             .then(data => {
                 setUser(data);
+                if (data?.is_super_admin) {
+                    localStorage.setItem('is_super_admin', 'true');
+                } else {
+                    localStorage.removeItem('is_super_admin');
+                }
 
                 // Check if user is returning from VibeCoding
                 const returnPath = sessionStorage.getItem('dsuite_return_path');
@@ -1361,9 +1366,9 @@ export default function AppLayout({ children }) {
                     </div>
                 </header>
 
-                {/* ── Project-level Roadmap Stepper — shown on all pages except /agents and /plugins ── */}
+                {/* ── Project-level Roadmap Stepper — shown on all pages except /agents, /plugins, and /superadmin/* ── */}
                 {
-                    roadmapDataForView && location.pathname !== '/agents' && location.pathname !== '/plugins' && location.pathname !== '/share-doc' && (
+                    roadmapDataForView && location.pathname !== '/agents' && location.pathname !== '/plugins' && location.pathname !== '/share-doc' && !location.pathname.startsWith('/superadmin') && (
                         <div className="bg-app-bg-card border-b border-app-border-light shadow-sm shrink-0 overflow-x-auto z-[240] relative">
                             <RoadmapHeader
                                 steps={roadmapDataForView.steps || []}

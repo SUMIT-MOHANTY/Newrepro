@@ -347,11 +347,18 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
             </div>
           </div>
 
-          {/* Central Pool Status */}
-          <div className="p-2 rounded-lg border border-app-border-light bg-app-bg-muted/15 space-y-2">
+          {/* Central Pool Status & Super Admin Cap Bar */}
+          <div className="p-2.5 rounded-lg border border-app-border-light bg-app-bg-muted/15 space-y-2.5">
             <div className="flex items-center justify-between">
-              <p className="text-[9px] font-bold uppercase tracking-wider text-app-text-muted">Central Quota Pool Usage</p>
-              <span className="text-[8px] font-semibold text-app-text-muted/80">Org-wide Capacity Slots</span>
+              <div>
+                <p className="text-[9.5px] font-bold uppercase tracking-wider text-app-text-muted">Central Capacity Pool & Limits</p>
+                <p className="text-[11px] font-semibold text-app-text-main mt-0.5">
+                  Super Admin Total Capacity: <span className="font-extrabold text-purple-400">{quota?.max_agent_capacity || 10} Agents Max</span>
+                </p>
+              </div>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-purple-500/10 border border-purple-500/20 text-purple-300">
+                {quota?.total_onboarded_agents || 0} Onboarded / {quota?.available_capacity || 0} Slots Free
+              </span>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -360,7 +367,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                 <div className="flex justify-between items-center">
                   <span className="text-xs font-semibold text-app-text-main flex items-center gap-1.5">
                     <span className="w-2 h-2 rounded-full bg-blue-500/80"></span>
-                    Shared Agents
+                    Shared Agents Pool
                   </span>
                   <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${sharedExceeded ? 'bg-red-500/10 text-red-400 border-red-500/20 animate-pulse' : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'}`}>
                     {totalSharedRequested} / {sharedAllowed} Used
@@ -369,7 +376,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                 <div className="w-full h-1 rounded-full bg-app-bg-muted/60 overflow-hidden">
                   <div
                     className={`h-full rounded-full transition-all duration-500 ${sharedExceeded ? 'bg-red-500' : 'bg-gradient-to-r from-blue-500 to-indigo-400'}`}
-                    style={{ width: `${Math.min(100, (totalSharedRequested / sharedAllowed) * 100)}%` }}
+                    style={{ width: `${Math.min(100, (totalSharedRequested / max(1, sharedAllowed)) * 100)}%` }}
                   />
                 </div>
                 <div className="flex justify-between text-[9.5px] text-app-text-muted px-0.5">
@@ -387,7 +394,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                 <div className="flex justify-between items-center">
                   <span className="text-xs font-semibold text-app-text-main flex items-center gap-1.5">
                     <span className="w-2 h-2 rounded-full bg-purple-500/80"></span>
-                    Dedicated Agents
+                    Dedicated Agents Pool
                   </span>
                   <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${dedicatedExceeded ? 'bg-red-500/10 text-red-400 border-red-500/20 animate-pulse' : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'}`}>
                     {totalDedicatedRequested} / {dedicatedAllowed} Used
@@ -396,7 +403,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                 <div className="w-full h-1 rounded-full bg-app-bg-muted/60 overflow-hidden">
                   <div
                     className={`h-full rounded-full transition-all duration-500 ${dedicatedExceeded ? 'bg-red-500' : 'bg-gradient-to-r from-purple-500 to-pink-400'}`}
-                    style={{ width: `${Math.min(100, (totalDedicatedRequested / dedicatedAllowed) * 100)}%` }}
+                    style={{ width: `${Math.min(100, (totalDedicatedRequested / max(1, dedicatedAllowed)) * 100)}%` }}
                   />
                 </div>
                 <div className="flex justify-between text-[9.5px] text-app-text-muted px-0.5">

@@ -86,8 +86,11 @@ export default function Sidebar({
         }
     };
 
+    const isSuperAdmin = user?.is_super_admin === true || rbac?.role_name === 'Super Admin' || localStorage.getItem('is_super_admin') === 'true';
+
     const canAccess = (path) => {
         if (!path) return true;
+        if (isSuperAdmin) return true;
         if (rbac?.is_org_admin) return true;
         const allowed = Array.isArray(rbac?.allowed_paths) ? rbac.allowed_paths : null;
         if (!allowed) return true; // if RBAC not loaded, don't block UI
@@ -264,6 +267,55 @@ export default function Sidebar({
                                     <ShieldCheck className="w-4 h-4 mr-3" />
                                     Organization Admin
                                 </button>
+                            )}
+
+                            {/* Super Admin Nav Section */}
+                            {isSuperAdmin && (
+                                <div className="my-3 pt-3 border-t border-purple-500/20">
+                                    <p className="px-2 mb-2 text-[10px] font-bold text-purple-400 uppercase tracking-wider">Super Admin</p>
+                                    <button
+                                        onClick={() => navigate('/superadmin/dashboard')}
+                                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-1.5 ${location.pathname === '/superadmin/dashboard' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-purple-300 hover:bg-purple-900/30'}`}
+                                    >
+                                        <ShieldCheck className="w-4 h-4 mr-3 text-purple-400" />
+                                        Dashboard
+                                    </button>
+                                    <button
+                                        onClick={() => navigate('/superadmin/requests')}
+                                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-1.5 ${location.pathname === '/superadmin/requests' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-purple-300 hover:bg-purple-900/30'}`}
+                                    >
+                                        <FileCheck className="w-4 h-4 mr-3 text-purple-400" />
+                                        Agent Capacity Requests
+                                    </button>
+                                    <button
+                                        onClick={() => navigate('/superadmin/organizations')}
+                                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-1.5 ${location.pathname === '/superadmin/organizations' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-purple-300 hover:bg-purple-900/30'}`}
+                                    >
+                                        <Users className="w-4 h-4 mr-3 text-purple-400" />
+                                        Organizations
+                                    </button>
+                                    <button
+                                        onClick={() => navigate('/superadmin/global-billing')}
+                                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-1.5 ${location.pathname === '/superadmin/global-billing' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-purple-300 hover:bg-purple-900/30'}`}
+                                    >
+                                        <CreditCard className="w-4 h-4 mr-3 text-purple-400" />
+                                        Global Billing Dashboard
+                                    </button>
+                                    <button
+                                        onClick={() => navigate('/superadmin/roles')}
+                                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-1.5 ${location.pathname === '/superadmin/roles' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-purple-300 hover:bg-purple-900/30'}`}
+                                    >
+                                        <ShieldCheck className="w-4 h-4 mr-3 text-purple-400" />
+                                        Roles & Permissions
+                                    </button>
+                                    <button
+                                        onClick={() => navigate('/superadmin/logs')}
+                                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-1.5 ${location.pathname === '/superadmin/logs' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-purple-300 hover:bg-purple-900/30'}`}
+                                    >
+                                        <Activity className="w-4 h-4 mr-3 text-purple-400" />
+                                        Audit Logs
+                                    </button>
+                                </div>
                             )}
                             {(user?.is_org_admin || canAccess('/billing')) && (
                                 <button

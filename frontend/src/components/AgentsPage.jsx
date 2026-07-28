@@ -760,6 +760,46 @@ export default function AgentsPage({ projects = [] }) {
                       </button>
                     </div>
                   </div>
+
+                  <div className="pt-2 border-t border-app-border-light/30 flex items-center justify-between">
+                    <span className="text-[11px] text-app-text-muted">Total Super Admin Cap:</span>
+                    <span className="font-extrabold text-purple-400 text-xs">{quota?.max_agent_capacity || 10} Max</span>
+                  </div>
+                </div>
+
+                <div className="mt-3">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const token = localStorage.getItem('token');
+                      const reason = prompt("Enter reason for requesting agent capacity increase from Super Admin:");
+                      if (!reason) return;
+                      try {
+                        const res = await fetch(`${API_ENDPOINTS.BASE_URL}/api/organization/capacity-request`, {
+                          method: 'POST',
+                          headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                          },
+                          body: JSON.stringify({
+                            requested_shared_count: sharedDevToAdd || 2,
+                            requested_dedicated_count: dedicatedDevToAdd || 2,
+                            total_requested_increase: (sharedDevToAdd + dedicatedDevToAdd) || 4,
+                            reason: reason
+                          })
+                        });
+                        if (!res.ok) throw new Error('Failed to submit capacity request');
+                        showToast('Capacity Increase Request submitted to Super Admin!', 'success');
+                        fetchQuota();
+                      } catch (err) {
+                        showToast(err.message, 'error');
+                      }
+                    }}
+                    className="w-full py-1.5 px-3 rounded bg-purple-600/80 hover:bg-purple-600 text-white text-[11px] font-bold transition-all flex items-center justify-center gap-1.5 shadow-sm"
+                  >
+                    <Shield className="w-3.5 h-3.5" />
+                    <span>Request Capacity Increase (Super Admin)</span>
+                  </button>
                 </div>
               </div>
             </div>
