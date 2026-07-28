@@ -265,8 +265,8 @@ def log_ai_usage(
     If token count is not provided by the API, falls back to character estimation (1 token = 4 characters).
 
     Rates for BRN Llama / BournAI:
-    - Input: $3.00 per 1M tokens ($0.000003 per token)
-    - Output: $15.00 per 1M tokens ($0.000015 per token)
+    - Input: $7.00 per 1M tokens ($0.000007 per token)
+    - Output: $7.00 per 1M tokens ($0.000007 per token)
     """
     try:
         from database import SessionLocal
@@ -307,7 +307,7 @@ def log_ai_usage(
             completion_tokens = max(1, len(response_text) // 4) if response_text else 0
 
         # Calculate cost based on rate
-        cost = (prompt_tokens * 0.000003) + (completion_tokens * 0.000015)
+        cost = (prompt_tokens * 0.000007) + (completion_tokens * 0.000007)
 
         db = SessionLocal()
         try:

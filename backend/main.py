@@ -2891,13 +2891,13 @@ def get_org_billing_and_logs(
                 total_bournai_prompt_tokens += (log.prompt_tokens or 0)
                 total_bournai_completion_tokens += (log.completion_tokens or 0)
             
-        # User-wise token cost & infra cost ($1.00 / hr based on overall usage duration)
+        # User-wise token cost & infra cost ($0.70 / hr based on overall usage duration)
         if user_ai_timestamps:
             u_usage_dur_sec = (max(user_ai_timestamps) - min(user_ai_timestamps)).total_seconds()
         else:
             u_usage_dur_sec = 0.0
         
-        u_infra_cost = (u_usage_dur_sec / 3600.0) * 1.0  # $1/hr rate per user
+        u_infra_cost = (u_usage_dur_sec / 3600.0) * 0.7  # $0.7/hr rate per user
         u_total_cost = u_token_cost + u_infra_cost
 
         total_token_cost += u_token_cost
@@ -3184,7 +3184,7 @@ def download_org_billing_report(
         else:
             u_usage_dur_sec = 0.0
 
-        u_infra_cost = (u_usage_dur_sec / 3600.0) * 1.0  # $1/hr rate per user
+        u_infra_cost = (u_usage_dur_sec / 3600.0) * 0.7  # $0.7/hr rate per user
         u_total_cost = u_token_cost + u_infra_cost
 
         total_token_cost += u_token_cost
@@ -16270,8 +16270,8 @@ def get_public_bournai_metrics(
                 u_dur_seconds = 0.0
 
             u_dur_hours = u_dur_seconds / 3600.0
-            # $1.00 per hour infra cost per user ($1/3600 per second)
-            u_infra_cost = u_dur_hours * 1.0
+            # $0.70 per hour infra cost per user ($0.7/3600 per second)
+            u_infra_cost = u_dur_hours * 0.7
             u_tok_cost = org_user_token_costs[org_key][user_key]
             u_total_cost = u_tok_cost + u_infra_cost
 

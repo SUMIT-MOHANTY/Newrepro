@@ -8,7 +8,8 @@
     "filters": {
         "block_list": [],
         "allow_list": [
-            "sribananda.p@bourntec.com"
+            "siba.p@bourntec.com",
+            "dev.user@bourntec.com"
         ],
         "block_domains": [],
         "allow_domains": [
@@ -39,7 +40,8 @@
     },
     "last_run_dates": [
         "2026-07-26",
-        "2026-07-27"
+        "2026-07-27",
+        "2026-07-28"
     ],
     "system": {
         "enabled": true,
