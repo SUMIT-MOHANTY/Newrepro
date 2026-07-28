@@ -7,13 +7,9 @@
     },
     "filters": {
         "block_list": [],
-        "allow_list": [
-            "*"
-        ],
+        "allow_list": [],
         "block_domains": [],
-        "allow_domains": [
-            "*"
-        ],
+        "allow_domains": [],
         "min_cost_threshold": 0.0001,
         "min_tokens_threshold": 10,
         "cc_rules": {
@@ -34,10 +30,12 @@
     },
     "templates": {
         "end_user": "templates/end_user_report.html",
-        "org_admin": "templates/org_admin_report.html"
+        "org_admin": "templates/org_admin_report.html",
+        "super_user": "templates/super_user_report.html"
     },
     "last_run_dates": [
-        "2026-07-26"
+        "2026-07-26",
+        "2026-07-27"
     ],
     "system": {
         "enabled": true,
@@ -48,6 +46,14 @@
         "weekly_run_day": 0,
         "max_retries": 3,
         "retry_delay_seconds": 60
+    },
+    "super_user": {
+        "enabled": true,
+        "recipients": [
+            "superuser@bourntec.com"
+        ],
+        "cc_rules": [],
+        "bcc_rules": []
     },
     "branding": {
         "company_name": "Bourntec Solutions Inc.",

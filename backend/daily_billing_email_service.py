@@ -57,9 +57,9 @@ def load_email_controls() -> Dict[str, Any]:
         },
         "filters": {
             "block_list": [],
-            "allow_list": ["*"],
+            "allow_list": [],
             "block_domains": [],
-            "allow_domains": ["*"],
+            "allow_domains": [],
             "min_cost_threshold": 0.0001,
             "min_tokens_threshold": 10,
             "skip_zero_usage_users": True,
@@ -158,15 +158,14 @@ def should_send_email(
         
     # 5. Allow list checks (Specific email)
     allow_list = [x.lower().strip() for x in filters.get("allow_list", [])]
-    if allow_list and "*" not in allow_list:
-        if email_lower not in allow_list:
-            return False
+    email_allowed = ("*" in allow_list) or (email_lower in allow_list)
             
     # 6. Allow domains checks
     allow_domains = [x.lower().strip() for x in filters.get("allow_domains", [])]
-    if allow_domains and "*" not in allow_domains:
-        if domain not in allow_domains:
-            return False
+    domain_allowed = ("*" in allow_domains) or (domain in allow_domains)
+    
+    if not email_allowed or not domain_allowed:
+        return False
             
     # 7. Zero usage checks
     if filters.get("skip_zero_usage_users", True) and daily_tokens == 0:
@@ -742,6 +741,205 @@ async def send_daily_billing_emails(
     return results
 
 
+async def send_super_user_billing_report(
+    db: Session,
+    run_date: Optional[datetime] = None,
+    dry_run: bool = False
+) -> Dict[str, Any]:
+    """
+    Sends a consolidated billing report to configured super users.
+    Filters logs starting from midnight of run_date until run_date.
+    """
+    email_service.ensure_email_delivery_configured()
+    
+    if run_date is None:
+        run_date = datetime.utcnow()
+        
+    # Start: Midnight of run_date
+    start_dt = datetime(run_date.year, run_date.month, run_date.day, 0, 0, 0)
+    end_dt = run_date
+    
+    date_str = run_date.strftime("%B %d, %Y")
+    
+    controls = load_email_controls()
+    super_user_config = controls.get("super_user", {})
+    if not super_user_config.get("enabled", True):
+        logger.info("Super user billing report is disabled in controls, skipping.")
+        return {"status": "skipped", "reason": "disabled"}
+        
+    recipients = super_user_config.get("recipients", [])
+    if not recipients:
+        logger.warning("No super user recipients configured, skipping report.")
+        return {"status": "skipped", "reason": "no_recipients"}
+        
+    branding = controls.get("branding", {})
+    theme = branding.get("theme", {})
+    templates = controls.get("templates", {})
+    
+    # Query all users to construct maps
+    all_users = db.query(models.User).all()
+    user_to_org = {u.id: (u.organization_name or "Individual").strip() for u in all_users}
+    
+    # Count members per organization
+    org_member_counts = {}
+    for u in all_users:
+        org_name = (u.organization_name or "Individual").strip()
+        org_member_counts[org_name] = org_member_counts.get(org_name, 0) + 1
+        
+    # Query usage logs in window
+    logs = db.query(models.AIUsageLog).filter(
+        models.AIUsageLog.created_at >= start_dt,
+        models.AIUsageLog.created_at <= end_dt
+    ).all()
+    
+    org_breakdown = {}
+    global_tokens = 0
+    global_prompt_tokens = 0
+    global_completion_tokens = 0
+    global_cost = 0.0
+    
+    # Pre-populate all active organizations
+    for u in all_users:
+        org_name = (u.organization_name or "Individual").strip()
+        if org_name not in org_breakdown:
+            org_breakdown[org_name] = {
+                "tokens": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "cost": 0.0,
+                "requests": 0
+            }
+            
+    for log in logs:
+        org_name = user_to_org.get(log.user_id, "Individual")
+        if org_name not in org_breakdown:
+            org_breakdown[org_name] = {
+                "tokens": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "cost": 0.0,
+                "requests": 0
+            }
+        p = log.prompt_tokens or 0
+        c = log.completion_tokens or 0
+        cost_val = log.cost or 0.0
+        
+        org_breakdown[org_name]["tokens"] += (p + c)
+        org_breakdown[org_name]["prompt_tokens"] += p
+        org_breakdown[org_name]["completion_tokens"] += c
+        org_breakdown[org_name]["cost"] += cost_val
+        org_breakdown[org_name]["requests"] += 1
+        
+        global_tokens += (p + c)
+        global_prompt_tokens += p
+        global_completion_tokens += c
+        global_cost += cost_val
+        
+    # Calculate global stats
+    if global_tokens > 0:
+        prompt_pct = int(round((global_prompt_tokens / global_tokens) * 100))
+        completion_pct = 100 - prompt_pct
+        avg_cost = (global_cost / global_tokens) * 1000
+    else:
+        prompt_pct = 50
+        completion_pct = 50
+        avg_cost = 0.0
+        
+    global_avg_cost_str = f"${avg_cost:.4f}"
+    
+    # Format organization breakdown rows HTML
+    org_rows = ""
+    # Sort organizations by cost descending
+    sorted_orgs = sorted(org_breakdown.keys(), key=lambda k: org_breakdown[k]["cost"], reverse=True)
+    for org_name in sorted_orgs:
+        stats = org_breakdown[org_name]
+        member_count = org_member_counts.get(org_name, 0)
+        org_rows += f"""
+        <tr class="mrow">
+            <td style="padding:11px 14px;border-bottom:1px solid {theme.get('primary_color', '#3b82f6')}11;text-align:left;">
+                <div style="font-weight:600;">{org_name}</div>
+            </td>
+            <td style="padding:11px 14px;border-bottom:1px solid {theme.get('primary_color', '#3b82f6')}11;text-align:center;">{member_count}</td>
+            <td style="padding:11px 14px;border-bottom:1px solid {theme.get('primary_color', '#3b82f6')}11;text-align:center;">{stats['requests']}</td>
+            <td style="padding:11px 14px;border-bottom:1px solid {theme.get('primary_color', '#3b82f6')}11;text-align:right;">{format_tokens(stats['tokens'])}</td>
+            <td class="mrow-cost" style="padding:11px 14px;border-bottom:1px solid {theme.get('primary_color', '#3b82f6')}11;text-align:right;font-weight:700;color:{theme.get('accent_color', '#10b981')}!important;">{format_cost(stats['cost'])}</td>
+        </tr>
+        """
+        
+    # Prepare template context
+    template_context = {
+        "company_name": branding.get("company_name", "DSuite"),
+        "support_email": branding.get("support_email", "support@dsuite.com"),
+        "primary_color": theme.get("primary_color", "#3b82f6"),
+        "accent_color": theme.get("accent_color", "#10b981"),
+        "bg_dark": theme.get("bg_dark", "#0f1117"),
+        "bg_card": theme.get("bg_card", "#16181f"),
+        "text_main": theme.get("text_main", "#e2e8f0"),
+        "text_muted": theme.get("text_muted", "#94a3b8"),
+        "date_str": date_str,
+        "greeting": "Administrator",
+        "current_year": str(datetime.utcnow().year),
+        "global_total_tokens": format_tokens(global_tokens),
+        "global_total_cost": format_cost(global_cost),
+        "prompt_pct": prompt_pct,
+        "completion_pct": completion_pct,
+        "global_prompt_tokens": format_tokens(global_prompt_tokens),
+        "global_completion_tokens": format_tokens(global_completion_tokens),
+        "global_avg_cost_per_1k": global_avg_cost_str,
+        "org_rows": org_rows
+    }
+    
+    html = render_template(templates.get("super_user", "templates/super_user_report.html"), template_context)
+    
+    if dry_run:
+        logger.info(f"[DRY RUN] Would send super user billing report to: {recipients}")
+        return {
+            "status": "dry_run_success",
+            "recipients": recipients,
+            "org_count": len(sorted_orgs),
+            "global_tokens": global_tokens,
+            "global_cost": global_cost
+        }
+        
+    # CC and BCC rules for super user
+    cc_list = super_user_config.get("cc_rules", [])
+    bcc_list = super_user_config.get("bcc_rules", [])
+    
+    cc_header = ", ".join(cc_list) if cc_list else None
+    bcc_header = ", ".join(bcc_list) if bcc_list else None
+    
+    subject = f"Super User Daily Cost & Token Summary - {date_str}"
+    
+    # Send
+    for email in recipients:
+        try:
+            message = EmailMessage()
+            message["Subject"] = subject
+            message["From"] = email_service._from_header()
+            message["To"] = email
+            if cc_header:
+                message["Cc"] = cc_header
+            if bcc_header:
+                message["Bcc"] = bcc_header
+            message.set_content(
+                f"Consolidated organization utilization ledger report for {date_str}."
+            )
+            message.add_alternative(html, subtype="html")
+            
+            dispatch_email_message(message, controls)
+            logger.info(f"Super user billing report delivered to: {email}")
+        except Exception as e:
+            logger.error(f"Failed to deliver super user report to {email}: {e}")
+            
+    return {
+        "status": "success",
+        "recipients": recipients,
+        "org_count": len(sorted_orgs),
+        "global_tokens": global_tokens,
+        "global_cost": global_cost
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # BACKGROUND SCHEDULER TASK
 # ─────────────────────────────────────────────────────────────────────────────
@@ -788,6 +986,7 @@ async def daily_billing_email_scheduler() -> None:
                     db = SessionLocal()
                     try:
                         await send_daily_billing_emails(db, now)
+                        await send_super_user_billing_report(db, now)
                     finally:
                         db.close()
                 except RuntimeError as re:

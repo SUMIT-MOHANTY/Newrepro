@@ -3310,6 +3310,7 @@ async def trigger_billing_emails(
     email: Optional[str] = None,
     skip_logging_run_date: bool = False,
     dry_run: bool = False,
+    super_user_only: bool = False,
     db: Session = Depends(get_db)
 ):
     """
@@ -3320,25 +3321,40 @@ async def trigger_billing_emails(
     if not current_user.is_org_admin:
         raise HTTPException(status_code=403, detail="Forbidden. Org admin rights required.")
         
-    from daily_billing_email_service import send_daily_billing_emails
+    from daily_billing_email_service import send_daily_billing_emails, send_super_user_billing_report
     import datetime
     
-    run_date = datetime.datetime.utcnow()
-    if date:
+    if super_user_only:
+        run_date = datetime.datetime.utcnow()
+        if date:
+            try:
+                parsed_dt = datetime.datetime.strptime(date, "%Y-%m-%d")
+                # For super user report, set run_date to the end of target date so it queries midnight to 23:59:59
+                run_date = parsed_dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid date format. Expected YYYY-MM-DD.")
         try:
-            # Parse target date and set run_date to date + 1 day so that "yesterday" of run_date matches target date
-            parsed_dt = datetime.datetime.strptime(date, "%Y-%m-%d")
-            run_date = parsed_dt + datetime.timedelta(days=1)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid date format. Expected YYYY-MM-DD.")
-            
-    try:
-        results = await send_daily_billing_emails(
-            db, run_date, target_email=email, skip_logging_run_date=skip_logging_run_date, dry_run=dry_run
-        )
-        return results
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to execute daily billing emails: {str(e)}")
+            results = await send_super_user_billing_report(db, run_date, dry_run=dry_run)
+            return results
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to execute super user billing report: {str(e)}")
+    else:
+        run_date = datetime.datetime.utcnow()
+        if date:
+            try:
+                # Parse target date and set run_date to date + 1 day so that "yesterday" of run_date matches target date
+                parsed_dt = datetime.datetime.strptime(date, "%Y-%m-%d")
+                run_date = parsed_dt + datetime.timedelta(days=1)
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid date format. Expected YYYY-MM-DD.")
+                
+        try:
+            results = await send_daily_billing_emails(
+                db, run_date, target_email=email, skip_logging_run_date=skip_logging_run_date, dry_run=dry_run
+            )
+            return results
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to execute daily billing emails: {str(e)}")
 
 
 @app.get("/admin/billing-emails/controls")
