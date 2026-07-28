@@ -1,15 +1,14 @@
 {
     "scheduler": {
         "enabled": true,
-        "utc_hour": 1,
-        "utc_minute": 0,
+        "utc_hour": 9,
+        "utc_minute": 20,
         "send_delay_seconds": 0.5
     },
     "filters": {
         "block_list": [],
         "allow_list": [
-            "siba.p@bourntec.com",
-            "dev.user@bourntec.com"
+            "sribananda.p@bourntec.com"
         ],
         "block_domains": [],
         "allow_domains": [
@@ -40,13 +39,12 @@
     },
     "last_run_dates": [
         "2026-07-26",
-        "2026-07-27",
-        "2026-07-28"
+        "2026-07-27"
     ],
     "system": {
         "enabled": true,
-        "utc_hour": 1,
-        "utc_minute": 0,
+        "utc_hour": 9,
+        "utc_minute": 20,
         "send_delay_seconds": 1.0,
         "frequency": "daily",
         "weekly_run_day": 0,
@@ -56,7 +54,7 @@
     "super_user": {
         "enabled": true,
         "recipients": [
-            "superuser@bourntec.com"
+            "siba.p@bourntec.com"
         ],
         "cc_rules": [],
         "bcc_rules": []
