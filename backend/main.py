@@ -2345,6 +2345,7 @@ ORG_MANAGED_PAGES: list[schemas.OrganizationPage] = [
     schemas.OrganizationPage(path="/plugins", label="Plugins"),
     schemas.OrganizationPage(path="/organization-admin", label="Organization Admin"),
     schemas.OrganizationPage(path="/governance-management", label="Governance Management"),
+    schemas.OrganizationPage(path="/billing", label="Billing & Activity"),
 ]
 
 def _hash_invite_token(token: str) -> str:
@@ -3543,13 +3544,14 @@ def accept_org_invite(
     else:
         raw_password = payload.password
         hashed_password = auth.get_password_hash(raw_password)
+        is_admin_role = bool(role and role.name and role.name.strip().lower() in ("admin", "organization admin"))
         user = models.User(
             email=requested_email,
             hashed_password=hashed_password,
             first_name=_normalized_text(payload.first_name) or None,
             last_name=_normalized_text(payload.last_name) or None,
             organization_name=invite.organization_name,
-            is_org_admin=False,
+            is_org_admin=is_admin_role,
             last_login=datetime.utcnow(),
         )
         db.add(user)
