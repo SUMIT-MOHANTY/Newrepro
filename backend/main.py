@@ -255,6 +255,17 @@ def _run_startup_migrations():
             except Exception as e:
                 logging.getLogger(__name__).warning(f"Migration: Could not create daily_billing_email_logs table: {e}")
 
+        # 6. Add is_virtual_shared to organization_agent_mappings table
+        if "organization_agent_mappings" in table_names:
+            oam_cols = [c["name"] for c in inspector.get_columns("organization_agent_mappings")]
+            if "is_virtual_shared" not in oam_cols:
+                try:
+                    conn.execute(sql_text("ALTER TABLE organization_agent_mappings ADD COLUMN is_virtual_shared BOOLEAN DEFAULT 0"))
+                    conn.commit()
+                    logging.getLogger(__name__).info("Migration: Added 'is_virtual_shared' column to 'organization_agent_mappings' table.")
+                except Exception as e:
+                    logging.getLogger(__name__).warning(f"Migration: Could not add is_virtual_shared to organization_agent_mappings: {e}")
+
 _run_startup_migrations()
 
 @asynccontextmanager
@@ -2585,7 +2596,7 @@ def get_superadmin_organizations(
             func.lower(models.OrganizationAgentQuota.organization_name) == name.lower()
         ).first()
 
-        max_cap = quota.max_agent_capacity if quota and quota.max_agent_capacity else 10
+        max_cap = quota.max_agent_capacity if quota and quota.max_agent_capacity is not None else 0
 
         users = db.query(models.User).filter(
             func.lower(models.User.organization_name) == name.lower()
@@ -2681,6 +2692,32 @@ def get_superadmin_capacity_requests(
 ):
     _require_super_admin(current_user)
 
+    # Auto-sync any PENDING ProjectAgentRequest that doesn't have a CapacityIncreaseRequest
+    pending_project_reqs = db.query(models.ProjectAgentRequest).filter(
+        models.ProjectAgentRequest.status == "PENDING"
+    ).all()
+    for pr in pending_project_reqs:
+        existing_cap = db.query(models.CapacityIncreaseRequest).filter(
+            models.CapacityIncreaseRequest.organization_name == pr.organization_name,
+            models.CapacityIncreaseRequest.requested_by_user_id == pr.requested_by_user_id,
+            models.CapacityIncreaseRequest.project_token == pr.project_token,
+            models.CapacityIncreaseRequest.status == "PENDING"
+        ).first()
+        if not existing_cap:
+            inc = max(1, (pr.requested_shared_count or 0) + (pr.requested_dedicated_count or 0))
+            new_cap = models.CapacityIncreaseRequest(
+                organization_name=pr.organization_name,
+                requested_by_user_id=pr.requested_by_user_id,
+                project_token=pr.project_token,
+                requested_shared_count=pr.requested_shared_count,
+                requested_dedicated_count=pr.requested_dedicated_count,
+                total_requested_increase=inc,
+                reason=f"[{pr.project_name or pr.project_token}] {pr.reason or 'Project agent request'}",
+                status="PENDING"
+            )
+            db.add(new_cap)
+    db.commit()
+
     requests = db.query(models.CapacityIncreaseRequest).order_by(
         models.CapacityIncreaseRequest.created_at.desc()
     ).all()
@@ -2688,13 +2725,23 @@ def get_superadmin_capacity_requests(
     result = []
     for r in requests:
         user = db.query(models.User).filter(models.User.id == r.requested_by_user_id).first()
+        quota = db.query(models.OrganizationAgentQuota).filter(
+            func.lower(models.OrganizationAgentQuota.organization_name) == (r.organization_name or "").lower()
+        ).first()
+        cur_cap = quota.max_agent_capacity if (quota and quota.max_agent_capacity is not None) else 0
+        inc = r.total_requested_increase or ((r.requested_shared_count or 0) + (r.requested_dedicated_count or 0)) or 1
+
         result.append({
             "id": r.id,
             "organization_name": r.organization_name,
+            "project_token": getattr(r, "project_token", None),
             "requested_by_user_id": r.requested_by_user_id,
             "requested_by_email": user.email if user else "Unknown",
-            "current_capacity": r.current_capacity,
-            "requested_capacity": r.requested_capacity,
+            "current_capacity": cur_cap,
+            "requested_capacity": cur_cap + inc,
+            "total_requested_increase": inc,
+            "requested_shared_count": getattr(r, "requested_shared_count", 0) or 0,
+            "requested_dedicated_count": getattr(r, "requested_dedicated_count", 0) or 0,
             "reason": r.reason,
             "status": r.status,
             "review_comment": r.review_comment,
@@ -2723,7 +2770,10 @@ def approve_superadmin_capacity_request(
     if not req:
         raise HTTPException(status_code=404, detail="Request not found")
 
-    approved_cap = payload.approved_total_capacity or req.requested_capacity
+    quota = _get_or_init_org_agent_quota(db, req.organization_name)
+    inc = req.total_requested_increase or ((req.requested_shared_count or 0) + (req.requested_dedicated_count or 0)) or 1
+    approved_cap = payload.approved_total_capacity or (quota.max_agent_capacity + inc)
+
     req.status = "APPROVED"
     req.approved_total_capacity = approved_cap
     req.review_comment = payload.review_comment
@@ -2731,8 +2781,18 @@ def approve_superadmin_capacity_request(
     req.updated_at = datetime.utcnow()
 
     # Increase org capacity in OrganizationAgentQuota
-    quota = _get_or_init_org_agent_quota(db, req.organization_name)
     quota.max_agent_capacity = approved_cap
+
+    # Sync corresponding ProjectAgentRequests to APPROVED
+    proj_reqs = db.query(models.ProjectAgentRequest).filter(
+        func.lower(models.ProjectAgentRequest.organization_name) == req.organization_name.lower(),
+        models.ProjectAgentRequest.status == "PENDING"
+    ).all()
+    for pr in proj_reqs:
+        pr.status = "APPROVED"
+        pr.review_comment = payload.review_comment or "Approved by Super Admin"
+        pr.reviewed_by_user_id = current_user.id
+        pr.updated_at = datetime.utcnow()
 
     db.commit()
     return {"success": True, "message": "Request approved", "approved_capacity": approved_cap}
@@ -2757,8 +2817,172 @@ def reject_superadmin_capacity_request(
     req.reviewed_by_user_id = current_user.id
     req.updated_at = datetime.utcnow()
 
+    # Sync corresponding ProjectAgentRequests to REJECTED
+    proj_reqs = db.query(models.ProjectAgentRequest).filter(
+        func.lower(models.ProjectAgentRequest.organization_name) == req.organization_name.lower(),
+        models.ProjectAgentRequest.status == "PENDING"
+    ).all()
+    for pr in proj_reqs:
+        pr.status = "REJECTED"
+        pr.review_comment = payload.review_comment or "Rejected by Super Admin"
+        pr.reviewed_by_user_id = current_user.id
+        pr.updated_at = datetime.utcnow()
+
     db.commit()
     return {"success": True, "message": "Request rejected"}
+
+def _require_org_admin_or_super_admin(current_user: models.User) -> None:
+    if not (bool(getattr(current_user, "is_org_admin", False)) or bool(getattr(current_user, "is_super_admin", False))):
+        raise HTTPException(status_code=403, detail="Only Organization Admins can perform this action")
+
+# ── End-User & Org Admin Agent Capacity Request Endpoints ───────────────────
+
+class ProjectAgentRequestCreate(BaseModel):
+    project_token: str
+    project_name: Optional[str] = None
+    requested_shared_count: int = 0
+    requested_dedicated_count: int = 0
+    reason: Optional[str] = None
+
+class CapacityIncreaseCreate(BaseModel):
+    project_token: Optional[str] = None
+    project_name: Optional[str] = None
+    requested_shared_count: int = 0
+    requested_dedicated_count: int = 0
+    total_requested_increase: int = 1
+    reason: Optional[str] = None
+
+@app.post("/api/agent/project-requests")
+def create_project_agent_request(
+    payload: ProjectAgentRequestCreate,
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db)
+):
+    org = _normalized_text(getattr(current_user, "organization_name", None))
+    if not org:
+        raise HTTPException(status_code=400, detail="User must belong to an organization")
+
+    # Save ProjectAgentRequest (Notification / Request for Org Admin ONLY)
+    req = models.ProjectAgentRequest(
+        organization_name=org,
+        project_token=payload.project_token,
+        project_name=payload.project_name or payload.project_token,
+        requested_by_user_id=current_user.id,
+        requested_shared_count=payload.requested_shared_count,
+        requested_dedicated_count=payload.requested_dedicated_count,
+        reason=payload.reason,
+        status="PENDING"
+    )
+    db.add(req)
+    db.commit()
+    db.refresh(req)
+    return {"success": True, "message": "Capacity notification submitted to Organization Admin", "id": req.id}
+
+@app.get("/api/agent/project-requests")
+def get_project_agent_requests(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db)
+):
+    org = _normalized_text(getattr(current_user, "organization_name", None))
+    is_super = bool(getattr(current_user, "is_super_admin", False))
+    is_org_admin = bool(getattr(current_user, "is_org_admin", False))
+
+    if is_super:
+        query = db.query(models.ProjectAgentRequest)
+    elif is_org_admin and org:
+        query = db.query(models.ProjectAgentRequest).filter(
+            func.lower(models.ProjectAgentRequest.organization_name) == org.lower()
+        )
+    elif org:
+        query = db.query(models.ProjectAgentRequest).filter(
+            or_(
+                func.lower(models.ProjectAgentRequest.organization_name) == org.lower(),
+                models.ProjectAgentRequest.requested_by_user_id == current_user.id
+            )
+        )
+    else:
+        query = db.query(models.ProjectAgentRequest).filter(
+            models.ProjectAgentRequest.requested_by_user_id == current_user.id
+        )
+
+    requests = query.order_by(models.ProjectAgentRequest.created_at.desc()).all()
+    res = []
+    for r in requests:
+        user = db.query(models.User).filter(models.User.id == r.requested_by_user_id).first()
+        res.append({
+            "id": r.id,
+            "organization_name": r.organization_name,
+            "project_token": r.project_token,
+            "project_name": r.project_name or r.project_token,
+            "requested_by_email": user.email if user else "Unknown",
+            "requested_shared_count": r.requested_shared_count,
+            "requested_dedicated_count": r.requested_dedicated_count,
+            "reason": r.reason,
+            "status": r.status,
+            "review_comment": r.review_comment,
+            "created_at": r.created_at.isoformat() if r.created_at else None
+        })
+    return res
+
+@app.post("/api/agent/capacity-increase-request")
+def create_capacity_increase_request(
+    payload: CapacityIncreaseCreate,
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db)
+):
+    # ONLY Org Admins or Super Admins can request Super Admin directly
+    _require_org_admin_or_super_admin(current_user)
+
+    org = _normalized_text(getattr(current_user, "organization_name", None))
+    if not org:
+        raise HTTPException(status_code=400, detail="User must belong to an organization")
+
+    req = models.CapacityIncreaseRequest(
+        organization_name=org,
+        requested_by_user_id=current_user.id,
+        project_token=payload.project_token,
+        requested_shared_count=payload.requested_shared_count,
+        requested_dedicated_count=payload.requested_dedicated_count,
+        total_requested_increase=payload.total_requested_increase or max(1, payload.requested_shared_count + payload.requested_dedicated_count),
+        reason=payload.reason,
+        status="PENDING"
+    )
+    db.add(req)
+    db.commit()
+    db.refresh(req)
+    return {"success": True, "message": "Capacity increase request submitted to Super Admin", "id": req.id}
+
+@app.post("/api/agent/project-requests/{request_id}/escalate")
+def escalate_project_request_to_superadmin(
+    request_id: int,
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db)
+):
+    _require_org_admin_or_super_admin(current_user)
+
+    proj_req = db.query(models.ProjectAgentRequest).filter(
+        models.ProjectAgentRequest.id == request_id
+    ).first()
+    if not proj_req:
+        raise HTTPException(status_code=404, detail="Project request not found")
+
+    proj_req.status = "ESCALATED"
+
+    # Create CapacityIncreaseRequest for Super Admin
+    inc = max(1, (proj_req.requested_shared_count or 0) + (proj_req.requested_dedicated_count or 0))
+    cap_req = models.CapacityIncreaseRequest(
+        organization_name=proj_req.organization_name,
+        requested_by_user_id=current_user.id,
+        project_token=proj_req.project_token,
+        requested_shared_count=proj_req.requested_shared_count,
+        requested_dedicated_count=proj_req.requested_dedicated_count,
+        total_requested_increase=inc,
+        reason=f"[{proj_req.project_name or proj_req.project_token}] Escalated: {proj_req.reason or 'Needs additional agent capacity'}",
+        status="PENDING"
+    )
+    db.add(cap_req)
+    db.commit()
+    return {"success": True, "message": "Request escalated to Super Admin"}
 
 @app.get("/api/superadmin/audit-logs")
 def get_superadmin_audit_logs(
@@ -4194,20 +4418,37 @@ def get_organization_agent_quota(
     usage = _count_org_agent_usage(db, organization_name)
     shared_quota = int(quota.shared_quota or 0)
     dedicated_quota = int(quota.dedicated_quota or 0)
-    max_cap = int(getattr(quota, "max_agent_capacity", 10) or 10)
+    max_cap = int(getattr(quota, "max_agent_capacity", 0) or 0)
 
     # Count total non-default onboarded custom agents for this organization
     total_onboarded = db.query(models.OrganizationAgentMapping).filter(
         func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower(),
-        models.OrganizationAgentMapping.is_default.is_(False)
+        models.OrganizationAgentMapping.is_default.is_(False),
+        models.OrganizationAgentMapping.project_token.isnot(None)
     ).count()
 
-    available_cap = max(0, max_cap - total_onboarded)
+    physical_onboarded = db.query(models.OrganizationAgentMapping).filter(
+        func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower(),
+        models.OrganizationAgentMapping.is_default.is_(False),
+        models.OrganizationAgentMapping.is_virtual_shared.is_(False),
+        models.OrganizationAgentMapping.project_token.isnot(None)
+    ).count()
+
+    virtual_onboarded = db.query(models.OrganizationAgentMapping).filter(
+        func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower(),
+        models.OrganizationAgentMapping.is_default.is_(False),
+        models.OrganizationAgentMapping.is_virtual_shared.is_(True),
+        models.OrganizationAgentMapping.project_token.isnot(None)
+    ).count()
+
+    available_cap = max(0, max_cap - physical_onboarded)
 
     return schemas.OrganizationAgentQuotaResponse(
         organization_name=organization_name,
         max_agent_capacity=max_cap,
         total_onboarded_agents=total_onboarded,
+        physical_workers_onboarded=physical_onboarded,
+        virtual_shared_onboarded=virtual_onboarded,
         available_capacity=available_cap,
         shared_quota=shared_quota,
         dedicated_quota=dedicated_quota,
@@ -12484,30 +12725,36 @@ async def onboard_agents(
     Onboard agents to a project with quantity-based shared/dedicated allocation.
     Supports both new multi-count format (shared_count, dedicated_count) and
     legacy single-kind format (kind: 'shared'|'dedicated'|'unassigned').
-    Enforces org-wide quota for both shared and dedicated agents.
+    Enforces org-wide capacity cap (max_agent_capacity). When physical container cap is reached,
+    shared agents are onboarded as Virtual Shared Agents that reuse idle physical containers.
     """
     organization_name = _require_organization(current_user)
     project_token = _normalize_project_token(request.project_token)
 
     quota = _get_or_init_org_agent_quota(db, organization_name)
-    shared_allowed = int(quota.shared_quota or 0) or 10
-    dedicated_allowed = int(quota.dedicated_quota or 0) or 10
+    max_cap = int(getattr(quota, "max_agent_capacity", 0) or 0)
+    shared_allowed = int(quota.shared_quota or 0)
+    dedicated_allowed = int(quota.dedicated_quota or 0)
 
-    # Count shared/dedicated already used by OTHER projects in this org
-    other_shared_count = db.query(func.coalesce(
-        func.sum(models.OrganizationAgentMapping.shared_count), 0
+    # 1. Capacity Cap Check
+    if max_cap == 0 and (shared_allowed == 0 and dedicated_allowed == 0):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Organization agent capacity cap is set to 0. "
+                "Please submit an agent capacity request to your Super Admin for approval."
+            )
+        )
+
+    effective_cap = max_cap if max_cap > 0 else (shared_allowed + dedicated_allowed)
+
+    # 2. Count physical containers already onboarded by OTHER projects in this org
+    other_physical_workers = db.query(func.coalesce(
+        func.sum(models.OrganizationAgentMapping.dedicated_count + models.OrganizationAgentMapping.shared_count), 0
     )).filter(
         func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower(),
         models.OrganizationAgentMapping.is_default == False,
-        models.OrganizationAgentMapping.project_token.isnot(None),
-        models.OrganizationAgentMapping.project_token != project_token,
-    ).scalar() or 0
-
-    other_dedicated_count = db.query(func.coalesce(
-        func.sum(models.OrganizationAgentMapping.dedicated_count), 0
-    )).filter(
-        func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower(),
-        models.OrganizationAgentMapping.is_default == False,
+        models.OrganizationAgentMapping.is_virtual_shared == False,
         models.OrganizationAgentMapping.project_token.isnot(None),
         models.OrganizationAgentMapping.project_token != project_token,
     ).scalar() or 0
@@ -12517,48 +12764,37 @@ async def onboard_agents(
     requested_dedicated = 0
     for ass in request.assignments:
         if ass.shared_count is not None or ass.dedicated_count is not None:
-            # New multi-count format
             requested_shared += max(0, ass.shared_count or 0)
             requested_dedicated += max(0, ass.dedicated_count or 0)
         elif ass.kind:
-            # Legacy single-kind format
             kind_norm = ass.kind.strip().lower()
             if kind_norm == "shared":
                 requested_shared += 1
             elif kind_norm == "dedicated":
                 requested_dedicated += 1
 
-    total_shared_requested = int(other_shared_count) + requested_shared
-    total_dedicated_requested = int(other_dedicated_count) + requested_dedicated
+    available_physical_slots = max(0, effective_cap - int(other_physical_workers))
 
-    if total_shared_requested > shared_allowed:
+    # 3. Check Dedicated Agent physical slot requirement
+    if requested_dedicated > available_physical_slots:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Shared agent capacity limit exceeded. "
-                f"Allowed: {shared_allowed}, "
-                f"Other projects: {int(other_shared_count)}, "
-                f"This project requests: {requested_shared}. "
-                f"Total: {total_shared_requested}."
-            )
-        )
-    if total_dedicated_requested > dedicated_allowed:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Dedicated agent capacity limit exceeded. "
-                f"Allowed: {dedicated_allowed}, "
-                f"Other projects: {int(other_dedicated_count)}, "
-                f"This project requests: {requested_dedicated}. "
-                f"Total: {total_dedicated_requested}."
+                f"Dedicated agent physical capacity limit reached. "
+                f"Max Cap: {effective_cap}, Active Physical Workers: {int(other_physical_workers)}, "
+                f"Available Physical Slots: {available_physical_slots}, Requested Dedicated: {requested_dedicated}. "
+                f"Dedicated agents require physical worker containers. Please request a capacity increase from Super Admin."
             )
         )
 
-    # Apply assignments
+    # 4. Apply assignments & determine physical vs virtual allocation
+    physical_slots_left = available_physical_slots
+    total_physical_for_project = 0
+    total_virtual_for_project = 0
+
     for ass in request.assignments:
         agent_id = ass.agent_id
 
-        # Determine shared_count + dedicated_count to store
         if ass.shared_count is not None or ass.dedicated_count is not None:
             sc = max(0, ass.shared_count or 0)
             dc = max(0, ass.dedicated_count or 0)
@@ -12571,15 +12807,13 @@ async def onboard_agents(
 
         total_for_agent = sc + dc
 
-        # Derive agent_kind from counts for backward-compat
         if dc > 0 and sc == 0:
             effective_kind = "dedicated"
         elif sc > 0:
             effective_kind = "shared"
         else:
-            effective_kind = "shared"  # default kind for unassigned agents
+            effective_kind = "shared"
 
-        # Determine sub_type from specialization
         agent_rec = db.query(models.Agent).filter(models.Agent.id == agent_id).first()
         sub_type = "dev"
         if agent_rec and agent_rec.specialization == "Testing":
@@ -12599,18 +12833,32 @@ async def onboard_agents(
             db.add(mapping)
 
         if total_for_agent == 0:
-            # Unassign: clear project binding, reset counts
             mapping.project_token = None
             mapping.agent_kind = "shared"
             mapping.agent_sub_type = sub_type
             mapping.shared_count = 0
             mapping.dedicated_count = 0
+            mapping.is_virtual_shared = False
         else:
             mapping.project_token = project_token
             mapping.agent_kind = effective_kind
             mapping.agent_sub_type = sub_type
             mapping.shared_count = sc
             mapping.dedicated_count = dc
+
+            # Allocate physical slots: dedicated first, then shared up to remaining physical cap
+            if dc > 0:
+                mapping.is_virtual_shared = False
+                physical_slots_left = max(0, physical_slots_left - dc)
+                total_physical_for_project += dc
+            elif sc > 0:
+                if physical_slots_left >= sc:
+                    mapping.is_virtual_shared = False
+                    physical_slots_left -= sc
+                    total_physical_for_project += sc
+                else:
+                    mapping.is_virtual_shared = True
+                    total_virtual_for_project += sc
 
         db.add(mapping)
 
@@ -12620,9 +12868,15 @@ async def onboard_agents(
 
     db.commit()
 
-    records = db.query(models.Agent).filter(
-        models.Agent.project_token == project_token
+    # Only initialize physical worker containers for non-virtual agents
+    records = db.query(models.Agent).join(
+        models.OrganizationAgentMapping,
+        models.Agent.id == models.OrganizationAgentMapping.agent_id
+    ).filter(
+        models.Agent.project_token == project_token,
+        models.OrganizationAgentMapping.is_virtual_shared == False
     ).all()
+
     agent_service.initialize_agents_from_records(_runtime_agent_records(records, project_token), project_token)
 
     return {
@@ -12631,14 +12885,14 @@ async def onboard_agents(
         "total_shared_onboarded": requested_shared,
         "total_dedicated_onboarded": requested_dedicated,
         "total_onboarded": requested_shared + requested_dedicated,
-        "total_allowed": shared_allowed + dedicated_allowed,
+        "physical_workers_onboarded": total_physical_for_project,
+        "virtual_shared_onboarded": total_virtual_for_project,
+        "max_agent_capacity": effective_cap,
         "org_quota": {
-            "shared_quota": shared_allowed,
-            "shared_used": total_shared_requested,
-            "shared_remaining": max(0, shared_allowed - total_shared_requested),
-            "dedicated_quota": dedicated_allowed,
-            "dedicated_used": total_dedicated_requested,
-            "dedicated_remaining": max(0, dedicated_allowed - total_dedicated_requested),
+            "max_agent_capacity": effective_cap,
+            "physical_workers_active": int(other_physical_workers) + total_physical_for_project,
+            "available_physical_slots": max(0, effective_cap - (int(other_physical_workers) + total_physical_for_project)),
+            "virtual_shared_onboarded": total_virtual_for_project,
         }
     }
 

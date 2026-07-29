@@ -59,6 +59,31 @@ class CapacityIncreaseRequest(Base):
     reviewed_by = relationship("User", foreign_keys=[reviewed_by_user_id])
 
 
+class ProjectAgentRequest(Base):
+    """
+    Agent requests raised by End Users / Project Members to the Org Admin
+    specifying shared and dedicated agent counts needed for a specific project.
+    """
+    __tablename__ = "project_agent_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_name = Column(String, index=True, nullable=False)
+    project_token = Column(String, index=True, nullable=False)
+    project_name = Column(String, nullable=True)
+    requested_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    requested_shared_count = Column(Integer, default=0)
+    requested_dedicated_count = Column(Integer, default=0)
+    reason = Column(String, nullable=True)
+    status = Column(String, default="PENDING", index=True)  # PENDING | APPROVED | REJECTED | ESCALATED
+    reviewed_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    review_comment = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    requested_by = relationship("User", foreign_keys=[requested_by_user_id])
+    reviewed_by = relationship("User", foreign_keys=[reviewed_by_user_id])
+
+
 class PasswordReset(Base):
     __tablename__ = "password_resets"
 
@@ -251,16 +276,16 @@ class Agent(Base):
 class OrganizationAgentQuota(Base):
     """
     Organization-wide capacity (license) for agent slots.
-    - max_agent_capacity: Overall total capacity cap set by Super Admin (single combined limit)
-    - shared_quota: how many shared agents the org is allowed to create (in addition to defaults)
-    - dedicated_quota: how many dedicated agents the org is allowed to create across ALL projects (in addition to defaults)
+    - max_agent_capacity: Overall total capacity cap set by Super Admin (single combined limit, default 0)
+    - shared_quota: how many shared agents the org is allowed to create
+    - dedicated_quota: how many dedicated agents the org is allowed to create across ALL projects
     - *_dev_quota / *_test_quota: sub_type breakdown of the above quotas
     """
     __tablename__ = "organization_agent_quotas"
 
     id = Column(Integer, primary_key=True, index=True)
     organization_name = Column(String, unique=True, index=True, nullable=False)
-    max_agent_capacity = Column(Integer, nullable=False, default=10) # Set by Super Admin
+    max_agent_capacity = Column(Integer, nullable=False, default=0) # Set by Super Admin
     shared_quota = Column(Integer, nullable=False, default=0)
     dedicated_quota = Column(Integer, nullable=False, default=0)
     # Sub-type breakdown
@@ -280,6 +305,7 @@ class OrganizationAgentMapping(Base):
     home_project_token: The project to which this dedicated agent is bound.
     current_borrowed_project_token: Project borrowing this agent as a shared agent when idle.
     is_borrowed: Flag indicating if an idle dedicated agent is currently borrowed by another project.
+    is_virtual_shared: Flag indicating if this shared agent is virtually onboarded without extra physical worker containers.
     """
     __tablename__ = "organization_agent_mappings"
     __table_args__ = (
@@ -293,6 +319,7 @@ class OrganizationAgentMapping(Base):
     home_project_token = Column(String, index=True, nullable=True)
     current_borrowed_project_token = Column(String, index=True, nullable=True)
     is_borrowed = Column(Boolean, default=False)
+    is_virtual_shared = Column(Boolean, default=False)
     agent_kind = Column(String, index=True, nullable=True)
     agent_sub_type = Column(String, index=True, nullable=True)  # 'dev' or 'test'
     is_default = Column(Boolean, default=False)

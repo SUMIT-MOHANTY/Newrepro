@@ -369,22 +369,27 @@ export default function Sidebar({
                                     Plugins
                                 </button>
                             )}
-                            {user && (
-                                <div className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md hover:bg-app-text-label transition-colors justify-between bg-white/5 border border-white/10 ${isDarkMode ? 'text-app-text-label' : 'text-app-border'}`}>
-                                    <div className="flex items-center overflow-hidden">
-                                        <User className="w-4 h-4 mr-3 flex-shrink-0" />
-                                        <span className="truncate w-24 text-xs" title={user.email}>{user.email}</span>
-                                    </div>
-                                    <button onClick={handleLogout} className="text-red-400 hover:text-red-300 p-1" title="Logout">
-                                        <LogOut className="w-4 h-4" />
-                                    </button>
-                                </div>
-                            )}
-
-
                         </div>
                     </div>
                 </div>
+
+                {user && (
+                    <div className="p-3 border-t border-white/10 bg-app-sidebar-bg shrink-0">
+                        <div className={`flex items-center w-full px-3 py-2 text-sm font-medium rounded-lg bg-white/5 border border-white/10 ${isDarkMode ? 'text-app-text-label' : 'text-app-border'}`}>
+                            <div className="flex items-center min-w-0 flex-1 mr-2">
+                                <User className="w-4 h-4 mr-2 text-purple-400 flex-shrink-0" />
+                                <span className="truncate text-xs font-semibold text-slate-200" title={user.email}>{user.email}</span>
+                            </div>
+                            <button 
+                                onClick={handleLogout} 
+                                className="text-red-400 hover:text-red-300 hover:bg-red-500/10 p-1.5 rounded-md transition-colors shrink-0 flex items-center" 
+                                title="Logout"
+                            >
+                                <LogOut className="w-4 h-4" />
+                            </button>
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* Modals - Rendered outside sidebar to appear centered on screen */}

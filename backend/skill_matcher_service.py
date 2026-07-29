@@ -263,3 +263,52 @@ async def inject_context_for_task(
     except Exception as e:
         logger.error(f"Error injecting context for task: {e}", exc_info=True)
         return {'claude_context': '', 'skills_context': ''}
+
+
+def find_best_idle_worker_for_task(
+    task: Dict[str, Any],
+    idle_workers: List[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """
+    Select the best idle physical worker agent to execute a virtual shared agent task
+    based on skill matching, specialization (Dev vs Testing), and keyword relevance.
+    """
+    if not idle_workers:
+        return None
+    
+    task_text = f"{task.get('title', '')} {task.get('description', '')} {task.get('checklist', '')}".lower()
+    task_phase = str(task.get('phase') or task.get('task_phase') or '').lower()
+    
+    scored_workers = []
+    for worker in idle_workers:
+        score = 0.0
+        spec = str(worker.get("specialization") or "").lower()
+        skills = str(worker.get("skills_content") or worker.get("skills_summary") or "").lower()
+        tags = [str(t).lower() for t in (worker.get("skills_tags") or [])]
+        
+        # 1. Specialization match
+        if "test" in task_phase or "qa" in task_text or "pytest" in task_text:
+            if spec == "testing" or "test" in worker.get("id", "").lower():
+                score += 50.0
+        else:
+            if spec != "testing":
+                score += 30.0
+                
+        # 2. Tag matches
+        for tag in tags:
+            if tag and tag in task_text:
+                score += 15.0
+                
+        # 3. Skill keywords match
+        if skills:
+            keywords = extract_skill_keywords(skills)
+            kw_matches = sum(1 for kw in keywords if kw in task_text)
+            score += min(kw_matches * 5.0, 30.0)
+            
+        scored_workers.append((score, worker))
+        
+    scored_workers.sort(key=lambda x: x[0], reverse=True)
+    best_score, best_worker = scored_workers[0]
+    logger.info(f"🎯 Matched task '{task.get('title')}' to worker {best_worker.get('id')} with skill relevance score {best_score}")
+    return best_worker
+

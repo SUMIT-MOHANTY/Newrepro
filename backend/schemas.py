@@ -82,8 +82,10 @@ class OrganizationSSOSettingsResponse(OrganizationSSOSettingsUpdate):
 
 class OrganizationAgentQuotaResponse(BaseModel):
     organization_name: str
-    max_agent_capacity: int = 10
+    max_agent_capacity: int = 0
     total_onboarded_agents: int = 0
+    physical_workers_onboarded: int = 0
+    virtual_shared_onboarded: int = 0
     available_capacity: int = 0
     shared_quota: int = 0
     dedicated_quota: int = 0

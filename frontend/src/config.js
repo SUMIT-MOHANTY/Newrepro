@@ -40,6 +40,8 @@ export const API_ENDPOINTS = {
     SUPERADMIN_AUDIT_LOGS: `${API_BASE_URL}/api/superadmin/audit-logs`,
     ORG_CAPACITY_REQUEST: `${API_BASE_URL}/api/organization/capacity-request`,
     ORG_CAPACITY_REQUESTS: `${API_BASE_URL}/api/organization/capacity-requests`,
+    AGENT_PROJECT_REQUESTS: `${API_BASE_URL}/api/agent/project-requests`,
+    AGENT_CAPACITY_INCREASE_REQUEST: `${API_BASE_URL}/api/agent/capacity-increase-request`,
 
     // Documents
     DOCUMENTS_UPLOAD: `${API_BASE_URL}/documents/upload`,
