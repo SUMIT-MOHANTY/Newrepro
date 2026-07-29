@@ -6250,6 +6250,20 @@ def _check_docker_available() -> bool:
         return False
 
 
+def get_running_containers_count() -> int:
+    """Returns the total number of running Docker containers for agent workers."""
+    try:
+        cmd = ["docker", "ps", "--format", "{{.Names}}"]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+        if res.returncode == 0:
+            lines = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+            agent_containers = [n for n in lines if n.startswith("agt_") or n.startswith("git_manager") or "agent" in n.lower() or "dsuite" in n.lower() or "vibecoding" in n.lower()]
+            return len(agent_containers) if agent_containers else len(lines)
+    except Exception as e:
+        logger.warning(f"Failed to query running containers: {e}")
+    return 0
+
+
 # ── Git Helpers ──────────────────────────────────────────────────────────────
 
 def _slugify_branch_name(task_title: str) -> str:

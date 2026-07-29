@@ -550,6 +550,135 @@ def _generate_sprints_and_milestones(
     
     return sprints, milestones
 
+async def _chunk_and_summarize_brd(
+    raw_text: str,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+    status_callback: Optional[Any] = None,
+) -> str:
+    """Chunk large BRD documents into logical blocks (~8000 chars) and summarize key features."""
+    if not raw_text or len(raw_text) <= 15000:
+        return raw_text
+
+    logger.info(f"Large BRD document detected ({len(raw_text)} chars). Executing chunked BRD summarization...")
+    chunk_size = 8000
+    chunks = [raw_text[i:i + chunk_size] for i in range(0, len(raw_text), chunk_size)]
+    summaries = []
+
+    for idx, chunk in enumerate(chunks):
+        logger.info(f"Summarizing BRD chunk {idx + 1} of {len(chunks)}...")
+        if status_callback:
+            try:
+                status_callback("chunk", idx + 1, len(chunks))
+            except Exception:
+                pass
+
+        messages = [
+            {
+                "role": "system",
+                "content": "You are a Senior Business Analyst. Summarize key functional requirements, core modules, data flows, and technical requirements from this document chunk into concise bullet points."
+            },
+            {
+                "role": "user",
+                "content": f"Document Chunk {idx + 1}/{len(chunks)}:\n\n{chunk}"
+            }
+        ]
+        try:
+            summary = await llm_gateway.call_llm_and_extract(
+                messages=messages, api_url=api_url, api_key=api_key, model=model, timeout=120.0, retries=3
+            )
+            summaries.append(f"--- BRD SECTION {idx + 1} SUMMARY ---\n{summary}")
+        except Exception as e:
+            logger.warning(f"Failed to summarize BRD chunk {idx + 1}: {e}")
+
+    consolidated_map = "\n\n".join(summaries)
+    logger.info(f"Chunked BRD summarization complete: consolidated {len(chunks)} chunks into {len(consolidated_map)} chars")
+    return consolidated_map
+
+
+async def _ai_plan_sprints(
+    brd_context: str,
+    project_type: str,
+    process_mode: str,
+    api_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Ask AI to dynamically analyze BRD scope and decide optimal sprint count (2-6) and names."""
+    logger.info("Executing AI Dynamic Sprint Planning...")
+    prompt = f"""# ROLE
+You are an Agile Lead Architect.
+
+# TASK
+Analyze the provided BRD requirements and project context. Dynamically determine the OPTIMAL NUMBER OF SPRINTS (between 2 and 6) and milestone targets required to deliver this project cleanly based on its scope, complexity, and project type.
+
+PROJECT TYPE: {project_type}
+PROCESS MODE: {process_mode}
+
+BRD CONTEXT:
+====================
+{brd_context[:25000]}
+
+# OUTPUT FORMAT (JSON ONLY)
+Return a valid JSON object:
+```json
+{{
+  "total_sprints": 3,
+  "rationale": "Explanation of why this sprint count was chosen...",
+  "sprints": [
+    {{
+      "sprint_number": 1,
+      "name": "Sprint 1: Frontend Prototype & Core UI",
+      "summary": "Build UI screens, navigation shell, and mock store.",
+      "milestone": "Frontend Proto Complete",
+      "focus": "frontend"
+    }},
+    {{
+      "sprint_number": 2,
+      "name": "Sprint 2: Backend Services & Database",
+      "summary": "Develop database schemas, controllers, and APIs.",
+      "milestone": "Backend Services Operational",
+      "focus": "backend"
+    }},
+    {{
+      "sprint_number": 3,
+      "name": "Sprint 3: E2E Integration & Staging Cutover",
+      "summary": "Connect UI to backend APIs, run tests, and prepare deployment.",
+      "milestone": "Production Ready",
+      "focus": "integration"
+    }}
+  ]
+}}
+```"""
+
+    messages = [
+        {"role": "system", "content": "You are a master Agile Lead Architect. Output valid JSON only."},
+        {"role": "user", "content": prompt}
+    ]
+
+    try:
+        raw_res = await llm_gateway.call_llm_and_extract(
+            messages=messages, api_url=api_url, api_key=api_key, model=model, timeout=120.0, retries=3
+        )
+        data = _extract_json_from_response(raw_res)
+        if isinstance(data, dict) and isinstance(data.get("sprints"), list) and len(data["sprints"]) > 0:
+            logger.info(f"AI Dynamic Sprint Planning succeeded: planned {len(data['sprints'])} sprints.")
+            return data
+    except Exception as e:
+        logger.warning(f"AI Dynamic Sprint Planning failed: {e}. Falling back to default 4-phase plan.")
+
+    # Fallback to default 4 sprints if LLM planning fails
+    return {
+        "total_sprints": 4,
+        "rationale": "Default 4-phase plan",
+        "sprints": [
+            {"sprint_number": 1, "name": "Sprint 1: Frontend Prototype & Bootstrap", "summary": "UI screens, navigation shell, mock data", "milestone": "Frontend Complete", "focus": "frontend"},
+            {"sprint_number": 2, "name": "Sprint 2: Backend Services & Database", "summary": "DB models, REST endpoints, auth", "milestone": "Backend Complete", "focus": "backend"},
+            {"sprint_number": 3, "name": "Sprint 3: Frontend-Backend Integration", "summary": "API wiring, state sync, DB checks", "milestone": "Integration Complete", "focus": "integration"},
+            {"sprint_number": 4, "name": "Sprint 4: Testing & Deployment", "summary": "E2E testing, polish, deployment config", "milestone": "Production Ready", "focus": "testing"}
+        ]
+    }
 
 
 def _parse_task_json(content: str) -> List[Dict[str, Any]]:
@@ -2014,6 +2143,7 @@ async def generate_tasks_locally(
     api_key: Optional[str] = None,
     model: Optional[str] = None,
     branch: Optional[str] = None,
+    sprint_callback: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """
     Generate tasks using AI with multiple sprints and milestones
@@ -2125,16 +2255,52 @@ Weighted Score:    {gov_ctx.get('weighted_score', 'Not available')}
 """
 
     raw_brd_analysis = context.get('brd_analysis', '')
-    if raw_brd_analysis and len(raw_brd_analysis) > 30000:
-        raw_brd_analysis = raw_brd_analysis[:30000] + "\n\n... [BRD Document Analysis truncated to 30,000 characters for task generation prompt length] ..."
+    
+    # ── 4b. Chunked BRD Summarization for large documents (> 15,000 chars) ───
+    if raw_brd_analysis and len(raw_brd_analysis) > 15000:
+        logger.info(f"[{project_token}] Raw BRD length {len(raw_brd_analysis)} exceeds 15,000 chars. Executing chunked BRD analysis...")
+        raw_brd_analysis = await _chunk_and_summarize_brd(
+            raw_text=raw_brd_analysis,
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+        )
+
+    # ── 4c. AI Dynamic Sprint Planning ────────────────────────────────────────
+    ai_sprint_plan = await _ai_plan_sprints(
+        brd_context=raw_brd_analysis,
+        project_type=project_type,
+        process_mode=process_mode,
+        api_url=api_url,
+        api_key=api_key,
+        model=model,
+    )
+    ai_sprints = ai_sprint_plan.get("sprints", [])
+    total_sprints_count = len(ai_sprints)
+    logger.info(f"[{project_token}] AI Dynamic Sprint Planning determined {total_sprints_count} sprints")
+
+    # Update job manager total sprints count if job exists
+    from task_generation_job_manager import get_task_generation_job_manager
+    job = get_task_generation_job_manager().get_job(project_token)
+    if job:
+        job.set_total_sprints(total_sprints_count)
+
+    sprint_list = "\n".join([
+        f"- {s.get('name')}: ({s.get('summary')})"
+        for s in ai_sprints
+    ])
+    milestone_list = "\n".join([
+        f"- {s.get('milestone')}: (Sprint: {s.get('name')})"
+        for s in ai_sprints if s.get('milestone')
+    ])
 
     brd_block = f"""
-AVAILABLE SPRINTS (with dates):
+AVAILABLE SPRINTS (AI Planned):
 ================================
 {sprint_list}
 
 AVAILABLE MILESTONES:
-=====================
+====================
 {milestone_list}
 
 REPOSITORY STRUCTURE (from section 0.5.1):
@@ -2152,122 +2318,72 @@ AGENT ACTION PLAN MARKDOWN DOCUMENT
 ===================================================================
 """
 
-    # ── 5. PER-SPRINT SEQUENTIAL GENERATION ──────────────────────────────────
-    # Generate tasks one sprint at a time, each with a focused scope:
-    #   Sprint 1 = Frontend screens + bootstrap (story-first format)
-    #   Sprint 2 = Backend services, DB models, API routes
-    #   Sprint 3 = Frontend-Backend integration, real API wiring
-    #   Sprint 4 = Testing, polish, deployment config
-    # Previous sprints are passed as context so each sprint builds on the last.
-    # This fixes "information overload" where a single LLM call forgets entire
-    # feature areas (especially backend CRUD) because it has too much to produce.
-    logger.info(f"[{project_token}] Per-sprint sequential generation — {len(sprints)} sprints")
+    # ── 5. PER-SPRINT DYNAMIC SEQUENTIAL GENERATION ───────────────────────────
+    logger.info(f"[{project_token}] Per-sprint sequential generation — {total_sprints_count} AI-planned sprints")
 
     all_tasks: List[Dict[str, Any]] = []
 
-    # ── Sprint 1: Frontend Prototype & Bootstrap ────────────────────────────
-    try:
-        logger.info(f"  → Generating Sprint 1 (Frontend) tasks...")
-        messages_1 = [
+    import asyncio
+    async def _notify_sprint(sprint_num: int, sprint_name: str, tasks: List[Dict[str, Any]]):
+        if sprint_callback:
+            try:
+                res = sprint_callback(sprint_num, sprint_name, tasks)
+                if asyncio.iscoroutine(res):
+                    await res
+            except Exception as cb_err:
+                logger.warning(f"[{project_token}] Sprint {sprint_num} callback error: {cb_err}")
+
+    # Generate tasks dynamically for each AI-planned sprint
+    for s_idx, sp in enumerate(ai_sprints):
+        sprint_num = sp.get("sprint_number", s_idx + 1)
+        sprint_name = sp.get("name", f"Sprint {sprint_num}")
+        sprint_summary = sp.get("summary", "")
+        sprint_focus = sp.get("focus", "general")
+
+        if job:
+            job.update_sprint_start(sprint_num, sprint_name)
+
+        logger.info(f"  → Generating Sprint {sprint_num}/{total_sprints_count}: {sprint_name}...")
+
+        prev_summary = _build_tasks_summary(all_tasks) if all_tasks else "No previous tasks generated yet."
+
+        prompt_content = f"""{brd_block}
+
+CURRENT SPRINT SCOPE ({sprint_num} of {total_sprints_count}):
+===================================================================
+Sprint Name: {sprint_name}
+Sprint Summary: {sprint_summary}
+Sprint Focus Target: {sprint_focus}
+Start Task Index: {len(all_tasks) + 1}
+
+PREVIOUS SPRINTS TASK SUMMARY:
+===================================================================
+{prev_summary}
+
+INSTRUCTIONS:
+Generate 3 to 8 actionable, technical, story-first tasks specifically for {sprint_name}.
+Set the "sprint" field of every generated task to "{sprint_name}".
+Set the "milestone" field of every generated task to "{sp.get('milestone', '')}".
+"""
+
+        messages_sprint = [
             {"role": "system", "content": INTELLIGENT_TASK_GENERATION_PROMPT},
-            {"role": "user", "content": brd_block + "\n\n" + SPRINT1_GENERATION_PROMPT},
+            {"role": "user", "content": prompt_content},
         ]
-        response_1 = await llm_gateway.call_llm_and_extract(
-            messages=messages_1, api_url=api_url, api_key=api_key,
-            model=model, timeout=180.0,
-        )
-        tasks_1 = _parse_task_json(response_1)
-        if tasks_1:
-            all_tasks.extend(tasks_1)
-            logger.info(f"[{project_token}] Sprint 1 generated {len(tasks_1)} tasks")
-        else:
-            logger.warning(f"[{project_token}] Sprint 1 generated 0 tasks")
-    except Exception as e:
-        logger.error(f"[{project_token}] Sprint 1 generation failed: {e}")
 
-    # ── Sprint 2: Backend Services & Database ───────────────────────────────
-    if all_tasks:
-        sprint1_summary = _build_tasks_summary(
-            [t for t in all_tasks if "Sprint 1" in t.get("sprint", "")]
-        ) or _build_tasks_summary(all_tasks)
         try:
-            logger.info(f"  → Generating Sprint 2 (Backend) tasks...")
-            formatted_prompt_2 = SPRINT2_GENERATION_PROMPT.format(
-                start_index=len(all_tasks),
-                sprint1_summary=sprint1_summary,
+            response_sprint = await llm_gateway.call_llm_and_extract(
+                messages=messages_sprint, api_url=api_url, api_key=api_key, model=model, timeout=180.0, retries=3
             )
-            messages_2 = [
-                {"role": "system", "content": INTELLIGENT_TASK_GENERATION_PROMPT},
-                {"role": "user", "content": brd_block + "\n\n" + formatted_prompt_2},
-            ]
-            response_2 = await llm_gateway.call_llm_and_extract(
-                messages=messages_2, api_url=api_url, api_key=api_key,
-                model=model, timeout=180.0,
-            )
-            tasks_2 = _parse_task_json(response_2)
-            if tasks_2:
-                all_tasks.extend(tasks_2)
-                logger.info(f"[{project_token}] Sprint 2 generated {len(tasks_2)} tasks")
+            tasks_sprint = _parse_task_json(response_sprint)
+            if tasks_sprint:
+                all_tasks.extend(tasks_sprint)
+                logger.info(f"[{project_token}] Sprint {sprint_num} generated {len(tasks_sprint)} tasks")
+                await _notify_sprint(sprint_num, sprint_name, tasks_sprint)
             else:
-                logger.warning(f"[{project_token}] Sprint 2 generated 0 tasks")
+                logger.warning(f"[{project_token}] Sprint {sprint_num} generated 0 tasks")
         except Exception as e:
-            logger.error(f"[{project_token}] Sprint 2 generation failed: {e}")
-
-    # ── Sprint 3: Frontend-Backend Integration ──────────────────────────────
-    if all_tasks:
-        s1 = [t for t in all_tasks if "Sprint 1" in t.get("sprint", "")]
-        s2 = [t for t in all_tasks if "Sprint 2" in t.get("sprint", "")]
-        s1_summary = _build_tasks_summary(s1) if s1 else _build_tasks_summary(all_tasks)
-        s2_summary = _build_tasks_summary(s2) if s2 else "No Sprint 2 tasks generated yet."
-        try:
-            logger.info(f"  → Generating Sprint 3 (Integration) tasks...")
-            formatted_prompt_3 = SPRINT3_GENERATION_PROMPT.format(
-                start_index=len(all_tasks),
-                sprint1_summary=s1_summary,
-                sprint2_summary=s2_summary,
-            )
-            messages_3 = [
-                {"role": "system", "content": INTELLIGENT_TASK_GENERATION_PROMPT},
-                {"role": "user", "content": brd_block + "\n\n" + formatted_prompt_3},
-            ]
-            response_3 = await llm_gateway.call_llm_and_extract(
-                messages=messages_3, api_url=api_url, api_key=api_key,
-                model=model, timeout=180.0,
-            )
-            tasks_3 = _parse_task_json(response_3)
-            if tasks_3:
-                all_tasks.extend(tasks_3)
-                logger.info(f"[{project_token}] Sprint 3 generated {len(tasks_3)} tasks")
-            else:
-                logger.warning(f"[{project_token}] Sprint 3 generated 0 tasks")
-        except Exception as e:
-            logger.error(f"[{project_token}] Sprint 3 generation failed: {e}")
-
-    # ── Sprint 4: Testing & Deployment ──────────────────────────────────────
-    if all_tasks:
-        all_summary = _build_tasks_summary(all_tasks)
-        try:
-            logger.info(f"  → Generating Sprint 4 (Testing) tasks...")
-            formatted_prompt_4 = SPRINT4_GENERATION_PROMPT.format(
-                start_index=len(all_tasks),
-                all_previous_summary=all_summary,
-            )
-            messages_4 = [
-                {"role": "system", "content": INTELLIGENT_TASK_GENERATION_PROMPT},
-                {"role": "user", "content": brd_block + "\n\n" + formatted_prompt_4},
-            ]
-            response_4 = await llm_gateway.call_llm_and_extract(
-                messages=messages_4, api_url=api_url, api_key=api_key,
-                model=model, timeout=180.0,
-            )
-            tasks_4 = _parse_task_json(response_4)
-            if tasks_4:
-                all_tasks.extend(tasks_4)
-                logger.info(f"[{project_token}] Sprint 4 generated {len(tasks_4)} tasks")
-            else:
-                logger.warning(f"[{project_token}] Sprint 4 generated 0 tasks")
-        except Exception as e:
-            logger.error(f"[{project_token}] Sprint 4 generation failed: {e}")
+            logger.error(f"[{project_token}] Sprint {sprint_num} generation failed: {e}")
 
     if not all_tasks:
         logger.error(f"[{project_token}] No tasks generated from any sprint")

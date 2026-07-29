@@ -2772,7 +2772,11 @@ def approve_superadmin_capacity_request(
 
     quota = _get_or_init_org_agent_quota(db, req.organization_name)
     inc = req.total_requested_increase or ((req.requested_shared_count or 0) + (req.requested_dedicated_count or 0)) or 1
-    approved_cap = payload.approved_total_capacity or (quota.max_agent_capacity + inc)
+    if payload.approved_total_capacity and payload.approved_total_capacity > (quota.max_agent_capacity or 0):
+        approved_cap = payload.approved_total_capacity
+    else:
+        inc_val = payload.approved_total_capacity or inc
+        approved_cap = int(quota.max_agent_capacity or 10) + inc_val
 
     req.status = "APPROVED"
     req.approved_total_capacity = approved_cap
@@ -2782,6 +2786,8 @@ def approve_superadmin_capacity_request(
 
     # Increase org capacity in OrganizationAgentQuota
     quota.max_agent_capacity = approved_cap
+    quota.shared_quota = max(int(quota.shared_quota or 0), approved_cap)
+    quota.dedicated_quota = max(int(quota.dedicated_quota or 0), approved_cap)
 
     # Sync corresponding ProjectAgentRequests to APPROVED
     proj_reqs = db.query(models.ProjectAgentRequest).filter(
@@ -4252,6 +4258,7 @@ def _count_org_agent_usage(
     rows = db.query(models.OrganizationAgentMapping).filter(
         func.lower(models.OrganizationAgentMapping.organization_name) == org.lower(),
         models.OrganizationAgentMapping.is_default.is_(False),
+        models.OrganizationAgentMapping.project_token.isnot(None),
     ).all()
     stats = {
         "shared": 0, "dedicated": 0,
@@ -4565,7 +4572,7 @@ def get_super_admin_dashboard_stats(
     active_users = db.query(models.User).filter(models.User.is_active.is_(True)).count()
 
     # Running Containers & Utilization
-    running_docker_containers = dedicated_agents + shared_agents
+    running_docker_containers = agent_service.get_running_containers_count() if hasattr(agent_service, "get_running_containers_count") else (dedicated_agents + shared_agents)
     agent_utilization = round((float(running_docker_containers) / float(max(1, total_onboarded_agents))) * 100.0, 1)
 
     return schemas.SuperAdminDashboardStatsResponse(
@@ -4678,8 +4685,14 @@ def approve_capacity_request(
 
     quota = _get_or_init_org_agent_quota(db, req.organization_name)
     inc_amount = payload.approved_total_capacity or req.total_requested_increase or 1
-    # Update total overall capacity cap
-    quota.max_agent_capacity = int(quota.max_agent_capacity or 10) + inc_amount
+    if payload.approved_total_capacity and payload.approved_total_capacity > (quota.max_agent_capacity or 0):
+        approved_cap = payload.approved_total_capacity
+    else:
+        approved_cap = int(quota.max_agent_capacity or 10) + inc_amount
+
+    quota.max_agent_capacity = approved_cap
+    quota.shared_quota = max(int(quota.shared_quota or 0), approved_cap)
+    quota.dedicated_quota = max(int(quota.dedicated_quota or 0), approved_cap)
     req.approved_total_capacity = quota.max_agent_capacity
 
     db.add(req)
@@ -15257,6 +15270,37 @@ def _apply_schedule_ids_to_preview_payload(
         if milestone_name:
             task["milestone"] = milestone_name
 
+@app.get("/api/agent/tasks/generation-status/{project_token}")
+async def get_task_generation_status(
+    project_token: str,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Polling status endpoint — returns active background loader state and released tasks per sprint.
+    Polling interval: 7 seconds.
+    """
+    from task_generation_job_manager import get_task_generation_job_manager
+    manager = get_task_generation_job_manager()
+    job = manager.get_job(project_token)
+    if not job:
+        return {
+            "project_token": project_token,
+            "is_generating": False,
+            "status": "idle",
+            "current_sprint": 0,
+            "current_sprint_name": "",
+            "total_sprints": 4,
+            "progress_percent": 0,
+            "status_message": "No active task generation job running.",
+            "tasks_count": 0,
+            "released_sprints": [],
+            "released_tasks": [],
+            "polling_interval_seconds": 7,
+            "error": None
+        }
+    return job.to_dict()
+
+
 @app.post("/api/agent/tasks/generate-local/")
 async def generate_tasks_locally(
     request: AutoGenerateRequest,
@@ -15266,9 +15310,15 @@ async def generate_tasks_locally(
 ):
     """
     Generate tasks locally using AI, store in database, then optionally sync to NXDUNE.
+    Supports progressive per-sprint generation and live polling status updates every 7s.
     """
     try:
         from task_generation_service import generate_tasks_locally as gen_tasks
+        from task_generation_job_manager import get_task_generation_job_manager
+
+        job_mgr = get_task_generation_job_manager()
+        gen_job = job_mgr.create_job(request.project_token)
+        gen_job.polling_interval_seconds = 7
         
         # Get AI config
         ai_config = await ai_service.get_ai_config()
@@ -15295,20 +15345,73 @@ async def generate_tasks_locally(
                 effective_branch = stored_branch
                 logger.info(f"[{request.project_token}] Using stored branch: {effective_branch}")
         
+        def on_sprint_generated(sprint_num: int, sprint_name: str, sprint_tasks: list):
+            gen_job.add_released_sprint(sprint_num, sprint_name, sprint_tasks)
+            # Incrementally save sprint tasks to database
+            try:
+                if sprint_num == 1:
+                    db.query(models.Task).filter(
+                        models.Task.project_token == request.project_token,
+                        models.Task.owner_id == current_user.id
+                    ).delete()
+                    db.commit()
+
+                for tdata in sprint_tasks:
+                    clean_id = tdata.get("task_id", "")
+                    db_uid = f"{request.project_token}_{clean_id}"
+                    existing = db.query(models.Task).filter(models.Task.task_id == db_uid).first()
+                    if not existing:
+                        as_assigned = json.dumps(tdata.get("assignedTo", [])) if isinstance(tdata.get("assignedTo"), list) else tdata.get("assignedTo", "[]")
+                        as_linked = json.dumps(tdata.get("linked_tasks", [])) if isinstance(tdata.get("linked_tasks"), list) else tdata.get("linked_tasks", "[]")
+                        as_check = json.dumps(tdata.get("checklist", [])) if isinstance(tdata.get("checklist"), list) else tdata.get("checklist", "[]")
+                        new_t = models.Task(
+                            task_id=db_uid,
+                            project_token=request.project_token,
+                            owner_id=current_user.id,
+                            task_name=tdata.get("taskName", "Untitled Task"),
+                            task_type=tdata.get("task_type", "TASK"),
+                            description=tdata.get("description", ""),
+                            priority=tdata.get("priority", "medium"),
+                            task_wallet=tdata.get("task_wallet", 1),
+                            startdate=tdata.get("startdate"),
+                            planned_start=tdata.get("planned_start"),
+                            deadline=tdata.get("deadline"),
+                            assigned_to=as_assigned,
+                            reported_by=tdata.get("reported_by", "system"),
+                            sprint=tdata.get("sprint", sprint_name),
+                            milestone=tdata.get("milestone", ""),
+                            linked_tasks=as_linked,
+                            checklist=as_check,
+                            selected=False,
+                            synced_to_nxdune=False
+                        )
+                        db.add(new_t)
+                db.commit()
+                logger.info(f"[{request.project_token}] Incrementally saved {len(sprint_tasks)} tasks for Sprint {sprint_num} to DB")
+            except Exception as db_err:
+                logger.warning(f"[{request.project_token}] Incremental DB save failed for Sprint {sprint_num}: {db_err}")
+                db.rollback()
+
         # Generate tasks using improved prompt
-        tasks = await gen_tasks(
-            project_token=request.project_token,
-            db=db,
-            user_id=current_user.id,
-            custom_rules=request.custom_rules,
-            process_mode=request.process_mode or "ai_first",
-            project_type=effective_project_type,
-            prerequisites=request.prerequisites or [],
-            api_url=ai_config.get("api_url"),
-            api_key=settings.ai_api_key,
-            model=ai_config.get("model"),
-            branch=effective_branch,
-        )
+        tasks = None
+        try:
+            tasks = await gen_tasks(
+                project_token=request.project_token,
+                db=db,
+                user_id=current_user.id,
+                custom_rules=request.custom_rules,
+                process_mode=request.process_mode or "ai_first",
+                project_type=effective_project_type,
+                prerequisites=request.prerequisites or [],
+                api_url=ai_config.get("api_url"),
+                api_key=settings.ai_api_key,
+                model=ai_config.get("model"),
+                branch=effective_branch,
+                sprint_callback=on_sprint_generated,
+            )
+        except Exception as gen_err:
+            gen_job.set_failed(str(gen_err))
+            raise gen_err
         
         # For brownfield projects, gen_tasks returns a dict with {tasks, skill_gaps, detected_tech_stack}
         # For greenfield, it returns a plain list
@@ -15320,70 +15423,16 @@ async def generate_tasks_locally(
             tasks = tasks.get("tasks", [])
         
         if not tasks:
+            gen_job.set_failed("No tasks generated.")
             raise HTTPException(
                 status_code=500,
                 detail="Failed to generate tasks. Please check your project context and try again."
             )
         
-        # Store tasks in local database
-        # First delete any existing tasks for this project to avoid duplicate task_id errors
-        db.query(models.Task).filter(
-            models.Task.project_token == request.project_token,
-            models.Task.owner_id == current_user.id
-        ).delete()
-        db.commit()
-
-        stored_tasks = []
-        for task_data in tasks:
-            # Use project_token + task_id as unique DB key, but store clean task_id separately
-            clean_task_id = task_data["task_id"]
-            db_unique_id = f"{request.project_token}_{clean_task_id}"
-            
-            # Convert list/dict fields to JSON strings for SQLite storage
-            assigned_to = task_data.get("assignedTo", [])
-            if isinstance(assigned_to, list):
-                assigned_to = json.dumps(assigned_to)
-            
-            linked_tasks = task_data.get("linked_tasks", [])
-            if isinstance(linked_tasks, list):
-                linked_tasks = json.dumps(linked_tasks)
-            
-            checklist = task_data.get("checklist", [])
-            if isinstance(checklist, list):
-                checklist = json.dumps(checklist)
-            elif not isinstance(checklist, str):
-                checklist = json.dumps([])
-            
-            task = models.Task(
-                task_id=db_unique_id,
-                project_token=request.project_token,
-                owner_id=current_user.id,
-                task_name=task_data["taskName"],
-                task_type=task_data["task_type"],
-                description=task_data.get("description", ""),
-                priority=task_data.get("priority", "medium"),
-                task_wallet=task_data.get("task_wallet", 1),
-                startdate=task_data.get("startdate"),
-                planned_start=task_data.get("planned_start"),
-                deadline=task_data.get("deadline"),
-                assigned_to=assigned_to,
-                reported_by=task_data.get("reported_by", "system"),
-                sprint=task_data.get("sprint", "new"),
-                milestone=task_data.get("milestone", "main"),
-                linked_tasks=linked_tasks,
-                checklist=checklist,
-                selected=False,  # User must explicitly select tasks to sync
-                synced_to_nxdune=False
-            )
-            db.add(task)
-            stored_tasks.append(task)
+        gen_job.set_completed(tasks)
         
-        db.commit()
+        logger.info(f"Generated and stored {len(tasks)} tasks locally for project {request.project_token}")
         
-        logger.info(f"Generated and stored {len(stored_tasks)} tasks locally for project {request.project_token}")
-        
-        # Return success - NO AUTO-SYNC to NxDune
-        # User must explicitly select tasks and click "Sync to NxDune" button
         return {
             "status": "success",
             "message": f"Generated {len(tasks)} tasks successfully. Select tasks to sync to NxDune.",
@@ -15393,6 +15442,7 @@ async def generate_tasks_locally(
             "sync_error": None,
             "skill_gaps": skill_gaps,
             "detected_tech_stack": detected_tech_stack,
+            "polling_interval_seconds": 7,
         }
     
     except ValueError as val_err:

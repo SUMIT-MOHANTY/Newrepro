@@ -163,9 +163,12 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
   const totalSharedRequested = otherProjectsSharedUsage + thisProjectUiSharedTotal;
   const totalDedicatedRequested = otherProjectsDedicatedUsage + thisProjectUiDedicatedTotal;
 
-  // Dedicated agents require physical container capacity
+  const [capacityRequestNotice, setCapacityRequestNotice] = useState('');
+
+  // Dedicated agents require physical container capacity for NEW requested slots
+  const newDedicatedRequested = Math.max(0, thisProjectUiDedicatedTotal - thisProjectCurrentDedicated);
   const dedicatedExceeded = maxAgentCap > 0
-    ? totalDedicatedRequested > freePhysicalSlots + thisProjectCurrentDedicated
+    ? newDedicatedRequested > freePhysicalSlots
     : true;
   
   // Shared agents can exceed physical cap if virtual shared worker reuse is available
@@ -371,13 +374,13 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
             </div>
           </div>
 
-          {/* Central Pool Status & Super Admin Cap Bar */}
+          {/* Central Pool Status & Org-Wide Capacity Limit Bar */}
           <div className="p-2.5 rounded-lg border border-app-border-light bg-app-bg-muted/15 space-y-2.5">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-[9.5px] font-bold uppercase tracking-wider text-app-text-muted">Central Capacity Pool & Limits</p>
                 <p className="text-[11px] font-semibold text-app-text-main mt-0.5">
-                  Super Admin Approved Cap: <span className="font-extrabold text-purple-400">{maxAgentCap} Max Agents</span>
+                  Org-Wide Capacity Limit: <span className="font-extrabold text-purple-400">{maxAgentCap} Max Agents</span>
                 </p>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
@@ -410,7 +413,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                 <div className="w-full h-1 rounded-full bg-app-bg-muted/60 overflow-hidden">
                   <div
                     className={`h-full rounded-full transition-all duration-500 ${sharedExceeded ? 'bg-red-500' : 'bg-gradient-to-r from-blue-500 to-indigo-400'}`}
-                    style={{ width: `${Math.min(100, (totalSharedRequested / max(1, sharedAllowed)) * 100)}%` }}
+                    style={{ width: `${Math.min(100, (totalSharedRequested / Math.max(1, sharedAllowed)) * 100)}%` }}
                   />
                 </div>
                 <div className="flex justify-between text-[9.5px] text-app-text-muted px-0.5">
@@ -437,7 +440,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                 <div className="w-full h-1 rounded-full bg-app-bg-muted/60 overflow-hidden">
                   <div
                     className={`h-full rounded-full transition-all duration-500 ${dedicatedExceeded ? 'bg-red-500' : 'bg-gradient-to-r from-purple-500 to-pink-400'}`}
-                    style={{ width: `${Math.min(100, (totalDedicatedRequested / max(1, dedicatedAllowed)) * 100)}%` }}
+                    style={{ width: `${Math.min(100, (totalDedicatedRequested / Math.max(1, dedicatedAllowed)) * 100)}%` }}
                   />
                 </div>
                 <div className="flex justify-between text-[9.5px] text-app-text-muted px-0.5">
@@ -451,6 +454,23 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
               </div>
             </div>
           </div>
+
+          {/* Capacity Request Submitted Success Banner */}
+          {capacityRequestNotice && (
+            <div className="p-2 text-[11px] text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 rounded-lg flex items-center justify-between gap-2 animate-in fade-in duration-200">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span className="font-semibold">{capacityRequestNotice}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCapacityRequestNotice('')}
+                className="text-emerald-400 hover:text-emerald-200 text-xs font-bold px-1.5"
+              >
+                ✕
+              </button>
+            </div>
+          )}
 
           {/* Quota Exceeded Alert */}
           {quotaExceeded && (
@@ -654,10 +674,10 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
         selectedProjectKey={selectedProjectKey}
         isOrgAdmin={isOrgAdmin}
         onSuccess={() => {
-          alert(
+          setCapacityRequestNotice(
             isOrgAdmin
-              ? 'Capacity Increase Request submitted to Super Admin!'
-              : 'Capacity notification submitted to Organization Admin!'
+              ? 'Capacity Increase Request submitted to Super Admin successfully.'
+              : 'Capacity notification submitted to Organization Admin successfully.'
           );
         }}
       />
