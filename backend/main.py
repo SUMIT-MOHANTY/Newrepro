@@ -6797,6 +6797,33 @@ async def get_vibecoding_brd_context(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/vibecoding/user-organizations")
+def get_user_organizations_for_vibecoding(
+    email: str,
+    sig: str,
+    db: Session = Depends(get_db)
+):
+    # Verify HMAC signature
+    expected_sig = hmac.new(HANDOFF_SECRET.encode(), email.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected_sig, sig):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+        
+    orgs = set()
+    user = db.query(models.User).filter(models.User.email.ilike(email)).first()
+    if user:
+        if user.organization_name:
+            orgs.add(user.organization_name)
+        roles = db.query(models.UserOrganizationRole).filter(models.UserOrganizationRole.user_id == user.id).all()
+        for r in roles:
+            if r.organization_name:
+                orgs.add(r.organization_name)
+                
+    return {
+        "organizations": sorted(list(orgs)),
+        "primary_organization": user.organization_name if user else None
+    }
+
+
 @app.delete("/governance/{identifier}")
 async def delete_governance_project(
     identifier: str,
