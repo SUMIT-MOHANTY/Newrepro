@@ -5097,9 +5097,10 @@ CHECK 5: API INTEGRATION TESTING (if applicable)
 ═══════════════════════════════════════════════════════════════════════════════
 Generate a script that:
 1. Detects API integration (backend routes + frontend API calls)
-   If none found: print "API_TEST: SKIPPED - No API integration found" and exit 0
-2. If API exists: start backend, wait for ready, test endpoints with curl, cleanup
-3. Output: "API_TEST: PASS - N/N endpoints working" or failure details
+   CRITICAL RULE: If this is a frontend-only app (React, Vite, Vue, HTML/JS) using localStorage or client state without an Express/Django/Flask/FastAPI/Spring backend API server, OR if no backend route files exist, print "API_TEST: SKIPPED - Frontend-only application (no backend API server)" and exit 0.
+   DO NOT create mock Express servers. DO NOT install Express. DO NOT fail the check if no backend server exists!
+2. If an actual backend server exists: start backend, wait for ready, test endpoints with curl, cleanup
+3. Output: "API_TEST: PASS - N/N endpoints working" or "API_TEST: SKIPPED - No API integration found"
 Exit code: 0 if pass or skipped, 1 if endpoints fail
 
 """
@@ -5109,8 +5110,18 @@ Exit code: 0 if pass or skipped, 1 if endpoints fail
         {"role": "user", "content": review_prompt},
     ]
     
+    def _is_frontend_only_container(c_name: str) -> bool:
+        """Check if workspace inside container is a frontend-only SPA (no backend API server)."""
+        try:
+            res = subprocess.run(
+                ["docker", "exec", c_name, "sh", "-c",
+                 "test -f server.js -o -f server.ts -o -f app.py -o -f main.py -o -f main.go -o -d server -o -d backend -o -d api || grep -q -E '\"express\"|\"fastapi\"|\"flask\"|\"django\"|\"nestjs\"|\"koa\"' package.json 2>/dev/null"],
+                capture_output=True, text=True, timeout=10,
+            )
+            return res.returncode != 0
+        except Exception:
+            return False
 
-    
     # Execute checks individually with iterations for each
     max_iterations_per_check = 10
     all_checks_passed = False
@@ -5189,7 +5200,7 @@ Exit code: 0 if pass or skipped, 1 if endpoints fail
                 "number": 5,
                 "name": "API Integration Testing",
                 "key": "check_5_api_test",
-                "skip_condition": None,
+                "skip_condition": lambda: _is_frontend_only_container(container_name),
                 "prompt_section": "CHECK 5: API INTEGRATION TESTING (if applicable)"
             }
         ]
@@ -5302,9 +5313,21 @@ Use grep to check for required functions/classes/endpoints.
 Output: List missing requirements or "REQUIREMENTS: PASS"
 """
                     elif check_num == 5:
-                        check_prompt += """Test API integration if it exists.
-Start server, test endpoints with curl, cleanup.
-Output: Test results or "API_TEST: SKIPPED" if no API
+                        check_prompt += """INTELLIGENT TASK & API ANALYSIS:
+Step 1: Read the TASK DESCRIPTION and TECHNICAL SPECIFICATION above carefully.
+Step 2: Determine if this specific task involves building/modifying an active backend HTTP API server (Express/FastAPI/Django/Flask/Spring/Go backend).
+Step 3: If the task focus is:
+   - Frontend UI components (React/Vue/HTML/CSS)
+   - State management or client storage (localStorage/sessionStorage/IndexedDB)
+   - Layout, navigation, or design setup
+   - Any task that does not explicitly implement an HTTP REST/GraphQL API server
+   OR if no backend server file exists in the codebase,
+   you MUST immediately output:
+   "API_TEST: SKIPPED - Task focus is frontend UI/localStorage (no backend API server required)" and exit 0.
+
+DO NOT create mock Express servers. DO NOT install Express. DO NOT attempt curl on Vite dev servers!
+Only if a real backend server file (server.js, app.py, main.go, etc.) is implemented by this task, start it, test endpoints with curl, and cleanup.
+Output: "API_TEST: PASS - N/N endpoints working" or "API_TEST: SKIPPED - Task does not require backend API"
 """
             else:
                 # Subsequent iterations — targeted fix script with full context
@@ -5370,6 +5393,7 @@ CRITICAL INSTRUCTIONS FOR FIX SCRIPT:
    - "tsconfig.json error": Overwrite with a minimal valid config
    - "Missing closing brace": Use sed to add the brace at the correct line
    - "Linter config not found": Output "LINTING: PASS (skipped)" and exit 0
+   - "API test failed on frontend/localStorage app": Output "API_TEST: SKIPPED (frontend app, no backend API server)" and exit 0
 
 5. EXIT CODES:
    - Exit 0 ONLY if all errors are fixed AND verification passes
@@ -5777,10 +5801,13 @@ def _verify_container_toolchain(container_name: str) -> Dict[str, Any]:
     """Verify the runtime container has the required toolchain preinstalled, auto-installing missing tools if needed."""
     checks = {
         "git": "git --version",
-        "python3": "python3 --version",
-        "pip": "pip --version",
-        "npm": "npm --version",
     }
+    if not container_name.startswith("git_manager_shared"):
+        checks.update({
+            "python3": "python3 --version",
+            "pip": "pip --version",
+            "npm": "npm --version",
+        })
     versions: Dict[str, str] = {}
     missing_tools = []
 
@@ -5814,9 +5841,9 @@ def _verify_container_toolchain(container_name: str) -> Dict[str, Any]:
         logger.info(f"[{container_name}] Missing tools in toolchain check: {missing_tools}. Attempting auto-installation...")
         
         install_commands = [
-            "apt-get update -qq && apt-get install -y --no-install-recommends git python3 python3-pip nodejs npm curl ca-certificates",
-            "apk add --no-cache git python3 py3-pip nodejs npm curl ca-certificates",
-            "yum install -y git python3 python3-pip nodejs npm curl || dnf install -y git || microdnf install -y git",
+            "apt-get update -qq && apt-get install -y --no-install-recommends git curl ca-certificates",
+            "apk add --no-cache git curl ca-certificates",
+            "yum install -y git curl || dnf install -y git || microdnf install -y git",
             "apt-get update -qq && apt-get install -y git",
             "apk add --no-cache git",
             "yum install -y git || dnf install -y git",
@@ -5827,17 +5854,15 @@ def _verify_container_toolchain(container_name: str) -> Dict[str, Any]:
                 ["docker", "exec", "-u", "root", container_name, "sh", "-c", inst_cmd],
                 capture_output=True, text=True, timeout=120,
             )
-            still_missing = []
             for tool_name in list(missing_tools):
                 command = checks[tool_name]
                 ok, ver = _check_tool(tool_name, command)
                 if ok:
                     versions[tool_name] = ver
-                    missing_tools.remove(tool_name)
-                else:
-                    still_missing.append(tool_name)
+                    if tool_name in missing_tools:
+                        missing_tools.remove(tool_name)
             
-            if not missing_tools:
+            if not missing_tools or ("git" not in missing_tools and container_name.startswith("git_manager_shared")):
                 break
 
     if "git" in missing_tools:
@@ -6762,7 +6787,28 @@ def _get_default_branch(container_name: str) -> str:
     )
     if main_check.returncode == 0:
         return "main"
-    return "master"
+
+    master_check = subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name,
+         "git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/master"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if master_check.returncode == 0:
+        return "master"
+
+    # Dynamic fallback: query remote branches from origin
+    remote_branches = subprocess.run(
+        ["docker", "exec", "-w", "/workspace", container_name,
+         "git", "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if remote_branches.returncode == 0 and remote_branches.stdout.strip():
+        for line in remote_branches.stdout.splitlines():
+            b = line.strip().replace("origin/", "", 1)
+            if b and b != "HEAD":
+                return b
+
+    return "main"
 
 
 def _collect_repo_summary(container_name: str) -> Dict[str, Any]:
@@ -9196,25 +9242,82 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
         return
     branch = branch.strip()
 
-    # CRITICAL FIX: Use a single shared git manager container for all merges
-    # This ensures all merges go to the same agent/integration branch
+    # Use a single dedicated git manager container for all merges.
+    # IMPORTANT: We bypass the generic pool manager here and create/manage
+    # the git_manager_shared_* container directly.  The pool manager may
+    # return a different physical container name (e.g. dsuite_worker_pool_01),
+    # which would cause all subsequent docker exec calls — toolchain check,
+    # git config, clone, fetch, merge — to target the wrong container and fail
+    # with "Missing required tool 'git'".
     container_name = f"git_manager_shared_{project_token or 'default'}"
-    
-    # Check if shared container already exists
-    existing_container = subprocess.run(
-        ["docker", "ps", "-q", "-f", f"name={container_name}"],
-        capture_output=True, text=True, timeout=10,
-    )
-    
-    container_exists = bool(existing_container.stdout.strip())
-    
+
+    # Check if the shared container already exists AND is running.
+    # Note: Docker --filter name= does substring matching, not regex.
+    # We use docker inspect to get an exact name match instead.
+    def _container_running(cname: str) -> bool:
+        res = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", cname],
+            capture_output=True, text=True, timeout=5,
+        )
+        return res.returncode == 0 and res.stdout.strip().lower() == "true"
+
+    def _container_exists_any_state(cname: str) -> bool:
+        res = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Status}}", cname],
+            capture_output=True, text=True, timeout=5,
+        )
+        return res.returncode == 0
+
+    container_exists = _container_running(container_name)
+
+    # Also check for stopped (exited) container so we can restart it
+    if not container_exists and _container_exists_any_state(container_name):
+        # Container exists but is stopped — restart it
+        subprocess.run(["docker", "start", container_name], capture_output=True, timeout=15)
+        container_exists = _container_running(container_name)
+        if container_exists:
+            _log_git_agent(f"Restarted stopped git manager container: {container_name}", project_token=project_token)
+
     try:
         if not container_exists:
             _log_git_agent(f"Creating shared git manager container: {container_name}", project_token=project_token)
-            container_result = await asyncio.to_thread(_create_persistent_container, container_name)
-            if not container_result["success"]:
-                _log_git_agent(f"Git manager container error: {container_result['error']}", "error", project_token=project_token)
-                return
+
+            # Bypass the pool manager — create the git manager container directly
+            # so that the container_name is always exactly git_manager_shared_*.
+            _ensure_agent_runtime_image()
+            create_result = subprocess.run(
+                ["docker", "create", "--name", container_name, "-w", "/workspace",
+                 DOCKER_BASE_IMAGE, "sleep", "infinity"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if create_result.returncode != 0:
+                # Container may already exist (race condition) — try to start it
+                start_fallback = subprocess.run(
+                    ["docker", "start", container_name],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if start_fallback.returncode != 0:
+                    _log_git_agent(
+                        f"Git manager container error: {create_result.stderr or start_fallback.stderr}",
+                        "error", project_token=project_token,
+                    )
+                    return
+            else:
+                start_result = subprocess.run(
+                    ["docker", "start", container_name],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if start_result.returncode != 0:
+                    _log_git_agent(
+                        f"Git manager container start error: {start_result.stderr}",
+                        "error", project_token=project_token,
+                    )
+                    return
+
+            subprocess.run(
+                ["docker", "exec", container_name, "mkdir", "-p", "/workspace"],
+                capture_output=True, timeout=10,
+            )
 
             toolchain_result = _verify_container_toolchain(container_name)
             if not toolchain_result.get("success"):
@@ -9314,7 +9417,20 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                  "git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{GIT_INTEGRATION_BRANCH}"],
                 capture_output=True, text=True, timeout=15,
             ).returncode == 0
-            base_ref = f"origin/{GIT_INTEGRATION_BRANCH}" if integration_exists else f"origin/{default_branch}"
+
+            if integration_exists:
+                base_ref = f"origin/{GIT_INTEGRATION_BRANCH}"
+            else:
+                default_branch_exists = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{default_branch}"],
+                    capture_output=True, text=True, timeout=15,
+                ).returncode == 0
+                if default_branch_exists:
+                    base_ref = f"origin/{default_branch}"
+                else:
+                    base_ref = f"origin/{branch}"
+
             base_branch_name = base_ref.replace("origin/", "", 1) if base_ref.startswith("origin/") else default_branch
 
             try:
@@ -9726,6 +9842,35 @@ async def _process_git_merge_item(item: Dict[str, Any]) -> None:
                     except Exception:
                         pass
                     return
+
+            # ═══ UNMERGED REMOTE BRANCH SWEEP ═══
+            # Scan origin for any other task branches (agent/*) that were pushed but not yet merged into agent/integration
+            try:
+                unmerged_branches = subprocess.run(
+                    ["docker", "exec", "-w", "/workspace", container_name,
+                     "git", "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/agent/*"],
+                    capture_output=True, text=True, timeout=20,
+                )
+                if unmerged_branches.returncode == 0 and unmerged_branches.stdout.strip():
+                    for ref_line in unmerged_branches.stdout.splitlines():
+                        ref_line = ref_line.strip()
+                        if not ref_line or ref_line.endswith(GIT_INTEGRATION_BRANCH):
+                            continue
+                        tb_name = ref_line.replace("origin/", "", 1)
+                        is_merged = subprocess.run(
+                            ["docker", "exec", "-w", "/workspace", container_name,
+                             "git", "merge-base", "--is-ancestor", f"origin/{tb_name}", GIT_INTEGRATION_BRANCH],
+                            capture_output=True, text=True, timeout=15,
+                        ).returncode == 0
+                        if not is_merged:
+                            _log_git_agent(f"Merging outstanding remote branch {tb_name} into {GIT_INTEGRATION_BRANCH}...", project_token=project_token)
+                            subprocess.run(
+                                ["docker", "exec", "-w", "/workspace", container_name,
+                                 "git", "merge", "--no-ff", "--allow-unrelated-histories", f"origin/{tb_name}"],
+                                capture_output=True, text=True, timeout=60,
+                            )
+            except Exception as sweep_err:
+                logger.warning(f"Unmerged remote branch sweep exception: {sweep_err}")
 
             auth_config = _get_git_auth_config(repo_url, token)
             push_cmd = ["docker", "exec", "-w", "/workspace", container_name, "git"]
@@ -10694,6 +10839,9 @@ def _create_persistent_container(container_name: str, org_name: str = "default_o
                 subprocess.run(["docker", "start", container_name], capture_output=True, text=True, timeout=15)
             subprocess.run(["docker", "exec", container_name, "mkdir", "-p", "/workspace"], capture_output=True, timeout=10)
             return {"success": True, "container_name": container_name}
+
+        # Ensure base image exists before creating container
+        _ensure_agent_runtime_image()
 
         create_result = subprocess.run(
             ["docker", "create", "--name", container_name, "-w", "/workspace",
@@ -17089,36 +17237,49 @@ def _compute_active_sprint(tasks: List[Dict[str, Any]]) -> Optional[str]:
     return None  # every sprint already finished
 
 
+def _canonical_task_key(task: Dict[str, Any]) -> str:
+    """Returns NXDune-independent canonical task key (e.g. TASK-00, TASK-01, TASK-02)."""
+    if not isinstance(task, dict):
+        return ""
+    tid_str = str(task.get("task_id") or task.get("external_task_id") or "").strip().upper()
+    title = str(task.get("title") or task.get("taskName") or "").strip().lower()
+    if tid_str == "TASK-00" or "project bootstrap" in title or "bootstrap" in title:
+        return "TASK-00"
+    
+    num = _task_serial_number(task)
+    if num != float("inf"):
+        return f"TASK-{int(num):02d}"
+    
+    raw = str(task.get("id") or task.get("external_id") or "")
+    return raw or title[:30]
+
+
 def _build_task_dag(tasks: List[Dict[str, Any]]) -> Dict[str, set]:
     """
-    Build a dependency map from the task list.
-
-    Returns a dict like:
-        {
-            "TASK-01": set(),               # no dependencies
-            "TASK-02": set(),               # no dependencies
-            "TASK-03": {"TASK-01"},         # needs TASK-01 first
-            "TASK-04": {"TASK-01", "TASK-02"},
-        }
-
-    How to read it:
-        dag[task_id] = set of task_ids that MUST be done before task_id can start.
-        If the set is empty, the task can start immediately.
+    STRICT SEQUENTIAL LINEAR QUEUE (No DAG / No Tree).
+    
+    Tasks execute strictly one after another in the exact creation order:
+      Task 0 (TASK-00) -> Task 1 -> Task 2 -> Task 3 -> Task 4 ...
+    
+    Each task at creation index I depends strictly on all preceding tasks
+    (indices 0 to I-1) in the created task list.
     """
-    all_ids = set()
-    for t in tasks:
-        tid = str(t.get("id") or t.get("task_id") or t.get("external_id") or "")
-        if tid:
-            all_ids.add(tid)
+    if not tasks:
+        return {}
 
     dag: Dict[str, set] = {}
-    for t in tasks:
-        tid = str(t.get("id") or t.get("task_id") or t.get("external_id") or "")
-        if not tid:
+    preceding_keys: set = set()
+
+    for idx, t in enumerate(tasks):
+        if not isinstance(t, dict):
             continue
-        raw_deps = t.get("dependencies") or t.get("linked_tasks") or []
-        valid_deps = {str(d) for d in raw_deps if str(d) in all_ids}
-        dag[tid] = valid_deps
+        ckey = _canonical_task_key(t)
+        if not ckey:
+            ckey = f"TASK-{idx:02d}"
+        
+        # This task depends strictly on ALL preceding tasks in creation order
+        dag[ckey] = set(preceding_keys)
+        preceding_keys.add(ckey)
 
     return dag
 
@@ -17145,6 +17306,36 @@ def _get_ready_task_ids(
         if deps.issubset(completed_ids):
             ready.append(tid)
     return ready
+
+
+def _task_serial_number(task: Dict[str, Any]) -> float:
+    """Extract 1-based task serial number (e.g. 1, 2, 3...) from task metadata or title."""
+    if not isinstance(task, dict):
+        return float("inf")
+    order_fields = (
+        "task_number", "number", "sequence", "sequence_number",
+        "position", "sort_order", "display_order", "order", "serial_number", "serial",
+    )
+    for field in order_fields:
+        val = task.get(field)
+        if val is not None:
+            explicit = _coerce_task_execution_order(val)
+            if explicit is not None:
+                return explicit
+    
+    # Try regex match on title (e.g. "01 React App...", "Task 02...", "02 TodoApp...")
+    title = str(task.get("title") or task.get("taskName") or "").strip()
+    match = _re.search(r"^(?:task\s*)?0*(\d+)", title, _re.IGNORECASE)
+    if match:
+        try:
+            return float(match.group(1))
+        except (ValueError, TypeError):
+            pass
+
+    tid = _normalize_task_id(task)
+    if isinstance(tid, (int, float)):
+        return float(tid)
+    return float("inf")
 
 
 def _sort_tasks_for_execution(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -17249,10 +17440,9 @@ def _sort_tasks_for_execution(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any
         return _PRIORITY_RANK.get(raw, 2)
 
     def _serial_sort_key(index: int, task: Dict[str, Any]) -> float:
-        for field in order_fields:
-            explicit = _coerce_task_execution_order(task.get(field))
-            if explicit is not None:
-                return explicit
+        num = _task_serial_number(task)
+        if num != float("inf"):
+            return num
         return float(index)
 
     def _task_sort_key(item: tuple[int, Dict[str, Any]]) -> tuple[float, int, int, int]:
@@ -18581,6 +18771,38 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
                         "message": f"⏸️ Bootstrap gate: assigned task '{task_title}' paused until bootstrap completes."
                     })
                 continue  # Don't resume this task yet — check next assigned task (may find bootstrap task)
+
+            # ── STRICT ABSOLUTE SEQUENTIAL QUEUE GATE ─────────────────────────
+            # Tasks execute strictly one after another in creation order.
+            # Task N cannot start until Task N-1 (and all preceding tasks) complete.
+            if not _is_assigned_bootstrap:
+                project_dag = _build_task_dag(external_tasks)
+                task_ckey = _canonical_task_key(t)
+                required_deps = project_dag.get(task_ckey, set())
+                
+                # Gather completed canonical keys
+                completed_ckeys = {
+                    _canonical_task_key(ot)
+                    for ot in external_tasks
+                    if _task_status_is_done(ot.get("status"))
+                }
+                if is_bootstrap_pushed(project_token):
+                    completed_ckeys.add("TASK-00")
+                
+                missing_deps = required_deps - completed_ckeys
+                if missing_deps:
+                    missing_list = ", ".join(sorted(list(missing_deps))[:3])
+                    logger.info(
+                        f"[{agent_id}] Strict Sequential gate: assigned task {tid} ({task_ckey} - {task_title[:30]}) "
+                        f"paused — waiting for preceding task(s) in creation queue ({missing_list}) to complete."
+                    )
+                    if agent:
+                        agent["output_log"].append({
+                            "time": datetime.utcnow().isoformat(),
+                            "type": "info",
+                            "message": f"⏸️ Sequential Queue gate: task '{task_title}' ({task_ckey}) paused until preceding task(s) complete: {missing_list}"
+                        })
+                    continue
             # ─────────────────────────────────────────────────────────────────
 
             # This agent already has this task — return it, don't pick another
@@ -20304,6 +20526,8 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             
             # Show assignment reason
             task_id = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
+            task_snum = _task_serial_number(task)
+            task_display_num = f"{int(task_snum):02d}" if task_snum != float("inf") else task_id
             assignment_reason = "self-selected from available tasks"
             if task.get("assigned_agent") == agent_id:
                 assignment_reason = "pre-assigned by master supervisor"
@@ -20311,7 +20535,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
                 "type": "info",
-                "message": f"▶ TASK {task_id}: {task['title']}{task_count_label}"
+                "message": f"▶ TASK {task_display_num}: {task['title']}{task_count_label}"
             })
             agent["output_log"].append({
                 "time": datetime.utcnow().isoformat(),
@@ -20322,7 +20546,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                 agent["output_log"].append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "info",
-                    "message": f"  Task ID: {task_id}"
+                    "message": f"  Database ID: {task_id}"
                 })
             if checklist:
                 agent["output_log"].append({

@@ -1900,7 +1900,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             ) : isDashboardSkeletonVisible ? (
                 renderDashboardSkeleton()
             ) : (
-                <div className="flex-1 p-3 sm:p-4 md:p-5 flex flex-col gap-4">
+                <div className="flex-1 p-3 sm:p-4 md:p-5 pb-20 md:pb-28 flex flex-col gap-4">
                     <div className="bg-app-bg-card rounded-xl border border-app-border-light shadow-sm px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                         <div>
                             <p className="text-[10px] uppercase tracking-widest font-bold text-app-text-light">Active Role View</p>
