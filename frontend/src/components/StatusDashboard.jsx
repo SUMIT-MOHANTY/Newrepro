@@ -612,10 +612,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
     // ── Fetch tasks (External API) ───────────────────────────────────
     const fetchTasks = useCallback(async (append = false, page = 1, silent = false) => {
-        if (!hasValidTaskToken) {
+        if (!selectedProjectKey && !hasValidTaskToken) {
             setTaskList([]);
             setTotalTaskCount(0);
-
             return;
         }
 

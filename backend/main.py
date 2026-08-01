@@ -13908,10 +13908,9 @@ def _format_local_tasks_as_nxdune(db: Session, db_tasks: List[models.Task], proj
 def _populate_local_dashboard_tasks(db: Session, project_token: str, dashboard_data: dict) -> dict:
     from datetime import timedelta
     
-    # Query only selected/synced local tasks for this project
+    # Fetch all local tasks for this project
     local_tasks = db.query(models.Task).filter(
-        models.Task.project_token == project_token,
-        (models.Task.selected == True) | (models.Task.synced_to_nxdune == True)
+        models.Task.project_token == project_token
     ).all()
     formatted = _format_local_tasks_as_nxdune(db, local_tasks, project_token)
     
@@ -14095,11 +14094,10 @@ async def get_external_agent_tasks(
         raise HTTPException(status_code=400, detail="x-task-token or x-project-token header is required")
         
     try:
-        # Fetch only selected/synced tasks locally
+        # Fetch all local tasks for this project
         resolved_token = _resolve_project_token(db, x_task_token, x_project_token)
         query = db.query(models.Task).filter(
-            models.Task.project_token == resolved_token,
-            (models.Task.selected == True) | (models.Task.synced_to_nxdune == True)
+            models.Task.project_token == resolved_token
         )
         local_tasks = query.all()
         
@@ -14177,11 +14175,10 @@ async def get_external_agent_total_tasks(
         raise HTTPException(status_code=400, detail="x-task-token or x-project-token header is required")
         
     try:
-        # Fetch only selected/synced tasks locally
+        # Fetch all local tasks for this project
         resolved_token = _resolve_project_token(db, x_task_token, x_project_token)
         query = db.query(models.Task).filter(
-            models.Task.project_token == resolved_token,
-            (models.Task.selected == True) | (models.Task.synced_to_nxdune == True)
+            models.Task.project_token == resolved_token
         )
         local_tasks = query.all()
         

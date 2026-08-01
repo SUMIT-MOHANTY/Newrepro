@@ -71,16 +71,27 @@ def clear_database_except_users():
         total_deleted = 0
         
         for model, name in tables_to_clear:
-            count = db.query(model).count()
-            if count > 0:
-                db.query(model).delete()
-                print(f"[OK] Cleared {count} records from {name}")
-                total_deleted += count
-            else:
-                print(f"  {name}: already empty")
+            try:
+                count = db.query(model).count()
+                if count > 0:
+                    db.query(model).delete(synchronize_session=False)
+                    db.commit()
+                    print(f"[OK] Cleared {count} records from {name}")
+                    total_deleted += count
+                else:
+                    print(f"  {name}: already empty")
+            except Exception as item_err:
+                db.rollback()
+                print(f"[WARNING] Could not clear {name}: {item_err}")
         
-        db.commit()
-        
+        # Clear in-memory agent service states
+        try:
+            from agent_service import _project_states
+            _project_states.clear()
+            print("[OK] Cleared in-memory agent project states")
+        except Exception:
+            pass
+
         print("=" * 60)
         print(f"[OK] Database cleanup complete!")
         print(f"  Total records deleted: {total_deleted}")
@@ -89,6 +100,7 @@ def clear_database_except_users():
         from models import User
         user_count = db.query(User).count()
         print(f"  User accounts preserved: {user_count}")
+        print("  NOTE: Please clear browser local storage / hard refresh (Ctrl+F5) to remove browser-cached task plans!")
         print("=" * 60)
         
     except Exception as e:

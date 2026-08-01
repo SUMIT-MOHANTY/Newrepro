@@ -33,6 +33,10 @@ import llm_gateway
 from agent_bash_ai_integration import get_ai_bash_interface, cleanup_bash_executor
 from llm_logs import log_llm_interaction
 
+from container_pool_manager import pool_manager
+from fast_playground_executor import fast_executor
+from master_governance_orchestrator import master_governance
+
 logger = logging.getLogger(__name__)
 
 # Cache invalidation callback for main.py
@@ -6251,17 +6255,12 @@ def _check_docker_available() -> bool:
 
 
 def get_running_containers_count() -> int:
-    """Returns the total number of running Docker containers for agent workers."""
+    """Returns the total number of running Docker containers for agent workers from pool_manager."""
     try:
-        cmd = ["docker", "ps", "--format", "{{.Names}}"]
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
-        if res.returncode == 0:
-            lines = [line.strip() for line in res.stdout.splitlines() if line.strip()]
-            agent_containers = [n for n in lines if n.startswith("agt_") or n.startswith("git_manager") or "agent" in n.lower() or "dsuite" in n.lower() or "vibecoding" in n.lower()]
-            return len(agent_containers) if agent_containers else len(lines)
+        return pool_manager.get_running_containers_count()
     except Exception as e:
-        logger.warning(f"Failed to query running containers: {e}")
-    return 0
+        logger.warning(f"Failed to query running containers from pool manager: {e}")
+        return 0
 
 
 # ── Git Helpers ──────────────────────────────────────────────────────────────
@@ -11058,52 +11057,29 @@ yarn-error.log
 
 # ── Docker Container Management ─────────────────────────────────────────────
 
-def _create_persistent_container(container_name: str) -> Dict[str, Any]:
-    """Create and start a persistent Docker container with /workspace/ directory."""
+def _create_persistent_container(container_name: str, org_name: str = "default_org", project_token: Optional[str] = None) -> Dict[str, Any]:
+    """Acquire a generic reusable worker container from the pool manager."""
     try:
-        image_result = _ensure_agent_runtime_image()
-        if not image_result.get("success"):
-            return {
-                "success": False,
-                "error": image_result.get("error", "runtime image unavailable"),
-            }
+        pooled_worker = pool_manager.acquire_worker(
+            org_name=org_name or "default_org",
+            project_token=project_token or container_name,
+            agent_id=container_name
+        )
+        if pooled_worker:
+            return {"success": True, "container_name": pooled_worker}
+    except Exception as e:
+        logger.warning(f"Pool manager acquisition fallback: {e}")
 
-        # Create container that stays alive (sleep infinity)
+    try:
         create_result = subprocess.run(
             ["docker", "create", "--name", container_name, "-w", "/workspace",
              DOCKER_BASE_IMAGE, "sleep", "infinity"],
             capture_output=True, text=True, timeout=30,
         )
-        if create_result.returncode != 0:
-            return {"success": False, "error": f"docker create failed: {create_result.stderr}"}
-
-        # Start it
-        start_result = subprocess.run(
-            ["docker", "start", container_name],
-            capture_output=True, text=True, timeout=15,
-        )
-        if start_result.returncode != 0:
-            subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=10)
-            return {"success": False, "error": f"docker start failed: {start_result.stderr}"}
-
-        # Create /workspace directory inside
-        subprocess.run(
-            ["docker", "exec", container_name, "mkdir", "-p", "/workspace"],
-            capture_output=True, text=True, timeout=10,
-        )
-
-        toolchain_result = _verify_container_toolchain(container_name)
-        if not toolchain_result.get("success"):
-            subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=10)
-            return {
-                "success": False,
-                "error": toolchain_result.get("error", "runtime toolchain verification failed"),
-            }
-
+        subprocess.run(["docker", "start", container_name], capture_output=True, text=True, timeout=15)
+        subprocess.run(["docker", "exec", container_name, "mkdir", "-p", "/workspace"], capture_output=True, timeout=10)
         return {"success": True, "container_name": container_name}
-
     except Exception as e:
-        subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=10)
         return {"success": False, "error": str(e)}
 
 
@@ -11465,10 +11441,12 @@ def _capture_workspace_tree(container_name: str, project_root: str = "/workspace
 
 
 def _destroy_container(container_name: str):
-    """Force remove a Docker container."""
+    """Release worker container back to pool or force remove if ephemeral."""
     try:
-        # Clean up bash executor before destroying container
         cleanup_bash_executor(container_name)
+        if container_name.startswith("dsuite_worker_pool_"):
+            pool_manager.release_worker(container_name, sanitize=True)
+            return
         
         subprocess.run(
             ["docker", "rm", "-f", container_name],
@@ -19997,8 +19975,11 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
     use_git = bool(agent.get("git_repo_url"))
     # Master note: only the master agent creates/refreshes the plan note.
     # Dev agents read from the cached result without blocking.
-    master_note_result = {"success": True, "approved": True, "skipped": True}
-    if agent_id == MASTER_AGENT_ID and task_token:
+    state_ref = _ensure_project_state(project_token)
+    cached = state_ref.get("master_note_cache")
+    if isinstance(cached, dict) and cached.get("success") and cached.get("approved"):
+        master_note_result = cached
+    elif agent_id == MASTER_AGENT_ID and task_token:
         try:
             _log_master_agent(
                 "Creating canonical project tree note from the full task plan.",
