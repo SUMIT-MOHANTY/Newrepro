@@ -35,62 +35,121 @@ class MasterGovernanceOrchestrator:
         except Exception as e:
             logger.warning(f"[MasterGovernance] Broadcast log warning: {e}")
 
-    async def validate_and_heal_tree_structure(self, container_name: str, project_token: str, agent_id: str) -> bool:
+    async def validate_structural_compliance(
+        self,
+        container_name: str,
+        project_token: str,
+        agent_id: str,
+        expected_files: List[str],
+        phase: int,
+        tech_stack: Optional[Dict] = None,
+    ) -> Dict[str, Any]:
         """
-        Master Agent Tree Compliance Check:
-        Verifies directory tree structure in /workspace/ does not violate domain-based rules.
-        If non-compliant (e.g. flat layer folders like pages/auth), guides AI agent to fix structure.
+        Comprehensive structural compliance check:
+        
+        1. Get actual file tree from container (docker exec find /workspace)
+        2. Compare against expected_files:
+           - Flag ROGUE files (exist but not in expected list) - WARNING level
+           - Flag MISSING files (expected but don't exist) - ERROR level
+           - Flag WRONG LOCATION (similar basename but different directory) - ERROR level
+        3. Phase boundary check logic is in validate_phase_boundary.
+        4. Return {compliant: bool, violations: [{type, file, description, severity}]}
         """
-        self._broadcast_log(project_token, agent_id, "🔍 Master Agent validating directory tree compliance...")
+        self._broadcast_log(project_token, agent_id, "🔍 Master Agent validating structural compliance...")
         try:
-            # Capture current tree
             res = subprocess.run(
-                ["docker", "exec", container_name, "find", "/workspace", "-maxdepth", "3", "-not", "-path", "*/.*"],
+                ["docker", "exec", container_name, "find", "/workspace", "-type", "f", "-not", "-path", "*/.*"],
                 capture_output=True, text=True, timeout=10
             )
-            tree_output = res.stdout or ""
-
-            # Check for forbidden flat layer folder patterns (e.g. pages/auth, pages/loans)
-            has_forbidden_pages = "/workspace/frontend/src/pages/" in tree_output or "/workspace/src/pages/" in tree_output
-            if has_forbidden_pages:
-                self._broadcast_log(
-                    project_token, agent_id,
-                    "⚠️ Tree Structure Violation Detected: Layer-based 'pages/' folder found. Master Agent triggering structural healing...",
-                    event_type="WARNING"
-                )
-                healing_prompt = f"""
-System: You are the Master Architect Agent.
-The current project workspace tree contains forbidden layer-based 'pages/' folders:
-{tree_output[:2000]}
-
-Re-structure the code into domain-based folders (e.g., move pages/auth/* into auth/, pages/dashboard/* into dashboard/).
-Return a JSON payload with updated file paths:
-```json
-{{
-  "files": [
-    {{
-      "path": "src/auth/LoginPage.jsx",
-      "content": "updated code here"
-    }}
-  ]
-}}
-```
-"""
-                raw = await llm_gateway.call_llm_and_extract([{"role": "user", "content": healing_prompt}], max_tokens=4000)
-                json_str = fast_executor._extract_json(raw)
-                if json_str:
-                    payload = json.loads(json_str)
-                    files = payload.get("files", [])
-                    for f in files:
-                        if f.get("path") and f.get("content"):
-                            fast_executor._write_file_to_container(container_name, f["path"], f["content"])
-                    self._broadcast_log(project_token, agent_id, "✅ Master Agent tree structural healing applied successfully!")
+            actual_files = res.stdout.strip().split('\n') if res.stdout else []
+            actual_files = [f.replace("/workspace/", "", 1) for f in actual_files if f.startswith("/workspace/")]
+            
+            violations = []
+            expected_set = set(expected_files)
+            actual_set = set(actual_files)
+            
+            for ef in expected_files:
+                if ef not in actual_set:
+                    ef_basename = os.path.basename(ef)
+                    found_wrong_loc = False
+                    for af in actual_files:
+                        if os.path.basename(af) == ef_basename:
+                            violations.append({"type": "WRONG_LOCATION", "file": af, "description": f"Expected at {ef}", "severity": "ERROR"})
+                            found_wrong_loc = True
+                            break
+                    if not found_wrong_loc:
+                        violations.append({"type": "MISSING", "file": ef, "description": "File is missing", "severity": "ERROR"})
+            
+            for af in actual_files:
+                if af not in expected_set:
+                    if not any(v["type"] == "WRONG_LOCATION" and v["file"] == af for v in violations):
+                        violations.append({"type": "ROGUE", "file": af, "description": "File not in expected list", "severity": "WARNING"})
+            
+            compliant = len([v for v in violations if v.get("severity") == "ERROR"]) == 0
+            if compliant:
+                self._broadcast_log(project_token, agent_id, "✅ Structural Compliance Check: PASSED!")
             else:
-                self._broadcast_log(project_token, agent_id, "✅ Master Agent Tree Compliance Check: PASSED!")
-            return True
+                self._broadcast_log(project_token, agent_id, f"⚠️ Structural Compliance Check: FAILED with {len(violations)} violations", event_type="WARNING")
+            
+            return {"compliant": compliant, "violations": violations}
         except Exception as e:
-            logger.warning(f"[MasterGovernance] Tree compliance check warning: {e}")
-            return True
+            logger.warning(f"[MasterGovernance] Structural compliance check error: {e}")
+            return {"compliant": False, "violations": []}
+
+    async def validate_phase_boundary(
+        self,
+        container_name: str,
+        project_token: str,
+        agent_id: str,
+        files_created: List[str],
+        phase: int,
+        tech_stack: Optional[Dict] = None,
+    ) -> List[Dict[str, str]]:
+        """
+        Check that files respect phase boundaries.
+        
+        For each file, read content from container and check:
+        - Phase 1 files: Must NOT import from backend framework (determined by tech_stack.backend)
+        - Phase 2 files: Must NOT modify frontend files
+        - Phase 3 files: Must NOT have mock data imports remaining
+        
+        Returns list of violations: [{file, violation, description}]
+        """
+        self._broadcast_log(project_token, agent_id, "🔍 Master Agent validating phase boundaries...")
+        violations = []
+        if not tech_stack:
+            tech_stack = {}
+            
+        backend_framework = str(tech_stack.get("backend", "")).lower()
+        
+        try:
+            for file_path in files_created:
+                res = subprocess.run(
+                    ["docker", "exec", container_name, "cat", f"/workspace/{file_path}"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if res.returncode != 0:
+                    continue
+                content = res.stdout.lower()
+                
+                if phase == 1:
+                    if backend_framework and backend_framework in content and "import" in content:
+                        violations.append({"file": file_path, "violation": "Phase 1 Boundary", "description": f"Backend framework ({backend_framework}) import found in Phase 1."})
+                elif phase == 2:
+                    if "frontend" in file_path.lower() or "src/components" in file_path.lower() or "src/pages" in file_path.lower():
+                        violations.append({"file": file_path, "violation": "Phase 2 Boundary", "description": "Frontend file modified in Phase 2."})
+                elif phase == 3:
+                    if "mock" in content or "dummy" in content:
+                        violations.append({"file": file_path, "violation": "Phase 3 Boundary", "description": "Mock data references found in Phase 3."})
+                        
+            if not violations:
+                self._broadcast_log(project_token, agent_id, "✅ Phase Boundary Check: PASSED!")
+            else:
+                self._broadcast_log(project_token, agent_id, f"⚠️ Phase Boundary Check: FAILED with {len(violations)} violations", event_type="WARNING")
+        except Exception as e:
+            logger.warning(f"[MasterGovernance] Phase boundary check error: {e}")
+            
+        return violations
 
     async def merge_to_integration_branch(self, container_name: str, project_token: str, agent_id: str, task_title: str) -> bool:
         """Push task changes and merge into canonical 'agent/integration' branch inside container."""
@@ -163,7 +222,17 @@ git add . && git commit -m 'Master Agent Merge: {task_title}' || true
 
         # 3. Master Agent Tree Structure Compliance Check
         if container_name:
-            await self.validate_and_heal_tree_structure(container_name, project_token, agent_id)
+            expected_files = task.get("expected_files", [])
+            phase = int(task.get("phase", 1))
+            tech_stack = task.get("tech_stack", {})
+            files_created = task.get("files_created", [])
+            
+            await self.validate_structural_compliance(
+                container_name, project_token, agent_id, expected_files, phase, tech_stack
+            )
+            await self.validate_phase_boundary(
+                container_name, project_token, agent_id, files_created, phase, tech_stack
+            )
 
             # 4. Merge to 'agent/integration' Branch
             await self.merge_to_integration_branch(container_name, project_token, agent_id, task_title)

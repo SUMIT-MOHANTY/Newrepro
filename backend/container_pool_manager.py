@@ -51,20 +51,32 @@ class WorkerContainerPoolManager:
     def _ensure_physical_container(self, container_name: str) -> bool:
         """Create and start a generic reusable worker container if it does not exist."""
         try:
-            # Check if exists
+            # Check image preference: dsuite-agent-runtime:latest or fallback
+            image_name = "dsuite-agent-runtime:latest"
+            img_inspect = subprocess.run(["docker", "image", "inspect", image_name], capture_output=True, timeout=5)
+            if img_inspect.returncode != 0:
+                image_name = "ubuntu:22.04"
+
+            # Check if container exists
             check = subprocess.run(
-                ["docker", "inspect", container_name],
+                ["docker", "inspect", "-f", "{{.Config.Image}}", container_name],
                 capture_output=True, text=True, timeout=5
             )
+            if check.returncode == 0:
+                curr_image = check.stdout.strip()
+                if curr_image != image_name and image_name == "dsuite-agent-runtime:latest":
+                    logger.info(f"[ContainerPoolManager] Replacing outdated container '{container_name}' (Image: {curr_image} -> {image_name})")
+                    subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, timeout=10)
+                    check.returncode = 1
+
             if check.returncode != 0:
-                # Create generic container
-                logger.info(f"[ContainerPoolManager] Creating generic worker container: {container_name}")
+                logger.info(f"[ContainerPoolManager] Creating worker container '{container_name}' with image '{image_name}'")
                 create_res = subprocess.run(
                     [
                         "docker", "create",
                         "--name", container_name,
                         "-w", "/workspace",
-                        "ubuntu:22.04",
+                        image_name,
                         "tail", "-f", "/dev/null"
                     ],
                     capture_output=True, text=True, timeout=15
@@ -83,6 +95,17 @@ class WorkerContainerPoolManager:
                 
                 # Ensure /workspace directory exists
                 subprocess.run(["docker", "exec", container_name, "mkdir", "-p", "/workspace"], capture_output=True, timeout=10)
+
+                # If built with ubuntu:22.04 fallback, verify & provision git/python3/pip/npm toolchain
+                if image_name == "ubuntu:22.04":
+                    git_check = subprocess.run(["docker", "exec", container_name, "git", "--version"], capture_output=True, timeout=5)
+                    if git_check.returncode != 0:
+                        logger.info(f"[ContainerPoolManager] Auto-installing toolchain in {container_name}...")
+                        subprocess.run(
+                            ["docker", "exec", "-u", "root", container_name, "sh", "-c", 
+                             "apt-get update -qq && apt-get install -y --no-install-recommends git python3 python3-pip nodejs npm curl ca-certificates procps build-essential"],
+                            capture_output=True, timeout=120
+                        )
 
             return True
         except Exception as e:

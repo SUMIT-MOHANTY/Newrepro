@@ -200,12 +200,10 @@ def set_bootstrap_failed(project_token: str, error_message: str):
 def is_bootstrap_pushed(project_token: str) -> bool:
     """
     Check if bootstrap has been successfully pushed.
-
-    Priority order (local-first, no NXDune dependency):
-    0. Brownfield/Migration projects are implicitly pushed (no bootstrap task)
-    1. ProjectCanonicalState.is_ready and bootstrap_branch is not None — most authoritative, written atomically at bootstrap completion
+    Option B (Pure Incremental Mode): Always returns True so worker agents
+    execute feature tasks directly without waiting for a separate bootstrap task.
     """
-    # ── Priority 0: Auto-pushed for Brownfield / Migration ──────────────────
+    return True
     try:
         from database import SessionLocal
         import models
@@ -450,3 +448,69 @@ def save_bootstrap_canonical_artifacts(
     )
 
     return saved
+
+
+# ── MasterTechnicalPlan Persistence ───────────────────────────────────────────
+# Stores MasterTechnicalPlan objects in-memory for fast access during execution.
+# Plans are frozen once saved — they are never regenerated for the same project.
+
+_MASTER_TECHNICAL_PLANS: Dict[str, Any] = {}
+
+
+def save_master_technical_plan(project_token: str, plan: Any) -> bool:
+    """
+    Save a MasterTechnicalPlan for a project.
+    Returns True if saved, False if a plan already exists (immutable).
+    """
+    if project_token in _MASTER_TECHNICAL_PLANS:
+        logger.info(
+            f"[MasterPlan] Plan already exists for {project_token} — immutable, skipping"
+        )
+        return False
+
+    _MASTER_TECHNICAL_PLANS[project_token] = plan
+    logger.info(f"[MasterPlan] ✅ Technical plan saved for {project_token}")
+
+    # Also persist plan JSON to ProjectCanonicalState for recovery
+    try:
+        from local_state_manager import save_canonical_state
+        import json
+        plan_json = None
+        if hasattr(plan, 'to_dict'):
+            plan_json = json.dumps(plan.to_dict())
+        elif hasattr(plan, '__dataclass_fields__'):
+            from dataclasses import asdict
+            plan_json = json.dumps(asdict(plan), default=str)
+        if plan_json:
+            save_canonical_state(
+                project_token=project_token,
+                master_technical_plan=plan_json,
+                agent_id="master_plan_service",
+            )
+    except Exception as e:
+        logger.warning(f"[MasterPlan] Failed to persist plan to canonical state: {e}")
+
+    return True
+
+
+def get_master_technical_plan(project_token: str) -> Any:
+    """
+    Get the MasterTechnicalPlan for a project.
+    Returns None if no plan exists yet.
+    """
+    return _MASTER_TECHNICAL_PLANS.get(project_token)
+
+
+def has_master_technical_plan(project_token: str) -> bool:
+    """Check if a MasterTechnicalPlan exists for this project."""
+    return project_token in _MASTER_TECHNICAL_PLANS
+
+
+def clear_master_technical_plan(project_token: str):
+    """
+    Clear the plan for a project (used when tasks are reset).
+    This is the ONLY way to clear a frozen plan.
+    """
+    if project_token in _MASTER_TECHNICAL_PLANS:
+        del _MASTER_TECHNICAL_PLANS[project_token]
+        logger.info(f"[MasterPlan] Plan cleared for {project_token}")

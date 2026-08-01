@@ -1751,7 +1751,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     // ── Resolved metric values (API data preferred; local as fallback) ──
     // If dashboardData is present and has real data, use it.
     // Otherwise fall back to locally computed metrics from taskList.
-    const hasDashboardStats = Boolean(dashboardData?.summary_statistics);
+    const hasDashboardStats = Boolean(dashboardData?.summary_statistics && (dashboardData.summary_statistics.total_tasks || 0) > 0);
     const resolvedTotal      = hasDashboardStats ? (dashboardData.summary_statistics.total_tasks ?? 0)     : (localMetrics?.total      ?? 0);
     const resolvedCompleted  = hasDashboardStats ? (dashboardData.summary_statistics.completed_tasks ?? 0)  : (localMetrics?.completed   ?? 0);
     const resolvedInProgress = hasDashboardStats ? (dashboardData.summary_statistics.in_progress_tasks ?? 0): (localMetrics?.inProgress  ?? 0);
@@ -2855,9 +2855,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                     if (!agent) return null;
                     const logs = agent.output_log || [];
                     const result = agent.last_result;
+
                     return (
                         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-[300] animate-in fade-in duration-200">
-                            <div className="bg-slate-900 text-slate-100 rounded-2xl shadow-2xl border border-slate-800 w-full max-w-3xl max-h-[80vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+                            <div className="bg-slate-900 text-slate-100 rounded-2xl shadow-2xl border border-slate-800 w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
                                 <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-800/50">
                                     <div className="flex items-center gap-3">
                                         <Terminal className="w-5 h-5 text-green-400" />

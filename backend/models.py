@@ -482,12 +482,17 @@ class Task(Base):
     synced_to_nxdune = Column(Boolean, default=False)
     nxdune_task_id = Column(Integer, nullable=True)  # ID from NXDUNE after sync
     
+    @property
+    def is_selected_for_execution(self) -> bool:
+        return bool(self.selected or self.synced_to_nxdune)
+    
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
     owner = relationship("User")
+
 
 
 class AgentMessage(Base):

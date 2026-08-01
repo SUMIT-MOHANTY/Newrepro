@@ -10131,27 +10131,47 @@ def _runtime_agent_records(records: List[models.Agent], project_token: Optional[
             models.OrganizationAgentMapping.project_token == project_token
         ).all() if project_token else []
         
-        visible_counts = {}
+        mapping_info = {}
         for row in mapping_rows:
             raw_id = row[0]
             kind = row[1] or 'shared'
             sc = int(row[2] or 0)
             dc = int(row[3] or 0)
-            count = sc if kind == 'shared' else dc
-            visible_counts[_public_agent_id(raw_id, project_token)] = count
+            mapping_info[_public_agent_id(raw_id, project_token)] = (kind, sc, dc)
             
         expanded = []
         for rec in records:
             public_id = _public_agent_id(rec.id, project_token)
             is_default_system = public_id in ("g_agent_01", "m_agent_01", "deploy_agent") or public_id.startswith("g_agent_") or public_id.startswith("m_agent_")
             
-            count = visible_counts.get(public_id, 0)
-            if not is_default_system and count > 1:
-                for i in range(1, count + 1):
+            info = mapping_info.get(public_id)
+            sc = info[1] if info else 0
+            dc = info[2] if info else 0
+            total_instances = sc + dc
+            
+            if not is_default_system and total_instances > 1:
+                # Expand shared instances
+                for i in range(1, sc + 1):
                     expanded.append({
                         "id": f"{public_id}#{i}",
                         "display_id": f"{getattr(rec, 'display_id', None) or public_id}#{i}",
-                        "name": f"{rec.name} #{i}",
+                        "name": f"{rec.name} (Shared #{i})" if sc > 1 else f"{rec.name} (Shared)",
+                        "agent_kind": "shared",
+                        "type": rec.type,
+                        "skills_content": getattr(rec, "skills_content", None),
+                        "skills_summary": getattr(rec, "skills_summary", None),
+                        "skills_tags": getattr(rec, "skills_tags", None),
+                        "specialization": getattr(rec, "specialization", None),
+                        "face": getattr(rec, "face", None),
+                    })
+                # Expand dedicated instances
+                for j in range(1, dc + 1):
+                    idx = sc + j
+                    expanded.append({
+                        "id": f"{public_id}#{idx}",
+                        "display_id": f"{getattr(rec, 'display_id', None) or public_id}#{idx}",
+                        "name": f"{rec.name} (Dedicated #{j})" if dc > 1 else f"{rec.name} (Dedicated)",
+                        "agent_kind": "dedicated",
                         "type": rec.type,
                         "skills_content": getattr(rec, "skills_content", None),
                         "skills_summary": getattr(rec, "skills_summary", None),
@@ -10160,10 +10180,12 @@ def _runtime_agent_records(records: List[models.Agent], project_token: Optional[
                         "face": getattr(rec, "face", None),
                     })
             else:
+                agent_kind = "shared" if sc > 0 else ("dedicated" if dc > 0 else (info[0] if info else "shared"))
                 expanded.append({
                     "id": public_id,
                     "display_id": getattr(rec, "display_id", None) or public_id,
                     "name": rec.name,
+                    "agent_kind": agent_kind,
                     "type": rec.type,
                     "skills_content": getattr(rec, "skills_content", None),
                     "skills_summary": getattr(rec, "skills_summary", None),
@@ -10868,17 +10890,21 @@ async def list_agents(
         if base_id not in visible_runtime_ids:
             continue
         row_tuple = visible_runtime_ids[base_id]
-        kind = row_tuple[0]
+        kind = sanitized_agent.get("agent_kind") or row_tuple[0]
         sub_type = row_tuple[1]
         sc = row_tuple[2] if len(row_tuple) > 2 else 0
         dc = row_tuple[3] if len(row_tuple) > 3 else 0
         
         agents.append({
             **sanitized_agent,
+            "kind": kind,
             "agent_kind": kind,
+            "agent_type": kind,
             "sub_type": sub_type,
             "shared_count": sc,
             "dedicated_count": dc,
+            "is_shared": (str(kind).lower() == "shared"),
+            "is_dedicated": (str(kind).lower() == "dedicated"),
         })
     
     # Filter out legacy dev/test agents when include_defaults=False
@@ -13873,14 +13899,19 @@ def _format_local_tasks_as_nxdune(db: Session, db_tasks: List[models.Task], proj
         if t.assigned_to:
             try:
                 if isinstance(t.assigned_to, list):
-                    assignees_list = t.assigned_to
+                    assignees_list = list(t.assigned_to)
                 elif isinstance(t.assigned_to, str):
                     import json as json_mod
                     parsed = json_mod.loads(t.assigned_to)
                     if isinstance(parsed, list):
-                        assignees_list = parsed
+                        assignees_list = list(parsed)
             except Exception:
                 pass
+                
+        # Append assigned agent from AgentTaskOwnership record if present
+        if ow_record and ow_record.agent_id:
+            if ow_record.agent_id not in assignees_list:
+                assignees_list.append(ow_record.agent_id)
                 
         results.append({
             "id": t.nxdune_task_id or t.id,
@@ -13908,9 +13939,10 @@ def _format_local_tasks_as_nxdune(db: Session, db_tasks: List[models.Task], proj
 def _populate_local_dashboard_tasks(db: Session, project_token: str, dashboard_data: dict) -> dict:
     from datetime import timedelta
     
-    # Fetch all local tasks for this project
+    # Fetch all local tasks selected or synced for this project
     local_tasks = db.query(models.Task).filter(
-        models.Task.project_token == project_token
+        models.Task.project_token == project_token,
+        (models.Task.selected == True) | (models.Task.synced_to_nxdune == True)
     ).all()
     formatted = _format_local_tasks_as_nxdune(db, local_tasks, project_token)
     
@@ -14094,10 +14126,11 @@ async def get_external_agent_tasks(
         raise HTTPException(status_code=400, detail="x-task-token or x-project-token header is required")
         
     try:
-        # Fetch all local tasks for this project
+        # Fetch all selected or synced local tasks for this project
         resolved_token = _resolve_project_token(db, x_task_token, x_project_token)
         query = db.query(models.Task).filter(
-            models.Task.project_token == resolved_token
+            models.Task.project_token == resolved_token,
+            (models.Task.selected == True) | (models.Task.synced_to_nxdune == True)
         )
         local_tasks = query.all()
         
@@ -14107,7 +14140,7 @@ async def get_external_agent_tasks(
         # Always include orphan ownership tasks (e.g. bootstrap TASK-00) in the result
         orphan_tasks = _get_orphan_ownership_tasks(db, resolved_token)
         
-        if local_tasks:
+        if local_tasks or orphan_tasks:
             formatted = _format_local_tasks_as_nxdune(db, local_tasks, resolved_token)
             # Merge orphan tasks (like TASK-00) so they appear in the task list
             merged = list(orphan_tasks) + formatted
@@ -14130,14 +14163,7 @@ async def get_external_agent_tasks(
             else:
                 return active_tasks
         elif has_any_local:
-            # If we have local tasks generated but none selected/synced,
-            # still return orphan ownership tasks (bootstrap progress)
-            active_orphans = [t for t in orphan_tasks if t.get("taskStatus") != "Completed"]
-            if active_orphans:
-                if page:
-                    return {"count": len(active_orphans), "results": active_orphans, "next": None, "previous": None}
-                else:
-                    return active_orphans
+            # If we have local tasks generated but none selected/synced yet, return empty list
             if page:
                 return {"count": 0, "results": [], "next": None, "previous": None}
             else:
@@ -14169,16 +14195,17 @@ async def get_external_agent_total_tasks(
     db: Session = Depends(get_db),
 ):
     """
-    Fetch the list of all tasks from the local DB first, falling back to external API if none found.
+    Fetch the list of all selected/synced tasks from the local DB first, falling back to external API if none found.
     """
     if not x_task_token and not x_project_token:
         raise HTTPException(status_code=400, detail="x-task-token or x-project-token header is required")
         
     try:
-        # Fetch all local tasks for this project
+        # Fetch all selected or synced local tasks for this project
         resolved_token = _resolve_project_token(db, x_task_token, x_project_token)
         query = db.query(models.Task).filter(
-            models.Task.project_token == resolved_token
+            models.Task.project_token == resolved_token,
+            (models.Task.selected == True) | (models.Task.synced_to_nxdune == True)
         )
         local_tasks = query.all()
         
@@ -15949,6 +15976,9 @@ async def save_tasks_locally(
             # Parse dates
             deadline = task_data.get("deadline") or task_data.get("planned_end")
             
+            is_bootstrap_task = (clean_task_id.upper() == "TASK-00" or "bootstrap" in str(task_data.get("taskName") or task_data.get("title") or "").lower())
+            is_selected = bool(task_data.get("selected", False)) or is_bootstrap_task
+            
             if existing_task:
                 # Update existing task
                 existing_task.task_name = task_data.get("taskName") or task_data.get("title") or existing_task.task_name
@@ -15964,8 +15994,8 @@ async def save_tasks_locally(
                 existing_task.milestone = task_data.get("milestone", existing_task.milestone)
                 existing_task.linked_tasks = linked_tasks
                 existing_task.checklist = checklist
-                existing_task.selected = bool(task_data.get("selected", False))
-                existing_task.synced_to_nxdune = bool(task_data.get("synced_to_nxdune", False))
+                existing_task.selected = is_selected or existing_task.selected
+                existing_task.synced_to_nxdune = bool(task_data.get("synced_to_nxdune", False)) or existing_task.synced_to_nxdune
                 stored_tasks.append(existing_task)
             else:
                 # Create new task
@@ -15987,7 +16017,7 @@ async def save_tasks_locally(
                     milestone=task_data.get("milestone", "main"),
                     linked_tasks=linked_tasks,
                     checklist=checklist,
-                    selected=bool(task_data.get("selected", False)),
+                    selected=is_selected,
                     synced_to_nxdune=bool(task_data.get("synced_to_nxdune", False))
                 )
                 db.add(task)

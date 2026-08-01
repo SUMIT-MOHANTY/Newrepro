@@ -76,11 +76,7 @@ class CoordinationMonitor:
         
         logger.info(f"[CoordinationMonitor] Handling blocked agent {from_agent} on task {task_id}")
         
-        # Check if this is a bootstrap failure - HANDLE IT AUTOMATICALLY
-        if msg.payload and msg.payload.get("bootstrap_failure"):
-            logger.warning(f"[CoordinationMonitor] Bootstrap failure detected - creating automatic fix task")
-            await self._handle_bootstrap_failure(error, db)
-            return
+        # Option B Pure Incremental Mode: Handle blocked agent messages directly
         
         # Analyze the failure and create a fix task
         fix_task = await self._create_fix_task(from_agent, task_id, error)
@@ -98,6 +94,10 @@ class CoordinationMonitor:
             )
             
             logger.info(f"[CoordinationMonitor] Created fix task for {from_agent}")
+        
+        # Always resolve the blocked message so it isn't repeatedly processed every loop iteration
+        msg.resolved = True
+        db.commit()
     
     async def _handle_bootstrap_failure(self, error: Optional[str], db):
         """Handle bootstrap failure by creating a fix task for master agent"""
