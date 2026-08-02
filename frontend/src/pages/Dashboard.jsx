@@ -1540,6 +1540,7 @@ const Dashboard = ({
                 classification: submission.classification || 'N/A',
                 weightedScore: submission.weighted_score ?? null,
                 submissionDate: submission.submission_date || null,
+                tags: submission.tags || [],
                 documents: [],
                 latestDocument: null,
                 latestRevision: 0,

@@ -51,6 +51,7 @@ export const useProjects = () => {
                     pendingRevisionReason: sub.pending_revision_reason || null,
                     client_id: sub.client_id || null,
                     client_secret: sub.client_secret || null,
+                    tags: sub.tags || [],
                 });
             });
 

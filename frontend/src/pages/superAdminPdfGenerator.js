@@ -231,24 +231,69 @@ export function generateSuperAdminPDF(orgs, stats, title, subtitle, filename, da
       doc.setFont('times', 'bold');
       doc.setFontSize(12.5);
       applyTextColor(colors.navy950);
-      doc.text(o.organization_name, margin + 5, cursorY + 6.5);
+      const orgNameStr = o.organization_name;
+      doc.text(orgNameStr, margin + 5, cursorY + 6.5);
 
-      // Restructure data: Group users by project_token under this organization
+      // Draw organization tags next to name
+      const orgTags = o.organization_tags || [];
+      if (orgTags.length > 0) {
+        let tagCursorX = margin + 5 + doc.getTextWidth(orgNameStr) + 5;
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(6.5);
+        
+        orgTags.forEach(t => {
+          const tagText = String(t).toUpperCase();
+          const tagW = doc.getTextWidth(tagText) + 4;
+          
+          // Draw tag pill background (light purple/indigo tint)
+          doc.setFillColor(235, 235, 250);
+          doc.roundedRect(tagCursorX, cursorY + 2.5, tagW, 4.5, 0.4, 0.4, 'F');
+          
+          // Draw tag text (indigo color)
+          doc.setTextColor(79, 70, 229);
+          doc.text(tagText, tagCursorX + 2, cursorY + 5.7);
+          
+          tagCursorX += tagW + 2;
+        });
+      }
+
+      // Initialize the projects map from the master projects list of the organization
       const projectsMap = {};
+      (o.projects || []).forEach(p => {
+        const pTok = p.project_token || 'direct_api';
+        projectsMap[pTok] = {
+          project_token: pTok,
+          project_name: p.project_name || (pTok === 'direct_api' ? 'Direct API / Custom Workspace' : `Project (${pTok})`),
+          total_tokens: p.total_tokens || 0,
+          total_cost: p.total_cost || 0,
+          users: []
+        };
+      });
+
+      // Ensure 'direct_api' is present in projectsMap
+      if (!projectsMap['direct_api']) {
+        projectsMap['direct_api'] = {
+          project_token: 'direct_api',
+          project_name: 'Direct API / Custom Workspace',
+          total_tokens: 0,
+          total_cost: 0,
+          users: []
+        };
+      }
+
+      // Map users' token/cost usage to their respective projects
       (o.users || []).forEach(u => {
         (u.projects || []).forEach(p => {
           const pTok = p.project_token || 'direct_api';
           if (!projectsMap[pTok]) {
             projectsMap[pTok] = {
               project_token: pTok,
-              project_name: p.project_name || (pTok === 'direct_api' ? 'Direct API / Custom Workspace' : `Project (${pTok})`),
-              total_tokens: 0,
-              total_cost: 0.0,
+              project_name: p.project_name || `Project (${pTok})`,
+              total_tokens: p.total_tokens || 0,
+              total_cost: p.total_cost || 0,
               users: []
             };
           }
-          projectsMap[pTok].total_tokens += p.total_tokens || 0;
-          projectsMap[pTok].total_cost += p.total_cost || 0;
           
           if (!projectsMap[pTok].users.some(pu => pu.email === u.email)) {
             projectsMap[pTok].users.push({
@@ -316,7 +361,32 @@ export function generateSuperAdminPDF(orgs, stats, title, subtitle, filename, da
           doc.setFont('courier', 'bold');
           doc.setFontSize(7.5);
           applyTextColor(colors.slate600);
-          doc.text(`[${proj.project_token}]`, margin + 8 + doc.getTextWidth(proj.project_name), cursorY + 5.8);
+          const tokStr = `[${proj.project_token}]`;
+          doc.text(tokStr, margin + 8 + doc.getTextWidth(proj.project_name), cursorY + 5.8);
+
+          // Project tags next to token
+          const matchingProj = (o.projects || []).find(op => op.project_token === proj.project_token);
+          const pTags = matchingProj ? (matchingProj.tags || []) : [];
+          if (pTags.length > 0) {
+            let tagCursorX = margin + 8 + doc.getTextWidth(proj.project_name) + doc.getTextWidth(tokStr) + 4;
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(6.5);
+            
+            pTags.forEach(t => {
+              const tagText = String(t).toUpperCase();
+              const tagW = doc.getTextWidth(tagText) + 3;
+              
+              // Draw tag pill background (light indigo/blue tint)
+              doc.setFillColor(230, 242, 255);
+              doc.roundedRect(tagCursorX, cursorY + 2.2, tagW, 4.2, 0.4, 0.4, 'F');
+              
+              // Draw tag text (blue color)
+              doc.setTextColor(30, 64, 175);
+              doc.text(tagText, tagCursorX + 1.5, cursorY + 5.2);
+              
+              tagCursorX += tagW + 2;
+            });
+          }
 
           // Project Total (Right aligned)
           doc.setFont('helvetica', 'normal');
@@ -332,65 +402,77 @@ export function generateSuperAdminPDF(orgs, stats, title, subtitle, filename, da
 
           cursorY += 9;
 
-          // Draw Users Table Headers
-          doc.setFillColor(255, 255, 255);
-          doc.rect(margin, cursorY, contentWidth, 7, 'F');
-          
-          doc.setFont('helvetica', 'bold');
-          doc.setFontSize(7);
-          applyTextColor(colors.slate400);
-          doc.text("USER", margin + 6, cursorY + 5);
-          doc.text("ROLE", margin + 95, cursorY + 5);
-          doc.text("TOKENS", margin + 130, cursorY + 5);
-          doc.text("COST", margin + 160, cursorY + 5);
-
-          cursorY += 7;
-
-          // Draw User Rows
-          proj.users.forEach((pu, puIdx) => {
-            checkSpace(10);
-            
-            // Draw alternating row background
-            if (puIdx % 2 === 1) {
-              doc.setFillColor(250, 250, 248);
-              doc.rect(margin, cursorY, contentWidth, 8.5, 'F');
-            }
-
-            // Bottom border row
+          if (proj.users.length === 0) {
+            checkSpace(12);
+            applyFillColor(colors.paperCard);
             applyDrawColor(colors.hairline);
-            doc.line(margin, cursorY + 8.5, pageWidth - margin, cursorY + 8.5);
-
-            // User Email
-            doc.setFont('helvetica', 'normal');
-            doc.setFontSize(8.5);
-            applyTextColor(colors.navy900);
-            doc.text(pu.email, margin + 6, cursorY + 5.5);
-
-            // Role pill background
-            const roleStr = pu.is_super_admin ? 'Super Admin' : pu.is_org_admin ? 'Org Admin' : 'Member';
-            doc.setFillColor(220, 224, 230);
-            doc.roundedRect(margin + 94, cursorY + 1.8, 20, 4.5, 0.4, 0.4, 'F');
-            doc.setFont('helvetica', 'bold');
-            doc.setFontSize(6.5);
-            applyTextColor(colors.navy800);
-            doc.text(roleStr, margin + 104 - (doc.getTextWidth(roleStr) / 2), cursorY + 5.0);
-
-            // Tokens (Right-aligned)
-            doc.setFont('helvetica', 'normal');
+            doc.rect(margin, cursorY, contentWidth, 8, 'FD');
+            doc.setFont('helvetica', 'italic');
             doc.setFontSize(8);
-            applyTextColor(colors.slate600);
-            const tokVal = (pu.tokens || 0).toLocaleString();
-            doc.text(tokVal, margin + 145 - doc.getTextWidth(tokVal), cursorY + 5.5);
-
-            // Cost (Right-aligned)
+            applyTextColor(colors.slate400);
+            doc.text("No user usage telemetry recorded for this project", margin + 6, cursorY + 5.5);
+            cursorY += 10;
+          } else {
+            // Draw Users Table Headers
+            doc.setFillColor(255, 255, 255);
+            doc.rect(margin, cursorY, contentWidth, 7, 'F');
+            
             doc.setFont('helvetica', 'bold');
-            applyTextColor(colors.navy900);
-            const costVal = `$${(pu.cost || 0).toFixed(4)}`;
-            doc.text(costVal, margin + 175 - doc.getTextWidth(costVal), cursorY + 5.5);
+            doc.setFontSize(7);
+            applyTextColor(colors.slate400);
+            doc.text("USER", margin + 6, cursorY + 5);
+            doc.text("ROLE", margin + 95, cursorY + 5);
+            doc.text("TOKENS", margin + 130, cursorY + 5);
+            doc.text("COST", margin + 160, cursorY + 5);
 
-            cursorY += 8.5;
-          });
-          cursorY += 4; // Spacer after table
+            cursorY += 7;
+
+            // Draw User Rows
+            proj.users.forEach((pu, puIdx) => {
+              checkSpace(10);
+              
+              // Draw alternating row background
+              if (puIdx % 2 === 1) {
+                doc.setFillColor(250, 250, 248);
+                doc.rect(margin, cursorY, contentWidth, 8.5, 'F');
+              }
+
+              // Bottom border row
+              applyDrawColor(colors.hairline);
+              doc.line(margin, cursorY + 8.5, pageWidth - margin, cursorY + 8.5);
+
+              // User Email
+              doc.setFont('helvetica', 'normal');
+              doc.setFontSize(8.5);
+              applyTextColor(colors.navy900);
+              doc.text(pu.email, margin + 6, cursorY + 5.5);
+
+              // Role pill background
+              const roleStr = pu.is_super_admin ? 'Super Admin' : pu.is_org_admin ? 'Org Admin' : 'Member';
+              doc.setFillColor(220, 224, 230);
+              doc.roundedRect(margin + 94, cursorY + 1.8, 20, 4.5, 0.4, 0.4, 'F');
+              doc.setFont('helvetica', 'bold');
+              doc.setFontSize(6.5);
+              applyTextColor(colors.navy800);
+              doc.text(roleStr, margin + 104 - (doc.getTextWidth(roleStr) / 2), cursorY + 5.0);
+
+              // Tokens (Right-aligned)
+              doc.setFont('helvetica', 'normal');
+              doc.setFontSize(8);
+              applyTextColor(colors.slate600);
+              const tokVal = (pu.tokens || 0).toLocaleString();
+              doc.text(tokVal, margin + 145 - doc.getTextWidth(tokVal), cursorY + 5.5);
+
+              // Cost (Right-aligned)
+              doc.setFont('helvetica', 'bold');
+              applyTextColor(colors.navy900);
+              const costVal = `$${(pu.cost || 0).toFixed(4)}`;
+              doc.text(costVal, margin + 175 - doc.getTextWidth(costVal), cursorY + 5.5);
+
+              cursorY += 8.5;
+            });
+            cursorY += 4; // Spacer after table
+          }
         });
       }
       cursorY += 8; // Extra spacing between Orgs

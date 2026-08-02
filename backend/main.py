@@ -2702,17 +2702,31 @@ def get_superadmin_organizations(
         token_cost = sum(l["cost"] for l in logs_list)
 
         # Build user breakdown and project breakdown
-        project_tokens = list({l["project_token"] for l in logs_list if l["project_token"]})
+        org_govs = db.query(models.GovernanceResponse).filter(
+            func.lower(models.GovernanceResponse.organization_name) == name.lower()
+        ).all()
         
-        project_names = {}
-        if project_tokens:
-            gov_responses = db.query(models.GovernanceResponse).filter(
-                models.GovernanceResponse.project_token.in_(project_tokens)
-            ).all()
-            for gr in gov_responses:
-                project_names[gr.project_token] = gr.project_name or gr.project_token
+        all_org_tags = sorted(list({t.name for gr in org_govs for t in gr.tags}))
+        project_tags = {gr.project_token: [t.name for t in gr.tags] for gr in org_govs}
+        project_names = {gr.project_token: gr.project_name for gr in org_govs}
+
+        project_tokens = list({l["project_token"] for l in logs_list if l["project_token"]})
+        for p_tok in project_tokens:
+            if p_tok not in project_names:
+                project_names[p_tok] = "Direct API / Custom Workspace" if p_tok == "direct_api" else f"Project ({p_tok})"
 
         org_projects = {}
+        # Pre-populate with all known projects from DB to list them even if 0 cost
+        for gr in org_govs:
+            p_tok = gr.project_token
+            org_projects[p_tok] = {
+                "project_token": p_tok,
+                "project_name": gr.project_name or p_tok,
+                "total_tokens": 0,
+                "total_cost": 0.0,
+                "tags": project_tags.get(p_tok, [])
+            }
+
         for log in logs_list:
             p_tok = log["project_token"] or "direct_api"
             p_name = project_names.get(p_tok, "Direct API / Custom Workspace" if p_tok == "direct_api" else f"Project ({p_tok})")
@@ -2721,7 +2735,8 @@ def get_superadmin_organizations(
                     "project_token": p_tok,
                     "project_name": p_name,
                     "total_tokens": 0,
-                    "total_cost": 0.0
+                    "total_cost": 0.0,
+                    "tags": project_tags.get(p_tok, [])
                 }
             org_projects[p_tok]["total_tokens"] += log["prompt_tokens"] + log["completion_tokens"]
             org_projects[p_tok]["total_cost"] += log["cost"]
@@ -2744,7 +2759,8 @@ def get_superadmin_organizations(
                         "project_token": p_tok,
                         "project_name": p_name,
                         "total_tokens": 0,
-                        "total_cost": 0.0
+                        "total_cost": 0.0,
+                        "tags": project_tags.get(p_tok, [])
                     }
                 u_projects[p_tok]["total_tokens"] += log["prompt_tokens"] + log["completion_tokens"]
                 u_projects[p_tok]["total_cost"] += log["cost"]
@@ -2779,7 +2795,8 @@ def get_superadmin_organizations(
             "total_tokens_consumed": total_tokens,
             "total_cost": round(token_cost, 4),
             "projects": sorted(list(org_projects.values()), key=lambda x: x["total_cost"], reverse=True),
-            "users": user_breakdown
+            "users": user_breakdown,
+            "organization_tags": all_org_tags
         })
 
     return result
@@ -6970,6 +6987,17 @@ async def delete_governance_question(
     db.commit()
     return {"detail": "Question deleted"}
 
+def _update_project_tags(db: Session, project: models.GovernanceResponse, tags_list: list[str]):
+    # Delete existing tags
+    db.query(models.ProjectTag).filter(models.ProjectTag.project_id == project.id).delete()
+    db.flush()
+    # Add new tags
+    for t in tags_list:
+        t_stripped = t.strip()
+        if t_stripped:
+            db.add(models.ProjectTag(name=t_stripped, project_id=project.id))
+    db.flush()
+
 @app.post("/api/projects/ensure")
 async def ensure_project_exists(
     request: dict,
@@ -7016,6 +7044,10 @@ async def ensure_project_exists(
                 existing_by_name.client_id = client_id
             if client_secret:
                 existing_by_name.client_secret = client_secret
+            
+            if 'tags' in request:
+                _update_project_tags(db, existing_by_name, request['tags'])
+                
             db.commit()
             db.refresh(existing_by_name)
             
@@ -7025,7 +7057,8 @@ async def ensure_project_exists(
                 'client_id': existing_by_name.client_id,
                 'client_secret': existing_by_name.client_secret,
                 'owner_id': existing_by_name.owner_id,
-                'exists': True
+                'exists': True,
+                'tags': [{'id': t.id, 'name': t.name} for t in existing_by_name.tags]
             }
         else:
             # Different token or no token - this is a duplicate name attempt
@@ -7047,6 +7080,10 @@ async def ensure_project_exists(
                 existing.client_id = client_id
             if client_secret:
                 existing.client_secret = client_secret
+            
+            if 'tags' in request:
+                _update_project_tags(db, existing, request['tags'])
+                
             db.commit()
             db.refresh(existing)
             
@@ -7056,7 +7093,8 @@ async def ensure_project_exists(
                 'owner_id': existing.owner_id,
                 'client_id': existing.client_id,
                 'client_secret': existing.client_secret,
-                'exists': True
+                'exists': True,
+                'tags': [{'id': t.id, 'name': t.name} for t in existing.tags]
             }
     
     # Project doesn't exist - create it with provided or new token
@@ -7086,6 +7124,11 @@ async def ensure_project_exists(
     db.commit()
     db.refresh(new_project)
     
+    if 'tags' in request:
+        _update_project_tags(db, new_project, request['tags'])
+        db.commit()
+        db.refresh(new_project)
+    
     logger.info(f"Created new project: {new_token} with name '{project_name}' for organization {org_name}")
     
     return {
@@ -7094,7 +7137,8 @@ async def ensure_project_exists(
         'client_id': new_project.client_id,
         'client_secret': new_project.client_secret,
         'owner_id': new_project.owner_id,
-        'exists': False
+        'exists': False,
+        'tags': [{'id': t.id, 'name': t.name} for t in new_project.tags]
     }
 
 
@@ -7324,6 +7368,7 @@ async def get_governance_history(
             or "/governance-management" in (allowed_paths or [])
             or "/new-project/governance" in (allowed_paths or [])
         )
+        
         if can_view_org_governance:
             responses = (
                 db.query(models.GovernanceResponse)
@@ -7367,10 +7412,99 @@ async def get_governance_history(
                 "client_secret": r.client_secret,
                 # Include owner_id so frontend can distinguish pre-governance projects
                 "owner_id": r.owner_id,
+                "tags": [{"id": t.id, "name": t.name} for t in r.tags]
             }
             for r in responses
         ]
     }
+
+class TagUpdateRequest(BaseModel):
+    name: str
+
+@app.get("/api/governance/projects/{project_token}/tags")
+def get_project_tags(
+    project_token: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    project_token = _normalize_project_token(project_token)
+    project = db.query(models.GovernanceResponse).filter(
+        models.GovernanceResponse.project_token == project_token
+    ).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+        
+    # Permission check on organization
+    organization_name = _normalized_text(getattr(current_user, "organization_name", None))
+    if organization_name:
+        if project.organization_name and project.organization_name.lower() != organization_name.lower():
+            raise HTTPException(status_code=403, detail="Access denied")
+    else:
+        if project.owner_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied")
+            
+    return [{"id": t.id, "name": t.name} for t in project.tags]
+
+@app.put("/api/governance/tags/{tag_id}")
+def update_project_tag(
+    tag_id: int,
+    payload: TagUpdateRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    tag = db.query(models.ProjectTag).filter(models.ProjectTag.id == tag_id).first()
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+        
+    project = tag.project
+    organization_name = _normalized_text(getattr(current_user, "organization_name", None))
+    if organization_name:
+        if project.organization_name and project.organization_name.lower() != organization_name.lower():
+            raise HTTPException(status_code=403, detail="Access denied")
+    else:
+        if project.owner_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied")
+            
+    new_name = payload.name.strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="Tag name cannot be empty")
+        
+    # Check duplicate on same project
+    exists = db.query(models.ProjectTag).filter(
+        func.lower(models.ProjectTag.name) == new_name.lower(),
+        models.ProjectTag.project_id == project.id,
+        models.ProjectTag.id != tag_id
+    ).first()
+    if exists:
+        raise HTTPException(status_code=400, detail="Tag already exists in this project")
+        
+    tag.name = new_name
+    db.commit()
+    db.refresh(tag)
+    return {"id": tag.id, "name": tag.name}
+
+@app.delete("/api/governance/tags/{tag_id}")
+def delete_project_tag(
+    tag_id: int,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    tag = db.query(models.ProjectTag).filter(models.ProjectTag.id == tag_id).first()
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+        
+    project = tag.project
+    organization_name = _normalized_text(getattr(current_user, "organization_name", None))
+    if organization_name:
+        if project.organization_name and project.organization_name.lower() != organization_name.lower():
+            raise HTTPException(status_code=403, detail="Access denied")
+    else:
+        if project.owner_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied")
+            
+    db.delete(tag)
+    db.commit()
+    return {"success": True, "detail": "Tag deleted"}
 
 
 @app.get("/governance/result/{identifier}")
@@ -7475,6 +7609,7 @@ async def get_governance_result(
         client_id=response.client_id,
         client_secret=response.client_secret,
         prerequisites_data=response.prerequisites_data,
+        tags=[schemas.ProjectTagSchema(id=t.id, name=t.name) for t in response.tags],
     )
 
 

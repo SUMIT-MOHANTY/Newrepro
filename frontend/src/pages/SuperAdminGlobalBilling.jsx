@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   DollarSign, Cpu, Building2, Users, RefreshCw, AlertCircle, 
   Search, Shield, Eye, X, Layers, CreditCard, ChevronLeft, ChevronRight, Activity, ArrowUpRight,
@@ -15,10 +15,40 @@ export default function SuperAdminGlobalBilling() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedOrg, setSelectedOrg] = useState(null);
   const [selectedOrgProj, setSelectedOrgProj] = useState(null);
+  const [selectedOrgTags, setSelectedOrgTags] = useState([]);
+  const [selectedProjTags, setSelectedProjTags] = useState([]);
+  const [expandedTags, setExpandedTags] = useState({});
 
   // Date Filters
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+
+  const allOrgTags = useMemo(() => {
+    const setTags = new Set();
+    orgs.forEach(o => {
+      if (o.organization_tags) {
+        o.organization_tags.forEach(t => setTags.add(t));
+      }
+    });
+    return Array.from(setTags).sort();
+  }, [orgs]);
+
+  const allProjectTags = useMemo(() => {
+    if (!selectedOrgProj || !selectedOrgProj.projects) return [];
+    const setTags = new Set();
+    selectedOrgProj.projects.forEach(p => {
+      if (p.tags) {
+        p.tags.forEach(t => setTags.add(t));
+      }
+    });
+    return Array.from(setTags).sort();
+  }, [selectedOrgProj]);
+
+  const filteredProjects = useMemo(() => {
+    if (!selectedOrgProj || !selectedOrgProj.projects) return [];
+    if (selectedProjTags.length === 0) return selectedOrgProj.projects;
+    return selectedOrgProj.projects.filter(p => p.tags && selectedProjTags.some(t => p.tags.includes(t)));
+  }, [selectedOrgProj, selectedProjTags]);
 
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 8;
@@ -95,6 +125,7 @@ export default function SuperAdminGlobalBilling() {
         'Total Members',
         'Max Agent Capacity',
         'Onboarded Agents',
+        'Organization Tags',
         'AI Tokens Consumed',
         'Total Usage Cost (USD)'
       ]);
@@ -105,6 +136,7 @@ export default function SuperAdminGlobalBilling() {
           o.user_count,
           o.max_agent_capacity,
           o.total_onboarded_agents,
+          o.organization_tags ? o.organization_tags.join('; ') : '',
           o.total_tokens_consumed || 0,
           o.total_cost || 0
         ]);
@@ -143,9 +175,11 @@ export default function SuperAdminGlobalBilling() {
     );
   };
 
-  const filteredOrgs = orgs.filter(o => 
-    o.organization_name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredOrgs = orgs.filter(o => {
+    const matchesSearch = o.organization_name.toLowerCase().includes(searchQuery.toLowerCase());
+    if (selectedOrgTags.length === 0) return matchesSearch;
+    return matchesSearch && o.organization_tags && selectedOrgTags.some(t => o.organization_tags.includes(t));
+  });
 
   const totalPages = Math.ceil(filteredOrgs.length / itemsPerPage) || 1;
   const paginatedOrgs = filteredOrgs.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
@@ -319,6 +353,49 @@ export default function SuperAdminGlobalBilling() {
             </div>
           </div>
 
+          {/* Main Org View Tag Filter */}
+          {allOrgTags.length > 0 && (
+            <div className="flex flex-col gap-2 p-3 bg-slate-800/30 rounded-xl border border-slate-800/80 text-xs">
+              <span className="font-semibold text-slate-400 uppercase tracking-wider text-[9px]">Filter Organizations by Tag</span>
+              <div className="flex flex-wrap gap-1.5 items-center">
+                <button
+                  onClick={() => { setSelectedOrgTags([]); setCurrentPage(1); }}
+                  className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all ${
+                    selectedOrgTags.length === 0 
+                      ? 'bg-purple-500/20 text-purple-300 border-purple-500/40 shadow-sm' 
+                      : 'bg-slate-800/60 text-slate-400 border-slate-700 hover:border-slate-600'
+                  }`}
+                >
+                  All Orgs
+                </button>
+                {allOrgTags.map(tag => {
+                  const isSelected = selectedOrgTags.includes(tag);
+                  return (
+                    <button
+                      key={tag}
+                      onClick={() => {
+                        setSelectedOrgTags(prev => {
+                          const newTags = prev.includes(tag) 
+                            ? prev.filter(t => t !== tag) 
+                            : [...prev, tag];
+                          return newTags;
+                        });
+                        setCurrentPage(1);
+                      }}
+                      className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all ${
+                        isSelected 
+                          ? 'bg-purple-500/20 text-purple-300 border-purple-500/40 shadow-sm' 
+                          : 'bg-slate-800/60 text-slate-400 border-slate-700 hover:border-slate-600'
+                      }`}
+                    >
+                      {tag}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-800/40 text-slate-400 font-semibold uppercase text-[10px] tracking-wider border-b border-slate-800">
@@ -327,6 +404,7 @@ export default function SuperAdminGlobalBilling() {
                   <th className="py-3 px-3">Members</th>
                   <th className="py-3 px-3">Max Capacity</th>
                   <th className="py-3 px-3">Onboarded Agents</th>
+                  <th className="py-3 px-3">Tags</th>
                   <th className="py-3 px-3">AI Tokens Consumed</th>
                   <th className="py-3 px-3">Total Usage Cost</th>
                   <th className="py-3 px-3 text-right">Actions</th>
@@ -335,7 +413,7 @@ export default function SuperAdminGlobalBilling() {
               <tbody className="divide-y divide-slate-800/60 text-slate-200">
                 {paginatedOrgs.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="py-6 text-center text-slate-400 italic">
+                    <td colSpan={8} className="py-6 text-center text-slate-400 italic">
                       No organization billing data found.
                     </td>
                   </tr>
@@ -356,6 +434,32 @@ export default function SuperAdminGlobalBilling() {
                       </td>
                       <td className="py-3.5 px-3 text-slate-300 font-medium">
                         {org.total_onboarded_agents}
+                      </td>
+                      <td className="py-3.5 px-3">
+                        <div className="flex flex-wrap gap-1 max-w-[150px]">
+                          {org.organization_tags && org.organization_tags.length > 0 ? (
+                            <>
+                              {org.organization_tags.slice(0, expandedTags[org.organization_name] ? undefined : 2).map(t => (
+                                <span key={t} className="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 text-[9px] font-semibold">
+                                  {t}
+                                </span>
+                              ))}
+                              {org.organization_tags.length > 2 && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setExpandedTags(prev => ({ ...prev, [org.organization_name]: !prev[org.organization_name] }));
+                                  }}
+                                  className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[9px] font-semibold transition-all hover:scale-105"
+                                >
+                                  {expandedTags[org.organization_name] ? 'show less' : `+${org.organization_tags.length - 2} more`}
+                                </button>
+                              )}
+                            </>
+                          ) : (
+                            <span className="text-slate-500 italic text-[10px]">No tags</span>
+                          )}
+                        </div>
                       </td>
                       <td className="py-3.5 px-3 font-mono font-semibold text-indigo-300">
                         {(org.total_tokens_consumed || 0).toLocaleString()}
@@ -515,7 +619,7 @@ export default function SuperAdminGlobalBilling() {
                 </h3>
               </div>
               <button
-                onClick={() => setSelectedOrgProj(null)}
+                onClick={() => { setSelectedOrgProj(null); setSelectedProjTags([]); setExpandedTags({}); }}
                 className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
               >
                 <X className="w-5 h-5" />
@@ -537,22 +641,91 @@ export default function SuperAdminGlobalBilling() {
               </div>
             </div>
 
+            {/* Tag Filter Chips Bar */}
+            {allProjectTags.length > 0 && (
+              <div className="flex flex-col gap-2 p-3 bg-slate-850/40 rounded-xl border border-slate-800 text-xs">
+                <span className="font-semibold text-slate-400 uppercase tracking-wider text-[9px]">Filter by Project Tag</span>
+                <div className="flex flex-wrap gap-1.5 items-center">
+                  <button
+                    onClick={() => setSelectedProjTags([])}
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all ${
+                      selectedProjTags.length === 0 
+                        ? 'bg-blue-500/20 text-blue-300 border-blue-500/40 shadow-sm' 
+                        : 'bg-slate-800/60 text-slate-400 border-slate-700 hover:border-slate-600'
+                    }`}
+                  >
+                    All Tags ({selectedOrgProj.projects.length})
+                  </button>
+                  {allProjectTags.map(tag => {
+                    const isSelected = selectedProjTags.includes(tag);
+                    const count = selectedOrgProj.projects.filter(p => p.tags && p.tags.includes(tag)).length;
+                    return (
+                      <button
+                        key={tag}
+                        onClick={() => {
+                          setSelectedProjTags(prev => 
+                            prev.includes(tag) 
+                              ? prev.filter(t => t !== tag) 
+                              : [...prev, tag]
+                          );
+                        }}
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all ${
+                          isSelected 
+                            ? 'bg-blue-500/20 text-blue-300 border-blue-500/40 shadow-sm' 
+                            : 'bg-slate-800/60 text-slate-400 border-slate-700 hover:border-slate-600'
+                        }`}
+                      >
+                        {tag} ({count})
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <div className="overflow-x-auto rounded-xl border border-slate-800">
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-800/80 text-slate-300 uppercase text-[10px] font-semibold">
                   <tr>
                     <th className="py-2.5 px-3">Project Name</th>
                     <th className="py-2.5 px-3">Project Token</th>
+                    <th className="py-2.5 px-3">Tags</th>
                     <th className="py-2.5 px-3 text-right">AI Tokens</th>
                     <th className="py-2.5 px-3 text-right">Usage Cost</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800 text-slate-200">
-                  {selectedOrgProj.projects && selectedOrgProj.projects.length > 0 ? (
-                    selectedOrgProj.projects.map((proj) => (
+                  {filteredProjects.length > 0 ? (
+                    filteredProjects.map((proj) => (
                       <tr key={proj.project_token} className="hover:bg-slate-800/40">
                         <td className="py-2.5 px-3 font-semibold text-white">{proj.project_name || 'Direct API / Custom Workspace'}</td>
                         <td className="py-2.5 px-3 text-slate-400 font-mono">{proj.project_token}</td>
+                        <td className="py-2.5 px-3">
+                          <div className="flex flex-wrap gap-1 max-w-[180px]">
+                            {proj.tags && proj.tags.length > 0 ? (
+                              <>
+                                {proj.tags.slice(0, expandedTags[proj.project_token] ? undefined : 2).map(t => (
+                                  <span key={t} className="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 text-[9px] font-semibold">
+                                    {t}
+                                  </span>
+                                ))}
+                                {proj.tags.length > 2 && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setExpandedTags(prev => ({ ...prev, [proj.project_token]: !prev[proj.project_token] }));
+                                    }}
+                                    className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[9px] font-semibold transition-all hover:scale-105"
+                                  >
+                                    {expandedTags[proj.project_token] ? 'show less' : `+${proj.tags.length - 2} more`}
+                                  </button>
+                                )}
+                              </>
+                            ) : (
+                              <span className="text-slate-500 italic text-[10px]">—</span>
+                            )}
+                          </div>
+                        </td>
                         <td className="py-2.5 px-3 text-right font-mono text-blue-300 font-semibold">
                           {(proj.total_tokens || 0).toLocaleString()}
                         </td>
@@ -563,8 +736,8 @@ export default function SuperAdminGlobalBilling() {
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={4} className="py-6 text-center text-slate-400 italic">
-                        No active project tokens recorded (Direct API or idle)
+                      <td colSpan={5} className="py-6 text-center text-slate-400 italic">
+                        No projects found matching the selected tag.
                       </td>
                     </tr>
                   )}
@@ -574,7 +747,7 @@ export default function SuperAdminGlobalBilling() {
 
             <div className="flex justify-end pt-2">
               <button
-                onClick={() => setSelectedOrgProj(null)}
+                onClick={() => { setSelectedOrgProj(null); setSelectedProjTags([]); setExpandedTags({}); }}
                 className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl text-xs"
               >
                 Close Drilldown

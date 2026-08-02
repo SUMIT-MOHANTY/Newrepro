@@ -345,8 +345,19 @@ class Document(Base):
 
     owner = relationship("User", back_populates="documents")
 
+class ProjectTag(Base):
+    __tablename__ = "project_tags"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True, nullable=False)
+    project_id = Column(Integer, ForeignKey("governance_responses.id", ondelete="CASCADE"), index=True, nullable=False)
+
+    project = relationship("GovernanceResponse", back_populates="tags")
+
 class GovernanceResponse(Base):
     __tablename__ = "governance_responses"
+
+    tags = relationship("ProjectTag", back_populates="project", cascade="all, delete-orphan")
 
     id = Column(Integer, primary_key=True, index=True)
     project_token = Column(String, unique=True, index=True)

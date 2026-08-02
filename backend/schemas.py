@@ -405,12 +405,19 @@ class GovernanceDimensionScores(BaseModel):
     ai_risk: Optional[float] = 0.0
     ownership: Optional[float] = 0.0
 
+class ProjectTagSchema(BaseModel):
+    id: int
+    name: str
+    class Config:
+        from_attributes = True
+
 class GovernanceResult(BaseModel):
     """Final governance scoring result"""
     id: int
     project_token: str
     project_name: Optional[str] = ""
     submission_date: Optional[datetime] = None
+    tags: Optional[list[ProjectTagSchema]] = []
     
     # Individual dimension scores (0-10)
     dimension_scores: Optional[GovernanceDimensionScores] = None
