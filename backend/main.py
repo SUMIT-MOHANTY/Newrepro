@@ -2466,6 +2466,61 @@ def _can_manage_governance(db: Session, user: models.User) -> bool:
     _, allowed_paths = _get_user_allowed_paths(db, user)
     return "/governance-management" in (allowed_paths or [])
 
+def _get_vibecoding_usage_logs(start_dt=None, end_dt=None):
+    import sqlite3
+    db_path = r"d:\DSuite Application\BRD_Analyzer\vibecoding\backend\vibecoding_users.db"
+    logs = []
+    if not os.path.exists(db_path):
+        return logs
+        
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Check if user_logs table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_logs'")
+        if not cursor.fetchone():
+            conn.close()
+            return logs
+            
+        query = "SELECT username, project_id, prompt_tokens, completion_tokens, timestamp FROM user_logs"
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        
+        for r in rows:
+            ts_str = r["timestamp"]
+            dt = None
+            if ts_str:
+                try:
+                    dt = datetime.fromisoformat(ts_str)
+                    dt = dt.replace(tzinfo=None)
+                except Exception:
+                    pass
+            
+            if start_dt and dt and dt < start_dt:
+                continue
+            if end_dt and dt and dt > end_dt:
+                continue
+                
+            p_tokens = r["prompt_tokens"] or 0
+            c_tokens = r["completion_tokens"] or 0
+            cost = (p_tokens + c_tokens) * 0.000007
+            
+            logs.append({
+                "username": r["username"],
+                "project_token": r["project_id"] or "vibecoding_workspace",
+                "prompt_tokens": p_tokens,
+                "completion_tokens": c_tokens,
+                "cost": round(cost, 6),
+                "model": "BournAI (VibeCoding)"
+            })
+        conn.close()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Could not read VibeCoding logs: {e}")
+        
+    return logs
+
 def _require_super_admin(current_user: models.User) -> None:
     if not bool(getattr(current_user, "is_super_admin", False)):
         raise HTTPException(status_code=403, detail="Super Admin access required")
@@ -2527,9 +2582,13 @@ def get_superadmin_dashboard_stats(
     if end_dt:
         ai_query = ai_query.filter(models.AIUsageLog.created_at <= end_dt)
     ai_logs = ai_query.all()
+    
+    vibe_logs = _get_vibecoding_usage_logs(start_dt, end_dt)
+    vibe_tokens = sum((vl["prompt_tokens"] or 0) + (vl["completion_tokens"] or 0) for vl in vibe_logs)
+    vibe_cost = sum(vl["cost"] or 0.0 for vl in vibe_logs)
 
-    ai_tokens_consumed = sum((l.prompt_tokens or 0) + (l.completion_tokens or 0) for l in ai_logs)
-    platform_billing = round(sum(l.cost or 0.0 for l in ai_logs), 2)
+    ai_tokens_consumed = sum((l.prompt_tokens or 0) + (l.completion_tokens or 0) for l in ai_logs) + vibe_tokens
+    platform_billing = round(sum(l.cost or 0.0 for l in ai_logs) + vibe_cost, 2)
 
     # Projects count
     proj_query = db.query(models.GovernanceResponse)
@@ -2610,17 +2669,89 @@ def get_superadmin_organizations(
             ai_query = ai_query.filter(models.AIUsageLog.created_at >= start_dt)
         if ai_query is not None and end_dt:
             ai_query = ai_query.filter(models.AIUsageLog.created_at <= end_dt)
-
         org_ai_logs = ai_query.all() if ai_query is not None else []
-        total_tokens = sum((l.prompt_tokens or 0) + (l.completion_tokens or 0) for l in org_ai_logs)
-        token_cost = sum(l.cost or 0.0 for l in org_ai_logs)
+        
+        # Convert ORM logs to dictionaries so we can merge VibeCoding logs
+        logs_list = []
+        for l in org_ai_logs:
+            logs_list.append({
+                "user_id": l.user_id,
+                "project_token": l.project_token,
+                "prompt_tokens": l.prompt_tokens or 0,
+                "completion_tokens": l.completion_tokens or 0,
+                "cost": l.cost or 0.0,
+                "model": l.model or "DSuite Model"
+            })
+            
+        vibe_logs = _get_vibecoding_usage_logs(start_dt, end_dt)
+        org_emails = {u.email.lower() for u in users}
+        for vl in vibe_logs:
+            if vl["username"] and vl["username"].lower() in org_emails:
+                matching_user = next((u for u in users if u.email.lower() == vl["username"].lower()), None)
+                if matching_user:
+                    logs_list.append({
+                        "user_id": matching_user.id,
+                        "project_token": vl["project_token"],
+                        "prompt_tokens": vl["prompt_tokens"],
+                        "completion_tokens": vl["completion_tokens"],
+                        "cost": vl["cost"],
+                        "model": vl["model"]
+                    })
+                    
+        total_tokens = sum(l["prompt_tokens"] + l["completion_tokens"] for l in logs_list)
+        token_cost = sum(l["cost"] for l in logs_list)
 
-        # Build user breakdown
+        # Build user breakdown and project breakdown
+        project_tokens = list({l["project_token"] for l in logs_list if l["project_token"]})
+        
+        project_names = {}
+        if project_tokens:
+            gov_responses = db.query(models.GovernanceResponse).filter(
+                models.GovernanceResponse.project_token.in_(project_tokens)
+            ).all()
+            for gr in gov_responses:
+                project_names[gr.project_token] = gr.project_name or gr.project_token
+
+        org_projects = {}
+        for log in logs_list:
+            p_tok = log["project_token"] or "direct_api"
+            p_name = project_names.get(p_tok, "Direct API / Custom Workspace" if p_tok == "direct_api" else f"Project ({p_tok})")
+            if p_tok not in org_projects:
+                org_projects[p_tok] = {
+                    "project_token": p_tok,
+                    "project_name": p_name,
+                    "total_tokens": 0,
+                    "total_cost": 0.0
+                }
+            org_projects[p_tok]["total_tokens"] += log["prompt_tokens"] + log["completion_tokens"]
+            org_projects[p_tok]["total_cost"] += log["cost"]
+
+        for p_tok in org_projects:
+            org_projects[p_tok]["total_cost"] = round(org_projects[p_tok]["total_cost"], 4)
+
         user_breakdown = []
         for u in users:
-            u_logs = [l for l in org_ai_logs if l.user_id == u.id]
-            u_tokens = sum((l.prompt_tokens or 0) + (l.completion_tokens or 0) for l in u_logs)
-            u_cost = round(sum(l.cost or 0.0 for l in u_logs), 4)
+            u_logs = [l for l in logs_list if l["user_id"] == u.id]
+            u_tokens = sum(l["prompt_tokens"] + l["completion_tokens"] for l in u_logs)
+            u_cost = round(sum(l["cost"] for l in u_logs), 4)
+
+            u_projects = {}
+            for log in u_logs:
+                p_tok = log["project_token"] or "direct_api"
+                p_name = project_names.get(p_tok, "Direct API / Custom Workspace" if p_tok == "direct_api" else f"Project ({p_tok})")
+                if p_tok not in u_projects:
+                    u_projects[p_tok] = {
+                        "project_token": p_tok,
+                        "project_name": p_name,
+                        "total_tokens": 0,
+                        "total_cost": 0.0
+                    }
+                u_projects[p_tok]["total_tokens"] += log["prompt_tokens"] + log["completion_tokens"]
+                u_projects[p_tok]["total_cost"] += log["cost"]
+
+            for p_tok in u_projects:
+                u_projects[p_tok]["total_cost"] = round(u_projects[p_tok]["total_cost"], 4)
+
             user_breakdown.append({
                 "id": u.id,
                 "email": u.email,
@@ -2630,7 +2761,8 @@ def get_superadmin_organizations(
                 "is_super_admin": u.is_super_admin,
                 "ai_tokens": u_tokens,
                 "total_cost": u_cost,
-                "last_login": u.last_login.isoformat() if u.last_login else None
+                "last_login": u.last_login.isoformat() if u.last_login else None,
+                "projects": sorted(list(u_projects.values()), key=lambda x: x["total_cost"], reverse=True)
             })
 
         onboarded = db.query(models.OrganizationAgentMapping).filter(
@@ -2646,6 +2778,7 @@ def get_superadmin_organizations(
             "user_count": len(users),
             "total_tokens_consumed": total_tokens,
             "total_cost": round(token_cost, 4),
+            "projects": sorted(list(org_projects.values()), key=lambda x: x["total_cost"], reverse=True),
             "users": user_breakdown
         })
 

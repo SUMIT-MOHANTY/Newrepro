@@ -4,7 +4,7 @@ import {
   Search, Shield, Eye, X, Layers, CreditCard, ChevronLeft, ChevronRight, Activity, ArrowUpRight,
   FileText, FileSpreadsheet, Calendar
 } from 'lucide-react';
-import { jsPDF } from 'jspdf';
+import { generateSuperAdminPDF } from './superAdminPdfGenerator';
 import { API_ENDPOINTS } from '../config';
 
 export default function SuperAdminGlobalBilling() {
@@ -131,55 +131,15 @@ export default function SuperAdminGlobalBilling() {
   };
 
   const handleDownloadPDF = () => {
-    try {
-      const doc = new jsPDF();
-      doc.setFontSize(16);
-      doc.text("Global Platform Billing & Financial Report", 14, 20);
-      doc.setFontSize(10);
-      doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 28);
-      if (startDate || endDate) {
-        doc.text(`Date Range: ${startDate || 'Start'} to ${endDate || 'Present'}`, 14, 34);
-      }
-
-      let y = startDate || endDate ? 44 : 38;
-      doc.setFontSize(12);
-      doc.text("Financial Summary:", 14, y);
-      y += 8;
-      doc.setFontSize(10);
-      doc.text(`Total Platform Cost: $${stats?.platform_billing || 0}`, 14, y); y += 6;
-      doc.text(`Total AI Tokens Consumed: ${(stats?.ai_tokens_consumed || 0).toLocaleString()}`, 14, y); y += 6;
-      doc.text(`Active Organizations: ${orgs.length}`, 14, y); y += 12;
-
-      doc.setFontSize(12);
-      doc.text("Organization Billing Breakdown:", 14, y);
-      y += 8;
-      doc.setFontSize(9);
-      doc.text("Org Name", 14, y);
-      doc.text("Users", 80, y);
-      doc.text("Cap Limit", 115, y);
-      doc.text("Tokens", 145, y);
-      doc.text("Cost ($)", 180, y);
-      y += 4;
-      doc.line(14, y, 195, y);
-      y += 6;
-
-      orgs.forEach(o => {
-        if (y > 270) {
-          doc.addPage();
-          y = 20;
-        }
-        doc.text(String(o.organization_name).substring(0, 25), 14, y);
-        doc.text(String(o.user_count), 80, y);
-        doc.text(String(o.max_agent_capacity), 115, y);
-        doc.text((o.total_tokens_consumed || 0).toLocaleString(), 145, y);
-        doc.text(`$${o.total_cost || 0}`, 180, y);
-        y += 7;
-      });
-
-      doc.save(`Global_Platform_Billing_Report_${new Date().toISOString().split('T')[0]}.pdf`);
-    } catch (e) {
-      alert('Failed to generate PDF: ' + e.message);
-    }
+    const range = (startDate || endDate) ? `${startDate || 'Start'} to ${endDate || 'Present'}` : 'All-Time';
+    generateSuperAdminPDF(
+      orgs, 
+      stats, 
+      "Global Platform Billing & Financial Report", 
+      "Executive overview of organization spends, token usage, and user activity logs",
+      `Global_Platform_Billing_Report_${new Date().toISOString().split('T')[0]}.pdf`,
+      range
+    );
   };
 
   const filteredOrgs = orgs.filter(o => 

@@ -5,7 +5,7 @@ import {
   Percent, ArrowRight, CheckCircle2, Shield, Settings, Search, 
   ChevronLeft, ChevronRight, Activity, Eye, X, Coins, FileText, FileSpreadsheet, Calendar
 } from 'lucide-react';
-import { jsPDF } from 'jspdf';
+import { generateSuperAdminPDF } from './superAdminPdfGenerator';
 import { API_ENDPOINTS } from '../config';
 
 export default function SuperAdminDashboard() {
@@ -179,58 +179,15 @@ export default function SuperAdminDashboard() {
   };
 
   const handleDownloadPDF = () => {
-    try {
-      const doc = new jsPDF();
-      doc.setFontSize(16);
-      doc.text("Global Organizations Telemetry & Capacity Report", 14, 20);
-      doc.setFontSize(10);
-      doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 28);
-      if (startDate || endDate) {
-        doc.text(`Date Range: ${startDate || 'Start'} to ${endDate || 'Present'}`, 14, 34);
-      }
-
-      let y = startDate || endDate ? 44 : 38;
-      doc.setFontSize(12);
-      doc.text("Executive Summary:", 14, y);
-      y += 8;
-      doc.setFontSize(10);
-      doc.text(`Total Organizations: ${stats?.total_organizations || orgs.length}`, 14, y); y += 6;
-      doc.text(`Total Onboarded Agents: ${stats?.total_onboarded_agents || 0}`, 14, y); y += 6;
-      doc.text(`Total AI Tokens Consumed: ${(stats?.ai_tokens_consumed || 0).toLocaleString()}`, 14, y); y += 6;
-      doc.text(`Total Billing Cost: $${stats?.platform_billing || 0}`, 14, y); y += 12;
-
-      doc.setFontSize(12);
-      doc.text("Organization Breakdown:", 14, y);
-      y += 8;
-      doc.setFontSize(9);
-      doc.text("Org Name", 14, y);
-      doc.text("Cap Limit", 70, y);
-      doc.text("Agents", 100, y);
-      doc.text("Users", 125, y);
-      doc.text("Tokens", 145, y);
-      doc.text("Cost ($)", 180, y);
-      y += 4;
-      doc.line(14, y, 195, y);
-      y += 6;
-
-      orgs.forEach(o => {
-        if (y > 270) {
-          doc.addPage();
-          y = 20;
-        }
-        doc.text(String(o.organization_name).substring(0, 25), 14, y);
-        doc.text(String(o.max_agent_capacity), 70, y);
-        doc.text(String(o.total_onboarded_agents), 100, y);
-        doc.text(String(o.user_count), 125, y);
-        doc.text((o.total_tokens_consumed || 0).toLocaleString(), 145, y);
-        doc.text(`$${o.total_cost || 0}`, 180, y);
-        y += 7;
-      });
-
-      doc.save(`Organizations_Telemetry_Report_${new Date().toISOString().split('T')[0]}.pdf`);
-    } catch (e) {
-      alert('Failed to generate PDF: ' + e.message);
-    }
+    const range = (startDate || endDate) ? `${startDate || 'Start'} to ${endDate || 'Present'}` : 'All-Time';
+    generateSuperAdminPDF(
+      orgs, 
+      stats, 
+      "Global Organizations Telemetry & Capacity Report", 
+      "Executive dashboard tracking capacity, onboarded agents, members, and spend",
+      `Organizations_Telemetry_Report_${new Date().toISOString().split('T')[0]}.pdf`,
+      range
+    );
   };
 
   const filteredOrgs = orgs.filter(o => 
