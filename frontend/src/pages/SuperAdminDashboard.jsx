@@ -20,6 +20,7 @@ export default function SuperAdminDashboard() {
   
   // Selected Org for detailed inspection modal
   const [selectedOrgModal, setSelectedOrgModal] = useState(null);
+  const [selectedOrgProjModal, setSelectedOrgProjModal] = useState(null);
 
   // Organization table editing & pagination
   const [editingOrg, setEditingOrg] = useState(null);
@@ -525,6 +526,13 @@ export default function SuperAdminDashboard() {
                             Inspect Users
                           </button>
                           <button
+                            onClick={() => setSelectedOrgProjModal(org)}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-blue-900/40 hover:bg-blue-800/60 border border-blue-500/30 text-xs font-semibold text-blue-200 transition-colors"
+                          >
+                            <Layers className="w-3 h-3" />
+                            Inspect Projects
+                          </button>
+                          <button
                             onClick={() => {
                               setEditingOrg(org.organization_name);
                               setNewCapacity(org.max_agent_capacity);
@@ -660,6 +668,88 @@ export default function SuperAdminDashboard() {
             <div className="flex justify-end pt-2">
               <button
                 onClick={() => setSelectedOrgModal(null)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl text-xs"
+              >
+                Close Inspection
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Project Breakdown Modal */}
+      {selectedOrgProjModal && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+          <div className="w-full max-w-4xl bg-slate-900 border border-blue-500/30 rounded-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div>
+                <span className="text-[10px] uppercase tracking-wider font-bold text-blue-400">Organization Telemetry</span>
+                <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                  <Building2 className="w-5 h-5 text-blue-400" />
+                  {selectedOrgProjModal.organization_name} — Project Usage Breakdown
+                </h3>
+              </div>
+              <button
+                onClick={() => setSelectedOrgProjModal(null)}
+                className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3 text-xs">
+              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
+                <span className="text-slate-400">Total Projects</span>
+                <div className="text-lg font-bold text-white">{(selectedOrgProjModal.projects || []).length}</div>
+              </div>
+              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
+                <span className="text-slate-400">Organization Tokens</span>
+                <div className="text-lg font-bold text-blue-300">{(selectedOrgProjModal.total_tokens_consumed || 0).toLocaleString()}</div>
+              </div>
+              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
+                <span className="text-slate-400">Organization Total Cost</span>
+                <div className="text-lg font-bold text-emerald-400">${selectedOrgProjModal.total_cost || 0}</div>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto rounded-xl border border-slate-800">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-800/80 text-slate-300 uppercase text-[10px] font-semibold">
+                  <tr>
+                    <th className="py-2.5 px-3">Project Name</th>
+                    <th className="py-2.5 px-3">Project Token</th>
+                    <th className="py-2.5 px-3 text-right">AI Tokens</th>
+                    <th className="py-2.5 px-3 text-right">Usage Cost</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800 text-slate-200">
+                  {selectedOrgProjModal.projects && selectedOrgProjModal.projects.length > 0 ? (
+                    selectedOrgProjModal.projects.map((proj) => (
+                      <tr key={proj.project_token} className="hover:bg-slate-800/40">
+                        <td className="py-2.5 px-3 font-semibold text-white">{proj.project_name || 'Direct API / Custom Workspace'}</td>
+                        <td className="py-2.5 px-3 text-slate-400 font-mono">{proj.project_token}</td>
+                        <td className="py-2.5 px-3 text-right font-mono text-blue-300 font-semibold">
+                          {(proj.total_tokens || 0).toLocaleString()}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono text-emerald-400 font-bold">
+                          ${(proj.total_cost || 0).toFixed(4)}
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={4} className="py-6 text-center text-slate-400 italic">
+                        No active project tokens recorded (Direct API or idle)
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                onClick={() => setSelectedOrgProjModal(null)}
                 className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl text-xs"
               >
                 Close Inspection
