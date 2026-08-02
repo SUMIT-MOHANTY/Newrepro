@@ -2466,11 +2466,47 @@ def _can_manage_governance(db: Session, user: models.User) -> bool:
     _, allowed_paths = _get_user_allowed_paths(db, user)
     return "/governance-management" in (allowed_paths or [])
 
+def _resolve_vibecoding_db_path() -> Optional[str]:
+    """Dynamically resolve vibecoding_users.db strictly from the official Vibecoding application database location."""
+    env_path = os.getenv("VIBECODING_DB_PATH")
+    if env_path and os.path.exists(env_path):
+        return env_path
+
+    candidates = [
+        r"D:\Vibecoding\BRD_Analyzer\vibecoding\backend\vibecoding_users.db",
+        "/app/vibecoding/backend/vibecoding_users.db",
+        "/var/lib/vibecoding/vibecoding_users.db",
+    ]
+
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _resolve_vibecoding_artifacts_dirs() -> List[str]:
+    """Dynamically resolve Vibecoding project_artifacts directory strictly from official Vibecoding location."""
+    env_dir = os.getenv("VIBECODING_ARTIFACTS_DIR")
+    dirs = []
+    if env_dir and os.path.exists(env_dir):
+        dirs.append(env_dir)
+
+    candidates = [
+        r"D:\Vibecoding\BRD_Analyzer\vibecoding\backend\project_artifacts",
+        "/app/vibecoding/backend/project_artifacts",
+    ]
+
+    for p in candidates:
+        if os.path.exists(p) and p not in dirs:
+            dirs.append(p)
+    return dirs
+
+
 def _get_vibecoding_usage_logs(start_dt=None, end_dt=None):
     import sqlite3
-    db_path = r"d:\DSuite Application\BRD_Analyzer\vibecoding\backend\vibecoding_users.db"
+    db_path = _resolve_vibecoding_db_path()
     logs = []
-    if not os.path.exists(db_path):
+    if not db_path or not os.path.exists(db_path):
         return logs
         
     try:
@@ -2478,7 +2514,6 @@ def _get_vibecoding_usage_logs(start_dt=None, end_dt=None):
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
-        # Check if user_logs table exists
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_logs'")
         if not cursor.fetchone():
             conn.close()
@@ -2520,6 +2555,208 @@ def _get_vibecoding_usage_logs(start_dt=None, end_dt=None):
         logging.getLogger(__name__).warning(f"Could not read VibeCoding logs: {e}")
         
     return logs
+
+
+def _fetch_vibecoding_data_directly(start_dt=None, end_dt=None):
+    import sqlite3
+    target_db = _resolve_vibecoding_db_path()
+    if not target_db:
+        return {"logs": [], "users": [], "project_names": {}}
+
+    logs = []
+    users = []
+    project_names = {}
+
+    try:
+        conn = sqlite3.connect(target_db)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("SELECT id, username, email, full_name FROM users")
+            for u in cursor.fetchall():
+                users.append(dict(u))
+        except Exception:
+            pass
+
+        conn.close()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Error reading Vibecoding users table: {e}")
+
+    # Build user lookup maps
+    users_by_id = {}
+    users_by_name = {}
+    for u in users:
+        u_id = u.get("id")
+        if u_id: users_by_id[u_id] = u
+        uname = u.get("username")
+        if uname: users_by_name[uname.lower()] = u
+        uemail = u.get("email")
+        if uemail: users_by_name[uemail.lower()] = u
+
+    default_user = list(users_by_id.values())[0] if users_by_id else None
+
+    # Resolve project names and project owner_ids from project_artifacts
+    artifacts_dirs = _resolve_vibecoding_artifacts_dirs()
+    project_owners = {}
+    for art_dir in artifacts_dirs:
+        if os.path.exists(art_dir):
+            try:
+                for p_id in os.listdir(art_dir):
+                    meta_p = os.path.join(art_dir, p_id, "metadata.json")
+                    if os.path.exists(meta_p):
+                        try:
+                            with open(meta_p, "r", encoding="utf-8") as f:
+                                m_data = json.load(f)
+                            if p_id not in project_names:
+                                name = m_data.get("name")
+                                if not name and m_data.get("versions"):
+                                    name = m_data["versions"][0].get("prompt")
+                                if name:
+                                    project_names[p_id] = name[:50]
+                            oid = m_data.get("owner_id")
+                            if oid and oid in users_by_id and p_id not in project_owners:
+                                project_owners[p_id] = users_by_id[oid]
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+    seen_log_ids = set()
+
+    try:
+        conn = sqlite3.connect(target_db)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("SELECT id, username, project_id, prompt_tokens, completion_tokens, total_tokens, status, timestamp FROM user_logs")
+            rows = cursor.fetchall()
+            for r in rows:
+                seen_log_ids.add(r["id"])
+                ts_str = r["timestamp"]
+                dt = None
+                if ts_str:
+                    try:
+                        dt = datetime.fromisoformat(ts_str)
+                        dt = dt.replace(tzinfo=None)
+                    except Exception:
+                        pass
+
+                if start_dt and dt and dt < start_dt:
+                    continue
+                if end_dt and dt and dt > end_dt:
+                    continue
+
+                raw_uname = r["username"] or "user"
+                pid = r["project_id"] or "default"
+
+                # Dynamic resolution of real user email/username
+                u_info = None
+                if raw_uname and raw_uname.lower() in users_by_name and raw_uname.lower() != "user":
+                    u_info = users_by_name[raw_uname.lower()]
+                elif pid in project_owners:
+                    u_info = project_owners[pid]
+                else:
+                    u_info = default_user
+
+                resolved_username = u_info.get("username") if u_info else raw_uname
+                resolved_email = u_info.get("email") if u_info else raw_uname
+                resolved_fullname = u_info.get("full_name") if u_info else resolved_username
+
+                p_tokens = r["prompt_tokens"] or 0
+                c_tokens = r["completion_tokens"] or 0
+                t_tokens = r["total_tokens"] or (p_tokens + c_tokens)
+                cost = round(t_tokens * 0.000007, 6)
+
+                logs.append({
+                    "id": r["id"],
+                    "username": resolved_username,
+                    "email": resolved_email,
+                    "full_name": resolved_fullname,
+                    "project_id": pid,
+                    "prompt_tokens": p_tokens,
+                    "completion_tokens": c_tokens,
+                    "total_tokens": t_tokens,
+                    "cost": cost,
+                    "timestamp": ts_str
+                })
+        except Exception as log_err:
+            logging.getLogger(__name__).warning(f"Could not read user_logs: {log_err}")
+
+        # Extract telemetry from messages table
+        try:
+            cursor.execute("SELECT id, project_id, role, content, timestamp FROM messages ORDER BY timestamp ASC")
+            msg_rows = cursor.fetchall()
+            msg_by_proj = {}
+            for m in msg_rows:
+                pid = m["project_id"] or "default"
+                if pid not in msg_by_proj:
+                    msg_by_proj[pid] = []
+                msg_by_proj[pid].append(dict(m))
+
+            for pid, m_list in msg_by_proj.items():
+                u_info = project_owners.get(pid) or default_user
+                resolved_username = u_info.get("username") if u_info else "user"
+                resolved_email = u_info.get("email") if u_info else "user"
+                resolved_fullname = u_info.get("full_name") if u_info else resolved_username
+
+                curr_log = None
+                for m in m_list:
+                    if m["id"] in seen_log_ids:
+                        continue
+                    ts_str = m.get("timestamp")
+                    dt = None
+                    if ts_str:
+                        try:
+                            dt = datetime.fromisoformat(ts_str)
+                            dt = dt.replace(tzinfo=None)
+                        except Exception:
+                            pass
+                    if start_dt and dt and dt < start_dt:
+                        continue
+                    if end_dt and dt and dt > end_dt:
+                        continue
+
+                    if m["role"] == "user":
+                        if curr_log:
+                            logs.append(curr_log)
+                        content = m.get("content") or ""
+                        p_tok = max(1, len(content) // 4)
+                        curr_log = {
+                            "id": m["id"],
+                            "username": resolved_username,
+                            "email": resolved_email,
+                            "full_name": resolved_fullname,
+                            "project_id": pid,
+                            "prompt_tokens": p_tok,
+                            "completion_tokens": 0,
+                            "total_tokens": p_tok,
+                            "cost": round(p_tok * 0.000007, 6),
+                            "timestamp": ts_str
+                        }
+                    elif m["role"] == "assistant" and curr_log:
+                        content = m.get("content") or ""
+                        c_tok = max(1, len(content) // 4)
+                        curr_log["completion_tokens"] += c_tok
+                        curr_log["total_tokens"] += c_tok
+                        curr_log["cost"] = round(curr_log["total_tokens"] * 0.000007, 6)
+
+                if curr_log:
+                    logs.append(curr_log)
+        except Exception as msg_err:
+            logging.getLogger(__name__).warning(f"Could not extract messages telemetry: {msg_err}")
+
+        conn.close()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Error reading Vibecoding direct data: {e}")
+
+    return {
+        "logs": logs,
+        "users": users,
+        "project_names": project_names
+    }
+
 
 def _require_super_admin(current_user: models.User) -> None:
     if not bool(getattr(current_user, "is_super_admin", False)):
@@ -2800,6 +3037,419 @@ def get_superadmin_organizations(
         })
 
     return result
+
+
+@app.get("/api/superadmin/vibecoding-costs")
+def get_superadmin_vibecoding_costs(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    _require_super_admin(current_user)
+    import datetime
+    import requests
+
+    start_dt, end_dt = None, None
+    if start_date:
+        try: start_dt = datetime.datetime.fromisoformat(start_date)
+        except Exception: pass
+    if end_date:
+        try: end_dt = datetime.datetime.fromisoformat(end_date) + datetime.timedelta(days=1) - datetime.timedelta(microseconds=1)
+        except Exception: pass
+
+    # 1. Fetch raw data from Vibecoding Service HTTP endpoint if available, else SQLite DB fallback
+    vibe_data = None
+    vibecoding_url = os.getenv("VIBECODING_BACKEND_URL", "http://localhost:8001")
+    if not vibecoding_url.endswith("/"):
+        vibecoding_url += "/"
+    telemetry_url = f"{vibecoding_url}vibecoding/api/telemetry/usage-costs"
+    q_params = []
+    if start_date: q_params.append(f"start_date={start_date}")
+    if end_date: q_params.append(f"end_date={end_date}")
+    if q_params:
+        telemetry_url += "?" + "&".join(q_params)
+
+    try:
+        resp = requests.get(telemetry_url, timeout=3)
+        if resp.ok:
+            vibe_data = resp.json()
+    except Exception:
+        pass
+
+    if not vibe_data or not isinstance(vibe_data, dict):
+        vibe_data = _fetch_vibecoding_data_directly(start_dt, end_dt)
+
+    raw_logs = vibe_data.get("logs", [])
+    raw_users = vibe_data.get("users", [])
+    project_names = vibe_data.get("project_names", {})
+
+    # Map Dsuite users to organization names and user info
+    dsuite_users = db.query(models.User).all()
+    user_org_map = {}
+    user_info_map = {}
+    user_info_by_prefix = {}
+
+    for u in dsuite_users:
+        if u.email:
+            email_key = u.email.lower().strip()
+            org_n = u.organization_name or "Default Organization"
+            f_name = f"{u.first_name or ''} {u.last_name or ''}".strip() or u.email
+            u_data = {
+                "id": u.id,
+                "email": u.email,
+                "full_name": f_name,
+                "organization_name": org_n
+            }
+            user_org_map[email_key] = org_n
+            user_info_map[email_key] = u_data
+            prefix = email_key.split("@")[0]
+            if prefix and prefix not in user_info_by_prefix:
+                user_info_by_prefix[prefix] = u_data
+
+    org_map = {}
+    proj_map = {}
+    user_summary_map = {}
+
+    total_prompts = len(raw_logs)
+    total_p_tokens = 0
+    total_c_tokens = 0
+    total_tokens = 0
+    total_cost = 0.0
+
+    for log in raw_logs:
+        raw_uname = log.get("username") or "user"
+        log_email = log.get("email") or raw_uname
+        log_fname = log.get("full_name") or raw_uname
+        p_id = log.get("project_id") or "default"
+        p_tok = log.get("prompt_tokens") or 0
+        c_tok = log.get("completion_tokens") or 0
+        t_tok = log.get("total_tokens") or (p_tok + c_tok)
+        cost = log.get("cost") or round(t_tok * 0.000007, 6)
+
+        total_p_tokens += p_tok
+        total_c_tokens += c_tok
+        total_tokens += t_tok
+        total_cost += cost
+
+        # Match log user against Dsuite users by email or email prefix
+        e_key = log_email.lower().strip() if log_email else ""
+        d_user = user_info_map.get(e_key)
+        if not d_user and e_key:
+            prefix = e_key.split("@")[0]
+            d_user = user_info_by_prefix.get(prefix)
+
+        if d_user:
+            email = d_user["email"]
+            full_name = d_user["full_name"]
+            org_name = d_user["organization_name"]
+            username = raw_uname if raw_uname != "user" else d_user["email"].split("@")[0]
+        else:
+            email = log_email
+            full_name = log_fname
+            org_name = "Bourntec"
+            username = raw_uname
+
+        p_name = project_names.get(p_id) or f"Project {p_id[:8]}"
+
+        # User aggregation (keyed by real email)
+        u_key = email.lower().strip()
+        if u_key not in user_summary_map:
+            user_summary_map[u_key] = {
+                "username": username,
+                "email": email,
+                "full_name": full_name,
+                "organization_name": org_name,
+                "projects": set(),
+                "log_count": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "total_cost": 0.0
+            }
+        user_summary_map[u_key]["projects"].add(p_id)
+        user_summary_map[u_key]["log_count"] += 1
+        user_summary_map[u_key]["prompt_tokens"] += p_tok
+        user_summary_map[u_key]["completion_tokens"] += c_tok
+        user_summary_map[u_key]["total_tokens"] += t_tok
+        user_summary_map[u_key]["total_cost"] += cost
+
+        # Project aggregation
+        if p_id not in proj_map:
+            proj_map[p_id] = {
+                "project_id": p_id,
+                "project_name": p_name,
+                "organization_name": org_name,
+                "username": username,
+                "email": email,
+                "log_count": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "total_cost": 0.0
+            }
+        proj_map[p_id]["log_count"] += 1
+        proj_map[p_id]["prompt_tokens"] += p_tok
+        proj_map[p_id]["completion_tokens"] += c_tok
+        proj_map[p_id]["total_tokens"] += t_tok
+        proj_map[p_id]["total_cost"] += cost
+
+        # Organization aggregation
+        if org_name not in org_map:
+            org_map[org_name] = {
+                "organization_name": org_name,
+                "users": set(),
+                "projects": set(),
+                "log_count": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "total_cost": 0.0
+            }
+        org_map[org_name]["users"].add(email)
+        org_map[org_name]["projects"].add(p_id)
+        org_map[org_name]["log_count"] += 1
+        org_map[org_name]["prompt_tokens"] += p_tok
+        org_map[org_name]["completion_tokens"] += c_tok
+        org_map[org_name]["total_tokens"] += t_tok
+        org_map[org_name]["total_cost"] += cost
+
+    # Format arrays
+    org_breakdown = []
+    for org_n, data in org_map.items():
+        org_breakdown.append({
+            "organization_name": org_n,
+            "user_count": len(data["users"]),
+            "project_count": len(data["projects"]),
+            "log_count": data["log_count"],
+            "prompt_tokens": data["prompt_tokens"],
+            "completion_tokens": data["completion_tokens"],
+            "total_tokens": data["total_tokens"],
+            "total_cost": round(data["total_cost"], 4),
+            "users": list(data["users"]),
+            "projects": list(data["projects"])
+        })
+    org_breakdown.sort(key=lambda x: x["total_cost"], reverse=True)
+
+    proj_breakdown = []
+    for p_id, data in proj_map.items():
+        proj_breakdown.append({
+            "project_id": p_id,
+            "project_name": data["project_name"],
+            "organization_name": data["organization_name"],
+            "username": data["username"],
+            "email": data["email"],
+            "log_count": data["log_count"],
+            "prompt_tokens": data["prompt_tokens"],
+            "completion_tokens": data["completion_tokens"],
+            "total_tokens": data["total_tokens"],
+            "total_cost": round(data["total_cost"], 4)
+        })
+    proj_breakdown.sort(key=lambda x: x["total_cost"], reverse=True)
+
+    user_breakdown = []
+    for u_n, data in user_summary_map.items():
+        user_breakdown.append({
+            "username": data["username"],
+            "email": data["email"],
+            "full_name": data["full_name"],
+            "organization_name": data["organization_name"],
+            "project_count": len(data["projects"]),
+            "log_count": data["log_count"],
+            "prompt_tokens": data["prompt_tokens"],
+            "completion_tokens": data["completion_tokens"],
+            "total_tokens": data["total_tokens"],
+            "total_cost": round(data["total_cost"], 4),
+            "projects": list(data["projects"])
+        })
+    user_breakdown.sort(key=lambda x: x["total_cost"], reverse=True)
+
+    return {
+        "summary": {
+            "total_organizations": len(org_map),
+            "total_projects": len(proj_map),
+            "total_users": len(user_summary_map),
+            "total_prompts": total_prompts,
+            "prompt_tokens": total_p_tokens,
+            "completion_tokens": total_c_tokens,
+            "total_tokens": total_tokens,
+            "total_cost": round(total_cost, 4)
+        },
+        "organization_breakdown": org_breakdown,
+        "project_breakdown": proj_breakdown,
+        "user_breakdown": user_breakdown
+    }
+
+
+@app.get("/api/superadmin/master-report/export")
+def export_superadmin_master_report(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Generate and stream a multi-sheet Excel master report (.xlsx) for Dsuite & Vibecoding telemetry."""
+    _require_super_admin(current_user)
+    import io, openpyxl, datetime
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    # 1. Fetch Dsuite & Vibecoding data
+    d_stats = get_superadmin_dashboard_stats(current_user=current_user, start_date=start_date, end_date=end_date, db=db)
+    d_orgs = get_superadmin_organizations(current_user=current_user, start_date=start_date, end_date=end_date, db=db)
+    vibe_data = get_superadmin_vibecoding_costs(current_user=current_user, start_date=start_date, end_date=end_date, db=db)
+
+    wb = openpyxl.Workbook()
+
+    # Styling setup
+    purple_fill = PatternFill(start_color="4C1D95", end_color="4C1D95", fill_type="solid")
+    cyan_fill = PatternFill(start_color="0891B2", end_color="0891B2", fill_type="solid")
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    title_font = Font(name="Calibri", size=14, bold=True, color="1E1B4B")
+    sub_font = Font(name="Calibri", size=10, italic=True, color="6B7280")
+
+    def style_headers(ws, row_idx, fill):
+        for cell in ws[row_idx]:
+            cell.fill = fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    def auto_fit_columns(ws):
+        ws.views.sheetView[0].showGridLines = True
+        for col in ws.columns:
+            max_len = 0
+            col_letter = get_column_letter(col[0].column)
+            for cell in col:
+                val_str = str(cell.value if cell.value is not None else "")
+                if isinstance(cell.value, float):
+                    val_str = f"{cell.value:,.4f}"
+                elif isinstance(cell.value, int):
+                    val_str = f"{cell.value:,}"
+                max_len = max(max_len, len(val_str))
+            ws.column_dimensions[col_letter].width = max(max_len + 5, 14)
+
+    # -------------------------------------------------------------
+    # SHEET 1: Executive Summary
+    # -------------------------------------------------------------
+    ws1 = wb.active
+    ws1.title = "Executive Summary"
+    ws1.append(["DSUITE & VIBECODING MASTER TELEMETRY REPORT"])
+    ws1.cell(row=1, column=1).font = title_font
+    ws1.append(["Export Date:", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+    ws1.cell(row=2, column=1).font = sub_font
+    ws1.append([])
+
+    ws1.append(["Platform / System", "Metric Description", "Recorded Value"])
+    style_headers(ws1, 4, purple_fill)
+
+    v_sum = vibe_data.get("summary", {})
+    summary_rows = [
+        ["Dsuite Governance", "Total Organizations Registered", len(d_orgs)],
+        ["Dsuite Governance", "Total Onboarded Agents", d_stats.get("total_onboarded_agents", 0)],
+        ["Dsuite Governance", "Docker Containers Active", d_stats.get("active_containers", 0)],
+        ["Dsuite Governance", "Total AI Tokens Consumed", d_stats.get("total_tokens_consumed", 0)],
+        ["Dsuite Governance", "Total Platform Usage Cost ($)", d_stats.get("total_usage_cost", 0.0)],
+        ["Vibecoding System", "Active Organizations", v_sum.get("total_organizations", 0)],
+        ["Vibecoding System", "Active Projects", v_sum.get("total_projects", 0)],
+        ["Vibecoding System", "Active Users", v_sum.get("total_users", 0)],
+        ["Vibecoding System", "Prompts Logged", v_sum.get("total_prompts", 0)],
+        ["Vibecoding System", "Prompt Tokens", v_sum.get("prompt_tokens", 0)],
+        ["Vibecoding System", "Completion Tokens", v_sum.get("completion_tokens", 0)],
+        ["Vibecoding System", "Total AI Tokens", v_sum.get("total_tokens", 0)],
+        ["Vibecoding System", "Total Usage Cost ($)", v_sum.get("total_cost", 0.0)],
+    ]
+    for r in summary_rows:
+        ws1.append(r)
+    auto_fit_columns(ws1)
+
+    # -------------------------------------------------------------
+    # SHEET 2: Dsuite Organizations Capacity
+    # -------------------------------------------------------------
+    ws2 = wb.create_sheet(title="Dsuite Organizations")
+    ws2.append(["Organization Name", "Max Agent Capacity", "Onboarded Agents", "Total AI Tokens", "Usage Cost ($)"])
+    style_headers(ws2, 1, purple_fill)
+    for org in d_orgs:
+        ws2.append([
+            org.get("organization_name"),
+            org.get("max_agent_capacity", 0),
+            org.get("total_onboarded_agents", 0),
+            org.get("total_tokens_consumed", 0),
+            org.get("total_cost", 0.0)
+        ])
+    auto_fit_columns(ws2)
+
+    # -------------------------------------------------------------
+    # SHEET 3: Vibecoding Organizations Breakdown
+    # -------------------------------------------------------------
+    ws3 = wb.create_sheet(title="Vibecoding Organizations")
+    ws3.append(["Organization Name", "Total Users", "Total Projects", "Prompts Logged", "Prompt Tokens", "Completion Tokens", "Total Tokens", "Usage Cost ($)"])
+    style_headers(ws3, 1, cyan_fill)
+    for org in vibe_data.get("organization_breakdown", []):
+        ws3.append([
+            org.get("organization_name"),
+            org.get("user_count", 0),
+            org.get("project_count", 0),
+            org.get("log_count", 0),
+            org.get("prompt_tokens", 0),
+            org.get("completion_tokens", 0),
+            org.get("total_tokens", 0),
+            org.get("total_cost", 0.0)
+        ])
+    auto_fit_columns(ws3)
+
+    # -------------------------------------------------------------
+    # SHEET 4: Vibecoding Projects Breakdown
+    # -------------------------------------------------------------
+    ws4 = wb.create_sheet(title="Vibecoding Projects")
+    ws4.append(["Project Name", "Project ID", "Organization Name", "Primary User Email", "Prompts Logged", "Prompt Tokens", "Completion Tokens", "Total Tokens", "Usage Cost ($)"])
+    style_headers(ws4, 1, cyan_fill)
+    for proj in vibe_data.get("project_breakdown", []):
+        ws4.append([
+            proj.get("project_name"),
+            proj.get("project_id"),
+            proj.get("organization_name"),
+            proj.get("email") or proj.get("username"),
+            proj.get("log_count", 0),
+            proj.get("prompt_tokens", 0),
+            proj.get("completion_tokens", 0),
+            proj.get("total_tokens", 0),
+            proj.get("total_cost", 0.0)
+        ])
+    auto_fit_columns(ws4)
+
+    # -------------------------------------------------------------
+    # SHEET 5: Vibecoding Users Breakdown
+    # -------------------------------------------------------------
+    ws5 = wb.create_sheet(title="Vibecoding Users")
+    ws5.append(["User Email", "Username", "Full Name", "Organization Name", "Active Projects", "Prompts Logged", "Prompt Tokens", "Completion Tokens", "Total Tokens", "Usage Cost ($)"])
+    style_headers(ws5, 1, cyan_fill)
+    for u in vibe_data.get("user_breakdown", []):
+        ws5.append([
+            u.get("email"),
+            u.get("username"),
+            u.get("full_name"),
+            u.get("organization_name"),
+            u.get("project_count", 0),
+            u.get("log_count", 0),
+            u.get("prompt_tokens", 0),
+            u.get("completion_tokens", 0),
+            u.get("total_tokens", 0),
+            u.get("total_cost", 0.0)
+        ])
+    auto_fit_columns(ws5)
+
+    # Save to buffer
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    filename = f"Dsuite_Vibecoding_Master_Report_{datetime.datetime.now().strftime('%Y%m%d')}.xlsx"
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
 
 class UpdateCapacityPayload(BaseModel):
     max_agent_capacity: int
