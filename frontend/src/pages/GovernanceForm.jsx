@@ -553,7 +553,7 @@ const GovernanceForm = ({
         );
     }
 
-    if (result) {
+    if (result && isGovernanceQuestionsPage) {
         return <GovernanceResult 
             result={result} 
             fetchRoadmapData={fetchRoadmapData}
