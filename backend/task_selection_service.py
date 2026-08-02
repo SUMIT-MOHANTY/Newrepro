@@ -20,26 +20,20 @@ class TaskSelectionService:
         return db.query(models.Task).filter(
             models.Task.project_token == project_token,
             models.Task.owner_id == owner_id,
-            models.Task.is_selected_for_execution == True
+            (models.Task.selected == True) | (models.Task.synced_to_nxdune == True)
         ).all()
     
     @staticmethod
-    def get_selected_sprints(db: Session, project_token: str, owner_id: int) -> List[models.Sprint]:
-        """Get all sprints that are selected for execution"""
-        return db.query(models.Sprint).filter(
-            models.Sprint.project_token == project_token,
-            models.Sprint.owner_id == owner_id,
-            models.Sprint.is_selected_for_execution == True
-        ).all()
+    def get_selected_sprints(db: Session, project_token: str, owner_id: int) -> List[str]:
+        """Get list of sprint IDs that have selected tasks"""
+        tasks = TaskSelectionService.get_selected_tasks(db, project_token, owner_id)
+        return list({t.sprint for t in tasks if t.sprint})
     
     @staticmethod
-    def get_selected_milestones(db: Session, project_token: str, owner_id: int) -> List[models.Milestone]:
-        """Get all milestones that are selected for execution"""
-        return db.query(models.Milestone).filter(
-            models.Milestone.project_token == project_token,
-            models.Milestone.owner_id == owner_id,
-            models.Milestone.is_selected_for_execution == True
-        ).all()
+    def get_selected_milestones(db: Session, project_token: str, owner_id: int) -> List[str]:
+        """Get list of milestone IDs that have selected tasks"""
+        tasks = TaskSelectionService.get_selected_tasks(db, project_token, owner_id)
+        return list({t.milestone for t in tasks if t.milestone})
     
     @staticmethod
     def toggle_task_selection(db: Session, task_id: str, project_token: str, owner_id: int, selected: bool) -> models.Task:
@@ -53,7 +47,7 @@ class TaskSelectionService:
         if not task:
             raise ValueError(f"Task {task_id} not found")
         
-        task.is_selected_for_execution = selected
+        task.selected = selected
         db.commit()
         db.refresh(task)
         
@@ -69,52 +63,25 @@ class TaskSelectionService:
         selected: bool,
         cascade_to_tasks: bool = True
     ) -> Dict[str, Any]:
-        """
-        Toggle sprint selection status
-        
-        Args:
-            db: Database session
-            sprint_id: Sprint identifier
-            project_token: Project token
-            owner_id: Owner user ID
-            selected: Whether to select or deselect
-            cascade_to_tasks: If True, also update all tasks in this sprint
-        
-        Returns:
-            Dict with sprint and affected task count
-        """
-        sprint = db.query(models.Sprint).filter(
-            models.Sprint.sprint_id == sprint_id,
-            models.Sprint.project_token == project_token,
-            models.Sprint.owner_id == owner_id
-        ).first()
-        
-        if not sprint:
-            raise ValueError(f"Sprint {sprint_id} not found")
-        
-        sprint.is_selected_for_execution = selected
+        """Toggle selection status for all tasks in a sprint"""
+        tasks = db.query(models.Task).filter(
+            models.Task.project_token == project_token,
+            models.Task.owner_id == owner_id,
+            models.Task.sprint == sprint_id
+        ).all()
         
         affected_tasks = 0
-        if cascade_to_tasks:
-            # Update all tasks in this sprint
-            tasks = db.query(models.Task).filter(
-                models.Task.project_token == project_token,
-                models.Task.owner_id == owner_id,
-                models.Task.sprint == sprint_id
-            ).all()
-            
-            for task in tasks:
-                task.is_selected_for_execution = selected
-                affected_tasks += 1
+        for task in tasks:
+            task.selected = selected
+            affected_tasks += 1
         
         db.commit()
-        db.refresh(sprint)
-        
         logger.info(f"Sprint {sprint_id} selection set to {selected}, affected {affected_tasks} tasks")
         
         return {
-            "sprint": sprint,
-            "affected_tasks": affected_tasks
+            "sprint_id": sprint_id,
+            "affected_tasks": affected_tasks,
+            "selected": selected
         }
     
     @staticmethod
@@ -126,52 +93,25 @@ class TaskSelectionService:
         selected: bool,
         cascade_to_tasks: bool = True
     ) -> Dict[str, Any]:
-        """
-        Toggle milestone selection status
-        
-        Args:
-            db: Database session
-            milestone_id: Milestone identifier
-            project_token: Project token
-            owner_id: Owner user ID
-            selected: Whether to select or deselect
-            cascade_to_tasks: If True, also update all tasks in this milestone
-        
-        Returns:
-            Dict with milestone and affected task count
-        """
-        milestone = db.query(models.Milestone).filter(
-            models.Milestone.milestone_id == milestone_id,
-            models.Milestone.project_token == project_token,
-            models.Milestone.owner_id == owner_id
-        ).first()
-        
-        if not milestone:
-            raise ValueError(f"Milestone {milestone_id} not found")
-        
-        milestone.is_selected_for_execution = selected
+        """Toggle selection status for all tasks in a milestone"""
+        tasks = db.query(models.Task).filter(
+            models.Task.project_token == project_token,
+            models.Task.owner_id == owner_id,
+            models.Task.milestone == milestone_id
+        ).all()
         
         affected_tasks = 0
-        if cascade_to_tasks:
-            # Update all tasks in this milestone
-            tasks = db.query(models.Task).filter(
-                models.Task.project_token == project_token,
-                models.Task.owner_id == owner_id,
-                models.Task.milestone == milestone_id
-            ).all()
-            
-            for task in tasks:
-                task.is_selected_for_execution = selected
-                affected_tasks += 1
+        for task in tasks:
+            task.selected = selected
+            affected_tasks += 1
         
         db.commit()
-        db.refresh(milestone)
-        
         logger.info(f"Milestone {milestone_id} selection set to {selected}, affected {affected_tasks} tasks")
         
         return {
-            "milestone": milestone,
-            "affected_tasks": affected_tasks
+            "milestone_id": milestone_id,
+            "affected_tasks": affected_tasks,
+            "selected": selected
         }
     
     @staticmethod
@@ -190,7 +130,7 @@ class TaskSelectionService:
         ).all()
         
         for task in tasks:
-            task.is_selected_for_execution = selected
+            task.selected = selected
         
         db.commit()
         
@@ -200,38 +140,19 @@ class TaskSelectionService:
     @staticmethod
     def get_selection_summary(db: Session, project_token: str, owner_id: int) -> Dict[str, Any]:
         """Get summary of selected items for a project"""
-        total_tasks = db.query(models.Task).filter(
+        all_tasks = db.query(models.Task).filter(
             models.Task.project_token == project_token,
             models.Task.owner_id == owner_id
-        ).count()
+        ).all()
         
-        selected_tasks = db.query(models.Task).filter(
-            models.Task.project_token == project_token,
-            models.Task.owner_id == owner_id,
-            models.Task.is_selected_for_execution == True
-        ).count()
+        total_tasks = len(all_tasks)
+        selected_tasks = len([t for t in all_tasks if t.selected or t.synced_to_nxdune])
         
-        total_sprints = db.query(models.Sprint).filter(
-            models.Sprint.project_token == project_token,
-            models.Sprint.owner_id == owner_id
-        ).count()
+        sprints = {t.sprint for t in all_tasks if t.sprint}
+        selected_sprints = {t.sprint for t in all_tasks if t.sprint and (t.selected or t.synced_to_nxdune)}
         
-        selected_sprints = db.query(models.Sprint).filter(
-            models.Sprint.project_token == project_token,
-            models.Sprint.owner_id == owner_id,
-            models.Sprint.is_selected_for_execution == True
-        ).count()
-        
-        total_milestones = db.query(models.Milestone).filter(
-            models.Milestone.project_token == project_token,
-            models.Milestone.owner_id == owner_id
-        ).count()
-        
-        selected_milestones = db.query(models.Milestone).filter(
-            models.Milestone.project_token == project_token,
-            models.Milestone.owner_id == owner_id,
-            models.Milestone.is_selected_for_execution == True
-        ).count()
+        milestones = {t.milestone for t in all_tasks if t.milestone}
+        selected_milestones = {t.milestone for t in all_tasks if t.milestone and (t.selected or t.synced_to_nxdune)}
         
         return {
             "tasks": {
@@ -240,14 +161,14 @@ class TaskSelectionService:
                 "unselected": total_tasks - selected_tasks
             },
             "sprints": {
-                "total": total_sprints,
-                "selected": selected_sprints,
-                "unselected": total_sprints - selected_sprints
+                "total": len(sprints),
+                "selected": len(selected_sprints),
+                "unselected": len(sprints) - len(selected_sprints)
             },
             "milestones": {
-                "total": total_milestones,
-                "selected": selected_milestones,
-                "unselected": total_milestones - selected_milestones
+                "total": len(milestones),
+                "selected": len(selected_milestones),
+                "unselected": len(milestones) - len(selected_milestones)
             }
         }
     

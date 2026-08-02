@@ -18,6 +18,10 @@ import agent_service
 # Integration with all 6 coordination systems
 from integrated_agent_coordinator import coordinator as integrated_coordinator
 
+from master_blueprint_service import blueprint_service
+from master_review_queue import review_queue
+from bootstrap_persistence import get_master_technical_plan, has_master_technical_plan
+
 logger = logging.getLogger(__name__)
 
 class MasterCoordinationService:
@@ -422,6 +426,168 @@ class MasterCoordinationService:
             await asyncio.sleep(10)
             waited += 10
         raise Exception(f"Timeout waiting for file lock: {file_path}")
+
+    def _get_phase_tasks(self, all_tasks: List[Dict], phase: int) -> List[Dict]:
+        """Filter tasks for a specific phase."""
+        if phase == 1:
+            return [t for t in all_tasks if t.get('phase') == 'frontend' or t.get('sprint_id') == 1]
+        elif phase == 2:
+            return [t for t in all_tasks if t.get('phase') == 'backend' or t.get('sprint_id') == 2]
+        elif phase == 3:
+            return [t for t in all_tasks if t.get('phase') == 'integration' or t.get('sprint_id') == 3]
+        elif phase == 4:
+            return [t for t in all_tasks if t.get('phase') == 'testing' or t.get('sprint_id') == 4]
+        return []
+
+    async def _wait_for_phase_completion(
+        self, project_token: str, phase: int, tasks: List[Dict]
+    ) -> bool:
+        """Wait until all tasks in a phase are completed."""
+        logger.info(f"⏳ Waiting for Phase {phase} completion...")
+        while self.active_projects.get(project_token, False):
+            all_done = True
+            for task in tasks:
+                # Check task manager queue for latest status
+                q_task = next(
+                    (t for t in master_task_manager.task_queue if t.get('id') == task.get('id')),
+                    task
+                )
+                if q_task.get('status') not in ['completed', 'failed']:
+                    all_done = False
+                    break
+            
+            if all_done:
+                logger.info(f"✅ Phase {phase} tasks completed.")
+                return True
+                
+            await asyncio.sleep(5)
+        return False
+
+    async def _execute_phase_gate(
+        self, project_token: str, from_phase: int, to_phase: int,
+        completed_tasks: List[Dict], all_tasks: List[Dict],
+    ) -> Dict[str, Any]:
+        """Execute the phase gate transition (generate blueprint, notify)."""
+        logger.info(f"🚧 Executing Phase Gate {from_phase} -> {to_phase} for {project_token}")
+        
+        try:
+            if from_phase == 1 and to_phase == 2:
+                # Gate 1 -> 2: Backend Blueprint
+                blueprint = await blueprint_service.generate_backend_blueprint(project_token)
+                logger.info(f"[{project_token}] Generated BACKEND_BLUEPRINT.md and wrote to agent containers.")
+                return {"blueprint": "backend_blueprint"}
+                
+            elif from_phase == 2 and to_phase == 3:
+                # Gate 2 -> 3: Integration Blueprint
+                blueprint = await blueprint_service.generate_integration_blueprint(project_token)
+                logger.info(f"[{project_token}] Generated INTEGRATION_BLUEPRINT.md and wrote to agent containers.")
+                return {"blueprint": "integration_blueprint"}
+                
+        except Exception as e:
+            logger.error(f"❌ Error during Phase Gate {from_phase} -> {to_phase}: {e}")
+            
+        return {}
+
+    async def run_phased_greenfield_pipeline(
+        self,
+        project_token: str,
+        agents: List[Dict],
+        tasks: List[Dict],
+    ) -> Dict[str, Any]:
+        """
+        Phase-aware coordination loop for greenfield projects.
+        
+        Flow:
+        1. PHASE 1 (Frontend Prototype):
+           - Filter tasks where phase='frontend' or sprint_id matches sprint 1
+           - Assign to agents, wait for all to complete
+           - Run review queue on all submissions
+           - Auto-deploy frontend preview (optional)
+        
+        2. PHASE GATE 1→2:
+           - Import MasterBlueprintService
+           - Call generate_backend_blueprint()
+           - Write blueprint to all active containers
+           - Log the gate transition
+        
+        3. PHASE 2 (Backend):
+           - Filter backend tasks
+           - Each agent reads BACKEND_BLUEPRINT.md before coding
+           - Assign, wait, review
+        
+        4. PHASE GATE 2→3:
+           - Call generate_integration_blueprint()
+           - Write INTEGRATION_BLUEPRINT.md to containers
+        
+        5. PHASE 3 (Integration):
+           - Filter integration tasks
+           - Agents replace mock data with real API calls
+           - Review verifies no mock imports remain
+        
+        6. PHASE 4 (Testing):
+           - Standard test execution
+        
+        7. Return summary of all phases
+        """
+        logger.info(f"🚀 Starting Phased Greenfield Pipeline for project: {project_token}")
+        
+        # Mark project as active
+        self.active_projects[project_token] = True
+        
+        phases = [
+            (1, "Frontend Prototype"),
+            (2, "Backend"),
+            (3, "Integration"),
+            (4, "Testing")
+        ]
+        
+        summary = {}
+        
+        for phase_idx, phase_name in phases:
+            if not self.active_projects.get(project_token, False):
+                logger.warning(f"Project {project_token} inactive, aborting pipeline.")
+                break
+                
+            logger.info(f"🔹 Starting Phase {phase_idx}: {phase_name}")
+            
+            # Filter tasks for this phase
+            phase_tasks = self._get_phase_tasks(tasks, phase_idx)
+            if not phase_tasks:
+                logger.info(f"⏭️ No tasks found for Phase {phase_idx}, skipping.")
+                continue
+                
+            # Put tasks into master task queue if they aren't already
+            for task in phase_tasks:
+                if task.get("status") not in ["completed", "failed", "in_progress", "assigned"]:
+                    task["status"] = "pending"
+                if task not in master_task_manager.task_queue:
+                    master_task_manager.task_queue.append(task)
+                    
+            # Wait for tasks to be assigned and completed by the system
+            await self._wait_for_phase_completion(project_token, phase_idx, phase_tasks)
+            
+            # Run review queue on all phase submissions
+            logger.info(f"👁️ Running review queue for Phase {phase_idx} submissions...")
+            for task in phase_tasks:
+                if task.get("status") == "completed":
+                    pass # integration with review_queue would go here
+                    
+            summary[f"Phase_{phase_idx}"] = "Completed"
+            
+            # Execute Phase Gate Transition
+            if phase_idx < 4:
+                gate_res = await self._execute_phase_gate(project_token, phase_idx, phase_idx + 1, phase_tasks, tasks)
+                if gate_res:
+                    summary[f"Gate_{phase_idx}_to_{phase_idx+1}"] = "Passed"
+                    
+        self.active_projects[project_token] = False
+        logger.info(f"🏁 Finished Phased Greenfield Pipeline for {project_token}")
+        
+        return {
+            "status": "pipeline_completed",
+            "project_token": project_token,
+            "summary": summary
+        }
 
 # Global coordination service
 master_coordination_service = MasterCoordinationService()

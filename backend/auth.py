@@ -70,3 +70,16 @@ async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)], db: Se
     return user
 
 
+async def get_current_super_admin(
+    current_user: Annotated[User, Depends(get_current_user)]
+) -> User:
+    """Ensure current user has Super Admin privileges."""
+    if not bool(getattr(current_user, "is_super_admin", False)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Super Admin privileges required"
+        )
+    return current_user
+
+
+

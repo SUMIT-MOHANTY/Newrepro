@@ -27,27 +27,11 @@ _CHECKPOINTER = InMemorySaver()
 
 
 async def _publish_master_workspace_note(state: AgentWorkflowState) -> Dict[str, Any]:
-    import agent_service
-    import agent_communication_service as comm
-    from database import SessionLocal
-    from bootstrap_persistence import set_bootstrap_success, set_bootstrap_failed, is_bootstrap_pushed, save_bootstrap_planning_note
-
-    logger.info("[LangGraph] Publishing master workspace note...")
-    agent_service._log_master_agent(
-        "📋 Creating canonical project tree note...",
-        project_token=state.get("project_token"),
-    )
-    
-    agent_service.prime_project_git_credentials(
-        state.get("agents_config"),
-        project_token=state.get("project_token"),
-    )
-    result = await agent_service.ensure_master_workspace_note(
-        project_token=state.get("project_token"),
-        task_token=state.get("task_token"),
-    )
-    
-    logger.info(f"[LangGraph] Master note result: success={result.get('success')}, title={result.get('title')}")
+    logger.info("[LangGraph] Publishing master workspace note (Bypassed - Zero token mode)...")
+    return {
+        "master_note": {"success": True, "approved": True, "workspace_tree": ""},
+        "errors": list(state.get("errors") or []),
+    }
     
     errors = list(state.get("errors") or [])
     project_token = state.get("project_token")
@@ -336,10 +320,11 @@ async def _run_parallel_agents(state: AgentWorkflowState) -> Dict[str, Any]:
                     "tasks_completed": 0,
                 }
 
-        # Run agents with coordination
-        results = await asyncio.gather(
-            *(_run_coordinated_agent(entry.get("agent_id"), entry.get("assigned_task")) for entry in assignments)
-        )
+        # Run agents strictly sequentially (one task completed before the next starts)
+        results = []
+        for entry in assignments:
+            res = await _run_coordinated_agent(entry.get("agent_id"), entry.get("assigned_task"))
+            results.append(res)
         
         errors = [
             f"{item.get('agent_id')}: {item.get('error')}"

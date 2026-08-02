@@ -6,6 +6,7 @@ let isAuthRedirectInProgress = false;
 
 export const clearAuthData = () => {
     localStorage.removeItem('token');
+    localStorage.removeItem('is_super_admin');
     localStorage.removeItem('governancePassed');
     localStorage.removeItem('governanceResult');
     localStorage.removeItem('governanceContext');

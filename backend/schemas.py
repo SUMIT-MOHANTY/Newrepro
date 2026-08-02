@@ -19,6 +19,7 @@ class User(UserBase):
     last_name: Optional[str] = None
     organization_name: Optional[str] = None
     is_org_admin: bool = False
+    is_super_admin: bool = False
 
     class Config:
         from_attributes = True
@@ -81,6 +82,11 @@ class OrganizationSSOSettingsResponse(OrganizationSSOSettingsUpdate):
 
 class OrganizationAgentQuotaResponse(BaseModel):
     organization_name: str
+    max_agent_capacity: int = 0
+    total_onboarded_agents: int = 0
+    physical_workers_onboarded: int = 0
+    virtual_shared_onboarded: int = 0
+    available_capacity: int = 0
     shared_quota: int = 0
     dedicated_quota: int = 0
     shared_used: int = 0
@@ -102,6 +108,62 @@ class OrganizationAgentQuotaIncreaseRequest(BaseModel):
     kind: str          # "shared" | "dedicated"
     sub_type: Optional[str] = None  # "dev" | "test" — tracks sub_type quota
     amount: int = 1
+
+class CapacityIncreaseRequestCreate(BaseModel):
+    project_token: Optional[str] = None
+    requested_shared_count: int = 0
+    requested_dedicated_count: int = 0
+    total_requested_increase: int = 1
+    reason: Optional[str] = None
+
+class CapacityIncreaseRequestReview(BaseModel):
+    status: str  # "APPROVED" | "REJECTED"
+    approved_total_capacity: Optional[int] = None
+    review_comment: Optional[str] = None
+
+class CapacityIncreaseRequestResponse(BaseModel):
+    id: int
+    organization_name: str
+    requested_by_user_id: int
+    requested_by_email: Optional[str] = None
+    project_token: Optional[str] = None
+    requested_shared_count: int = 0
+    requested_dedicated_count: int = 0
+    total_requested_increase: int
+    reason: Optional[str] = None
+    status: str
+    approved_total_capacity: Optional[int] = None
+    reviewed_by_user_id: Optional[int] = None
+    review_comment: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class ProjectAgentRequestCreate(BaseModel):
+    project_token: str
+    requested_shared_count: int = 0
+    requested_dedicated_count: int = 0
+    reason: Optional[str] = None
+
+class SuperAdminCapUpdate(BaseModel):
+    max_agent_capacity: int
+
+class SuperAdminDashboardStatsResponse(BaseModel):
+    total_organizations: int = 0
+    total_onboarded_agents: int = 0
+    running_docker_containers: int = 0
+    dedicated_agents: int = 0
+    shared_agents: int = 0
+    borrowed_dedicated_agents: int = 0
+    pending_capacity_requests: int = 0
+    organization_billing: float = 0.0
+    ai_token_usage: int = 0
+    project_statistics: dict = Field(default_factory=dict)
+    active_users: int = 0
+    agent_utilization: float = 0.0
+
 
 # ===== ORG RBAC + INVITES =====
 

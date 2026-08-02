@@ -1,8 +1,9 @@
 // Resource Onboarding page
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { ArrowRight, CheckCircle2, Loader2, Bot, AlertTriangle, Minus, Plus, Info, Zap, Lock } from 'lucide-react';
+import { ArrowRight, CheckCircle2, Loader2, Bot, AlertTriangle, Minus, Plus, Info, Zap, Lock, Shield } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
+import RequestCapacityModal from '../components/RequestCapacityModal';
 
 const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
 
@@ -111,14 +112,32 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
   const [quota, setQuota] = useState(null);
   const [quotaLoading, setQuotaLoading] = useState(false);
 
+  const [showNotifyModal, setShowNotifyModal] = useState(false);
+  const [userRbac, setUserRbac] = useState(null);
+  const isOrgAdmin = Boolean(userRbac?.is_org_admin);
+
+  useEffect(() => {
+    if (!token) return;
+    fetch(API_ENDPOINTS.ORG_RBAC_ME, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+      .then(res => res.json())
+      .then(data => setUserRbac(data))
+      .catch(() => {});
+  }, [token]);
+
   const taskToken = useMemo(() => getCachedTaskToken(selectedProjectKey), [selectedProjectKey]);
   const hasValidTaskToken = Boolean(taskToken);
 
   // ─── Quota helpers ──────────────────────────────────────────────────────────
-  const sharedAllowed = quota?.shared_quota || 10;
-  const dedicatedAllowed = quota?.dedicated_quota || 10;
+  const maxAgentCap = quota?.max_agent_capacity ?? 0;
+  const sharedAllowed = quota?.shared_quota || maxAgentCap;
+  const dedicatedAllowed = quota?.dedicated_quota || maxAgentCap;
+  const physicalOnboarded = quota?.physical_workers_onboarded || (quota?.total_onboarded_agents || 0);
+  const virtualSharedCount = quota?.virtual_shared_onboarded || 0;
+  const freePhysicalSlots = quota?.available_capacity ?? Math.max(0, maxAgentCap - physicalOnboarded);
 
-  // Usage by other projects (from quota.shared_used, minus what this project already holds)
+  // Usage by other projects
   const thisProjectCurrentShared = useMemo(() =>
     agents.filter(a => a.project_token === selectedProjectKey && (a.agent_kind === 'shared' || !a.agent_kind)).length,
     [agents, selectedProjectKey]
@@ -144,12 +163,20 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
   const totalSharedRequested = otherProjectsSharedUsage + thisProjectUiSharedTotal;
   const totalDedicatedRequested = otherProjectsDedicatedUsage + thisProjectUiDedicatedTotal;
 
-  const sharedExceeded = totalSharedRequested > sharedAllowed;
-  const dedicatedExceeded = totalDedicatedRequested > dedicatedAllowed;
-  const quotaExceeded = sharedExceeded || dedicatedExceeded;
+  const [capacityRequestNotice, setCapacityRequestNotice] = useState('');
+
+  // Dedicated agents require physical container capacity for NEW requested slots
+  const newDedicatedRequested = Math.max(0, thisProjectUiDedicatedTotal - thisProjectCurrentDedicated);
+  const dedicatedExceeded = maxAgentCap > 0
+    ? newDedicatedRequested > freePhysicalSlots
+    : true;
+  
+  // Shared agents can exceed physical cap if virtual shared worker reuse is available
+  const sharedExceeded = maxAgentCap === 0;
+  const quotaExceeded = maxAgentCap === 0 || dedicatedExceeded;
 
   const sharedRemaining = Math.max(0, sharedAllowed - totalSharedRequested);
-  const dedicatedRemaining = Math.max(0, dedicatedAllowed - totalDedicatedRequested);
+  const dedicatedRemaining = Math.max(0, freePhysicalSlots);
 
   // ─── Fetch agents ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -347,11 +374,28 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
             </div>
           </div>
 
-          {/* Central Pool Status */}
-          <div className="p-2 rounded-lg border border-app-border-light bg-app-bg-muted/15 space-y-2">
+          {/* Central Pool Status & Org-Wide Capacity Limit Bar */}
+          <div className="p-2.5 rounded-lg border border-app-border-light bg-app-bg-muted/15 space-y-2.5">
             <div className="flex items-center justify-between">
-              <p className="text-[9px] font-bold uppercase tracking-wider text-app-text-muted">Central Quota Pool Usage</p>
-              <span className="text-[8px] font-semibold text-app-text-muted/80">Org-wide Capacity Slots</span>
+              <div>
+                <p className="text-[9.5px] font-bold uppercase tracking-wider text-app-text-muted">Central Capacity Pool & Limits</p>
+                <p className="text-[11px] font-semibold text-app-text-main mt-0.5">
+                  Org-Wide Capacity Limit: <span className="font-extrabold text-purple-400">{maxAgentCap} Max Agents</span>
+                </p>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-purple-500/10 border border-purple-500/20 text-purple-300">
+                  {physicalOnboarded} Physical Workers / {freePhysicalSlots} Free Slots {virtualSharedCount > 0 && `(${virtualSharedCount} Virtual Shared)`}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowNotifyModal(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition-all shadow-sm"
+                >
+                  <Shield className="w-3.5 h-3.5" />
+                  <span>{isOrgAdmin ? 'Request Capacity Increase (Super Admin)' : 'Notify Org Admin for Agent Capacity'}</span>
+                </button>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -360,7 +404,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                 <div className="flex justify-between items-center">
                   <span className="text-xs font-semibold text-app-text-main flex items-center gap-1.5">
                     <span className="w-2 h-2 rounded-full bg-blue-500/80"></span>
-                    Shared Agents
+                    Shared Agents Pool
                   </span>
                   <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${sharedExceeded ? 'bg-red-500/10 text-red-400 border-red-500/20 animate-pulse' : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'}`}>
                     {totalSharedRequested} / {sharedAllowed} Used
@@ -369,7 +413,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                 <div className="w-full h-1 rounded-full bg-app-bg-muted/60 overflow-hidden">
                   <div
                     className={`h-full rounded-full transition-all duration-500 ${sharedExceeded ? 'bg-red-500' : 'bg-gradient-to-r from-blue-500 to-indigo-400'}`}
-                    style={{ width: `${Math.min(100, (totalSharedRequested / sharedAllowed) * 100)}%` }}
+                    style={{ width: `${Math.min(100, (totalSharedRequested / Math.max(1, sharedAllowed)) * 100)}%` }}
                   />
                 </div>
                 <div className="flex justify-between text-[9.5px] text-app-text-muted px-0.5">
@@ -387,7 +431,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                 <div className="flex justify-between items-center">
                   <span className="text-xs font-semibold text-app-text-main flex items-center gap-1.5">
                     <span className="w-2 h-2 rounded-full bg-purple-500/80"></span>
-                    Dedicated Agents
+                    Dedicated Agents Pool
                   </span>
                   <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${dedicatedExceeded ? 'bg-red-500/10 text-red-400 border-red-500/20 animate-pulse' : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'}`}>
                     {totalDedicatedRequested} / {dedicatedAllowed} Used
@@ -396,7 +440,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                 <div className="w-full h-1 rounded-full bg-app-bg-muted/60 overflow-hidden">
                   <div
                     className={`h-full rounded-full transition-all duration-500 ${dedicatedExceeded ? 'bg-red-500' : 'bg-gradient-to-r from-purple-500 to-pink-400'}`}
-                    style={{ width: `${Math.min(100, (totalDedicatedRequested / dedicatedAllowed) * 100)}%` }}
+                    style={{ width: `${Math.min(100, (totalDedicatedRequested / Math.max(1, dedicatedAllowed)) * 100)}%` }}
                   />
                 </div>
                 <div className="flex justify-between text-[9.5px] text-app-text-muted px-0.5">
@@ -410,6 +454,23 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
               </div>
             </div>
           </div>
+
+          {/* Capacity Request Submitted Success Banner */}
+          {capacityRequestNotice && (
+            <div className="p-2 text-[11px] text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 rounded-lg flex items-center justify-between gap-2 animate-in fade-in duration-200">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span className="font-semibold">{capacityRequestNotice}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCapacityRequestNotice('')}
+                className="text-emerald-400 hover:text-emerald-200 text-xs font-bold px-1.5"
+              >
+                ✕
+              </button>
+            </div>
+          )}
 
           {/* Quota Exceeded Alert */}
           {quotaExceeded && (
@@ -605,6 +666,21 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
 
         </div>
       </div>
+
+      {/* Capacity Notification / Request Modal */}
+      <RequestCapacityModal
+        isOpen={showNotifyModal}
+        onClose={() => setShowNotifyModal(false)}
+        selectedProjectKey={selectedProjectKey}
+        isOrgAdmin={isOrgAdmin}
+        onSuccess={() => {
+          setCapacityRequestNotice(
+            isOrgAdmin
+              ? 'Capacity Increase Request submitted to Super Admin successfully.'
+              : 'Capacity notification submitted to Organization Admin successfully.'
+          );
+        }}
+      />
     </div>
   );
 }

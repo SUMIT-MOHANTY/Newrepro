@@ -255,6 +255,17 @@ def _run_startup_migrations():
             except Exception as e:
                 logging.getLogger(__name__).warning(f"Migration: Could not create daily_billing_email_logs table: {e}")
 
+        # 6. Add is_virtual_shared to organization_agent_mappings table
+        if "organization_agent_mappings" in table_names:
+            oam_cols = [c["name"] for c in inspector.get_columns("organization_agent_mappings")]
+            if "is_virtual_shared" not in oam_cols:
+                try:
+                    conn.execute(sql_text("ALTER TABLE organization_agent_mappings ADD COLUMN is_virtual_shared BOOLEAN DEFAULT 0"))
+                    conn.commit()
+                    logging.getLogger(__name__).info("Migration: Added 'is_virtual_shared' column to 'organization_agent_mappings' table.")
+                except Exception as e:
+                    logging.getLogger(__name__).warning(f"Migration: Could not add is_virtual_shared to organization_agent_mappings: {e}")
+
 _run_startup_migrations()
 
 @asynccontextmanager
@@ -2406,6 +2417,19 @@ def _get_user_allowed_paths(db: Session, user: models.User) -> tuple[Optional[st
     if not org:
         return None, []
 
+    if bool(getattr(user, "is_super_admin", False)):
+        superadmin_paths = [p.path for p in ORG_MANAGED_PAGES] + [
+            "/superadmin/dashboard",
+            "/superadmin/requests",
+            "/superadmin/organizations",
+            "/superadmin/billing",
+            "/superadmin/global-billing",
+            "/superadmin/roles",
+            "/superadmin/capacity",
+            "/superadmin/logs"
+        ]
+        return "Super Admin", superadmin_paths
+
     if bool(getattr(user, "is_org_admin", False)):
         return "Admin", [p.path for p in ORG_MANAGED_PAGES]
 
@@ -2441,6 +2465,558 @@ def _can_manage_governance(db: Session, user: models.User) -> bool:
         return True
     _, allowed_paths = _get_user_allowed_paths(db, user)
     return "/governance-management" in (allowed_paths or [])
+
+def _require_super_admin(current_user: models.User) -> None:
+    if not bool(getattr(current_user, "is_super_admin", False)):
+        raise HTTPException(status_code=403, detail="Super Admin access required")
+
+@app.get("/api/superadmin/dashboard-stats")
+def get_superadmin_dashboard_stats(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    _require_super_admin(current_user)
+    import datetime
+
+    start_dt, end_dt = None, None
+    if start_date:
+        try: start_dt = datetime.datetime.fromisoformat(start_date)
+        except Exception: pass
+    if end_date:
+        try: end_dt = datetime.datetime.fromisoformat(end_date) + datetime.timedelta(days=1) - datetime.timedelta(microseconds=1)
+        except Exception: pass
+
+    # Total registered organization names
+    org_names = [
+        row[0] for row in db.query(models.User.organization_name).filter(
+            models.User.organization_name.isnot(None)
+        ).distinct().all() if row[0] and row[0].strip()
+    ]
+    total_organizations = len(org_names)
+
+    # Agents count
+    total_onboarded_agents = db.query(models.OrganizationAgentMapping).filter(
+        models.OrganizationAgentMapping.is_default == False
+    ).count()
+
+    shared_agents = db.query(models.OrganizationAgentMapping).filter(
+        models.OrganizationAgentMapping.is_default == False,
+        func.lower(models.OrganizationAgentMapping.agent_kind) == "shared"
+    ).count()
+
+    dedicated_agents = db.query(models.OrganizationAgentMapping).filter(
+        models.OrganizationAgentMapping.is_default == False,
+        func.lower(models.OrganizationAgentMapping.agent_kind) == "dedicated"
+    ).count()
+
+    borrowed_dedicated_agents = db.query(models.OrganizationAgentMapping).filter(
+        models.OrganizationAgentMapping.is_borrowed == True
+    ).count()
+
+    # Pending capacity requests
+    pending_capacity_requests = db.query(models.CapacityIncreaseRequest).filter(
+        models.CapacityIncreaseRequest.status == "PENDING"
+    ).count()
+
+    # Total AI tokens and platform billing
+    ai_query = db.query(models.AIUsageLog)
+    if start_dt:
+        ai_query = ai_query.filter(models.AIUsageLog.created_at >= start_dt)
+    if end_dt:
+        ai_query = ai_query.filter(models.AIUsageLog.created_at <= end_dt)
+    ai_logs = ai_query.all()
+
+    ai_tokens_consumed = sum((l.prompt_tokens or 0) + (l.completion_tokens or 0) for l in ai_logs)
+    platform_billing = round(sum(l.cost or 0.0 for l in ai_logs), 2)
+
+    # Projects count
+    proj_query = db.query(models.GovernanceResponse)
+    if start_dt:
+        proj_query = proj_query.filter(models.GovernanceResponse.submission_date >= start_dt)
+    if end_dt:
+        proj_query = proj_query.filter(models.GovernanceResponse.submission_date <= end_dt)
+    total_projects = proj_query.count()
+    active_projects = proj_query.filter(
+        models.GovernanceResponse.is_archived == False
+    ).count()
+
+    # Users count
+    active_users = db.query(models.User).filter(models.User.is_active == True).count()
+
+    # Docker containers
+    running_containers = agent_service.get_running_containers_count() if hasattr(agent_service, "get_running_containers_count") else 0
+
+    return {
+        "total_organizations": total_organizations,
+        "total_onboarded_agents": total_onboarded_agents,
+        "total_running_containers": running_containers,
+        "dedicated_agents": dedicated_agents,
+        "shared_agents": shared_agents,
+        "borrowed_dedicated_agents": borrowed_dedicated_agents,
+        "pending_capacity_requests": pending_capacity_requests,
+        "platform_billing": platform_billing,
+        "ai_tokens_consumed": ai_tokens_consumed,
+        "project_telemetry": {
+            "active": active_projects,
+            "total": total_projects
+        },
+        "active_users": active_users,
+        "agent_utilization": 85 if total_onboarded_agents > 0 else 0
+    }
+
+@app.get("/api/superadmin/organizations")
+def get_superadmin_organizations(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    _require_super_admin(current_user)
+    import datetime
+
+    start_dt, end_dt = None, None
+    if start_date:
+        try: start_dt = datetime.datetime.fromisoformat(start_date)
+        except Exception: pass
+    if end_date:
+        try: end_dt = datetime.datetime.fromisoformat(end_date) + datetime.timedelta(days=1) - datetime.timedelta(microseconds=1)
+        except Exception: pass
+
+    org_names = sorted(list({
+        row[0].strip() for row in db.query(models.User.organization_name).filter(
+            models.User.organization_name.isnot(None)
+        ).all() if row[0] and row[0].strip()
+    }))
+
+    result = []
+    for name in org_names:
+        quota = db.query(models.OrganizationAgentQuota).filter(
+            func.lower(models.OrganizationAgentQuota.organization_name) == name.lower()
+        ).first()
+
+        max_cap = quota.max_agent_capacity if quota and quota.max_agent_capacity is not None else 0
+
+        users = db.query(models.User).filter(
+            func.lower(models.User.organization_name) == name.lower()
+        ).all()
+
+        user_ids = [u.id for u in users]
+
+        # Calculate AI token usage and costs for all users in this org
+        ai_query = db.query(models.AIUsageLog).filter(models.AIUsageLog.user_id.in_(user_ids)) if user_ids else None
+        if ai_query is not None and start_dt:
+            ai_query = ai_query.filter(models.AIUsageLog.created_at >= start_dt)
+        if ai_query is not None and end_dt:
+            ai_query = ai_query.filter(models.AIUsageLog.created_at <= end_dt)
+
+        org_ai_logs = ai_query.all() if ai_query is not None else []
+        total_tokens = sum((l.prompt_tokens or 0) + (l.completion_tokens or 0) for l in org_ai_logs)
+        token_cost = sum(l.cost or 0.0 for l in org_ai_logs)
+
+        # Build user breakdown
+        user_breakdown = []
+        for u in users:
+            u_logs = [l for l in org_ai_logs if l.user_id == u.id]
+            u_tokens = sum((l.prompt_tokens or 0) + (l.completion_tokens or 0) for l in u_logs)
+            u_cost = round(sum(l.cost or 0.0 for l in u_logs), 4)
+            user_breakdown.append({
+                "id": u.id,
+                "email": u.email,
+                "first_name": u.first_name,
+                "last_name": u.last_name,
+                "is_org_admin": u.is_org_admin,
+                "is_super_admin": u.is_super_admin,
+                "ai_tokens": u_tokens,
+                "total_cost": u_cost,
+                "last_login": u.last_login.isoformat() if u.last_login else None
+            })
+
+        onboarded = db.query(models.OrganizationAgentMapping).filter(
+            func.lower(models.OrganizationAgentMapping.organization_name) == name.lower(),
+            models.OrganizationAgentMapping.is_default == False
+        ).count()
+
+        result.append({
+            "organization_name": name,
+            "max_agent_capacity": max_cap,
+            "total_onboarded_agents": onboarded,
+            "available_capacity": max(0, max_cap - onboarded),
+            "user_count": len(users),
+            "total_tokens_consumed": total_tokens,
+            "total_cost": round(token_cost, 4),
+            "users": user_breakdown
+        })
+
+    return result
+
+class UpdateCapacityPayload(BaseModel):
+    max_agent_capacity: int
+
+@app.put("/api/superadmin/organizations/{org_name}/capacity")
+def update_superadmin_org_capacity(
+    org_name: str,
+    payload: UpdateCapacityPayload,
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db),
+):
+    _require_super_admin(current_user)
+
+    clean_org = org_name.strip()
+    quota = db.query(models.OrganizationAgentQuota).filter(
+        func.lower(models.OrganizationAgentQuota.organization_name) == clean_org.lower()
+    ).first()
+
+    if not quota:
+        quota = models.OrganizationAgentQuota(
+            organization_name=clean_org,
+            max_agent_capacity=payload.max_agent_capacity
+        )
+        db.add(quota)
+    else:
+        quota.max_agent_capacity = payload.max_agent_capacity
+
+    db.commit()
+    db.refresh(quota)
+    return {
+        "success": True,
+        "organization_name": clean_org,
+        "max_agent_capacity": quota.max_agent_capacity
+    }
+
+@app.get("/api/superadmin/capacity-requests")
+def get_superadmin_capacity_requests(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db),
+):
+    _require_super_admin(current_user)
+
+    # Auto-sync any PENDING ProjectAgentRequest that doesn't have a CapacityIncreaseRequest
+    pending_project_reqs = db.query(models.ProjectAgentRequest).filter(
+        models.ProjectAgentRequest.status == "PENDING"
+    ).all()
+    for pr in pending_project_reqs:
+        existing_cap = db.query(models.CapacityIncreaseRequest).filter(
+            models.CapacityIncreaseRequest.organization_name == pr.organization_name,
+            models.CapacityIncreaseRequest.requested_by_user_id == pr.requested_by_user_id,
+            models.CapacityIncreaseRequest.project_token == pr.project_token,
+            models.CapacityIncreaseRequest.status == "PENDING"
+        ).first()
+        if not existing_cap:
+            inc = max(1, (pr.requested_shared_count or 0) + (pr.requested_dedicated_count or 0))
+            new_cap = models.CapacityIncreaseRequest(
+                organization_name=pr.organization_name,
+                requested_by_user_id=pr.requested_by_user_id,
+                project_token=pr.project_token,
+                requested_shared_count=pr.requested_shared_count,
+                requested_dedicated_count=pr.requested_dedicated_count,
+                total_requested_increase=inc,
+                reason=f"[{pr.project_name or pr.project_token}] {pr.reason or 'Project agent request'}",
+                status="PENDING"
+            )
+            db.add(new_cap)
+    db.commit()
+
+    requests = db.query(models.CapacityIncreaseRequest).order_by(
+        models.CapacityIncreaseRequest.created_at.desc()
+    ).all()
+
+    result = []
+    for r in requests:
+        user = db.query(models.User).filter(models.User.id == r.requested_by_user_id).first()
+        quota = db.query(models.OrganizationAgentQuota).filter(
+            func.lower(models.OrganizationAgentQuota.organization_name) == (r.organization_name or "").lower()
+        ).first()
+        cur_cap = quota.max_agent_capacity if (quota and quota.max_agent_capacity is not None) else 0
+        inc = r.total_requested_increase or ((r.requested_shared_count or 0) + (r.requested_dedicated_count or 0)) or 1
+
+        result.append({
+            "id": r.id,
+            "organization_name": r.organization_name,
+            "project_token": getattr(r, "project_token", None),
+            "requested_by_user_id": r.requested_by_user_id,
+            "requested_by_email": user.email if user else "Unknown",
+            "current_capacity": cur_cap,
+            "requested_capacity": cur_cap + inc,
+            "total_requested_increase": inc,
+            "requested_shared_count": getattr(r, "requested_shared_count", 0) or 0,
+            "requested_dedicated_count": getattr(r, "requested_dedicated_count", 0) or 0,
+            "reason": r.reason,
+            "status": r.status,
+            "review_comment": r.review_comment,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+        })
+    return result
+
+class CapacityReviewPayload(BaseModel):
+    status: str
+    approved_total_capacity: Optional[int] = None
+    review_comment: Optional[str] = None
+
+@app.post("/api/superadmin/capacity-requests/{request_id}/approve")
+def approve_superadmin_capacity_request(
+    request_id: int,
+    payload: CapacityReviewPayload,
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db),
+):
+    _require_super_admin(current_user)
+
+    req = db.query(models.CapacityIncreaseRequest).filter(
+        models.CapacityIncreaseRequest.id == request_id
+    ).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    quota = _get_or_init_org_agent_quota(db, req.organization_name)
+    inc = req.total_requested_increase or ((req.requested_shared_count or 0) + (req.requested_dedicated_count or 0)) or 1
+    if payload.approved_total_capacity and payload.approved_total_capacity > (quota.max_agent_capacity or 0):
+        approved_cap = payload.approved_total_capacity
+    else:
+        inc_val = payload.approved_total_capacity or inc
+        approved_cap = int(quota.max_agent_capacity or 10) + inc_val
+
+    req.status = "APPROVED"
+    req.approved_total_capacity = approved_cap
+    req.review_comment = payload.review_comment
+    req.reviewed_by_user_id = current_user.id
+    req.updated_at = datetime.utcnow()
+
+    # Increase org capacity in OrganizationAgentQuota
+    quota.max_agent_capacity = approved_cap
+    quota.shared_quota = max(int(quota.shared_quota or 0), approved_cap)
+    quota.dedicated_quota = max(int(quota.dedicated_quota or 0), approved_cap)
+
+    # Sync corresponding ProjectAgentRequests to APPROVED
+    proj_reqs = db.query(models.ProjectAgentRequest).filter(
+        func.lower(models.ProjectAgentRequest.organization_name) == req.organization_name.lower(),
+        models.ProjectAgentRequest.status == "PENDING"
+    ).all()
+    for pr in proj_reqs:
+        pr.status = "APPROVED"
+        pr.review_comment = payload.review_comment or "Approved by Super Admin"
+        pr.reviewed_by_user_id = current_user.id
+        pr.updated_at = datetime.utcnow()
+
+    db.commit()
+    return {"success": True, "message": "Request approved", "approved_capacity": approved_cap}
+
+@app.post("/api/superadmin/capacity-requests/{request_id}/reject")
+def reject_superadmin_capacity_request(
+    request_id: int,
+    payload: CapacityReviewPayload,
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db),
+):
+    _require_super_admin(current_user)
+
+    req = db.query(models.CapacityIncreaseRequest).filter(
+        models.CapacityIncreaseRequest.id == request_id
+    ).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    req.status = "REJECTED"
+    req.review_comment = payload.review_comment
+    req.reviewed_by_user_id = current_user.id
+    req.updated_at = datetime.utcnow()
+
+    # Sync corresponding ProjectAgentRequests to REJECTED
+    proj_reqs = db.query(models.ProjectAgentRequest).filter(
+        func.lower(models.ProjectAgentRequest.organization_name) == req.organization_name.lower(),
+        models.ProjectAgentRequest.status == "PENDING"
+    ).all()
+    for pr in proj_reqs:
+        pr.status = "REJECTED"
+        pr.review_comment = payload.review_comment or "Rejected by Super Admin"
+        pr.reviewed_by_user_id = current_user.id
+        pr.updated_at = datetime.utcnow()
+
+    db.commit()
+    return {"success": True, "message": "Request rejected"}
+
+def _require_org_admin_or_super_admin(current_user: models.User) -> None:
+    if not (bool(getattr(current_user, "is_org_admin", False)) or bool(getattr(current_user, "is_super_admin", False))):
+        raise HTTPException(status_code=403, detail="Only Organization Admins can perform this action")
+
+# ── End-User & Org Admin Agent Capacity Request Endpoints ───────────────────
+
+class ProjectAgentRequestCreate(BaseModel):
+    project_token: str
+    project_name: Optional[str] = None
+    requested_shared_count: int = 0
+    requested_dedicated_count: int = 0
+    reason: Optional[str] = None
+
+class CapacityIncreaseCreate(BaseModel):
+    project_token: Optional[str] = None
+    project_name: Optional[str] = None
+    requested_shared_count: int = 0
+    requested_dedicated_count: int = 0
+    total_requested_increase: int = 1
+    reason: Optional[str] = None
+
+@app.post("/api/agent/project-requests")
+def create_project_agent_request(
+    payload: ProjectAgentRequestCreate,
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db)
+):
+    org = _normalized_text(getattr(current_user, "organization_name", None))
+    if not org:
+        raise HTTPException(status_code=400, detail="User must belong to an organization")
+
+    # Save ProjectAgentRequest (Notification / Request for Org Admin ONLY)
+    req = models.ProjectAgentRequest(
+        organization_name=org,
+        project_token=payload.project_token,
+        project_name=payload.project_name or payload.project_token,
+        requested_by_user_id=current_user.id,
+        requested_shared_count=payload.requested_shared_count,
+        requested_dedicated_count=payload.requested_dedicated_count,
+        reason=payload.reason,
+        status="PENDING"
+    )
+    db.add(req)
+    db.commit()
+    db.refresh(req)
+    return {"success": True, "message": "Capacity notification submitted to Organization Admin", "id": req.id}
+
+@app.get("/api/agent/project-requests")
+def get_project_agent_requests(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db)
+):
+    org = _normalized_text(getattr(current_user, "organization_name", None))
+    is_super = bool(getattr(current_user, "is_super_admin", False))
+    is_org_admin = bool(getattr(current_user, "is_org_admin", False))
+
+    if is_super:
+        query = db.query(models.ProjectAgentRequest)
+    elif is_org_admin and org:
+        query = db.query(models.ProjectAgentRequest).filter(
+            func.lower(models.ProjectAgentRequest.organization_name) == org.lower()
+        )
+    elif org:
+        query = db.query(models.ProjectAgentRequest).filter(
+            or_(
+                func.lower(models.ProjectAgentRequest.organization_name) == org.lower(),
+                models.ProjectAgentRequest.requested_by_user_id == current_user.id
+            )
+        )
+    else:
+        query = db.query(models.ProjectAgentRequest).filter(
+            models.ProjectAgentRequest.requested_by_user_id == current_user.id
+        )
+
+    requests = query.order_by(models.ProjectAgentRequest.created_at.desc()).all()
+    res = []
+    for r in requests:
+        user = db.query(models.User).filter(models.User.id == r.requested_by_user_id).first()
+        res.append({
+            "id": r.id,
+            "organization_name": r.organization_name,
+            "project_token": r.project_token,
+            "project_name": r.project_name or r.project_token,
+            "requested_by_email": user.email if user else "Unknown",
+            "requested_shared_count": r.requested_shared_count,
+            "requested_dedicated_count": r.requested_dedicated_count,
+            "reason": r.reason,
+            "status": r.status,
+            "review_comment": r.review_comment,
+            "created_at": r.created_at.isoformat() if r.created_at else None
+        })
+    return res
+
+@app.post("/api/agent/capacity-increase-request")
+def create_capacity_increase_request(
+    payload: CapacityIncreaseCreate,
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db)
+):
+    # ONLY Org Admins or Super Admins can request Super Admin directly
+    _require_org_admin_or_super_admin(current_user)
+
+    org = _normalized_text(getattr(current_user, "organization_name", None))
+    if not org:
+        raise HTTPException(status_code=400, detail="User must belong to an organization")
+
+    req = models.CapacityIncreaseRequest(
+        organization_name=org,
+        requested_by_user_id=current_user.id,
+        project_token=payload.project_token,
+        requested_shared_count=payload.requested_shared_count,
+        requested_dedicated_count=payload.requested_dedicated_count,
+        total_requested_increase=payload.total_requested_increase or max(1, payload.requested_shared_count + payload.requested_dedicated_count),
+        reason=payload.reason,
+        status="PENDING"
+    )
+    db.add(req)
+    db.commit()
+    db.refresh(req)
+    return {"success": True, "message": "Capacity increase request submitted to Super Admin", "id": req.id}
+
+@app.post("/api/agent/project-requests/{request_id}/escalate")
+def escalate_project_request_to_superadmin(
+    request_id: int,
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db)
+):
+    _require_org_admin_or_super_admin(current_user)
+
+    proj_req = db.query(models.ProjectAgentRequest).filter(
+        models.ProjectAgentRequest.id == request_id
+    ).first()
+    if not proj_req:
+        raise HTTPException(status_code=404, detail="Project request not found")
+
+    proj_req.status = "ESCALATED"
+
+    # Create CapacityIncreaseRequest for Super Admin
+    inc = max(1, (proj_req.requested_shared_count or 0) + (proj_req.requested_dedicated_count or 0))
+    cap_req = models.CapacityIncreaseRequest(
+        organization_name=proj_req.organization_name,
+        requested_by_user_id=current_user.id,
+        project_token=proj_req.project_token,
+        requested_shared_count=proj_req.requested_shared_count,
+        requested_dedicated_count=proj_req.requested_dedicated_count,
+        total_requested_increase=inc,
+        reason=f"[{proj_req.project_name or proj_req.project_token}] Escalated: {proj_req.reason or 'Needs additional agent capacity'}",
+        status="PENDING"
+    )
+    db.add(cap_req)
+    db.commit()
+    return {"success": True, "message": "Request escalated to Super Admin"}
+
+@app.get("/api/superadmin/audit-logs")
+def get_superadmin_audit_logs(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    db: Session = Depends(get_db),
+):
+    _require_super_admin(current_user)
+
+    logs = db.query(models.UserActivityLog).order_by(
+        models.UserActivityLog.created_at.desc()
+    ).limit(200).all()
+
+    result = []
+    for l in logs:
+        user = db.query(models.User).filter(models.User.id == l.user_id).first() if l.user_id else None
+        result.append({
+            "id": l.id,
+            "user_id": l.user_id,
+            "email": user.email if user else "Anonymous",
+            "organization_name": user.organization_name if user else "System",
+            "action": l.action,
+            "method": l.method,
+            "path": l.path,
+            "ip_address": l.ip_address,
+            "user_agent": l.user_agent,
+            "created_at": l.created_at.isoformat() if l.created_at else None
+        })
+    return result
 
 @app.get("/organization/rbac/pages", response_model=list[schemas.OrganizationPage])
 def list_org_pages(
@@ -3682,6 +4258,7 @@ def _count_org_agent_usage(
     rows = db.query(models.OrganizationAgentMapping).filter(
         func.lower(models.OrganizationAgentMapping.organization_name) == org.lower(),
         models.OrganizationAgentMapping.is_default.is_(False),
+        models.OrganizationAgentMapping.project_token.isnot(None),
     ).all()
     stats = {
         "shared": 0, "dedicated": 0,
@@ -3848,8 +4425,38 @@ def get_organization_agent_quota(
     usage = _count_org_agent_usage(db, organization_name)
     shared_quota = int(quota.shared_quota or 0)
     dedicated_quota = int(quota.dedicated_quota or 0)
+    max_cap = int(getattr(quota, "max_agent_capacity", 0) or 0)
+
+    # Count total non-default onboarded custom agents for this organization
+    total_onboarded = db.query(models.OrganizationAgentMapping).filter(
+        func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower(),
+        models.OrganizationAgentMapping.is_default.is_(False),
+        models.OrganizationAgentMapping.project_token.isnot(None)
+    ).count()
+
+    physical_onboarded = db.query(models.OrganizationAgentMapping).filter(
+        func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower(),
+        models.OrganizationAgentMapping.is_default.is_(False),
+        models.OrganizationAgentMapping.is_virtual_shared.is_(False),
+        models.OrganizationAgentMapping.project_token.isnot(None)
+    ).count()
+
+    virtual_onboarded = db.query(models.OrganizationAgentMapping).filter(
+        func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower(),
+        models.OrganizationAgentMapping.is_default.is_(False),
+        models.OrganizationAgentMapping.is_virtual_shared.is_(True),
+        models.OrganizationAgentMapping.project_token.isnot(None)
+    ).count()
+
+    available_cap = max(0, max_cap - physical_onboarded)
+
     return schemas.OrganizationAgentQuotaResponse(
         organization_name=organization_name,
+        max_agent_capacity=max_cap,
+        total_onboarded_agents=total_onboarded,
+        physical_workers_onboarded=physical_onboarded,
+        virtual_shared_onboarded=virtual_onboarded,
+        available_capacity=available_cap,
         shared_quota=shared_quota,
         dedicated_quota=dedicated_quota,
         shared_used=usage["shared"],
@@ -3866,6 +4473,7 @@ def get_organization_agent_quota(
         dedicated_test_used=usage["dedicated_test"],
         updated_at=quota.updated_at,
     )
+
 
 
 @app.post("/organization/agent-quota/increase", response_model=schemas.OrganizationAgentQuotaResponse)
@@ -3923,11 +4531,281 @@ def increase_organization_agent_quota(
         dedicated_dev_quota=int(quota.dedicated_dev_quota or 0),
         dedicated_test_quota=int(quota.dedicated_test_quota or 0),
         shared_dev_used=usage["shared_dev"],
-        shared_test_used=usage["shared_test"],
-        dedicated_dev_used=usage["dedicated_dev"],
-        dedicated_test_used=usage["dedicated_test"],
-        updated_at=quota.updated_at,
     )
+
+
+# ===== SUPER ADMIN & CAPACITY REQUEST ENDPOINTS =====
+
+@app.get("/api/superadmin/dashboard-stats", response_model=schemas.SuperAdminDashboardStatsResponse)
+def get_super_admin_dashboard_stats(
+    super_admin: models.User = Depends(auth.get_current_super_admin),
+    db: Session = Depends(get_db),
+):
+    # Total organizations
+    user_orgs = db.query(models.User.organization_name).filter(models.User.organization_name.isnot(None)).distinct()
+    quota_orgs = db.query(models.OrganizationAgentQuota.organization_name).distinct()
+    all_orgs = set([r[0] for r in user_orgs.all() if r[0]] + [r[0] for r in quota_orgs.all() if r[0]])
+    total_organizations = len(all_orgs)
+
+    # Total onboarded agents
+    total_onboarded_agents = db.query(models.Agent).count()
+
+    # Dedicated / Shared / Borrowed breakdown
+    dedicated_agents = db.query(models.OrganizationAgentMapping).filter(models.OrganizationAgentMapping.agent_kind == "dedicated").count()
+    shared_agents = db.query(models.OrganizationAgentMapping).filter(models.OrganizationAgentMapping.agent_kind == "shared").count()
+    borrowed_dedicated_agents = db.query(models.OrganizationAgentMapping).filter(models.OrganizationAgentMapping.is_borrowed.is_(True)).count()
+
+    # Pending capacity requests
+    pending_capacity_requests = db.query(models.CapacityIncreaseRequest).filter(models.CapacityIncreaseRequest.status == "PENDING").count()
+
+    # Billing & Token Usage
+    usage_logs = db.query(models.AIUsageLog).all()
+    organization_billing = sum([float(log.cost or 0.0) for log in usage_logs])
+    ai_token_usage = sum([int((log.prompt_tokens or 0) + (log.completion_tokens or 0)) for log in usage_logs])
+
+    # Project Stats
+    total_projects = db.query(models.GovernanceResponse).count()
+    archived_projects = db.query(models.GovernanceResponse).filter(models.GovernanceResponse.is_archived.is_(True)).count()
+    active_projects = total_projects - archived_projects
+
+    # Active Users
+    active_users = db.query(models.User).filter(models.User.is_active.is_(True)).count()
+
+    # Running Containers & Utilization
+    running_docker_containers = agent_service.get_running_containers_count() if hasattr(agent_service, "get_running_containers_count") else (dedicated_agents + shared_agents)
+    agent_utilization = round((float(running_docker_containers) / float(max(1, total_onboarded_agents))) * 100.0, 1)
+
+    return schemas.SuperAdminDashboardStatsResponse(
+        total_organizations=total_organizations,
+        total_onboarded_agents=total_onboarded_agents,
+        running_docker_containers=running_docker_containers,
+        dedicated_agents=dedicated_agents,
+        shared_agents=shared_agents,
+        borrowed_dedicated_agents=borrowed_dedicated_agents,
+        pending_capacity_requests=pending_capacity_requests,
+        organization_billing=round(organization_billing, 2),
+        ai_token_usage=ai_token_usage,
+        project_statistics={"total": total_projects, "active": active_projects, "archived": archived_projects},
+        active_users=active_users,
+        agent_utilization=agent_utilization,
+    )
+
+
+@app.get("/api/superadmin/organizations")
+def get_super_admin_organizations(
+    super_admin: models.User = Depends(auth.get_current_super_admin),
+    db: Session = Depends(get_db),
+):
+    quotas = db.query(models.OrganizationAgentQuota).all()
+    results = []
+    for q in quotas:
+        onboarded = db.query(models.OrganizationAgentMapping).filter(
+            func.lower(models.OrganizationAgentMapping.organization_name) == q.organization_name.lower(),
+            models.OrganizationAgentMapping.is_default.is_(False)
+        ).count()
+        user_count = db.query(models.User).filter(
+            func.lower(models.User.organization_name) == q.organization_name.lower()
+        ).count()
+        results.append({
+            "organization_name": q.organization_name,
+            "max_agent_capacity": q.max_agent_capacity,
+            "total_onboarded_agents": onboarded,
+            "available_capacity": max(0, q.max_agent_capacity - onboarded),
+            "shared_quota": q.shared_quota,
+            "dedicated_quota": q.dedicated_quota,
+            "user_count": user_count,
+            "updated_at": q.updated_at,
+        })
+    return results
+
+
+@app.put("/api/superadmin/organizations/{org_name}/capacity")
+def update_super_admin_organization_capacity(
+    org_name: str,
+    payload: schemas.SuperAdminCapUpdate,
+    super_admin: models.User = Depends(auth.get_current_super_admin),
+    db: Session = Depends(get_db),
+):
+    quota = _get_or_init_org_agent_quota(db, org_name)
+    quota.max_agent_capacity = max(1, payload.max_agent_capacity)
+    db.add(quota)
+    db.commit()
+    db.refresh(quota)
+    return {
+        "success": True,
+        "organization_name": org_name,
+        "max_agent_capacity": quota.max_agent_capacity,
+    }
+
+
+@app.get("/api/superadmin/capacity-requests", response_model=List[schemas.CapacityIncreaseRequestResponse])
+def get_super_admin_capacity_requests(
+    super_admin: models.User = Depends(auth.get_current_super_admin),
+    db: Session = Depends(get_db),
+):
+    requests = db.query(models.CapacityIncreaseRequest).order_by(models.CapacityIncreaseRequest.created_at.desc()).all()
+    response = []
+    for req in requests:
+        user = db.query(models.User).filter(models.User.id == req.requested_by_user_id).first()
+        item = schemas.CapacityIncreaseRequestResponse(
+            id=req.id,
+            organization_name=req.organization_name,
+            requested_by_user_id=req.requested_by_user_id,
+            requested_by_email=user.email if user else None,
+            project_token=req.project_token,
+            requested_shared_count=req.requested_shared_count or 0,
+            requested_dedicated_count=req.requested_dedicated_count or 0,
+            total_requested_increase=req.total_requested_increase or 1,
+            reason=req.reason,
+            status=req.status,
+            approved_total_capacity=req.approved_total_capacity,
+            reviewed_by_user_id=req.reviewed_by_user_id,
+            review_comment=req.review_comment,
+            created_at=req.created_at,
+            updated_at=req.updated_at,
+        )
+        response.append(item)
+    return response
+
+
+@app.post("/api/superadmin/capacity-requests/{request_id}/approve")
+def approve_capacity_request(
+    request_id: int,
+    payload: schemas.CapacityIncreaseRequestReview,
+    super_admin: models.User = Depends(auth.get_current_super_admin),
+    db: Session = Depends(get_db),
+):
+    req = db.query(models.CapacityIncreaseRequest).filter(models.CapacityIncreaseRequest.id == request_id).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Capacity request not found")
+
+    req.status = "APPROVED"
+    req.reviewed_by_user_id = super_admin.id
+    req.review_comment = payload.review_comment
+
+    quota = _get_or_init_org_agent_quota(db, req.organization_name)
+    inc_amount = payload.approved_total_capacity or req.total_requested_increase or 1
+    if payload.approved_total_capacity and payload.approved_total_capacity > (quota.max_agent_capacity or 0):
+        approved_cap = payload.approved_total_capacity
+    else:
+        approved_cap = int(quota.max_agent_capacity or 10) + inc_amount
+
+    quota.max_agent_capacity = approved_cap
+    quota.shared_quota = max(int(quota.shared_quota or 0), approved_cap)
+    quota.dedicated_quota = max(int(quota.dedicated_quota or 0), approved_cap)
+    req.approved_total_capacity = quota.max_agent_capacity
+
+    db.add(req)
+    db.add(quota)
+    db.commit()
+    db.refresh(quota)
+    db.refresh(req)
+
+    return {
+        "success": True,
+        "request_id": req.id,
+        "status": "APPROVED",
+        "new_max_agent_capacity": quota.max_agent_capacity,
+    }
+
+
+@app.post("/api/superadmin/capacity-requests/{request_id}/reject")
+def reject_capacity_request(
+    request_id: int,
+    payload: schemas.CapacityIncreaseRequestReview,
+    super_admin: models.User = Depends(auth.get_current_super_admin),
+    db: Session = Depends(get_db),
+):
+    req = db.query(models.CapacityIncreaseRequest).filter(models.CapacityIncreaseRequest.id == request_id).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Capacity request not found")
+
+    req.status = "REJECTED"
+    req.reviewed_by_user_id = super_admin.id
+    req.review_comment = payload.review_comment
+
+    db.add(req)
+    db.commit()
+    db.refresh(req)
+
+    return {
+        "success": True,
+        "request_id": req.id,
+        "status": "REJECTED",
+    }
+
+
+@app.get("/api/superadmin/audit-logs")
+def get_super_admin_audit_logs(
+    page: int = 1,
+    limit: int = 20,
+    super_admin: models.User = Depends(auth.get_current_super_admin),
+    db: Session = Depends(get_db),
+):
+    offset = (page - 1) * limit
+    total = db.query(models.UserActivityLog).count()
+    logs = db.query(models.UserActivityLog).order_by(models.UserActivityLog.created_at.desc()).offset(offset).limit(limit).all()
+    return {
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "logs": [
+            {
+                "id": l.id,
+                "user_id": l.user_id,
+                "action": l.action,
+                "method": l.method,
+                "path": l.path,
+                "ip_address": l.ip_address,
+                "created_at": l.created_at,
+            } for l in logs
+        ]
+    }
+
+
+@app.post("/api/organization/capacity-request")
+def submit_organization_capacity_request(
+    payload: schemas.CapacityIncreaseRequestCreate,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    organization_name = _require_organization(current_user)
+    tot_req = max(1, payload.requested_shared_count + payload.requested_dedicated_count)
+    if payload.total_requested_increase > 0:
+        tot_req = payload.total_requested_increase
+
+    req = models.CapacityIncreaseRequest(
+        organization_name=organization_name,
+        requested_by_user_id=current_user.id,
+        project_token=payload.project_token,
+        requested_shared_count=payload.requested_shared_count,
+        requested_dedicated_count=payload.requested_dedicated_count,
+        total_requested_increase=tot_req,
+        reason=payload.reason or "Capacity expansion requested",
+        status="PENDING",
+    )
+    db.add(req)
+    db.commit()
+    db.refresh(req)
+    return {
+        "success": True,
+        "request_id": req.id,
+        "organization_name": organization_name,
+        "status": "PENDING",
+        "message": "Capacity increase request submitted to Super Admin."
+    }
+
+
+@app.get("/api/organization/capacity-requests")
+def get_organization_capacity_requests(
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    organization_name = _require_organization(current_user)
+    reqs = db.query(models.CapacityIncreaseRequest).filter(
+        func.lower(models.CapacityIncreaseRequest.organization_name) == organization_name.lower()
+    ).order_by(models.CapacityIncreaseRequest.created_at.desc()).all()
+    return reqs
 
 # --- Document Endpoints ---
 @app.post("/documents/upload")
@@ -9280,27 +10158,47 @@ def _runtime_agent_records(records: List[models.Agent], project_token: Optional[
             models.OrganizationAgentMapping.project_token == project_token
         ).all() if project_token else []
         
-        visible_counts = {}
+        mapping_info = {}
         for row in mapping_rows:
             raw_id = row[0]
             kind = row[1] or 'shared'
             sc = int(row[2] or 0)
             dc = int(row[3] or 0)
-            count = sc if kind == 'shared' else dc
-            visible_counts[_public_agent_id(raw_id, project_token)] = count
+            mapping_info[_public_agent_id(raw_id, project_token)] = (kind, sc, dc)
             
         expanded = []
         for rec in records:
             public_id = _public_agent_id(rec.id, project_token)
             is_default_system = public_id in ("g_agent_01", "m_agent_01", "deploy_agent") or public_id.startswith("g_agent_") or public_id.startswith("m_agent_")
             
-            count = visible_counts.get(public_id, 0)
-            if not is_default_system and count > 1:
-                for i in range(1, count + 1):
+            info = mapping_info.get(public_id)
+            sc = info[1] if info else 0
+            dc = info[2] if info else 0
+            total_instances = sc + dc
+            
+            if not is_default_system and total_instances > 1:
+                # Expand shared instances
+                for i in range(1, sc + 1):
                     expanded.append({
                         "id": f"{public_id}#{i}",
                         "display_id": f"{getattr(rec, 'display_id', None) or public_id}#{i}",
-                        "name": f"{rec.name} #{i}",
+                        "name": f"{rec.name} (Shared #{i})" if sc > 1 else f"{rec.name} (Shared)",
+                        "agent_kind": "shared",
+                        "type": rec.type,
+                        "skills_content": getattr(rec, "skills_content", None),
+                        "skills_summary": getattr(rec, "skills_summary", None),
+                        "skills_tags": getattr(rec, "skills_tags", None),
+                        "specialization": getattr(rec, "specialization", None),
+                        "face": getattr(rec, "face", None),
+                    })
+                # Expand dedicated instances
+                for j in range(1, dc + 1):
+                    idx = sc + j
+                    expanded.append({
+                        "id": f"{public_id}#{idx}",
+                        "display_id": f"{getattr(rec, 'display_id', None) or public_id}#{idx}",
+                        "name": f"{rec.name} (Dedicated #{j})" if dc > 1 else f"{rec.name} (Dedicated)",
+                        "agent_kind": "dedicated",
                         "type": rec.type,
                         "skills_content": getattr(rec, "skills_content", None),
                         "skills_summary": getattr(rec, "skills_summary", None),
@@ -9309,10 +10207,12 @@ def _runtime_agent_records(records: List[models.Agent], project_token: Optional[
                         "face": getattr(rec, "face", None),
                     })
             else:
+                agent_kind = "shared" if sc > 0 else ("dedicated" if dc > 0 else (info[0] if info else "shared"))
                 expanded.append({
                     "id": public_id,
                     "display_id": getattr(rec, "display_id", None) or public_id,
                     "name": rec.name,
+                    "agent_kind": agent_kind,
                     "type": rec.type,
                     "skills_content": getattr(rec, "skills_content", None),
                     "skills_summary": getattr(rec, "skills_summary", None),
@@ -10017,17 +10917,21 @@ async def list_agents(
         if base_id not in visible_runtime_ids:
             continue
         row_tuple = visible_runtime_ids[base_id]
-        kind = row_tuple[0]
+        kind = sanitized_agent.get("agent_kind") or row_tuple[0]
         sub_type = row_tuple[1]
         sc = row_tuple[2] if len(row_tuple) > 2 else 0
         dc = row_tuple[3] if len(row_tuple) > 3 else 0
         
         agents.append({
             **sanitized_agent,
+            "kind": kind,
             "agent_kind": kind,
+            "agent_type": kind,
             "sub_type": sub_type,
             "shared_count": sc,
             "dedicated_count": dc,
+            "is_shared": (str(kind).lower() == "shared"),
+            "is_dedicated": (str(kind).lower() == "dedicated"),
         })
     
     # Filter out legacy dev/test agents when include_defaults=False
@@ -11887,30 +12791,36 @@ async def onboard_agents(
     Onboard agents to a project with quantity-based shared/dedicated allocation.
     Supports both new multi-count format (shared_count, dedicated_count) and
     legacy single-kind format (kind: 'shared'|'dedicated'|'unassigned').
-    Enforces org-wide quota for both shared and dedicated agents.
+    Enforces org-wide capacity cap (max_agent_capacity). When physical container cap is reached,
+    shared agents are onboarded as Virtual Shared Agents that reuse idle physical containers.
     """
     organization_name = _require_organization(current_user)
     project_token = _normalize_project_token(request.project_token)
 
     quota = _get_or_init_org_agent_quota(db, organization_name)
-    shared_allowed = int(quota.shared_quota or 0) or 10
-    dedicated_allowed = int(quota.dedicated_quota or 0) or 10
+    max_cap = int(getattr(quota, "max_agent_capacity", 0) or 0)
+    shared_allowed = int(quota.shared_quota or 0)
+    dedicated_allowed = int(quota.dedicated_quota or 0)
 
-    # Count shared/dedicated already used by OTHER projects in this org
-    other_shared_count = db.query(func.coalesce(
-        func.sum(models.OrganizationAgentMapping.shared_count), 0
+    # 1. Capacity Cap Check
+    if max_cap == 0 and (shared_allowed == 0 and dedicated_allowed == 0):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Organization agent capacity cap is set to 0. "
+                "Please submit an agent capacity request to your Super Admin for approval."
+            )
+        )
+
+    effective_cap = max_cap if max_cap > 0 else (shared_allowed + dedicated_allowed)
+
+    # 2. Count physical containers already onboarded by OTHER projects in this org
+    other_physical_workers = db.query(func.coalesce(
+        func.sum(models.OrganizationAgentMapping.dedicated_count + models.OrganizationAgentMapping.shared_count), 0
     )).filter(
         func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower(),
         models.OrganizationAgentMapping.is_default == False,
-        models.OrganizationAgentMapping.project_token.isnot(None),
-        models.OrganizationAgentMapping.project_token != project_token,
-    ).scalar() or 0
-
-    other_dedicated_count = db.query(func.coalesce(
-        func.sum(models.OrganizationAgentMapping.dedicated_count), 0
-    )).filter(
-        func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower(),
-        models.OrganizationAgentMapping.is_default == False,
+        models.OrganizationAgentMapping.is_virtual_shared == False,
         models.OrganizationAgentMapping.project_token.isnot(None),
         models.OrganizationAgentMapping.project_token != project_token,
     ).scalar() or 0
@@ -11920,48 +12830,37 @@ async def onboard_agents(
     requested_dedicated = 0
     for ass in request.assignments:
         if ass.shared_count is not None or ass.dedicated_count is not None:
-            # New multi-count format
             requested_shared += max(0, ass.shared_count or 0)
             requested_dedicated += max(0, ass.dedicated_count or 0)
         elif ass.kind:
-            # Legacy single-kind format
             kind_norm = ass.kind.strip().lower()
             if kind_norm == "shared":
                 requested_shared += 1
             elif kind_norm == "dedicated":
                 requested_dedicated += 1
 
-    total_shared_requested = int(other_shared_count) + requested_shared
-    total_dedicated_requested = int(other_dedicated_count) + requested_dedicated
+    available_physical_slots = max(0, effective_cap - int(other_physical_workers))
 
-    if total_shared_requested > shared_allowed:
+    # 3. Check Dedicated Agent physical slot requirement
+    if requested_dedicated > available_physical_slots:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Shared agent capacity limit exceeded. "
-                f"Allowed: {shared_allowed}, "
-                f"Other projects: {int(other_shared_count)}, "
-                f"This project requests: {requested_shared}. "
-                f"Total: {total_shared_requested}."
-            )
-        )
-    if total_dedicated_requested > dedicated_allowed:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Dedicated agent capacity limit exceeded. "
-                f"Allowed: {dedicated_allowed}, "
-                f"Other projects: {int(other_dedicated_count)}, "
-                f"This project requests: {requested_dedicated}. "
-                f"Total: {total_dedicated_requested}."
+                f"Dedicated agent physical capacity limit reached. "
+                f"Max Cap: {effective_cap}, Active Physical Workers: {int(other_physical_workers)}, "
+                f"Available Physical Slots: {available_physical_slots}, Requested Dedicated: {requested_dedicated}. "
+                f"Dedicated agents require physical worker containers. Please request a capacity increase from Super Admin."
             )
         )
 
-    # Apply assignments
+    # 4. Apply assignments & determine physical vs virtual allocation
+    physical_slots_left = available_physical_slots
+    total_physical_for_project = 0
+    total_virtual_for_project = 0
+
     for ass in request.assignments:
         agent_id = ass.agent_id
 
-        # Determine shared_count + dedicated_count to store
         if ass.shared_count is not None or ass.dedicated_count is not None:
             sc = max(0, ass.shared_count or 0)
             dc = max(0, ass.dedicated_count or 0)
@@ -11974,15 +12873,13 @@ async def onboard_agents(
 
         total_for_agent = sc + dc
 
-        # Derive agent_kind from counts for backward-compat
         if dc > 0 and sc == 0:
             effective_kind = "dedicated"
         elif sc > 0:
             effective_kind = "shared"
         else:
-            effective_kind = "shared"  # default kind for unassigned agents
+            effective_kind = "shared"
 
-        # Determine sub_type from specialization
         agent_rec = db.query(models.Agent).filter(models.Agent.id == agent_id).first()
         sub_type = "dev"
         if agent_rec and agent_rec.specialization == "Testing":
@@ -12002,18 +12899,32 @@ async def onboard_agents(
             db.add(mapping)
 
         if total_for_agent == 0:
-            # Unassign: clear project binding, reset counts
             mapping.project_token = None
             mapping.agent_kind = "shared"
             mapping.agent_sub_type = sub_type
             mapping.shared_count = 0
             mapping.dedicated_count = 0
+            mapping.is_virtual_shared = False
         else:
             mapping.project_token = project_token
             mapping.agent_kind = effective_kind
             mapping.agent_sub_type = sub_type
             mapping.shared_count = sc
             mapping.dedicated_count = dc
+
+            # Allocate physical slots: dedicated first, then shared up to remaining physical cap
+            if dc > 0:
+                mapping.is_virtual_shared = False
+                physical_slots_left = max(0, physical_slots_left - dc)
+                total_physical_for_project += dc
+            elif sc > 0:
+                if physical_slots_left >= sc:
+                    mapping.is_virtual_shared = False
+                    physical_slots_left -= sc
+                    total_physical_for_project += sc
+                else:
+                    mapping.is_virtual_shared = True
+                    total_virtual_for_project += sc
 
         db.add(mapping)
 
@@ -12023,9 +12934,15 @@ async def onboard_agents(
 
     db.commit()
 
-    records = db.query(models.Agent).filter(
-        models.Agent.project_token == project_token
+    # Only initialize physical worker containers for non-virtual agents
+    records = db.query(models.Agent).join(
+        models.OrganizationAgentMapping,
+        models.Agent.id == models.OrganizationAgentMapping.agent_id
+    ).filter(
+        models.Agent.project_token == project_token,
+        models.OrganizationAgentMapping.is_virtual_shared == False
     ).all()
+
     agent_service.initialize_agents_from_records(_runtime_agent_records(records, project_token), project_token)
 
     return {
@@ -12034,14 +12951,14 @@ async def onboard_agents(
         "total_shared_onboarded": requested_shared,
         "total_dedicated_onboarded": requested_dedicated,
         "total_onboarded": requested_shared + requested_dedicated,
-        "total_allowed": shared_allowed + dedicated_allowed,
+        "physical_workers_onboarded": total_physical_for_project,
+        "virtual_shared_onboarded": total_virtual_for_project,
+        "max_agent_capacity": effective_cap,
         "org_quota": {
-            "shared_quota": shared_allowed,
-            "shared_used": total_shared_requested,
-            "shared_remaining": max(0, shared_allowed - total_shared_requested),
-            "dedicated_quota": dedicated_allowed,
-            "dedicated_used": total_dedicated_requested,
-            "dedicated_remaining": max(0, dedicated_allowed - total_dedicated_requested),
+            "max_agent_capacity": effective_cap,
+            "physical_workers_active": int(other_physical_workers) + total_physical_for_project,
+            "available_physical_slots": max(0, effective_cap - (int(other_physical_workers) + total_physical_for_project)),
+            "virtual_shared_onboarded": total_virtual_for_project,
         }
     }
 
@@ -13009,14 +13926,19 @@ def _format_local_tasks_as_nxdune(db: Session, db_tasks: List[models.Task], proj
         if t.assigned_to:
             try:
                 if isinstance(t.assigned_to, list):
-                    assignees_list = t.assigned_to
+                    assignees_list = list(t.assigned_to)
                 elif isinstance(t.assigned_to, str):
                     import json as json_mod
                     parsed = json_mod.loads(t.assigned_to)
                     if isinstance(parsed, list):
-                        assignees_list = parsed
+                        assignees_list = list(parsed)
             except Exception:
                 pass
+                
+        # Append assigned agent from AgentTaskOwnership record if present
+        if ow_record and ow_record.agent_id:
+            if ow_record.agent_id not in assignees_list:
+                assignees_list.append(ow_record.agent_id)
                 
         results.append({
             "id": t.nxdune_task_id or t.id,
@@ -13044,7 +13966,7 @@ def _format_local_tasks_as_nxdune(db: Session, db_tasks: List[models.Task], proj
 def _populate_local_dashboard_tasks(db: Session, project_token: str, dashboard_data: dict) -> dict:
     from datetime import timedelta
     
-    # Query only selected/synced local tasks for this project
+    # Fetch all local tasks selected or synced for this project
     local_tasks = db.query(models.Task).filter(
         models.Task.project_token == project_token,
         (models.Task.selected == True) | (models.Task.synced_to_nxdune == True)
@@ -13231,7 +14153,7 @@ async def get_external_agent_tasks(
         raise HTTPException(status_code=400, detail="x-task-token or x-project-token header is required")
         
     try:
-        # Fetch only selected/synced tasks locally
+        # Fetch all selected or synced local tasks for this project
         resolved_token = _resolve_project_token(db, x_task_token, x_project_token)
         query = db.query(models.Task).filter(
             models.Task.project_token == resolved_token,
@@ -13245,7 +14167,7 @@ async def get_external_agent_tasks(
         # Always include orphan ownership tasks (e.g. bootstrap TASK-00) in the result
         orphan_tasks = _get_orphan_ownership_tasks(db, resolved_token)
         
-        if local_tasks:
+        if local_tasks or orphan_tasks:
             formatted = _format_local_tasks_as_nxdune(db, local_tasks, resolved_token)
             # Merge orphan tasks (like TASK-00) so they appear in the task list
             merged = list(orphan_tasks) + formatted
@@ -13268,14 +14190,7 @@ async def get_external_agent_tasks(
             else:
                 return active_tasks
         elif has_any_local:
-            # If we have local tasks generated but none selected/synced,
-            # still return orphan ownership tasks (bootstrap progress)
-            active_orphans = [t for t in orphan_tasks if t.get("taskStatus") != "Completed"]
-            if active_orphans:
-                if page:
-                    return {"count": len(active_orphans), "results": active_orphans, "next": None, "previous": None}
-                else:
-                    return active_orphans
+            # If we have local tasks generated but none selected/synced yet, return empty list
             if page:
                 return {"count": 0, "results": [], "next": None, "previous": None}
             else:
@@ -13307,13 +14222,13 @@ async def get_external_agent_total_tasks(
     db: Session = Depends(get_db),
 ):
     """
-    Fetch the list of all tasks from the local DB first, falling back to external API if none found.
+    Fetch the list of all selected/synced tasks from the local DB first, falling back to external API if none found.
     """
     if not x_task_token and not x_project_token:
         raise HTTPException(status_code=400, detail="x-task-token or x-project-token header is required")
         
     try:
-        # Fetch only selected/synced tasks locally
+        # Fetch all selected or synced local tasks for this project
         resolved_token = _resolve_project_token(db, x_task_token, x_project_token)
         query = db.query(models.Task).filter(
             models.Task.project_token == resolved_token,
@@ -14406,6 +15321,37 @@ def _apply_schedule_ids_to_preview_payload(
         if milestone_name:
             task["milestone"] = milestone_name
 
+@app.get("/api/agent/tasks/generation-status/{project_token}")
+async def get_task_generation_status(
+    project_token: str,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Polling status endpoint — returns active background loader state and released tasks per sprint.
+    Polling interval: 7 seconds.
+    """
+    from task_generation_job_manager import get_task_generation_job_manager
+    manager = get_task_generation_job_manager()
+    job = manager.get_job(project_token)
+    if not job:
+        return {
+            "project_token": project_token,
+            "is_generating": False,
+            "status": "idle",
+            "current_sprint": 0,
+            "current_sprint_name": "",
+            "total_sprints": 4,
+            "progress_percent": 0,
+            "status_message": "No active task generation job running.",
+            "tasks_count": 0,
+            "released_sprints": [],
+            "released_tasks": [],
+            "polling_interval_seconds": 7,
+            "error": None
+        }
+    return job.to_dict()
+
+
 @app.post("/api/agent/tasks/generate-local/")
 async def generate_tasks_locally(
     request: AutoGenerateRequest,
@@ -14415,9 +15361,15 @@ async def generate_tasks_locally(
 ):
     """
     Generate tasks locally using AI, store in database, then optionally sync to NXDUNE.
+    Supports progressive per-sprint generation and live polling status updates every 7s.
     """
     try:
         from task_generation_service import generate_tasks_locally as gen_tasks
+        from task_generation_job_manager import get_task_generation_job_manager
+
+        job_mgr = get_task_generation_job_manager()
+        gen_job = job_mgr.create_job(request.project_token)
+        gen_job.polling_interval_seconds = 7
         
         # Get AI config
         ai_config = await ai_service.get_ai_config()
@@ -14444,20 +15396,73 @@ async def generate_tasks_locally(
                 effective_branch = stored_branch
                 logger.info(f"[{request.project_token}] Using stored branch: {effective_branch}")
         
+        def on_sprint_generated(sprint_num: int, sprint_name: str, sprint_tasks: list):
+            gen_job.add_released_sprint(sprint_num, sprint_name, sprint_tasks)
+            # Incrementally save sprint tasks to database
+            try:
+                if sprint_num == 1:
+                    db.query(models.Task).filter(
+                        models.Task.project_token == request.project_token,
+                        models.Task.owner_id == current_user.id
+                    ).delete()
+                    db.commit()
+
+                for tdata in sprint_tasks:
+                    clean_id = tdata.get("task_id", "")
+                    db_uid = f"{request.project_token}_{clean_id}"
+                    existing = db.query(models.Task).filter(models.Task.task_id == db_uid).first()
+                    if not existing:
+                        as_assigned = json.dumps(tdata.get("assignedTo", [])) if isinstance(tdata.get("assignedTo"), list) else tdata.get("assignedTo", "[]")
+                        as_linked = json.dumps(tdata.get("linked_tasks", [])) if isinstance(tdata.get("linked_tasks"), list) else tdata.get("linked_tasks", "[]")
+                        as_check = json.dumps(tdata.get("checklist", [])) if isinstance(tdata.get("checklist"), list) else tdata.get("checklist", "[]")
+                        new_t = models.Task(
+                            task_id=db_uid,
+                            project_token=request.project_token,
+                            owner_id=current_user.id,
+                            task_name=tdata.get("taskName", "Untitled Task"),
+                            task_type=tdata.get("task_type", "TASK"),
+                            description=tdata.get("description", ""),
+                            priority=tdata.get("priority", "medium"),
+                            task_wallet=tdata.get("task_wallet", 1),
+                            startdate=tdata.get("startdate"),
+                            planned_start=tdata.get("planned_start"),
+                            deadline=tdata.get("deadline"),
+                            assigned_to=as_assigned,
+                            reported_by=tdata.get("reported_by", "system"),
+                            sprint=tdata.get("sprint", sprint_name),
+                            milestone=tdata.get("milestone", ""),
+                            linked_tasks=as_linked,
+                            checklist=as_check,
+                            selected=False,
+                            synced_to_nxdune=False
+                        )
+                        db.add(new_t)
+                db.commit()
+                logger.info(f"[{request.project_token}] Incrementally saved {len(sprint_tasks)} tasks for Sprint {sprint_num} to DB")
+            except Exception as db_err:
+                logger.warning(f"[{request.project_token}] Incremental DB save failed for Sprint {sprint_num}: {db_err}")
+                db.rollback()
+
         # Generate tasks using improved prompt
-        tasks = await gen_tasks(
-            project_token=request.project_token,
-            db=db,
-            user_id=current_user.id,
-            custom_rules=request.custom_rules,
-            process_mode=request.process_mode or "ai_first",
-            project_type=effective_project_type,
-            prerequisites=request.prerequisites or [],
-            api_url=ai_config.get("api_url"),
-            api_key=settings.ai_api_key,
-            model=ai_config.get("model"),
-            branch=effective_branch,
-        )
+        tasks = None
+        try:
+            tasks = await gen_tasks(
+                project_token=request.project_token,
+                db=db,
+                user_id=current_user.id,
+                custom_rules=request.custom_rules,
+                process_mode=request.process_mode or "ai_first",
+                project_type=effective_project_type,
+                prerequisites=request.prerequisites or [],
+                api_url=ai_config.get("api_url"),
+                api_key=settings.ai_api_key,
+                model=ai_config.get("model"),
+                branch=effective_branch,
+                sprint_callback=on_sprint_generated,
+            )
+        except Exception as gen_err:
+            gen_job.set_failed(str(gen_err))
+            raise gen_err
         
         # For brownfield projects, gen_tasks returns a dict with {tasks, skill_gaps, detected_tech_stack}
         # For greenfield, it returns a plain list
@@ -14469,70 +15474,16 @@ async def generate_tasks_locally(
             tasks = tasks.get("tasks", [])
         
         if not tasks:
+            gen_job.set_failed("No tasks generated.")
             raise HTTPException(
                 status_code=500,
                 detail="Failed to generate tasks. Please check your project context and try again."
             )
         
-        # Store tasks in local database
-        # First delete any existing tasks for this project to avoid duplicate task_id errors
-        db.query(models.Task).filter(
-            models.Task.project_token == request.project_token,
-            models.Task.owner_id == current_user.id
-        ).delete()
-        db.commit()
-
-        stored_tasks = []
-        for task_data in tasks:
-            # Use project_token + task_id as unique DB key, but store clean task_id separately
-            clean_task_id = task_data["task_id"]
-            db_unique_id = f"{request.project_token}_{clean_task_id}"
-            
-            # Convert list/dict fields to JSON strings for SQLite storage
-            assigned_to = task_data.get("assignedTo", [])
-            if isinstance(assigned_to, list):
-                assigned_to = json.dumps(assigned_to)
-            
-            linked_tasks = task_data.get("linked_tasks", [])
-            if isinstance(linked_tasks, list):
-                linked_tasks = json.dumps(linked_tasks)
-            
-            checklist = task_data.get("checklist", [])
-            if isinstance(checklist, list):
-                checklist = json.dumps(checklist)
-            elif not isinstance(checklist, str):
-                checklist = json.dumps([])
-            
-            task = models.Task(
-                task_id=db_unique_id,
-                project_token=request.project_token,
-                owner_id=current_user.id,
-                task_name=task_data["taskName"],
-                task_type=task_data["task_type"],
-                description=task_data.get("description", ""),
-                priority=task_data.get("priority", "medium"),
-                task_wallet=task_data.get("task_wallet", 1),
-                startdate=task_data.get("startdate"),
-                planned_start=task_data.get("planned_start"),
-                deadline=task_data.get("deadline"),
-                assigned_to=assigned_to,
-                reported_by=task_data.get("reported_by", "system"),
-                sprint=task_data.get("sprint", "new"),
-                milestone=task_data.get("milestone", "main"),
-                linked_tasks=linked_tasks,
-                checklist=checklist,
-                selected=False,  # User must explicitly select tasks to sync
-                synced_to_nxdune=False
-            )
-            db.add(task)
-            stored_tasks.append(task)
+        gen_job.set_completed(tasks)
         
-        db.commit()
+        logger.info(f"Generated and stored {len(tasks)} tasks locally for project {request.project_token}")
         
-        logger.info(f"Generated and stored {len(stored_tasks)} tasks locally for project {request.project_token}")
-        
-        # Return success - NO AUTO-SYNC to NxDune
-        # User must explicitly select tasks and click "Sync to NxDune" button
         return {
             "status": "success",
             "message": f"Generated {len(tasks)} tasks successfully. Select tasks to sync to NxDune.",
@@ -14542,6 +15493,7 @@ async def generate_tasks_locally(
             "sync_error": None,
             "skill_gaps": skill_gaps,
             "detected_tech_stack": detected_tech_stack,
+            "polling_interval_seconds": 7,
         }
     
     except ValueError as val_err:
@@ -15051,6 +16003,9 @@ async def save_tasks_locally(
             # Parse dates
             deadline = task_data.get("deadline") or task_data.get("planned_end")
             
+            is_bootstrap_task = (clean_task_id.upper() == "TASK-00" or "bootstrap" in str(task_data.get("taskName") or task_data.get("title") or "").lower())
+            is_selected = bool(task_data.get("selected", False)) or is_bootstrap_task
+            
             if existing_task:
                 # Update existing task
                 existing_task.task_name = task_data.get("taskName") or task_data.get("title") or existing_task.task_name
@@ -15066,8 +16021,8 @@ async def save_tasks_locally(
                 existing_task.milestone = task_data.get("milestone", existing_task.milestone)
                 existing_task.linked_tasks = linked_tasks
                 existing_task.checklist = checklist
-                existing_task.selected = bool(task_data.get("selected", False))
-                existing_task.synced_to_nxdune = bool(task_data.get("synced_to_nxdune", False))
+                existing_task.selected = is_selected or existing_task.selected
+                existing_task.synced_to_nxdune = bool(task_data.get("synced_to_nxdune", False)) or existing_task.synced_to_nxdune
                 stored_tasks.append(existing_task)
             else:
                 # Create new task
@@ -15089,7 +16044,7 @@ async def save_tasks_locally(
                     milestone=task_data.get("milestone", "main"),
                     linked_tasks=linked_tasks,
                     checklist=checklist,
-                    selected=bool(task_data.get("selected", False)),
+                    selected=is_selected,
                     synced_to_nxdune=bool(task_data.get("synced_to_nxdune", False))
                 )
                 db.add(task)

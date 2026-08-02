@@ -336,7 +336,7 @@ async def call_llm(
     api_key: Optional[str] = None,
     model: Optional[str] = None,
     timeout: float = 120.0,
-    retries: int = 1,
+    retries: int = 3,
     retry_delay: float = 5.0,
     **extra,
 ) -> dict:
@@ -419,6 +419,7 @@ async def call_llm(
                 break
             except Exception as e:
                 last_err = e
+                logger.warning(f"LLM call attempt {attempt + 1}/{retries} failed ({type(e).__name__}: {e}). Retrying in {retry_delay * (attempt + 1)}s...")
                 if attempt == retries - 1:
                     raise
         if last_err:
@@ -433,7 +434,7 @@ async def call_llm_and_extract(
     api_key: Optional[str] = None,
     model: Optional[str] = None,
     timeout: float = 120.0,
-    retries: int = 1,
+    retries: int = 3,
     retry_delay: float = 5.0,
     **extra,
 ) -> str:

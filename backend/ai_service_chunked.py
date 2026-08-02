@@ -627,7 +627,9 @@ async def analyze_document_chunked(
             api_url=api_url,
             api_key=api_key,
             model=model,
-            timeout=180.0
+            timeout=180.0,
+            retries=3,
+            retry_delay=5.0
         )
         
         stage1_data = _extract_json_from_response(stage1_result)
@@ -659,7 +661,9 @@ async def analyze_document_chunked(
             api_url=api_url,
             api_key=api_key,
             model=model,
-            timeout=180.0
+            timeout=180.0,
+            retries=3,
+            retry_delay=5.0
         )
         
         stage2_data = _extract_json_from_response(stage2_result)
@@ -702,7 +706,9 @@ async def analyze_document_chunked(
             api_url=api_url,
             api_key=api_key,
             model=model,
-            timeout=180.0
+            timeout=180.0,
+            retries=3,
+            retry_delay=5.0
         )
         
         stage3_data = _extract_json_from_response(stage3_result)
@@ -745,7 +751,9 @@ async def analyze_document_chunked(
             api_url=api_url,
             api_key=api_key,
             model=model,
-            timeout=180.0
+            timeout=180.0,
+            retries=3,
+            retry_delay=5.0
         )
         
         stage4_data = _extract_json_from_response(stage4_result)
@@ -783,7 +791,9 @@ async def analyze_document_chunked(
             api_url=api_url,
             api_key=api_key,
             model=model,
-            timeout=240.0
+            timeout=240.0,
+            retries=3,
+            retry_delay=5.0
         )
         
         logger.info("Stage 5 complete: Final report generated")

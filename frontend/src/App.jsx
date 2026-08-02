@@ -26,6 +26,11 @@ import ResetPassword from './pages/ResetPassword';
 import ShareDocument from './pages/ShareDocument';
 import SharedDocumentViewer from './pages/SharedDocumentViewer';
 import Billing from './pages/Billing';
+import SuperAdminDashboard from './pages/SuperAdminDashboard';
+import SuperAdminCapacityRequests from './pages/SuperAdminCapacityRequests';
+import SuperAdminGlobalBilling from './pages/SuperAdminGlobalBilling';
+import SuperAdminRoles from './pages/SuperAdminRoles';
+import SuperAdminAuditLogs from './pages/SuperAdminAuditLogs';
 
 function App() {
   return (
@@ -120,6 +125,42 @@ function App() {
         <Route path="/billing" element={
           <AppLayout>
             {(layoutProps) => <Billing {...layoutProps} />}
+          </AppLayout>
+        } />
+        {/* Super Admin routes */}
+        <Route path="/superadmin/dashboard" element={
+          <AppLayout>
+            {(layoutProps) => <SuperAdminDashboard {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/superadmin/requests" element={
+          <AppLayout>
+            {(layoutProps) => <SuperAdminCapacityRequests {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/superadmin/organizations" element={
+          <AppLayout>
+            {(layoutProps) => <SuperAdminDashboard {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/superadmin/global-billing" element={
+          <AppLayout>
+            {(layoutProps) => <SuperAdminGlobalBilling {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/superadmin/roles" element={
+          <AppLayout>
+            {(layoutProps) => <SuperAdminRoles {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/superadmin/capacity" element={
+          <AppLayout>
+            {(layoutProps) => <SuperAdminDashboard {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/superadmin/logs" element={
+          <AppLayout>
+            {(layoutProps) => <SuperAdminAuditLogs {...layoutProps} />}
           </AppLayout>
         } />
         <Route path="/app/:projectId" element={

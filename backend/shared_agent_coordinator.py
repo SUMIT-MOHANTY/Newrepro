@@ -172,7 +172,62 @@ class SharedAgentCoordinator:
                 
                 # Notify waiting projects
                 await self._notify_waiting_projects(agent_id)
-    
+
+    async def preempt_borrowed_agent(
+        self,
+        agent_id: str,
+        home_project_token: str,
+        reason: str = "Home project requirement raised"
+    ) -> bool:
+        """
+        Immediately preempt a Dedicated Agent borrowed by another project as a Shared Agent,
+        returning it to its home project. The interrupted task is re-queued.
+        """
+        async with self._coordinator_lock:
+            state = self._agent_states.get(agent_id)
+            if not state or state.status != SharedAgentStatus.BUSY:
+                logger.info(f"⚡ Preemption check for {agent_id}: Agent is not currently busy on a borrowed task.")
+                return False
+
+            borrowed_project = state.current_project
+            borrowed_task = state.current_task
+
+            logger.warning(
+                f"🚨 PREEMPTING Agent {agent_id} from borrowed project {borrowed_project} "
+                f"back to home project {home_project_token}. Reason: {reason}"
+            )
+
+            # Re-queue interrupted borrowed task back into FIFO queue
+            if borrowed_task and borrowed_project:
+                if agent_id not in self._task_queues:
+                    self._task_queues[agent_id] = []
+                self._task_queues[agent_id].insert(0, QueuedTask(
+                    project_token=borrowed_project,
+                    task=borrowed_task,
+                    priority=1,  # Top priority on re-queue
+                    queued_at=datetime.utcnow().isoformat(),
+                    master_agent_id="M_agent_01"
+                ))
+                logger.info(f"🔁 Re-queued interrupted task for borrowed project {borrowed_project}")
+
+            # Reset agent state to idle for home project
+            self._agent_states[agent_id] = SharedAgentState(
+                agent_id=agent_id,
+                status=SharedAgentStatus.IDLE,
+                current_project=home_project_token,
+                last_active=datetime.utcnow().isoformat()
+            )
+
+            # Force release lock if held
+            lock = self._agent_locks.get(agent_id)
+            if lock and lock.locked():
+                try:
+                    lock.release()
+                except RuntimeError:
+                    pass
+
+            return True
+
     async def queue_task(
         self,
         agent_id: str,
