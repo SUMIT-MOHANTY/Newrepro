@@ -357,18 +357,11 @@ export function generateSuperAdminPDF(orgs, stats, title, subtitle, filename, da
           applyTextColor(colors.navy900);
           doc.text(proj.project_name, margin + 4, cursorY + 5.8);
 
-          // Project Token Pill (Courier style)
-          doc.setFont('courier', 'bold');
-          doc.setFontSize(7.5);
-          applyTextColor(colors.slate600);
-          const tokStr = `[${proj.project_token}]`;
-          doc.text(tokStr, margin + 8 + doc.getTextWidth(proj.project_name), cursorY + 5.8);
-
-          // Project tags next to token
+          // Project tags next to name
           const matchingProj = (o.projects || []).find(op => op.project_token === proj.project_token);
           const pTags = matchingProj ? (matchingProj.tags || []) : [];
           if (pTags.length > 0) {
-            let tagCursorX = margin + 8 + doc.getTextWidth(proj.project_name) + doc.getTextWidth(tokStr) + 4;
+            let tagCursorX = margin + 8 + doc.getTextWidth(proj.project_name) + 4;
             doc.setFont('helvetica', 'bold');
             doc.setFontSize(6.5);
             

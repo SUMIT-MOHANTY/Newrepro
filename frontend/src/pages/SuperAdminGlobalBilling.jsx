@@ -681,14 +681,11 @@ export default function SuperAdminGlobalBilling() {
                   })}
                 </div>
               </div>
-            )}
-
-            <div className="overflow-x-auto rounded-xl border border-slate-800">
+                       <div className="overflow-x-auto rounded-xl border border-slate-800">
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-800/80 text-slate-300 uppercase text-[10px] font-semibold">
                   <tr>
                     <th className="py-2.5 px-3">Project Name</th>
-                    <th className="py-2.5 px-3">Project Token</th>
                     <th className="py-2.5 px-3">Tags</th>
                     <th className="py-2.5 px-3 text-right">AI Tokens</th>
                     <th className="py-2.5 px-3 text-right">Usage Cost</th>
@@ -699,7 +696,6 @@ export default function SuperAdminGlobalBilling() {
                     filteredProjects.map((proj) => (
                       <tr key={proj.project_token} className="hover:bg-slate-800/40">
                         <td className="py-2.5 px-3 font-semibold text-white">{proj.project_name || 'Direct API / Custom Workspace'}</td>
-                        <td className="py-2.5 px-3 text-slate-400 font-mono">{proj.project_token}</td>
                         <td className="py-2.5 px-3">
                           <div className="flex flex-wrap gap-1 max-w-[180px]">
                             {proj.tags && proj.tags.length > 0 ? (
@@ -736,7 +732,7 @@ export default function SuperAdminGlobalBilling() {
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={5} className="py-6 text-center text-slate-400 italic">
+                      <td colSpan={4} className="py-6 text-center text-slate-400 italic">
                         No projects found matching the selected tag.
                       </td>
                     </tr>
