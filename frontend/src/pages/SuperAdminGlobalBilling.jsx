@@ -142,6 +142,28 @@ export default function SuperAdminGlobalBilling() {
         ]);
       });
 
+      rows.push([]);
+      rows.push(['PROJECT BREAKDOWN WITH TAGS']);
+      rows.push([
+        'Organization Name',
+        'Project Name',
+        'Project Tags',
+        'AI Tokens',
+        'Usage Cost (USD)'
+      ]);
+
+      orgs.forEach(o => {
+        (o.projects || []).forEach(p => {
+          rows.push([
+            o.organization_name,
+            p.project_name || 'Direct API / Custom Workspace',
+            p.tags && p.tags.length > 0 ? p.tags.join('; ') : '',
+            p.total_tokens || 0,
+            p.total_cost || 0
+          ]);
+        });
+      });
+
       const csvContent = rows
         .map(row => row.map(cell => escapeCSV(cell)).join(','))
         .join('\n');
@@ -681,7 +703,9 @@ export default function SuperAdminGlobalBilling() {
                   })}
                 </div>
               </div>
-                       <div className="overflow-x-auto rounded-xl border border-slate-800">
+            )}
+
+            <div className="overflow-x-auto rounded-xl border border-slate-800">
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-800/80 text-slate-300 uppercase text-[10px] font-semibold">
                   <tr>
