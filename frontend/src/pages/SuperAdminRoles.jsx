@@ -9,11 +9,11 @@ export default function SuperAdminRoles() {
     {
       id: 'super_admin',
       name: 'Super Admin (Platform Level)',
-      badge: 'GOD MODE',
+      badge: 'SUPER ADMIN',
       badgeColor: 'bg-purple-500/20 text-purple-300 border-purple-500/30',
       description: 'Global administrator with cross-organization visibility, capacity enforcement, billing telemetry, and system control.',
       permissions: [
-        'Global Platform Governance & Telemetry',
+        'Platform Analytics & Telemetry',
         'Cross-Organization Billing & Token Cost Monitoring',
         'Organization Agent Onboarding Capacity Enforcement',
         'Capacity Increase Request Approvals / Rejections',

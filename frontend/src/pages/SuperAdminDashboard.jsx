@@ -363,7 +363,7 @@ export default function SuperAdminDashboard() {
       <div className="h-full flex items-center justify-center bg-app-bg-page text-app-text-muted">
         <div className="flex items-center gap-3">
           <RefreshCw className="w-5 h-5 animate-spin text-purple-400" />
-          <span className="text-sm font-medium">Loading Super Admin God's View...</span>
+          <span className="text-sm font-medium">Loading Super Admin Dashboard...</span>
         </div>
       </div>
     );
@@ -378,13 +378,13 @@ export default function SuperAdminDashboard() {
           <div>
             <div className="flex items-center gap-2">
               <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
-                God's View Control Center
+                Super Admin Control Center
               </span>
               <span className="text-xs text-slate-400">• Super Admin Access</span>
             </div>
             <h1 className="text-xl sm:text-2xl font-extrabold text-white mt-1 flex items-center gap-2">
               <Shield className="w-6 h-6 text-purple-400" />
-              Global Platform Governance & Organizations
+              DSuite Analytics & Costs — Organizations
             </h1>
           </div>
           
@@ -489,7 +489,7 @@ export default function SuperAdminDashboard() {
               }`}
             >
               <Shield className="w-4 h-4 text-purple-300" />
-              <span>Global Platform Governance</span>
+              <span>DSuite Analytics & Costs</span>
             </button>
 
             <button

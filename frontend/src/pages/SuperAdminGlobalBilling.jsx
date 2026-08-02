@@ -18,6 +18,8 @@ export default function SuperAdminGlobalBilling() {
   const [selectedOrgTags, setSelectedOrgTags] = useState([]);
   const [selectedProjTags, setSelectedProjTags] = useState([]);
   const [expandedTags, setExpandedTags] = useState({});
+  const [orgTagDropdownOpen, setOrgTagDropdownOpen] = useState(false);
+  const [projTagDropdownOpen, setProjTagDropdownOpen] = useState(false);
 
   // Date Filters
   const [startDate, setStartDate] = useState('');
@@ -230,7 +232,7 @@ export default function SuperAdminGlobalBilling() {
           <div>
             <div className="flex items-center gap-2">
               <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
-                God-Level Control Center
+                Platform Control Center
               </span>
               <span className="text-xs text-slate-400">• Multi-Tenant Platform Billing</span>
             </div>
@@ -353,6 +355,7 @@ export default function SuperAdminGlobalBilling() {
 
         {/* Organization Financial Telemetry Table */}
         <div className="p-5 rounded-2xl bg-slate-900/80 border border-purple-500/20 space-y-4">
+          {/* Toolbar: Search + Tag Filter inline */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h2 className="text-base font-bold text-white flex items-center gap-2">
@@ -363,60 +366,97 @@ export default function SuperAdminGlobalBilling() {
                 View real-time token consumption, compute costs, and member counts for every organization.
               </p>
             </div>
-            <div className="relative w-full sm:w-64">
-              <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
-              <input
-                type="text"
-                placeholder="Search organizations..."
-                value={searchQuery}
-                onChange={e => { setSearchQuery(e.target.value); setCurrentPage(1); }}
-                className="w-full pl-8 pr-3 py-1.5 bg-slate-800/60 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-400 focus:outline-none focus:border-purple-500"
-              />
+            <div className="flex items-center gap-2 flex-shrink-0">
+              {/* Search */}
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Search organizations..."
+                  value={searchQuery}
+                  onChange={e => { setSearchQuery(e.target.value); setCurrentPage(1); }}
+                  className="pl-8 pr-3 py-1.5 bg-slate-800/60 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-400 focus:outline-none focus:border-purple-500 w-48"
+                />
+              </div>
+
+              {/* Org Tag Filter Dropdown */}
+              {allOrgTags.length > 0 && (
+                <div className="relative">
+                  <button
+                    onClick={() => setOrgTagDropdownOpen(o => !o)}
+                    className="flex items-center gap-2 px-3 py-1.5 bg-slate-800/70 hover:bg-slate-700/80 border border-slate-700 hover:border-purple-500/50 rounded-lg text-xs font-semibold text-slate-300 transition-all whitespace-nowrap"
+                  >
+                    <svg className="w-3.5 h-3.5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2a1 1 0 01-.293.707L13 13.414V19a1 1 0 01-.553.894l-4 2A1 1 0 017 21v-7.586L3.293 6.707A1 1 0 013 6V4z" /></svg>
+                    Filter by Tag
+                    {selectedOrgTags.length > 0 && (
+                      <span className="px-1.5 py-0.5 rounded-full bg-purple-500 text-white text-[9px] font-bold leading-none">
+                        {selectedOrgTags.length}
+                      </span>
+                    )}
+                    <svg className={`w-3 h-3 text-slate-400 transition-transform ${orgTagDropdownOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                  </button>
+
+                  {orgTagDropdownOpen && (
+                    <div className="absolute right-0 top-full mt-1.5 z-50 w-60 bg-slate-900 border border-purple-500/30 rounded-xl shadow-2xl shadow-black/50 overflow-hidden">
+                      <div className="px-3 py-2 border-b border-slate-800 flex items-center justify-between">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Organization Tags</span>
+                        {selectedOrgTags.length > 0 && (
+                          <button
+                            onClick={() => { setSelectedOrgTags([]); setCurrentPage(1); }}
+                            className="text-[10px] text-purple-400 hover:text-purple-300 font-semibold transition-colors"
+                          >
+                            Clear all
+                          </button>
+                        )}
+                      </div>
+                      <div className="max-h-52 overflow-y-auto py-1">
+                        {allOrgTags.map(tag => {
+                          const isSelected = selectedOrgTags.includes(tag);
+                          const count = orgs.filter(o => o.organization_tags && o.organization_tags.includes(tag)).length;
+                          return (
+                            <button
+                              key={tag}
+                              onClick={() => {
+                                setSelectedOrgTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
+                                setCurrentPage(1);
+                              }}
+                              className="w-full flex items-center justify-between px-3 py-2 text-xs hover:bg-slate-800/80 transition-colors group"
+                            >
+                              <span className="flex items-center gap-2">
+                                <span className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-all ${
+                                  isSelected ? 'bg-purple-500 border-purple-500' : 'border-slate-600 group-hover:border-slate-400'
+                                }`}>
+                                  {isSelected && (
+                                    <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
+                                  )}
+                                </span>
+                                <span className={isSelected ? 'text-purple-200 font-semibold' : 'text-slate-300'}>{tag}</span>
+                              </span>
+                              <span className="text-[10px] text-slate-500">{count} org{count !== 1 ? 's' : ''}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {selectedOrgTags.length > 0 && (
+                        <div className="px-3 py-2 border-t border-slate-800">
+                          <div className="flex flex-wrap gap-1">
+                            {selectedOrgTags.map(t => (
+                              <span key={t} className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[9px] font-semibold">
+                                {t}
+                                <button onClick={() => setSelectedOrgTags(prev => prev.filter(x => x !== t))} className="hover:text-white">
+                                  <X className="w-2.5 h-2.5" />
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
-
-          {/* Main Org View Tag Filter */}
-          {allOrgTags.length > 0 && (
-            <div className="flex flex-col gap-2 p-3 bg-slate-800/30 rounded-xl border border-slate-800/80 text-xs">
-              <span className="font-semibold text-slate-400 uppercase tracking-wider text-[9px]">Filter Organizations by Tag</span>
-              <div className="flex flex-wrap gap-1.5 items-center">
-                <button
-                  onClick={() => { setSelectedOrgTags([]); setCurrentPage(1); }}
-                  className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all ${
-                    selectedOrgTags.length === 0 
-                      ? 'bg-purple-500/20 text-purple-300 border-purple-500/40 shadow-sm' 
-                      : 'bg-slate-800/60 text-slate-400 border-slate-700 hover:border-slate-600'
-                  }`}
-                >
-                  All Orgs
-                </button>
-                {allOrgTags.map(tag => {
-                  const isSelected = selectedOrgTags.includes(tag);
-                  return (
-                    <button
-                      key={tag}
-                      onClick={() => {
-                        setSelectedOrgTags(prev => {
-                          const newTags = prev.includes(tag) 
-                            ? prev.filter(t => t !== tag) 
-                            : [...prev, tag];
-                          return newTags;
-                        });
-                        setCurrentPage(1);
-                      }}
-                      className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all ${
-                        isSelected 
-                          ? 'bg-purple-500/20 text-purple-300 border-purple-500/40 shadow-sm' 
-                          : 'bg-slate-800/60 text-slate-400 border-slate-700 hover:border-slate-600'
-                      }`}
-                    >
-                      {tag}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
 
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
@@ -663,45 +703,77 @@ export default function SuperAdminGlobalBilling() {
               </div>
             </div>
 
-            {/* Tag Filter Chips Bar */}
+            {/* Project Tag Filter — Multi-Select Dropdown */}
             {allProjectTags.length > 0 && (
-              <div className="flex flex-col gap-2 p-3 bg-slate-850/40 rounded-xl border border-slate-800 text-xs">
-                <span className="font-semibold text-slate-400 uppercase tracking-wider text-[9px]">Filter by Project Tag</span>
-                <div className="flex flex-wrap gap-1.5 items-center">
-                  <button
-                    onClick={() => setSelectedProjTags([])}
-                    className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all ${
-                      selectedProjTags.length === 0 
-                        ? 'bg-blue-500/20 text-blue-300 border-blue-500/40 shadow-sm' 
-                        : 'bg-slate-800/60 text-slate-400 border-slate-700 hover:border-slate-600'
-                    }`}
-                  >
-                    All Tags ({selectedOrgProj.projects.length})
-                  </button>
-                  {allProjectTags.map(tag => {
-                    const isSelected = selectedProjTags.includes(tag);
-                    const count = selectedOrgProj.projects.filter(p => p.tags && p.tags.includes(tag)).length;
-                    return (
-                      <button
-                        key={tag}
-                        onClick={() => {
-                          setSelectedProjTags(prev => 
-                            prev.includes(tag) 
-                              ? prev.filter(t => t !== tag) 
-                              : [...prev, tag]
-                          );
-                        }}
-                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all ${
-                          isSelected 
-                            ? 'bg-blue-500/20 text-blue-300 border-blue-500/40 shadow-sm' 
-                            : 'bg-slate-800/60 text-slate-400 border-slate-700 hover:border-slate-600'
-                        }`}
-                      >
-                        {tag} ({count})
-                      </button>
-                    );
-                  })}
-                </div>
+              <div className="relative">
+                <button
+                  onClick={() => setProjTagDropdownOpen(o => !o)}
+                  className="flex items-center gap-2 px-3 py-1.5 bg-slate-800/70 hover:bg-slate-700/80 border border-slate-700 hover:border-blue-500/50 rounded-lg text-xs font-semibold text-slate-300 transition-all"
+                >
+                  <svg className="w-3.5 h-3.5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2a1 1 0 01-.293.707L13 13.414V19a1 1 0 01-.553.894l-4 2A1 1 0 017 21v-7.586L3.293 6.707A1 1 0 013 6V4z" /></svg>
+                  Filter by Tag
+                  {selectedProjTags.length > 0 && (
+                    <span className="ml-1 px-1.5 py-0.5 rounded-full bg-blue-500 text-white text-[9px] font-bold leading-none">
+                      {selectedProjTags.length}
+                    </span>
+                  )}
+                  <svg className={`w-3 h-3 text-slate-400 transition-transform ${projTagDropdownOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                </button>
+
+                {projTagDropdownOpen && (
+                  <div className="absolute left-0 top-full mt-1.5 z-50 w-56 bg-slate-900 border border-blue-500/30 rounded-xl shadow-2xl shadow-black/40 overflow-hidden">
+                    <div className="px-3 py-2 border-b border-slate-800 flex items-center justify-between">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Project Tags</span>
+                      {selectedProjTags.length > 0 && (
+                        <button
+                          onClick={() => setSelectedProjTags([])}
+                          className="text-[10px] text-blue-400 hover:text-blue-300 font-semibold transition-colors"
+                        >
+                          Clear all
+                        </button>
+                      )}
+                    </div>
+                    <div className="max-h-52 overflow-y-auto py-1">
+                      {allProjectTags.map(tag => {
+                        const isSelected = selectedProjTags.includes(tag);
+                        const count = selectedOrgProj.projects.filter(p => p.tags && p.tags.includes(tag)).length;
+                        return (
+                          <button
+                            key={tag}
+                            onClick={() => setSelectedProjTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag])}
+                            className="w-full flex items-center justify-between px-3 py-2 text-xs hover:bg-slate-800/80 transition-colors group"
+                          >
+                            <span className="flex items-center gap-2">
+                              <span className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-all ${
+                                isSelected ? 'bg-blue-500 border-blue-500' : 'border-slate-600 group-hover:border-slate-400'
+                              }`}>
+                                {isSelected && (
+                                  <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
+                                )}
+                              </span>
+                              <span className={isSelected ? 'text-blue-200 font-semibold' : 'text-slate-300'}>{tag}</span>
+                            </span>
+                            <span className="text-[10px] text-slate-500">{count} project{count !== 1 ? 's' : ''}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {selectedProjTags.length > 0 && (
+                      <div className="px-3 py-2 border-t border-slate-800">
+                        <div className="flex flex-wrap gap-1">
+                          {selectedProjTags.map(t => (
+                            <span key={t} className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 text-[9px] font-semibold">
+                              {t}
+                              <button onClick={() => setSelectedProjTags(prev => prev.filter(x => x !== t))} className="hover:text-white">
+                                <X className="w-2.5 h-2.5" />
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
