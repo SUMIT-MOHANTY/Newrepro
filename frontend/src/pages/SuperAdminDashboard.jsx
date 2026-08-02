@@ -206,6 +206,38 @@ export default function SuperAdminDashboard() {
     }
   };
 
+  const handleExportMasterExcel = async () => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      let downloadUrl = API_ENDPOINTS.SUPERADMIN_MASTER_REPORT_EXPORT || '/api/superadmin/master-report/export';
+      const params = [];
+      if (startDate) params.push(`start_date=${startDate}`);
+      if (endDate) params.push(`end_date=${endDate}`);
+      if (params.length > 0) downloadUrl += `?${params.join('&')}`;
+
+      const res = await fetch(downloadUrl, { headers });
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(errText || 'Failed to download Master Excel Report');
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute(
+        'download',
+        `Dsuite_Vibecoding_Master_Report_${new Date().toISOString().split('T')[0]}.xlsx`
+      );
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (e) {
+      alert('Failed to export Master Excel Report: ' + e.message);
+    }
+  };
+
   const handleExportVibeExcel = () => {
     try {
       const escapeCSV = (val) => {
@@ -366,11 +398,20 @@ export default function SuperAdminDashboard() {
             </button>
 
             <button
+              onClick={handleExportMasterExcel}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-purple-900/80 to-cyan-900/80 hover:from-purple-800 hover:to-cyan-800 border border-cyan-400/40 text-white text-xs font-bold transition-all shadow-md shadow-purple-950/50"
+              title="Export Multi-Sheet Master Report (.xlsx) for both Dsuite & Vibecoding"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-cyan-400" />
+              Master Report (.xlsx)
+            </button>
+
+            <button
               onClick={handleExportExcel}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-950/60 hover:bg-emerald-900/70 border border-emerald-500/30 text-emerald-300 text-xs font-semibold transition-all"
             >
               <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
-              Export Excel
+              Export Dsuite CSV
             </button>
 
             <button

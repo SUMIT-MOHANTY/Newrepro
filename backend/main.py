@@ -3264,6 +3264,176 @@ def get_superadmin_vibecoding_costs(
     }
 
 
+@app.get("/api/superadmin/master-report/export")
+def export_superadmin_master_report(
+    current_user: Annotated[models.User, Depends(auth.get_current_user)],
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Generate and stream a multi-sheet Excel master report (.xlsx) for Dsuite & Vibecoding telemetry."""
+    _require_super_admin(current_user)
+    import io, openpyxl, datetime
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    # 1. Fetch Dsuite & Vibecoding data
+    d_stats = get_superadmin_dashboard_stats(current_user=current_user, start_date=start_date, end_date=end_date, db=db)
+    d_orgs = get_superadmin_organizations(current_user=current_user, start_date=start_date, end_date=end_date, db=db)
+    vibe_data = get_superadmin_vibecoding_costs(current_user=current_user, start_date=start_date, end_date=end_date, db=db)
+
+    wb = openpyxl.Workbook()
+
+    # Styling setup
+    purple_fill = PatternFill(start_color="4C1D95", end_color="4C1D95", fill_type="solid")
+    cyan_fill = PatternFill(start_color="0891B2", end_color="0891B2", fill_type="solid")
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    title_font = Font(name="Calibri", size=14, bold=True, color="1E1B4B")
+    sub_font = Font(name="Calibri", size=10, italic=True, color="6B7280")
+
+    def style_headers(ws, row_idx, fill):
+        for cell in ws[row_idx]:
+            cell.fill = fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    def auto_fit_columns(ws):
+        ws.views.sheetView[0].showGridLines = True
+        for col in ws.columns:
+            max_len = 0
+            col_letter = get_column_letter(col[0].column)
+            for cell in col:
+                val_str = str(cell.value if cell.value is not None else "")
+                if isinstance(cell.value, float):
+                    val_str = f"{cell.value:,.4f}"
+                elif isinstance(cell.value, int):
+                    val_str = f"{cell.value:,}"
+                max_len = max(max_len, len(val_str))
+            ws.column_dimensions[col_letter].width = max(max_len + 5, 14)
+
+    # -------------------------------------------------------------
+    # SHEET 1: Executive Summary
+    # -------------------------------------------------------------
+    ws1 = wb.active
+    ws1.title = "Executive Summary"
+    ws1.append(["DSUITE & VIBECODING MASTER TELEMETRY REPORT"])
+    ws1.cell(row=1, column=1).font = title_font
+    ws1.append(["Export Date:", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+    ws1.cell(row=2, column=1).font = sub_font
+    ws1.append([])
+
+    ws1.append(["Platform / System", "Metric Description", "Recorded Value"])
+    style_headers(ws1, 4, purple_fill)
+
+    v_sum = vibe_data.get("summary", {})
+    summary_rows = [
+        ["Dsuite Governance", "Total Organizations Registered", len(d_orgs)],
+        ["Dsuite Governance", "Total Onboarded Agents", d_stats.get("total_onboarded_agents", 0)],
+        ["Dsuite Governance", "Docker Containers Active", d_stats.get("active_containers", 0)],
+        ["Dsuite Governance", "Total AI Tokens Consumed", d_stats.get("total_tokens_consumed", 0)],
+        ["Dsuite Governance", "Total Platform Usage Cost ($)", d_stats.get("total_usage_cost", 0.0)],
+        ["Vibecoding System", "Active Organizations", v_sum.get("total_organizations", 0)],
+        ["Vibecoding System", "Active Projects", v_sum.get("total_projects", 0)],
+        ["Vibecoding System", "Active Users", v_sum.get("total_users", 0)],
+        ["Vibecoding System", "Prompts Logged", v_sum.get("total_prompts", 0)],
+        ["Vibecoding System", "Prompt Tokens", v_sum.get("prompt_tokens", 0)],
+        ["Vibecoding System", "Completion Tokens", v_sum.get("completion_tokens", 0)],
+        ["Vibecoding System", "Total AI Tokens", v_sum.get("total_tokens", 0)],
+        ["Vibecoding System", "Total Usage Cost ($)", v_sum.get("total_cost", 0.0)],
+    ]
+    for r in summary_rows:
+        ws1.append(r)
+    auto_fit_columns(ws1)
+
+    # -------------------------------------------------------------
+    # SHEET 2: Dsuite Organizations Capacity
+    # -------------------------------------------------------------
+    ws2 = wb.create_sheet(title="Dsuite Organizations")
+    ws2.append(["Organization Name", "Max Agent Capacity", "Onboarded Agents", "Total AI Tokens", "Usage Cost ($)"])
+    style_headers(ws2, 1, purple_fill)
+    for org in d_orgs:
+        ws2.append([
+            org.get("organization_name"),
+            org.get("max_agent_capacity", 0),
+            org.get("total_onboarded_agents", 0),
+            org.get("total_tokens_consumed", 0),
+            org.get("total_cost", 0.0)
+        ])
+    auto_fit_columns(ws2)
+
+    # -------------------------------------------------------------
+    # SHEET 3: Vibecoding Organizations Breakdown
+    # -------------------------------------------------------------
+    ws3 = wb.create_sheet(title="Vibecoding Organizations")
+    ws3.append(["Organization Name", "Total Users", "Total Projects", "Prompts Logged", "Prompt Tokens", "Completion Tokens", "Total Tokens", "Usage Cost ($)"])
+    style_headers(ws3, 1, cyan_fill)
+    for org in vibe_data.get("organization_breakdown", []):
+        ws3.append([
+            org.get("organization_name"),
+            org.get("user_count", 0),
+            org.get("project_count", 0),
+            org.get("log_count", 0),
+            org.get("prompt_tokens", 0),
+            org.get("completion_tokens", 0),
+            org.get("total_tokens", 0),
+            org.get("total_cost", 0.0)
+        ])
+    auto_fit_columns(ws3)
+
+    # -------------------------------------------------------------
+    # SHEET 4: Vibecoding Projects Breakdown
+    # -------------------------------------------------------------
+    ws4 = wb.create_sheet(title="Vibecoding Projects")
+    ws4.append(["Project Name", "Project ID", "Organization Name", "Primary User Email", "Prompts Logged", "Prompt Tokens", "Completion Tokens", "Total Tokens", "Usage Cost ($)"])
+    style_headers(ws4, 1, cyan_fill)
+    for proj in vibe_data.get("project_breakdown", []):
+        ws4.append([
+            proj.get("project_name"),
+            proj.get("project_id"),
+            proj.get("organization_name"),
+            proj.get("email") or proj.get("username"),
+            proj.get("log_count", 0),
+            proj.get("prompt_tokens", 0),
+            proj.get("completion_tokens", 0),
+            proj.get("total_tokens", 0),
+            proj.get("total_cost", 0.0)
+        ])
+    auto_fit_columns(ws4)
+
+    # -------------------------------------------------------------
+    # SHEET 5: Vibecoding Users Breakdown
+    # -------------------------------------------------------------
+    ws5 = wb.create_sheet(title="Vibecoding Users")
+    ws5.append(["User Email", "Username", "Full Name", "Organization Name", "Active Projects", "Prompts Logged", "Prompt Tokens", "Completion Tokens", "Total Tokens", "Usage Cost ($)"])
+    style_headers(ws5, 1, cyan_fill)
+    for u in vibe_data.get("user_breakdown", []):
+        ws5.append([
+            u.get("email"),
+            u.get("username"),
+            u.get("full_name"),
+            u.get("organization_name"),
+            u.get("project_count", 0),
+            u.get("log_count", 0),
+            u.get("prompt_tokens", 0),
+            u.get("completion_tokens", 0),
+            u.get("total_tokens", 0),
+            u.get("total_cost", 0.0)
+        ])
+    auto_fit_columns(ws5)
+
+    # Save to buffer
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    filename = f"Dsuite_Vibecoding_Master_Report_{datetime.datetime.now().strftime('%Y%m%d')}.xlsx"
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
 class UpdateCapacityPayload(BaseModel):
     max_agent_capacity: int
 
