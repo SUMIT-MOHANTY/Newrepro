@@ -1735,6 +1735,21 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         const completionPct = total > 0 ? Math.round((completed / total) * 100) : 0;
         const remainingPct  = 100 - completionPct;
 
+        // Calculate hours logged locally from tasks
+        let hoursLogged = 0;
+        all.forEach(t => {
+            const clocked = getClockedHours(t);
+            if (clocked && !isNaN(Number(clocked))) {
+                hoursLogged += Number(clocked);
+            } else {
+                const isDone = normalizeStatus(t) === 'completed' || t.is_completed || t.task_progress === 100;
+                if (isDone) {
+                    hoursLogged += Number(t.task_wallet || t.wallet || t.duration || t.time_taken || 0);
+                }
+            }
+        });
+        hoursLogged = Number(hoursLogged.toFixed(1));
+
         return {
             total,
             completed,
@@ -1744,6 +1759,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             activeSprints: totalSprints, // all sprints considered active locally
             completionPct,
             remainingPct,
+            hoursLogged,
             isLocalOnly: true,
         };
     }, [taskList]);
@@ -1752,24 +1768,57 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     // If dashboardData is present and has real data, use it.
     // Otherwise fall back to locally computed metrics from taskList.
     const hasDashboardStats = Boolean(dashboardData?.summary_statistics && (dashboardData.summary_statistics.total_tasks || 0) > 0);
-    const resolvedTotal      = hasDashboardStats ? (dashboardData.summary_statistics.total_tasks ?? 0)     : (localMetrics?.total      ?? 0);
-    const resolvedCompleted  = hasDashboardStats ? (dashboardData.summary_statistics.completed_tasks ?? 0)  : (localMetrics?.completed   ?? 0);
-    const resolvedInProgress = hasDashboardStats ? (dashboardData.summary_statistics.in_progress_tasks ?? 0): (localMetrics?.inProgress  ?? 0);
-    const resolvedPending    = hasDashboardStats ? (dashboardData.summary_statistics.pending_tasks ?? 0)    : (localMetrics?.pending     ?? 0);
-    const resolvedActiveSprints = hasDashboardStats ? (dashboardData.summary_statistics.active_sprints ?? 0): (localMetrics?.activeSprints ?? 0);
-    const resolvedTotalSprints  = hasDashboardStats ? (dashboardData.summary_statistics.total_sprints ?? 0) : (localMetrics?.totalSprints  ?? 0);
-    const resolvedWorkComplete  = hasDashboardStats ? (dashboardData.kpi?.work_complete_percentage ?? 0)    : (localMetrics?.completionPct ?? 0);
-    const resolvedHoursLogged   = dashboardData?.kpi?.total_hours_logged ?? 0;
-    const resolvedCompletionKpi = hasDashboardStats ? (dashboardData.kpi?.completion_percentage ?? 0)       : (localMetrics?.completionPct ?? 0);
-    // Offline donut chart work percentages
-    const resolvedWorkCompletedPct  = hasDashboardStats
-        ? Math.max(0, Math.min(100, Number(dashboardData.actual_vs_remaining_work?.work_completed_percentage ?? 0)))
-        : (localMetrics?.completionPct ?? 0);
-    const resolvedWorkRemainingPct  = hasDashboardStats
-        ? Math.max(0, Math.min(100, Number(dashboardData.actual_vs_remaining_work?.work_remaining_percentage ?? 0)))
-        : (localMetrics?.remainingPct  ?? 0);
 
-    const overallHealth = dashboardData?.project_status?.overall_health || 'Unknown';
+    const resolvedTotal      = Math.max(dashboardData?.summary_statistics?.total_tasks ?? 0, localMetrics?.total ?? 0);
+    const resolvedCompleted  = Math.max(dashboardData?.summary_statistics?.completed_tasks ?? 0, localMetrics?.completed ?? 0);
+    const resolvedInProgress = Math.max(dashboardData?.summary_statistics?.in_progress_tasks ?? 0, localMetrics?.inProgress ?? 0);
+    const resolvedPending    = hasDashboardStats && dashboardData?.summary_statistics?.pending_tasks != null 
+        ? dashboardData.summary_statistics.pending_tasks 
+        : (localMetrics?.pending ?? 0);
+
+    const resolvedActiveSprints = Math.max(dashboardData?.summary_statistics?.active_sprints ?? 0, localMetrics?.activeSprints ?? 0);
+    const resolvedTotalSprints  = Math.max(dashboardData?.summary_statistics?.total_sprints ?? 0, localMetrics?.totalSprints ?? 0);
+
+    const computedCompletionPct = resolvedTotal > 0 ? Math.round((resolvedCompleted / resolvedTotal) * 100) : 0;
+
+    const resolvedCompletionKpi = (hasDashboardStats && dashboardData?.kpi?.completion_percentage != null && dashboardData.kpi.completion_percentage > 0)
+        ? Number(dashboardData.kpi.completion_percentage)
+        : computedCompletionPct;
+
+    const resolvedWorkComplete = resolvedCompletionKpi;
+
+    // Hours Logged
+    const resolvedHoursLogged = (dashboardData?.kpi?.total_hours_logged && Number(dashboardData.kpi.total_hours_logged) > 0)
+        ? Number(dashboardData.kpi.total_hours_logged)
+        : (localMetrics?.hoursLogged ?? 0);
+
+    // Actual vs Remaining Work (Donut chart & badges)
+    const backendWorkCompletedPct = Number(dashboardData?.actual_vs_remaining_work?.work_completed_percentage ?? 0);
+    const backendWorkRemainingPct = Number(dashboardData?.actual_vs_remaining_work?.work_remaining_percentage ?? 0);
+    const hasBackendWorkData = hasDashboardStats && (backendWorkCompletedPct > 0 || backendWorkRemainingPct > 0);
+
+    const resolvedWorkCompletedPct = hasBackendWorkData
+        ? Math.max(0, Math.min(100, backendWorkCompletedPct))
+        : resolvedCompletionKpi;
+
+    const resolvedWorkRemainingPct = hasBackendWorkData
+        ? Math.max(0, Math.min(100, backendWorkRemainingPct))
+        : (100 - resolvedWorkCompletedPct);
+
+    // Progress meters for Sidebar & role views
+    const resolvedProjectProgress = (dashboardData?.project_status?.project_progress != null && Number(dashboardData.project_status.project_progress) > 0)
+        ? Number(dashboardData.project_status.project_progress)
+        : resolvedCompletionKpi;
+
+    const activeSprintData = dashboardData?.sprint_status?.find(s => s.status === "On Going") || dashboardData?.sprint_status?.[0];
+    const resolvedSprintProgress = (activeSprintData && (activeSprintData.actual_work + activeSprintData.remaining_work) > 0)
+        ? Math.round((activeSprintData.actual_work / (activeSprintData.actual_work + activeSprintData.remaining_work)) * 100)
+        : resolvedCompletionKpi;
+
+    const rawHealth = dashboardData?.project_status?.overall_health;
+    const overallHealth = (resolvedTotal > 0 && resolvedCompleted === resolvedTotal)
+        ? 'Good'
+        : (rawHealth && rawHealth !== 'At Risk' ? rawHealth : (resolvedCompleted > 0 ? 'Good' : (rawHealth || 'Good')));
     const lateTaskCount = dashboardData?.tasks?.late_tasks?.length || 0;
     const upcomingTaskCount = dashboardData?.tasks?.upcoming_tasks_next_period?.length || 0;
     const dueThisWeekCount = dashboardData?.tasks?.due_this_week?.length || 0;
@@ -1924,7 +1973,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 </div>
                                 <div className="bg-app-bg-card rounded-xl border border-app-border-light p-4 shadow-sm">
                                     <p className="text-[11px] font-bold text-app-text-muted uppercase tracking-wide">Completion</p>
-                                    <p className="text-2xl font-bold text-app-text-main mt-2">{dashboardData?.kpi?.completion_percentage ?? 0}%</p>
+                                    <p className="text-2xl font-bold text-app-text-main mt-2">{resolvedCompletionKpi}%</p>
                                 </div>
                                 <div className="bg-app-bg-card rounded-xl border border-app-border-light p-4 shadow-sm">
                                     <p className="text-[11px] font-bold text-app-text-muted uppercase tracking-wide">Launch In</p>
@@ -1985,17 +2034,17 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                     <div className="bg-app-bg-card rounded-xl border border-app-border-light p-5 shadow-sm">
                                         <p className="text-[11px] font-bold text-app-text-muted uppercase tracking-wide">Workload Split</p>
                                         <p className="text-2xl font-bold text-app-text-main mt-2">
-                                            {dashboardData?.actual_vs_remaining_work?.work_completed_percentage ?? 0}% complete
+                                            {workCompletedDisplay}% complete
                                         </p>
                                         <p className="text-xs text-app-text-muted mt-1">
-                                            {dashboardData?.actual_vs_remaining_work?.work_remaining_percentage ?? 0}% remaining effort
+                                            {workRemainingDisplay}% remaining effort
                                         </p>
                                     </div>
                                     <div className="bg-app-bg-card rounded-xl border border-app-border-light p-5 shadow-sm">
                                         <p className="text-[11px] font-bold text-app-text-muted uppercase tracking-wide">Task Distribution</p>
-                                        <p className="text-2xl font-bold text-app-text-main mt-2">{dashboardData?.summary_statistics?.total_tasks ?? 0}</p>
+                                        <p className="text-2xl font-bold text-app-text-main mt-2">{resolvedTotal}</p>
                                         <p className="text-xs text-app-text-muted mt-1">
-                                            {dashboardData?.summary_statistics?.in_progress_tasks ?? 0} in progress, {dashboardData?.summary_statistics?.completed_tasks ?? 0} completed
+                                            {resolvedInProgress} in progress, {resolvedCompleted} completed
                                         </p>
                                     </div>
                                 </div>
@@ -2298,12 +2347,12 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         {/* Overall Health */}
                                         <div className="flex items-center justify-between p-3 bg-app-bg-card border border-app-border-light rounded-lg shadow-sm">
                                             <div className="flex items-center gap-3">
-                                                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${dashboardData?.project_status?.overall_health === 'Good' ? 'bg-app-status-successBg text-app-status-success' : dashboardData?.project_status?.overall_health === 'At Risk' ? 'bg-app-status-warningBg text-app-status-warning' : 'bg-app-status-errorBg text-app-status-error'}`}>
+                                                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${overallHealth === 'Good' ? 'bg-app-status-successBg text-app-status-success' : overallHealth === 'At Risk' ? 'bg-app-status-warningBg text-app-status-warning' : 'bg-app-status-errorBg text-app-status-error'}`}>
                                                     <Activity className="w-4 h-4" />
                                                 </div>
                                                 <div>
                                                     <p className="text-[9px] font-bold text-app-text-muted uppercase tracking-widest">Overall Health</p>
-                                                    <p className="text-sm font-black text-app-text-main">{dashboardData?.project_status?.overall_health ?? '—'}</p>
+                                                    <p className="text-sm font-black text-app-text-main">{overallHealth}</p>
                                                 </div>
                                             </div>
                                         </div>
@@ -2316,10 +2365,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                             <div>
                                                 <div className="flex justify-between items-center mb-1.5">
                                                     <p className="text-[10px] font-bold text-app-text-label uppercase tracking-widest flex items-center gap-1.5"><CheckCircle className="w-3.5 h-3.5 text-app-status-success" /> Completion</p>
-                                                    <span className="text-xs font-black text-app-status-success">{dashboardData?.kpi?.completion_percentage ?? 0}%</span>
+                                                    <span className="text-xs font-black text-app-status-success">{resolvedCompletionKpi}%</span>
                                                 </div>
                                                 <div className="w-full bg-app-bg-muted rounded-full h-2">
-                                                    <div className="bg-gradient-to-r from-emerald-400 to-app-status-success h-2 rounded-full" style={{ width: `${dashboardData?.kpi?.completion_percentage ?? 0}%` }}></div>
+                                                    <div className="bg-gradient-to-r from-emerald-400 to-app-status-success h-2 rounded-full" style={{ width: `${resolvedCompletionKpi}%` }}></div>
                                                 </div>
                                             </div>
 
@@ -2327,10 +2376,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                             <div>
                                                 <div className="flex justify-between items-center mb-1.5">
                                                     <p className="text-[10px] font-bold text-app-text-label uppercase tracking-widest flex items-center gap-1.5"><Flag className="w-3.5 h-3.5 text-app-primary" /> Project Prog.</p>
-                                                    <span className="text-xs font-black text-app-primary">{dashboardData?.project_status?.project_progress ?? 0}%</span>
+                                                    <span className="text-xs font-black text-app-primary">{resolvedProjectProgress}%</span>
                                                 </div>
                                                 <div className="w-full bg-app-bg-muted rounded-full h-2">
-                                                    <div className="bg-gradient-to-r from-blue-400 to-app-primary h-2 rounded-full" style={{ width: `${dashboardData?.project_status?.project_progress ?? 0}%` }}></div>
+                                                    <div className="bg-gradient-to-r from-blue-400 to-app-primary h-2 rounded-full" style={{ width: `${resolvedProjectProgress}%` }}></div>
                                                 </div>
                                             </div>
 
@@ -2338,26 +2387,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                             <div>
                                                 <div className="flex justify-between items-center mb-1.5">
                                                     <p className="text-[10px] font-bold text-app-text-label uppercase tracking-widest flex items-center gap-1.5"><RefreshCw className="w-3.5 h-3.5 text-app-primary" /> Sprint Prog.</p>
-                                                    <span className="text-xs font-black text-app-primary">
-                                                        {(() => {
-                                                            const activeSprint = dashboardData?.sprint_status?.find(s => s.status === "On Going") || dashboardData?.sprint_status?.[0];
-                                                            if (activeSprint && (activeSprint.actual_work + activeSprint.remaining_work) > 0) {
-                                                                return Math.round((activeSprint.actual_work / (activeSprint.actual_work + activeSprint.remaining_work)) * 100) + '%';
-                                                            }
-                                                            return '0%';
-                                                        })()}
-                                                    </span>
+                                                    <span className="text-xs font-black text-app-primary">{resolvedSprintProgress}%</span>
                                                 </div>
                                                 <div className="w-full bg-app-bg-muted rounded-full h-2">
-                                                    <div className="bg-gradient-to-r from-indigo-400 to-purple-500 h-2 rounded-full" style={{
-                                                        width: (() => {
-                                                            const activeSprint = dashboardData?.sprint_status?.find(s => s.status === "On Going") || dashboardData?.sprint_status?.[0];
-                                                            if (activeSprint && (activeSprint.actual_work + activeSprint.remaining_work) > 0) {
-                                                                return Math.round((activeSprint.actual_work / (activeSprint.actual_work + activeSprint.remaining_work)) * 100) + '%';
-                                                            }
-                                                            return '0%';
-                                                        })()
-                                                    }}></div>
+                                                    <div className="bg-gradient-to-r from-indigo-400 to-purple-500 h-2 rounded-full" style={{ width: `${resolvedSprintProgress}%` }}></div>
                                                 </div>
                                             </div>
                                         </div>
