@@ -14,6 +14,19 @@ export default function SuperAdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
+  // Main Tabs State
+  const [activeMainTab, setActiveMainTab] = useState('platform'); // 'platform' | 'vibecoding'
+
+  // Vibecoding Telemetry State
+  const [vibeData, setVibeData] = useState(null);
+  const [vibeLoading, setVibeLoading] = useState(false);
+  const [vibeError, setVibeError] = useState('');
+  const [vibeSubTab, setVibeSubTab] = useState('orgs'); // 'orgs' | 'projects' | 'users'
+  const [vibeSearchQuery, setVibeSearchQuery] = useState('');
+  const [vibePage, setVibePage] = useState(1);
+  const [vibeSelectedOrg, setVibeSelectedOrg] = useState(null);
+  const [vibeSelectedUser, setVibeSelectedUser] = useState(null);
+
   // Date Filters
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -40,6 +53,8 @@ export default function SuperAdminDashboard() {
       
       let statsUrl = API_ENDPOINTS.SUPERADMIN_DASHBOARD_STATS;
       let orgsUrl = API_ENDPOINTS.SUPERADMIN_ORGANIZATIONS;
+      let vibeUrl = API_ENDPOINTS.SUPERADMIN_VIBECODING_COSTS;
+
       const queryParams = [];
       if (startDate) queryParams.push(`start_date=${startDate}`);
       if (endDate) queryParams.push(`end_date=${endDate}`);
@@ -47,6 +62,7 @@ export default function SuperAdminDashboard() {
         const queryStr = `?${queryParams.join('&')}`;
         statsUrl += queryStr;
         orgsUrl += queryStr;
+        vibeUrl += queryStr;
       }
 
       const statsRes = await fetch(statsUrl, { headers });
@@ -59,10 +75,21 @@ export default function SuperAdminDashboard() {
         const orgsData = await orgsRes.json();
         setOrgs(orgsData);
       }
+
+      // Fetch Vibecoding Costs
+      setVibeLoading(true);
+      const vibeRes = await fetch(vibeUrl, { headers });
+      if (vibeRes.ok) {
+        const vData = await vibeRes.json();
+        setVibeData(vData);
+      } else {
+        setVibeError('Failed to fetch Vibecoding costs');
+      }
     } catch (err) {
       setError(err.message || 'Error loading Super Admin telemetry');
     } finally {
       setLoading(false);
+      setVibeLoading(false);
     }
   };
 
@@ -176,6 +203,107 @@ export default function SuperAdminDashboard() {
       URL.revokeObjectURL(url);
     } catch (e) {
       alert('Failed to export Excel CSV: ' + e.message);
+    }
+  };
+
+  const handleExportVibeExcel = () => {
+    try {
+      const escapeCSV = (val) => {
+        if (val === null || val === undefined) return '';
+        const str = String(val);
+        if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+          return `"${str.replace(/"/g, '""')}"`;
+        }
+        return str;
+      };
+
+      const rows = [];
+      rows.push(['VIBECODING COSTS & USAGE TELEMETRY REPORT']);
+      rows.push(['Generated At:', new Date().toLocaleString()]);
+      if (startDate || endDate) {
+        rows.push(['Filter Date Range:', `${startDate || 'Start'} to ${endDate || 'Present'}`]);
+      }
+      rows.push([]);
+
+      rows.push(['EXECUTIVE VIBECODING SUMMARY']);
+      rows.push(['Total Organizations', vibeData?.summary?.total_organizations || 0]);
+      rows.push(['Total Active Projects', vibeData?.summary?.total_projects || 0]);
+      rows.push(['Total Onboarded Users', vibeData?.summary?.total_users || 0]);
+      rows.push(['Total Prompts Logged', vibeData?.summary?.total_prompts || 0]);
+      rows.push(['Prompt Tokens', vibeData?.summary?.prompt_tokens || 0]);
+      rows.push(['Completion Tokens', vibeData?.summary?.completion_tokens || 0]);
+      rows.push(['Total Tokens Consumed', vibeData?.summary?.total_tokens || 0]);
+      rows.push(['Total Vibecoding Cost ($)', vibeData?.summary?.total_cost || 0]);
+      rows.push([]);
+
+      rows.push(['ORGANIZATION-WISE VIBECODING BREAKDOWN']);
+      rows.push(['Organization Name', 'Users', 'Projects', 'Prompts', 'Prompt Tokens', 'Completion Tokens', 'Total Tokens', 'Total Cost (USD)']);
+      (vibeData?.organization_breakdown || []).forEach(o => {
+        rows.push([
+          o.organization_name,
+          o.user_count,
+          o.project_count,
+          o.log_count,
+          o.prompt_tokens,
+          o.completion_tokens,
+          o.total_tokens,
+          o.total_cost
+        ]);
+      });
+
+      rows.push([]);
+      rows.push(['PROJECT-WISE VIBECODING BREAKDOWN']);
+      rows.push(['Project ID', 'Project Name', 'Organization', 'User Email', 'Prompts', 'Prompt Tokens', 'Completion Tokens', 'Total Tokens', 'Total Cost (USD)']);
+      (vibeData?.project_breakdown || []).forEach(p => {
+        rows.push([
+          p.project_id,
+          p.project_name,
+          p.organization_name,
+          p.email,
+          p.log_count,
+          p.prompt_tokens,
+          p.completion_tokens,
+          p.total_tokens,
+          p.total_cost
+        ]);
+      });
+
+      rows.push([]);
+      rows.push(['USER-WISE VIBECODING BREAKDOWN']);
+      rows.push(['Username', 'Email', 'Full Name', 'Organization', 'Projects', 'Prompts', 'Prompt Tokens', 'Completion Tokens', 'Total Tokens', 'Total Cost (USD)']);
+      (vibeData?.user_breakdown || []).forEach(u => {
+        rows.push([
+          u.username,
+          u.email,
+          u.full_name,
+          u.organization_name,
+          u.project_count,
+          u.log_count,
+          u.prompt_tokens,
+          u.completion_tokens,
+          u.total_tokens,
+          u.total_cost
+        ]);
+      });
+
+      const csvContent = rows
+        .map(row => row.map(cell => escapeCSV(cell)).join(','))
+        .join('\n');
+
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const fileName = `Vibecoding_Costs_Report_${new Date().toISOString().split('T')[0]}.csv`;
+
+      link.setAttribute('href', url);
+      link.setAttribute('download', fileName);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert('Failed to export Vibecoding CSV: ' + e.message);
     }
   };
 
@@ -294,13 +422,52 @@ export default function SuperAdminDashboard() {
           </div>
         </div>
 
-        {error && (
-          <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 shrink-0" />
-            <span>{error}</span>
-          </div>
-        )}
+        {/* Main Tab Navigation Bar */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-purple-500/20 pb-3">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setActiveMainTab('platform')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-extrabold transition-all border ${
+                activeMainTab === 'platform'
+                  ? 'bg-purple-600/90 text-white border-purple-500 shadow-lg shadow-purple-600/30'
+                  : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:bg-slate-800 hover:text-slate-200'
+              }`}
+            >
+              <Shield className="w-4 h-4 text-purple-300" />
+              <span>Global Platform Governance</span>
+            </button>
 
+            <button
+              onClick={() => setActiveMainTab('vibecoding')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-extrabold transition-all border ${
+                activeMainTab === 'vibecoding'
+                  ? 'bg-cyan-600/90 text-white border-cyan-500 shadow-lg shadow-cyan-600/30'
+                  : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:bg-slate-800 hover:text-slate-200'
+              }`}
+            >
+              <Coins className="w-4 h-4 text-cyan-300" />
+              <span>Vibecoding Analytics & Costs</span>
+              {vibeData?.summary?.total_cost > 0 && (
+                <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-mono font-bold">
+                  ${vibeData.summary.total_cost}
+                </span>
+              )}
+            </button>
+          </div>
+
+          {activeMainTab === 'vibecoding' && (
+            <button
+              onClick={handleExportVibeExcel}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-950/60 hover:bg-emerald-900/70 border border-emerald-500/30 text-emerald-300 text-xs font-semibold transition-all"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+              Export Vibecoding CSV
+            </button>
+          )}
+        </div>
+
+        {activeMainTab === 'platform' && (
+          <>
         {/* Metric Cards Grid (Compact & Responsive) */}
         {stats && (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
@@ -574,8 +741,366 @@ export default function SuperAdminDashboard() {
             </div>
           </div>
         </div>
+      </>
+    )}
 
-      </div>
+        {activeMainTab === 'vibecoding' && (
+          <div className="space-y-6">
+            {/* Vibecoding Executive Metric Cards */}
+            {vibeData?.summary && (
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                <div className="p-3.5 rounded-xl bg-slate-900/60 border border-cyan-500/20 backdrop-blur">
+                  <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                    <span className="font-semibold uppercase tracking-wider text-[10px]">Organizations</span>
+                    <Building2 className="w-4 h-4 text-cyan-400" />
+                  </div>
+                  <div className="text-xl font-bold text-white">{vibeData.summary.total_organizations}</div>
+                  <div className="text-[10px] text-cyan-400 mt-0.5">Active Tenants</div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-900/60 border border-purple-500/20 backdrop-blur">
+                  <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                    <span className="font-semibold uppercase tracking-wider text-[10px]">Active Projects</span>
+                    <FolderKanban className="w-4 h-4 text-purple-400" />
+                  </div>
+                  <div className="text-xl font-bold text-white">{vibeData.summary.total_projects}</div>
+                  <div className="text-[10px] text-purple-400 mt-0.5">Vibecoding Workspaces</div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-900/60 border border-blue-500/20 backdrop-blur">
+                  <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                    <span className="font-semibold uppercase tracking-wider text-[10px]">Active Users</span>
+                    <Users className="w-4 h-4 text-blue-400" />
+                  </div>
+                  <div className="text-xl font-bold text-white">{vibeData.summary.total_users}</div>
+                  <div className="text-[10px] text-blue-400 mt-0.5">Registered Developers</div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-900/60 border border-amber-500/20 backdrop-blur">
+                  <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                    <span className="font-semibold uppercase tracking-wider text-[10px]">AI Prompts</span>
+                    <Activity className="w-4 h-4 text-amber-400" />
+                  </div>
+                  <div className="text-xl font-bold text-white">{vibeData.summary.total_prompts}</div>
+                  <div className="text-[10px] text-amber-400 mt-0.5">Generations Logged</div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-900/60 border border-indigo-500/20 backdrop-blur">
+                  <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                    <span className="font-semibold uppercase tracking-wider text-[10px]">Tokens Consumed</span>
+                    <Cpu className="w-4 h-4 text-indigo-400" />
+                  </div>
+                  <div className="text-xl font-bold text-white">{(vibeData.summary.total_tokens || 0).toLocaleString()}</div>
+                  <div className="text-[10px] text-indigo-400 mt-0.5">Prompt + Completion</div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-900/60 border border-emerald-500/20 backdrop-blur">
+                  <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                    <span className="font-semibold uppercase tracking-wider text-[10px]">Total Costs</span>
+                    <Coins className="w-4 h-4 text-emerald-400" />
+                  </div>
+                  <div className="text-xl font-bold text-emerald-400">${vibeData.summary.total_cost}</div>
+                  <div className="text-[10px] text-emerald-400 mt-0.5">Calculated Usage Cost</div>
+                </div>
+              </div>
+            )}
+
+            {/* Vibecoding Breakdown Table Container */}
+            <div className="p-5 rounded-2xl bg-slate-900/80 border border-cyan-500/20 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+                <div>
+                  <h2 className="text-base font-bold text-white flex items-center gap-2">
+                    <Coins className="w-4 h-4 text-cyan-400" />
+                    Vibecoding Cost Breakdown Telemetry
+                  </h2>
+                  <p className="text-xs text-slate-400">
+                    Detailed token usage and calculated platform costs categorized by Organization, Project, and User.
+                  </p>
+                </div>
+
+                {/* Sub-Tabs Switcher */}
+                <div className="flex items-center gap-1.5 p-1 bg-slate-950/80 border border-slate-800 rounded-xl text-xs">
+                  <button
+                    onClick={() => { setVibeSubTab('orgs'); setVibePage(1); }}
+                    className={`px-3 py-1 rounded-lg font-bold transition-colors ${
+                      vibeSubTab === 'orgs'
+                        ? 'bg-cyan-600 text-white'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                    }`}
+                  >
+                    Organization-Wise
+                  </button>
+                  <button
+                    onClick={() => { setVibeSubTab('projects'); setVibePage(1); }}
+                    className={`px-3 py-1 rounded-lg font-bold transition-colors ${
+                      vibeSubTab === 'projects'
+                        ? 'bg-cyan-600 text-white'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                    }`}
+                  >
+                    Project-Wise
+                  </button>
+                  <button
+                    onClick={() => { setVibeSubTab('users'); setVibePage(1); }}
+                    className={`px-3 py-1 rounded-lg font-bold transition-colors ${
+                      vibeSubTab === 'users'
+                        ? 'bg-cyan-600 text-white'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                    }`}
+                  >
+                    User-Wise
+                  </button>
+                </div>
+              </div>
+
+              {/* Filter & Search Bar */}
+              <div className="flex items-center justify-between gap-3">
+                <div className="relative w-full sm:w-80">
+                  <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder={`Search ${vibeSubTab}...`}
+                    value={vibeSearchQuery}
+                    onChange={e => { setVibeSearchQuery(e.target.value); setVibePage(1); }}
+                    className="w-full pl-8 pr-3 py-1.5 bg-slate-800/60 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-400 focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+                {vibeLoading && (
+                  <div className="flex items-center gap-2 text-xs text-cyan-400">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Loading...</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Sub-Tab 1: Organization-Wise Breakdown */}
+              {vibeSubTab === 'orgs' && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-800/40 text-slate-400 font-semibold uppercase text-[10px] tracking-wider border-b border-slate-800">
+                      <tr>
+                        <th className="py-2.5 px-3">Organization</th>
+                        <th className="py-2.5 px-3">Active Users</th>
+                        <th className="py-2.5 px-3">Active Projects</th>
+                        <th className="py-2.5 px-3">Prompts Logged</th>
+                        <th className="py-2.5 px-3">Prompt Tokens</th>
+                        <th className="py-2.5 px-3">Completion Tokens</th>
+                        <th className="py-2.5 px-3">Total Tokens</th>
+                        <th className="py-2.5 px-3">Total Cost</th>
+                        <th className="py-2.5 px-3 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 text-slate-200">
+                      {vibeData?.organization_breakdown?.filter(o =>
+                        o.organization_name.toLowerCase().includes(vibeSearchQuery.toLowerCase())
+                      ).length === 0 ? (
+                        <tr>
+                          <td colSpan={9} className="py-6 text-center text-slate-400 italic">
+                            No Organization telemetry records found.
+                          </td>
+                        </tr>
+                      ) : (
+                        vibeData?.organization_breakdown?.filter(o =>
+                          o.organization_name.toLowerCase().includes(vibeSearchQuery.toLowerCase())
+                        ).map(org => (
+                          <tr key={org.organization_name} className="hover:bg-slate-800/30 transition-colors">
+                            <td className="py-3 px-3 font-semibold text-white">
+                              {org.organization_name}
+                            </td>
+                            <td className="py-3 px-3 text-slate-300">
+                              {org.user_count} users
+                            </td>
+                            <td className="py-3 px-3 text-slate-300">
+                              {org.project_count} projects
+                            </td>
+                            <td className="py-3 px-3 font-mono text-cyan-300">
+                              {org.log_count}
+                            </td>
+                            <td className="py-3 px-3 font-mono text-slate-400">
+                              {(org.prompt_tokens || 0).toLocaleString()}
+                            </td>
+                            <td className="py-3 px-3 font-mono text-slate-400">
+                              {(org.completion_tokens || 0).toLocaleString()}
+                            </td>
+                            <td className="py-3 px-3 font-mono text-purple-300 font-semibold">
+                              {(org.total_tokens || 0).toLocaleString()}
+                            </td>
+                            <td className="py-3 px-3 font-mono text-emerald-400 font-bold">
+                              ${org.total_cost || 0}
+                            </td>
+                            <td className="py-3 px-3 text-right">
+                              <button
+                                onClick={() => setVibeSelectedOrg(org)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-cyan-900/40 hover:bg-cyan-800/60 border border-cyan-500/30 text-xs font-semibold text-cyan-200 transition-colors"
+                              >
+                                <Eye className="w-3 h-3" />
+                                Inspect Details
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Sub-Tab 2: Project-Wise Breakdown */}
+              {vibeSubTab === 'projects' && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-800/40 text-slate-400 font-semibold uppercase text-[10px] tracking-wider border-b border-slate-800">
+                      <tr>
+                        <th className="py-2.5 px-3">Project Name</th>
+                        <th className="py-2.5 px-3">Project ID</th>
+                        <th className="py-2.5 px-3">Organization</th>
+                        <th className="py-2.5 px-3">User Email</th>
+                        <th className="py-2.5 px-3">Prompts Logged</th>
+                        <th className="py-2.5 px-3">Prompt Tokens</th>
+                        <th className="py-2.5 px-3">Completion Tokens</th>
+                        <th className="py-2.5 px-3">Total Tokens</th>
+                        <th className="py-2.5 px-3 text-right">Total Cost</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 text-slate-200">
+                      {vibeData?.project_breakdown?.filter(p =>
+                        p.project_name.toLowerCase().includes(vibeSearchQuery.toLowerCase()) ||
+                        p.project_id.toLowerCase().includes(vibeSearchQuery.toLowerCase()) ||
+                        p.organization_name.toLowerCase().includes(vibeSearchQuery.toLowerCase()) ||
+                        p.email.toLowerCase().includes(vibeSearchQuery.toLowerCase())
+                      ).length === 0 ? (
+                        <tr>
+                          <td colSpan={9} className="py-6 text-center text-slate-400 italic">
+                            No Project telemetry records found.
+                          </td>
+                        </tr>
+                      ) : (
+                        vibeData?.project_breakdown?.filter(p =>
+                          p.project_name.toLowerCase().includes(vibeSearchQuery.toLowerCase()) ||
+                          p.project_id.toLowerCase().includes(vibeSearchQuery.toLowerCase()) ||
+                          p.organization_name.toLowerCase().includes(vibeSearchQuery.toLowerCase()) ||
+                          p.email.toLowerCase().includes(vibeSearchQuery.toLowerCase())
+                        ).map(proj => (
+                          <tr key={proj.project_id} className="hover:bg-slate-800/30 transition-colors">
+                            <td className="py-3 px-3 font-semibold text-white">
+                              {proj.project_name}
+                            </td>
+                            <td className="py-3 px-3 text-slate-400 font-mono">
+                              {proj.project_id}
+                            </td>
+                            <td className="py-3 px-3 text-slate-300">
+                              {proj.organization_name}
+                            </td>
+                            <td className="py-3 px-3 text-slate-300">
+                              {proj.email}
+                            </td>
+                            <td className="py-3 px-3 font-mono text-cyan-300">
+                              {proj.log_count}
+                            </td>
+                            <td className="py-3 px-3 font-mono text-slate-400">
+                              {(proj.prompt_tokens || 0).toLocaleString()}
+                            </td>
+                            <td className="py-3 px-3 font-mono text-slate-400">
+                              {(proj.completion_tokens || 0).toLocaleString()}
+                            </td>
+                            <td className="py-3 px-3 font-mono text-purple-300 font-semibold">
+                              {(proj.total_tokens || 0).toLocaleString()}
+                            </td>
+                            <td className="py-3 px-3 text-right font-mono text-emerald-400 font-bold">
+                              ${proj.total_cost || 0}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Sub-Tab 3: User-Wise Breakdown */}
+              {vibeSubTab === 'users' && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-800/40 text-slate-400 font-semibold uppercase text-[10px] tracking-wider border-b border-slate-800">
+                      <tr>
+                        <th className="py-2.5 px-3">User Email / Username</th>
+                        <th className="py-2.5 px-3">Full Name</th>
+                        <th className="py-2.5 px-3">Organization</th>
+                        <th className="py-2.5 px-3">Projects</th>
+                        <th className="py-2.5 px-3">Prompts Logged</th>
+                        <th className="py-2.5 px-3">Prompt Tokens</th>
+                        <th className="py-2.5 px-3">Completion Tokens</th>
+                        <th className="py-2.5 px-3">Total Tokens</th>
+                        <th className="py-2.5 px-3">Total Cost</th>
+                        <th className="py-2.5 px-3 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 text-slate-200">
+                      {vibeData?.user_breakdown?.filter(u =>
+                        u.email.toLowerCase().includes(vibeSearchQuery.toLowerCase()) ||
+                        u.username.toLowerCase().includes(vibeSearchQuery.toLowerCase()) ||
+                        (u.full_name && u.full_name.toLowerCase().includes(vibeSearchQuery.toLowerCase())) ||
+                        u.organization_name.toLowerCase().includes(vibeSearchQuery.toLowerCase())
+                      ).length === 0 ? (
+                        <tr>
+                          <td colSpan={10} className="py-6 text-center text-slate-400 italic">
+                            No User telemetry records found.
+                          </td>
+                        </tr>
+                      ) : (
+                        vibeData?.user_breakdown?.filter(u =>
+                          u.email.toLowerCase().includes(vibeSearchQuery.toLowerCase()) ||
+                          u.username.toLowerCase().includes(vibeSearchQuery.toLowerCase()) ||
+                          (u.full_name && u.full_name.toLowerCase().includes(vibeSearchQuery.toLowerCase())) ||
+                          u.organization_name.toLowerCase().includes(vibeSearchQuery.toLowerCase())
+                        ).map(user => (
+                          <tr key={user.username} className="hover:bg-slate-800/30 transition-colors">
+                            <td className="py-3 px-3 font-semibold text-white">
+                              {user.email || user.username}
+                            </td>
+                            <td className="py-3 px-3 text-slate-300">
+                              {user.full_name || '—'}
+                            </td>
+                            <td className="py-3 px-3 text-slate-300">
+                              {user.organization_name}
+                            </td>
+                            <td className="py-3 px-3 text-slate-300">
+                              {user.project_count} projects
+                            </td>
+                            <td className="py-3 px-3 font-mono text-cyan-300">
+                              {user.log_count}
+                            </td>
+                            <td className="py-3 px-3 font-mono text-slate-400">
+                              {(user.prompt_tokens || 0).toLocaleString()}
+                            </td>
+                            <td className="py-3 px-3 font-mono text-slate-400">
+                              {(user.completion_tokens || 0).toLocaleString()}
+                            </td>
+                            <td className="py-3 px-3 font-mono text-purple-300 font-semibold">
+                              {(user.total_tokens || 0).toLocaleString()}
+                            </td>
+                            <td className="py-3 px-3 font-mono text-emerald-400 font-bold">
+                              ${user.total_cost || 0}
+                            </td>
+                            <td className="py-3 px-3 text-right">
+                              <button
+                                onClick={() => setVibeSelectedUser(user)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-purple-900/40 hover:bg-purple-800/60 border border-purple-500/30 text-xs font-semibold text-purple-200 transition-colors"
+                              >
+                                <Eye className="w-3 h-3" />
+                                Inspect User
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
       {/* Organization Detailed Inspection Modal */}
       {selectedOrgModal && (
@@ -758,6 +1283,153 @@ export default function SuperAdminDashboard() {
           </div>
         </div>
       )}
+
+      {/* Vibecoding Organization Inspection Modal */}
+      {vibeSelectedOrg && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+          <div className="w-full max-w-4xl bg-slate-900 border border-cyan-500/30 rounded-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div>
+                <span className="text-[10px] uppercase tracking-wider font-bold text-cyan-400">Vibecoding Organization Telemetry</span>
+                <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                  <Building2 className="w-5 h-5 text-cyan-400" />
+                  {vibeSelectedOrg.organization_name}
+                </h3>
+              </div>
+              <button
+                onClick={() => setVibeSelectedOrg(null)}
+                className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-4 gap-3 text-xs">
+              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
+                <span className="text-slate-400">Total Users</span>
+                <div className="text-lg font-bold text-cyan-300">{vibeSelectedOrg.user_count} Users</div>
+              </div>
+              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
+                <span className="text-slate-400">Total Projects</span>
+                <div className="text-lg font-bold text-purple-300">{vibeSelectedOrg.project_count} Projects</div>
+              </div>
+              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
+                <span className="text-slate-400">Total AI Tokens</span>
+                <div className="text-lg font-bold text-indigo-300">{(vibeSelectedOrg.total_tokens || 0).toLocaleString()}</div>
+              </div>
+              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
+                <span className="text-slate-400">Total Usage Cost</span>
+                <div className="text-lg font-bold text-emerald-400">${vibeSelectedOrg.total_cost || 0}</div>
+              </div>
+            </div>
+
+            {/* Users in Org */}
+            <div>
+              <h4 className="text-sm font-bold text-white mb-2 flex items-center gap-2">
+                <Users className="w-4 h-4 text-cyan-400" />
+                Users in Organization
+              </h4>
+              <div className="flex flex-wrap gap-2">
+                {(vibeSelectedOrg.users || []).map(u => (
+                  <span key={u} className="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-xs font-mono text-cyan-200">
+                    {u}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            {/* Projects in Org */}
+            <div>
+              <h4 className="text-sm font-bold text-white mb-2 flex items-center gap-2">
+                <FolderKanban className="w-4 h-4 text-purple-400" />
+                Projects in Organization
+              </h4>
+              <div className="flex flex-wrap gap-2">
+                {(vibeSelectedOrg.projects || []).map(p => (
+                  <span key={p} className="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-xs font-mono text-purple-200">
+                    {p}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                onClick={() => setVibeSelectedOrg(null)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl text-xs"
+              >
+                Close Inspection
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Vibecoding User Inspection Modal */}
+      {vibeSelectedUser && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+          <div className="w-full max-w-4xl bg-slate-900 border border-purple-500/30 rounded-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div>
+                <span className="text-[10px] uppercase tracking-wider font-bold text-purple-400">Vibecoding User Telemetry</span>
+                <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                  <Users className="w-5 h-5 text-purple-400" />
+                  {vibeSelectedUser.email || vibeSelectedUser.username}
+                </h3>
+              </div>
+              <button
+                onClick={() => setVibeSelectedUser(null)}
+                className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-4 gap-3 text-xs">
+              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
+                <span className="text-slate-400">Full Name</span>
+                <div className="text-base font-bold text-white">{vibeSelectedUser.full_name || '—'}</div>
+              </div>
+              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
+                <span className="text-slate-400">Organization</span>
+                <div className="text-base font-bold text-cyan-300">{vibeSelectedUser.organization_name}</div>
+              </div>
+              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
+                <span className="text-slate-400">Total Tokens</span>
+                <div className="text-base font-bold text-indigo-300">{(vibeSelectedUser.total_tokens || 0).toLocaleString()}</div>
+              </div>
+              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
+                <span className="text-slate-400">Total Usage Cost</span>
+                <div className="text-base font-bold text-emerald-400">${vibeSelectedUser.total_cost || 0}</div>
+              </div>
+            </div>
+
+            <div>
+              <h4 className="text-sm font-bold text-white mb-2 flex items-center gap-2">
+                <FolderKanban className="w-4 h-4 text-purple-400" />
+                User Projects ({vibeSelectedUser.project_count})
+              </h4>
+              <div className="flex flex-wrap gap-2">
+                {(vibeSelectedUser.projects || []).map(p => (
+                  <span key={p} className="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-xs font-mono text-purple-200">
+                    {p}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                onClick={() => setVibeSelectedUser(null)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl text-xs"
+              >
+                Close Inspection
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
-  );
+  </div>
+);
 }

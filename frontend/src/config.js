@@ -33,6 +33,7 @@ export const API_ENDPOINTS = {
     // Super Admin
     SUPERADMIN_DASHBOARD_STATS: `${API_BASE_URL}/api/superadmin/dashboard-stats`,
     SUPERADMIN_ORGANIZATIONS: `${API_BASE_URL}/api/superadmin/organizations`,
+    SUPERADMIN_VIBECODING_COSTS: `${API_BASE_URL}/api/superadmin/vibecoding-costs`,
     SUPERADMIN_ORG_CAPACITY: (orgName) => `${API_BASE_URL}/api/superadmin/organizations/${encodeURIComponent(orgName)}/capacity`,
     SUPERADMIN_CAPACITY_REQUESTS: `${API_BASE_URL}/api/superadmin/capacity-requests`,
     SUPERADMIN_CAPACITY_REQUEST_APPROVE: (id) => `${API_BASE_URL}/api/superadmin/capacity-requests/${id}/approve`,
