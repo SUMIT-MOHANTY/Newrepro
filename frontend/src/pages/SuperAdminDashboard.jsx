@@ -389,13 +389,35 @@ export default function SuperAdminDashboard() {
           </div>
           
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={handleDownloadPDF}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-900/40 hover:bg-purple-800/60 border border-purple-500/30 text-purple-200 text-xs font-semibold transition-all"
-            >
-              <FileText className="w-3.5 h-3.5 text-purple-300" />
-              Download PDF Report
-            </button>
+            {activeMainTab === 'platform' ? (
+              <>
+                <button
+                  onClick={handleDownloadPDF}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-900/40 hover:bg-purple-800/60 border border-purple-500/30 text-purple-200 text-xs font-semibold transition-all"
+                >
+                  <FileText className="w-3.5 h-3.5 text-purple-300" />
+                  Download PDF Report
+                </button>
+
+                <button
+                  onClick={handleExportExcel}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-950/60 hover:bg-emerald-900/70 border border-emerald-500/30 text-emerald-300 text-xs font-semibold transition-all"
+                  title="Export Dsuite Platform Governance CSV"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+                  Export Dsuite CSV
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={handleExportVibeExcel}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-950/80 hover:bg-cyan-900/90 border border-cyan-500/40 text-cyan-300 text-xs font-bold transition-all shadow-md shadow-cyan-950/50"
+                title="Export Vibecoding Telemetry CSV"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-cyan-400" />
+                Export Vibecoding CSV
+              </button>
+            )}
 
             <button
               onClick={handleExportMasterExcel}
@@ -404,14 +426,6 @@ export default function SuperAdminDashboard() {
             >
               <FileSpreadsheet className="w-4 h-4 text-cyan-400" />
               Master Report (.xlsx)
-            </button>
-
-            <button
-              onClick={handleExportExcel}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-950/60 hover:bg-emerald-900/70 border border-emerald-500/30 text-emerald-300 text-xs font-semibold transition-all"
-            >
-              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
-              Export Dsuite CSV
             </button>
 
             <button
