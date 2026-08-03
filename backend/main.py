@@ -3060,7 +3060,7 @@ def get_superadmin_vibecoding_costs(
 
     # 1. Fetch raw data from Vibecoding Service HTTP endpoint if available, else SQLite DB fallback
     vibe_data = None
-    vibecoding_url = os.getenv("VIBECODING_BACKEND_URL", "http://localhost:8001")
+    vibecoding_url = os.getenv("VIBECODING_BACKEND_URL")
     if not vibecoding_url.endswith("/"):
         vibecoding_url += "/"
     telemetry_url = f"{vibecoding_url}vibecoding/api/telemetry/usage-costs"
