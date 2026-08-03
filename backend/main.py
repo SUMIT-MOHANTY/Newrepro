@@ -3064,6 +3064,7 @@ def get_superadmin_vibecoding_costs(
     if not vibecoding_url.endswith("/"):
         vibecoding_url += "/"
     telemetry_url = f"{vibecoding_url}vibecoding/api/telemetry/usage-costs"
+    print(f"-----------------{telemetry_url}-------------------")
     q_params = []
     if start_date: q_params.append(f"start_date={start_date}")
     if end_date: q_params.append(f"end_date={end_date}")
@@ -3074,6 +3075,7 @@ def get_superadmin_vibecoding_costs(
         resp = requests.get(telemetry_url, timeout=3)
         if resp.ok:
             vibe_data = resp.json()
+            print(vibe_data)
     except Exception:
         pass
 
