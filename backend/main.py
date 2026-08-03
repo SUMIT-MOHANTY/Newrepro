@@ -1,4 +1,7 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()
+
 # Disable Hugging Face symlinks on Windows to prevent WinError 1314 permission crash
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 
@@ -3060,24 +3063,23 @@ def get_superadmin_vibecoding_costs(
 
     # 1. Fetch raw data from Vibecoding Service HTTP endpoint if available, else SQLite DB fallback
     vibe_data = None
-    vibecoding_url = os.getenv("VIBECODING_BACKEND_URL")
-    if not vibecoding_url.endswith("/"):
-        vibecoding_url += "/"
-    telemetry_url = f"{vibecoding_url}vibecoding/api/telemetry/usage-costs"
-    print(f"-----------------{telemetry_url}-------------------")
-    q_params = []
-    if start_date: q_params.append(f"start_date={start_date}")
-    if end_date: q_params.append(f"end_date={end_date}")
-    if q_params:
-        telemetry_url += "?" + "&".join(q_params)
+    vibecoding_url = os.getenv("VIBECODING_BACKEND_URL", "http://localhost:8001")
+    if vibecoding_url:
+        if not vibecoding_url.endswith("/"):
+            vibecoding_url += "/"
+        telemetry_url = f"{vibecoding_url}vibecoding/api/telemetry/usage-costs"
+        q_params = []
+        if start_date: q_params.append(f"start_date={start_date}")
+        if end_date: q_params.append(f"end_date={end_date}")
+        if q_params:
+            telemetry_url += "?" + "&".join(q_params)
 
-    try:
-        resp = requests.get(telemetry_url, timeout=3)
-        if resp.ok:
-            vibe_data = resp.json()
-            print(vibe_data)
-    except Exception:
-        pass
+        try:
+            resp = requests.get(telemetry_url, timeout=3)
+            if resp.ok:
+                vibe_data = resp.json()
+        except Exception as err:
+            logging.getLogger(__name__).warning(f"Could not fetch Vibecoding telemetry via HTTP ({telemetry_url}): {err}")
 
     if not vibe_data or not isinstance(vibe_data, dict):
         vibe_data = _fetch_vibecoding_data_directly(start_dt, end_dt)
