@@ -352,6 +352,17 @@ export default function TaskCreation({
     const [generatedTaskPlan, setGeneratedTaskPlan] = useState(null);
     const [isLoading, setIsLoading] = useState(false);
     const [isGenerating, setIsGenerating] = useState(false);
+    const [generationStatus, setGenerationStatus] = useState({
+        is_generating: false,
+        status: 'idle',
+        current_sprint: 0,
+        current_sprint_name: '',
+        total_sprints: 4,
+        progress_percent: 0,
+        status_message: 'Initializing...',
+        released_sprints: [],
+        released_tasks: []
+    });
     const [isSyncing, setIsSyncing] = useState(false);
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
@@ -911,44 +922,73 @@ export default function TaskCreation({
                 generatePayload.prerequisites = prerequisites;
             }
 
-            // Use new local task generation endpoint
-            const generateRes = await fetch(API_ENDPOINTS.AGENT_TASKS_GENERATE_LOCAL, {
-                method: 'POST',
-                headers,
-                body: JSON.stringify(generatePayload),
-            });
-            const generateJson = await generateRes.json().catch(() => ({}));
-            if (!generateRes.ok) {
-                const errorMsg = getErrorMessage(generateJson, 'Failed to generate tasks');
-                if (errorMsg.toLowerCase().includes('already exists') || errorMsg.toLowerCase().includes('will use the existing')) {
-                    console.warn('Sprint/milestone already exists, continuing:', errorMsg);
-                } else {
-                    throw new Error(errorMsg);
+            // Start 7-second polling interval for live progressive sprint status updates
+            let pollInterval = null;
+            pollInterval = setInterval(async () => {
+                try {
+                    const statusRes = await fetch(`${API_BASE_URL}/api/agent/tasks/generation-status/${selectedProjectKey}`, {
+                        headers: buildHeaders(),
+                    });
+                    if (statusRes.ok) {
+                        const statusData = await statusRes.json();
+                        setGenerationStatus(statusData);
+
+                        // If released_tasks contains new tasks, update tasks state live so UI renders them immediately
+                        if (Array.isArray(statusData.released_tasks) && statusData.released_tasks.length > 0) {
+                            setTasks(prev => {
+                                const existingIds = new Set(prev.map(t => t.task_id));
+                                const newTasks = statusData.released_tasks.filter(t => !existingIds.has(t.task_id));
+                                return newTasks.length > 0 ? [...prev, ...newTasks] : prev;
+                            });
+                        }
+                    }
+                } catch (pollErr) {
+                    console.warn('Task generation status poll error:', pollErr);
                 }
-            }
+            }, 7000);
 
-            // Reload from DB instead of using localStorage
-            await loadData(1);
+            try {
+                // Use new local task generation endpoint
+                const generateRes = await fetch(API_ENDPOINTS.AGENT_TASKS_GENERATE_LOCAL, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify(generatePayload),
+                });
+                const generateJson = await generateRes.json().catch(() => ({}));
+                if (!generateRes.ok) {
+                    const errorMsg = getErrorMessage(generateJson, 'Failed to generate tasks');
+                    if (errorMsg.toLowerCase().includes('already exists') || errorMsg.toLowerCase().includes('will use the existing')) {
+                        console.warn('Sprint/milestone already exists, continuing:', errorMsg);
+                    } else {
+                        throw new Error(errorMsg);
+                    }
+                }
 
-            const createdCount = Array.isArray(generateJson?.tasks)
-                ? generateJson.tasks.length
-                : (generateJson?.tasks_created ?? 0);
-            const backendMessage =
-                typeof generateJson?.message === 'string' ? generateJson.message : '';
-            const syncedToNxdune = generateJson?.synced_to_nxdune === true;
-            const syncError = generateJson?.sync_error;
+                // Reload from DB instead of using localStorage
+                await loadData(1);
 
-            if (backendMessage) {
-                setSuccess(backendMessage + (syncedToNxdune ? ' ✅ Synced to NXDUNE.' : ''));
-            } else {
-                setSuccess(`Generated ${createdCount} task preview item(s).` + (syncedToNxdune ? ' ✅ Synced to NXDUNE.' : ''));
+                const createdCount = Array.isArray(generateJson?.tasks)
+                    ? generateJson.tasks.length
+                    : (generateJson?.tasks_created ?? 0);
+                const backendMessage =
+                    typeof generateJson?.message === 'string' ? generateJson.message : '';
+                const syncedToNxdune = generateJson?.synced_to_nxdune === true;
+                const syncError = generateJson?.sync_error;
+
+                if (backendMessage) {
+                    setSuccess(backendMessage + (syncedToNxdune ? ' ✅ Synced to NXDUNE.' : ''));
+                } else {
+                    setSuccess(`Generated ${createdCount} task preview item(s).` + (syncedToNxdune ? ' ✅ Synced to NXDUNE.' : ''));
+                }
+                if (!syncedToNxdune && syncError) {
+                    console.warn('NXDUNE sync failed:', syncError);
+                    setError(`Tasks generated but NXDUNE sync failed: ${syncError}`);
+                }
+                setLiveCreatedTaskCount(createdCount);
+                setCreationStageIndex(1);
+            } finally {
+                if (pollInterval) clearInterval(pollInterval);
             }
-            if (!syncedToNxdune && syncError) {
-                console.warn('NXDUNE sync failed:', syncError);
-                setError(`Tasks generated but NXDUNE sync failed: ${syncError}`);
-            }
-            setLiveCreatedTaskCount(createdCount);
-            setCreationStageIndex(1);
         } catch (e) {
             setError(e?.message || 'Task creation failed');
         } finally {
@@ -1188,7 +1228,7 @@ export default function TaskCreation({
 
     return (
         <>
-            <div className={`h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/10 ${isGenerating ? 'blur-sm' : ''}`}>
+            <div className="h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/10">
                 <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
                     {/* Top Premium Gradient Banner Header */}
                     <div className="relative rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-blue-950 text-white shadow-xl border border-indigo-500/10 p-6 sm:p-7">
@@ -1256,6 +1296,60 @@ export default function TaskCreation({
                             </div>
                         </div>
                     </div>
+
+                    {/* Inline Live AI Task Generation Progress Banner */}
+                    {isGenerating && (
+                        <div className="rounded-2xl border border-indigo-500/30 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white p-5 shadow-xl animate-fade-in relative overflow-hidden">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                                <div className="flex items-center gap-3.5">
+                                    <div className="w-10 h-10 rounded-xl bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shrink-0">
+                                        <Loader2 className="w-5 h-5 animate-spin" />
+                                    </div>
+                                    <div>
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-xs font-bold uppercase tracking-wider text-indigo-300">
+                                                AI Generation Active (Sprint {generationStatus.current_sprint || 1} of {generationStatus.total_sprints || 4})
+                                            </span>
+                                            {/* <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-semibold">
+                                                Polling Live 7s
+                                            </span> */}
+                                        </div>
+                                        <h4 className="text-base font-bold text-white mt-0.5">
+                                            {generationStatus.current_sprint_name || 'Generating Sprint Tasks...'}
+                                        </h4>
+                                        <p className="text-xs text-slate-300 mt-0.5">
+                                            {generationStatus.status_message}
+                                        </p>
+                                    </div>
+                                </div>
+                                <div className="text-right shrink-0">
+                                    <span className="text-2xl font-black text-indigo-300 font-mono">
+                                        {generationStatus.progress_percent || 10}%
+                                    </span>
+                                </div>
+                            </div>
+
+                            {/* Progress Line */}
+                            <div className="mt-4 w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                                <div
+                                    className="bg-gradient-to-r from-indigo-500 via-teal-400 to-emerald-400 h-full rounded-full transition-all duration-500"
+                                    style={{ width: `${Math.max(10, generationStatus.progress_percent || 10)}%` }}
+                                ></div>
+                            </div>
+
+                            {/* Released Sprint Pills */}
+                            {(generationStatus.released_sprints || []).length > 0 && (
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                    {(generationStatus.released_sprints || []).map((s, idx) => (
+                                        <div key={idx} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/20 border border-emerald-500/30 text-emerald-200 text-xs font-medium">
+                                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                                            <span>{s.sprint_name} ({s.task_count} tasks released)</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
 
                     {/* AI Planning & Configuration Section */}
                     <div className="bg-app-bg-card rounded-2xl border border-app-border-light shadow-md p-6 space-y-5 relative overflow-hidden">
@@ -1619,10 +1713,7 @@ export default function TaskCreation({
                                             <button
                                                 onClick={() => loadData(pagination.currentPage + 1)}
                                                 disabled={!pagination.next || isLoading}
-                                                className={`px-4 py-2 text-xs font-bold rounded-xl border transition-all duration-250 ${!pagination.next || isLoading
-                                                    ? 'border-app-border text-app-text-muted cursor-not-allowed opacity-40 bg-app-bg-page'
-                                                    : 'border-app-border bg-app-bg-card text-app-text-main hover:bg-app-bg-hover active:scale-95'
-                                                    }`}
+                                                className={`px-4 py-2 text-xs font-bold rounded-xl border transition-all duration-250 ${!pagination.next || isLoading ? "border-app-border text-app-text-muted cursor-not-allowed opacity-40 bg-app-bg-page" : "border-app-border bg-app-bg-card text-app-text-main hover:bg-app-bg-hover active:scale-95"}`}
                                             >
                                                 Next
                                             </button>
@@ -1634,64 +1725,6 @@ export default function TaskCreation({
                     </div>
                 </div>
             </div>
-
-            {/* Premium Frosted AI Generating Progress Modal Overlay */}
-            {isGenerating && (
-                <div className="fixed inset-0 z-[300] bg-slate-950/60 backdrop-blur-md flex items-center justify-center p-4">
-                    <div className="w-full max-w-lg rounded-2xl border border-indigo-500/10 bg-app-bg-card shadow-2xl p-6 sm:p-8 text-center animate-fade-in relative overflow-hidden" style={{ filter: 'none', backdropFilter: 'none' }}>
-                        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500 animate-pulse"></div>
-                        <div className="flex justify-center mb-4">
-                            <div className="relative">
-                                <div className="absolute -inset-1 rounded-full bg-app-primary/30 blur animate-ping"></div>
-                                <div className="relative w-12 h-12 rounded-full bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-500">
-                                    <Sparkles className="w-6 h-6 text-indigo-500 animate-pulse" />
-                                </div>
-                            </div>
-                        </div>
-                        <h3 className="text-xl font-black text-app-text-main tracking-tight">AI Plan Generation In Progress</h3>
-                        <p className="mt-2.5 text-sm text-app-text-label leading-relaxed">
-                            Parsing the BRD artifacts to design custom sprints, milestones, and development checklists for <span className="font-semibold text-app-text-main">{selectedProject?.name || 'your project'}</span>.
-                        </p>
-                        
-                        <div className="mt-6 space-y-3.5">
-                            {PLAN_CREATION_STEPS.map((stepLabel, idx) => {
-                                const isDone = idx < creationStageIndex;
-                                const isActive = idx === creationStageIndex;
-                                return (
-                                    <div
-                                        key={stepLabel}
-                                        className={`flex items-center gap-3.5 rounded-xl border px-4 py-3 text-left transition-all duration-300 ${isDone
-                                            ? 'border-emerald-100 bg-emerald-50/20 dark:bg-emerald-950/15'
-                                            : isActive
-                                                ? 'border-indigo-100 bg-indigo-50/20 dark:bg-indigo-950/15 ring-2 ring-indigo-500/10'
-                                                : 'border-app-border-light bg-app-bg-page/50 opacity-55'
-                                            }`}
-                                    >
-                                        {isDone ? (
-                                            <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" />
-                                        ) : isActive ? (
-                                            <Loader2 className="w-5 h-5 text-indigo-500 animate-spin shrink-0" />
-                                        ) : (
-                                            <div className="w-5 h-5 rounded-full border border-app-border bg-app-bg-page shrink-0" />
-                                        )}
-                                        <div className="min-w-0 flex-1">
-                                            <span className={`text-sm font-bold block ${isDone ? 'text-emerald-700 dark:text-emerald-400' : isActive ? 'text-indigo-700 dark:text-indigo-400' : 'text-app-text-muted'}`}>
-                                                {stepLabel}
-                                            </span>
-                                            {isActive && (
-                                                <span className="text-[10px] text-app-text-muted block mt-0.5 animate-pulse">Running planning algorithms...</span>
-                                            )}
-                                        </div>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                        <p className="mt-5 text-[11px] text-app-text-muted italic">
-                            Planning operations are locked until task structure layout settles.
-                        </p>
-                    </div>
-                </div>
-            )}
         </>
     );
 }

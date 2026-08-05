@@ -150,7 +150,7 @@ const AssistantBot = () => {
       isIdle: true
     };
     setMessages(prev => [...prev, idleMsg]);
-    
+
     if (!isOpen) {
       setIsOpen(true);
     }
@@ -243,31 +243,6 @@ const AssistantBot = () => {
     hasShownWelcomeRef.current = false;
     setIdleMessageShown(false);
     setMessages([]);
-
-    if (!context) return;
-
-    const timer = setTimeout(async () => {
-      if (hasShownWelcomeRef.current) return;
-      hasShownWelcomeRef.current = true;
-
-      const msgId = Date.now();
-      // Seed empty message to stream into
-      setMessages([{ id: msgId, type: 'bot', text: '', timestamp: new Date(), isWelcome: true }]);
-
-      const prompt = `I just navigated to the "${context.title}" page (path: ${path}). Based on the platform context you know, describe what this page is about, what I can do here, and why it matters in the workflow. Be specific and practical — no generic greetings.`;
-
-      const result = await streamToMessage(msgId, prompt, { currentStep: context.title, currentPath: path });
-
-      // If stream failed or returned nothing, use a concise fallback
-      if (!result) {
-        setMessages([{
-          id: msgId, type: 'bot', text: `You're on the **${context.title}** page.\n\n${context.description}\n\nAsk me anything about this step!`,
-          timestamp: new Date(), isWelcome: true
-        }]);
-      }
-    }, 600);
-
-    return () => clearTimeout(timer);
   }, [location.pathname]);
 
   const showPageWelcome = () => { hasShownWelcomeRef.current = false; };
@@ -320,7 +295,7 @@ const AssistantBot = () => {
     }
   };
 
-    const handleBotClick = (e) => {
+  const handleBotClick = (e) => {
     e.preventDefault();
     e.stopPropagation();
     setIsOpen(true);
@@ -338,45 +313,41 @@ const AssistantBot = () => {
       style={{ pointerEvents: 'auto' }}
     >
       {/* Glow effect - enhanced when idle */}
-      <div className={`absolute inset-0 bg-gradient-to-r from-violet-600 to-purple-600 rounded-full blur-xl transition-opacity duration-300 ${
-        isUserIdle ? 'opacity-90 animate-pulse' : 'opacity-60 group-hover:opacity-80'
-      }`}></div>
-      
+      <div className={`absolute inset-0 bg-gradient-to-r from-violet-600 to-purple-600 rounded-full blur-xl transition-opacity duration-300 ${isUserIdle ? 'opacity-90 animate-pulse' : 'opacity-60 group-hover:opacity-80'
+        }`}></div>
+
       {/* Main ball */}
-      <div className={`bot-face relative w-12 h-12 bg-gradient-to-br from-violet-400 via-purple-500 to-indigo-600 rounded-full shadow-2xl hover:shadow-violet-500/50 hover:scale-110 transition-all duration-300 flex items-center justify-center overflow-hidden ${
-        isUserIdle ? 'animate-bounce' : ''
-      }`}>
+      <div className={`bot-face relative w-12 h-12 bg-gradient-to-br from-violet-400 via-purple-500 to-indigo-600 rounded-full shadow-2xl hover:shadow-violet-500/50 hover:scale-110 transition-all duration-300 flex items-center justify-center overflow-hidden ${isUserIdle ? 'animate-bounce' : ''
+        }`}>
         {/* Shine effect */}
         <div className="absolute top-1.5 left-1.5 w-3 h-3 bg-white/40 rounded-full blur-sm"></div>
         <div className="absolute top-2 left-2 w-1 h-1 bg-white/60 rounded-full"></div>
-        
+
         {/* Face container */}
         <div className="relative w-full h-full flex flex-col items-center justify-center">
           {/* Eyes container */}
           <div className="flex items-center gap-1 mb-0.5">
             {/* Left eye */}
             <div className="w-2.5 h-2.5 bg-white rounded-full relative overflow-hidden shadow-inner">
-              <div 
-                className={`w-2 h-2 bg-gray-800 rounded-full absolute top-0.5 left-0.5 transition-all duration-500 ease-out ${
-                  isUserIdle ? 'animate-pulse' : ''
-                }`}
-                style={{ 
-                  transform: `translate(${eyePosition.x * 0.5}px, ${eyePosition.y * 0.5}px)` 
+              <div
+                className={`w-2 h-2 bg-gray-800 rounded-full absolute top-0.5 left-0.5 transition-all duration-500 ease-out ${isUserIdle ? 'animate-pulse' : ''
+                  }`}
+                style={{
+                  transform: `translate(${eyePosition.x * 0.5}px, ${eyePosition.y * 0.5}px)`
                 }}
               >
                 <div className="w-0.5 h-0.5 bg-white rounded-full absolute top-0.5 left-0.5"></div>
               </div>
               <div className="eyelid absolute inset-0 bg-violet-500 rounded-full transform -translate-y-full transition-transform duration-150"></div>
             </div>
-            
+
             {/* Right eye */}
             <div className="w-2.5 h-2.5 bg-white rounded-full relative overflow-hidden shadow-inner">
-              <div 
-                className={`w-2 h-2 bg-gray-800 rounded-full absolute top-0.5 left-0.5 transition-all duration-500 ease-out ${
-                  isUserIdle ? 'animate-pulse' : ''
-                }`}
-                style={{ 
-                  transform: `translate(${eyePosition.x * 0.5}px, ${eyePosition.y * 0.5}px)` 
+              <div
+                className={`w-2 h-2 bg-gray-800 rounded-full absolute top-0.5 left-0.5 transition-all duration-500 ease-out ${isUserIdle ? 'animate-pulse' : ''
+                  }`}
+                style={{
+                  transform: `translate(${eyePosition.x * 0.5}px, ${eyePosition.y * 0.5}px)`
                 }}
               >
                 <div className="w-0.5 h-0.5 bg-white rounded-full absolute top-0.5 left-0.5"></div>
@@ -384,28 +355,28 @@ const AssistantBot = () => {
               <div className="eyelid absolute inset-0 bg-violet-500 rounded-full transform -translate-y-full transition-transform duration-150"></div>
             </div>
           </div>
-          
+
           {/* Mouth */}
           <div className="w-4 h-2 border-b-2 border-white/80 rounded-full"></div>
         </div>
-        
+
         {/* Idle indicator */}
         {isUserIdle && (
           <div className="absolute -top-2 -left-2 w-5 h-5 bg-orange-400 text-white text-xs rounded-full flex items-center justify-center font-bold animate-bounce shadow-lg">
             💭
           </div>
         )}
-        
+
         <div className="absolute inset-0 rounded-full bg-gradient-to-br from-yellow-300/20 to-pink-300/20 opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
       </div>
-      
+
       {/* Notification badge */}
       {messages.length > 0 && (
         <div className="absolute -top-1 -right-1 w-6 h-6 bg-red-500 text-white text-xs rounded-full flex items-center justify-center font-bold animate-bounce shadow-lg border-2 border-white">
           {messages.filter(m => m.isIdle || m.isWelcome).length > 0 ? '💡' : '!'}
         </div>
       )}
-      
+
       {/* Idle message tooltip */}
       {isUserIdle && (
         <div className="absolute bottom-full right-0 mb-3 bg-gray-800 text-white text-xs px-4 py-2 rounded-lg shadow-xl animate-fadeIn max-w-48">
@@ -413,7 +384,7 @@ const AssistantBot = () => {
           <div className="absolute top-full right-6 w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent border-t-gray-800"></div>
         </div>
       )}
-      
+
       {/* Click ripple effect */}
       <div className="absolute inset-0 rounded-full bg-white/30 scale-0 group-active:scale-150 transition-transform duration-200 pointer-events-none"></div>
     </div>
@@ -424,12 +395,11 @@ const AssistantBot = () => {
 
       {isOpen && (
         <div
-          className={`fixed z-[250] backdrop-blur-xl border shadow-2xl transition-all duration-300 ${
-            isMinimized
+          className={`fixed z-[250] backdrop-blur-xl border shadow-2xl transition-all duration-300 ${isMinimized
               ? 'bottom-6 right-6 w-72 h-14'
               : 'bottom-6 right-6 w-[360px] h-[520px] flex flex-col'
-          }`}
-          style={{ 
+            }`}
+          style={{
             borderRadius: '20px',
             background: 'rgba(255, 255, 255, 0.95)',
             border: '1px solid rgba(139, 92, 246, 0.2)',
@@ -485,15 +455,14 @@ const AssistantBot = () => {
                     style={{ animationDelay: `${index * 0.1}s` }}
                   >
                     <div className={`flex items-end gap-2 max-w-[85%] ${msg.type === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
-                        msg.type === 'user' 
-                          ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white' 
-                          : msg.isWelcome 
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${msg.type === 'user'
+                          ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white'
+                          : msg.isWelcome
                             ? 'bg-gradient-to-r from-green-500 to-emerald-500 text-white'
                             : msg.isIdle
                               ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white'
                               : 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white'
-                      }`}>
+                        }`}>
                         {msg.type === 'user' ? (
                           <div className="w-5 h-5 bg-white/30 rounded-full"></div>
                         ) : msg.isWelcome ? (
@@ -504,26 +473,24 @@ const AssistantBot = () => {
                           <Bot className="w-5 h-5" />
                         )}
                       </div>
-                      
+
                       <div
-                        className={`rounded-2xl px-4 py-3 text-sm relative ${
-                          msg.type === 'user'
+                        className={`rounded-2xl px-4 py-3 text-sm relative ${msg.type === 'user'
                             ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-lg shadow-violet-500/30'
                             : msg.isWelcome
                               ? 'bg-gradient-to-r from-green-50 to-emerald-50 text-green-800 border border-green-200 shadow-lg'
                               : msg.isIdle
                                 ? 'bg-gradient-to-r from-orange-50 to-amber-50 text-orange-800 border border-orange-200 shadow-lg'
                                 : 'bg-white/90 backdrop-blur-sm text-gray-800 border border-gray-200/50 shadow-lg'
-                        }`}
+                          }`}
                       >
                         {(msg.isWelcome || msg.isIdle) && (
-                          <div className={`text-xs font-semibold mb-2 ${
-                            msg.isWelcome ? 'text-green-600' : 'text-orange-600'
-                          }`}>
+                          <div className={`text-xs font-semibold mb-2 ${msg.isWelcome ? 'text-green-600' : 'text-orange-600'
+                            }`}>
                             {msg.isWelcome ? '🎉 Welcome Guide' : '💭 Friendly Check-in'}
                           </div>
                         )}
-                        
+
                         <div className="prose prose-sm max-w-none leading-relaxed
                           prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0
                           prose-headings:my-1 prose-strong:font-semibold
@@ -534,9 +501,8 @@ const AssistantBot = () => {
                           </ReactMarkdown>
                         </div>
                         <div
-                          className={`text-xs mt-2 ${
-                            msg.type === 'user' ? 'text-white/70' : 'text-gray-500'
-                          }`}
+                          className={`text-xs mt-2 ${msg.type === 'user' ? 'text-white/70' : 'text-gray-500'
+                            }`}
                         >
                           {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         </div>
@@ -584,19 +550,18 @@ const AssistantBot = () => {
                       </button>
                     )}
                   </div>
-                  
+
                   <button
                     onClick={toggleVoiceInput}
-                    className={`p-3 rounded-xl transition-all duration-200 hover:scale-110 ${
-                      isListening 
-                        ? 'bg-red-500 text-white shadow-lg shadow-red-500/40' 
+                    className={`p-3 rounded-xl transition-all duration-200 hover:scale-110 ${isListening
+                        ? 'bg-red-500 text-white shadow-lg shadow-red-500/40'
                         : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
-                    }`}
+                      }`}
                     title={isListening ? "Stop listening" : "Voice input"}
                   >
                     {isListening ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
                   </button>
-                  
+
                   <button
                     onClick={handleSend}
                     disabled={!inputValue.trim()}
@@ -606,7 +571,7 @@ const AssistantBot = () => {
                     <Send className="w-5 h-5" />
                   </button>
                 </div>
-                
+
                 <div className="flex items-center justify-between mt-3 text-xs text-gray-500">
                   <div className="flex items-center gap-2">
                     <div className="flex items-center gap-1">

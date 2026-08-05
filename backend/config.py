@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = True
     smtp_use_ssl: bool = False
     smtp_timeout_seconds: int = 20
+    daily_billing_email_enabled: bool = True
+    daily_billing_email_hour: int = 1
     
     # Microsoft OAuth for SMTP
     microsoft_tenant_id: Optional[str] = None
@@ -78,6 +80,9 @@ class Settings(BaseSettings):
     nxdune_org_create_url: str = "https://stg-nxdune.bourntec.com/api/organizations/create/"
     nxdune_org_create_auth_token: Optional[str] = None
     nxdune_org_create_timeout_seconds: int = 20
+    task_api_base_url: Optional[str] = "https://stg-nxdune.bourntec.com/api"
+    task_api_client_id: Optional[str] = None
+    task_api_client_secret: Optional[str] = None
 
     class Config:
         env_file = ".env"

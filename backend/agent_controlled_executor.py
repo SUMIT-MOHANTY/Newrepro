@@ -1700,39 +1700,59 @@ async def run_controlled_execution(
 #   3. Docker name filter is exact, so we won't match wrong containers
 
 
-def _find_agent_container(agent_id: str) -> Optional[str]:
+def _find_agent_container(agent_id: str, container_hint: Optional[str] = None) -> Optional[str]:
     """
-    Find a running Docker container for this agent by scanning container names.
-    Container names follow the pattern: {sanitized_agent_id}_{8-char-hex}
-    Agent IDs containing '#' are sanitized to '_' to match how containers are named.
+    Find a running Docker container for this agent by checking hints,
+    global mappings, base agent IDs, or scanning running Docker container names.
     """
+    if container_hint and str(container_hint).strip():
+        return str(container_hint).strip()
+
     if not agent_id:
         return None
+
+    # Check global container map first
+    if agent_id in _AGENT_CONTAINER_MAP:
+        return _AGENT_CONTAINER_MAP[agent_id]
+
+    base_agent_id = agent_id.split('#')[0].strip()
+    if base_agent_id in _AGENT_CONTAINER_MAP:
+        return _AGENT_CONTAINER_MAP[base_agent_id]
+
     try:
-        # Normalize agent_id: containers replace '#' with '_' in names
+        docker_bin = shutil.which("docker") or "docker"
+        # Search docker ps using base_agent_id and sanitized_id
         sanitized_id = agent_id.replace('#', '_')
-        
-        # List all running containers and filter by name containing sanitized_id
+        patterns = [base_agent_id, sanitized_id]
+
+        for pattern in patterns:
+            if not pattern:
+                continue
+            result = subprocess.run(
+                [docker_bin, "ps", "--filter", f"name={pattern}",
+                 "--format", "{{.Names}}", "--no-trunc"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                containers = [n.strip() for n in result.stdout.strip().split("\n") if n.strip()]
+                if containers:
+                    for name in containers:
+                        if name.startswith(f"{pattern}_") or name == pattern:
+                            return name
+                    return containers[0]
+
+        # Worker pool fallback: if any dsuite_worker_pool container is running
         result = subprocess.run(
-            ["docker", "ps", "--filter", f"name={sanitized_id}",
+            [docker_bin, "ps", "--filter", "name=dsuite_worker_pool",
              "--format", "{{.Names}}", "--no-trunc"],
             capture_output=True, text=True, timeout=10,
         )
-        if result.returncode != 0 or not result.stdout.strip():
-            return None
+        if result.returncode == 0 and result.stdout.strip():
+            pool_containers = [n.strip() for n in result.stdout.strip().split("\n") if n.strip()]
+            if pool_containers:
+                return pool_containers[0]
 
-        containers = [n.strip() for n in result.stdout.strip().split("\n") if n.strip()]
-        if not containers:
-            return None
-
-        # Exact match: prefer container that starts with sanitized_id_
-        for name in containers:
-            if name.startswith(f"{sanitized_id}_"):
-                return name
-
-        # Fallback to first matching container
-        return containers[0]
-
+        return None
     except Exception as e:
         logger.debug(f"Container discovery failed for {agent_id}: {e}")
         return None
@@ -1762,12 +1782,24 @@ class ContainerAwareControlledExecutor:
         self._container_name: Optional[str] = None
         self._executor: Optional[ControlledExecutor] = None
 
-    async def _ensure_container(self) -> Optional[str]:
+    async def _ensure_container(self, container_hint: Optional[str] = None) -> Optional[str]:
         """Find or refresh the container name for this agent."""
+        if container_hint and str(container_hint).strip():
+            cname = str(container_hint).strip()
+            if self._container_name != cname or not self._executor:
+                self._container_name = cname
+                self._executor = ControlledExecutor(
+                    container_name=cname,
+                    project_root=self.project_root,
+                    project_token=self.project_token,
+                    agent_id=self.agent_id,
+                )
+            return cname
+
         if self._container_name:
             return self._container_name
 
-        container_name = _find_agent_container(self.agent_id)
+        container_name = _find_agent_container(self.agent_id, container_hint=container_hint)
         if container_name:
             self._container_name = container_name
             self._executor = ControlledExecutor(
@@ -1789,19 +1821,13 @@ class ContainerAwareControlledExecutor:
         canonical_tree: str = "",
         existing_files: Optional[List[str]] = None,
         is_bootstrap: bool = False,
+        container_hint: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run controlled execution for a task. Discovers container automatically.
-
-        Returns a dict compatible with _call_ai_for_code()'s output format:
-        {
-            "script": str,      # Fake bash script for _exec_script_in_container
-            "thought": str,     # Optional thought text
-            "files_written": List[str],  # Files created
-            "success": bool,             # Whether execution succeeded
-        }
         """
-        container_name = await self._ensure_container()
+        hint = container_hint or (task.get("container_name") if isinstance(task, dict) else None)
+        container_name = await self._ensure_container(container_hint=hint)
         if not container_name or not self._executor:
             logger.warning(f"[CE] No container found for {self.agent_id}, controlled execution unavailable")
             return {"success": False, "script": "", "thought": "No container found", "files_written": []}
@@ -1881,14 +1907,12 @@ async def try_controlled_execution(
     tech_spec: str = "",
     peer_context: str = "",
     workspace_tree: str = "",
+    container_name: str = "",
 ) -> Optional[Dict[str, Any]]:
     """
     Try to execute a task using the controlled executor.
     Returns None if not available (e.g., no container found, bootstrap task).
     Otherwise returns the result dict with 'script', 'thought', 'files_written'.
-
-    This is the main integration point. Call this instead of _call_ai_for_code()
-    for non-bootstrap tasks.
     """
     # Detect bootstrap: use original bash approach
     if not task:
@@ -1916,6 +1940,7 @@ async def try_controlled_execution(
         peer_context_block=peer_context,
         workspace_tree=workspace_tree,
         is_bootstrap=False,
+        container_hint=container_name,
     )
 
     if result["success"]:
@@ -1926,17 +1951,6 @@ async def try_controlled_execution(
 
 
 # ── Drop-in Replacement Wrapper ─────────────────────────────────────────────
-# This function has the EXACT same signature as agent_service._call_ai_for_code().
-# It adds controlled execution as a PREFERRED path and falls back to the original
-# bash approach if controlled execution is not available.
-#
-# Usage:
-#   # Replace this:
-#   code, thought = await _call_ai_for_code(...)
-#
-#   # With this:
-#   from agent_controlled_executor import call_ai_for_code_with_controlled
-#   code, thought = await call_ai_for_code_with_controlled(...)
 
 async def call_ai_for_code_with_controlled(
     task_description: str,
@@ -1952,6 +1966,7 @@ async def call_ai_for_code_with_controlled(
     agent_output_log: list = None,
     checklist: list = None,
     task: dict = None,
+    container_name: str = "",
 ) -> tuple[str, str]:
     """
     Drop-in replacement for agent_service._call_ai_for_code().
@@ -1971,6 +1986,7 @@ async def call_ai_for_code_with_controlled(
             tech_spec=tech_spec,
             peer_context=peer_context,
             workspace_tree=workspace_tree,
+            container_name=container_name,
         )
 
         if controlled_result is not None and controlled_result["success"]:

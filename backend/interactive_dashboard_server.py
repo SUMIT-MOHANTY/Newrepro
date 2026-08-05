@@ -742,7 +742,7 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
                             <th onclick="sortUserTable('hours')">Total Time (Hrs) ⇅</th>
                             <th onclick="sortUserTable('ai_tokens')">AI Tokens ⇅</th>
                             <th onclick="sortUserTable('token_cost')">Token Cost ⇅</th>
-                            <th onclick="sortUserTable('infra_cost')">Infra Cost ($1/hr) ⇅</th>
+                            <th onclick="sortUserTable('infra_cost')">Infra Cost ($0.7/hr) ⇅</th>
                             <th onclick="sortUserTable('total_cost')">Total Cost ⇅</th>
                         </tr>
                     </thead>
@@ -974,14 +974,14 @@ DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
                     <div class="kpi-desc">Prompt + Completion token spend</div>
                 </div>
                 <div class="kpi-card">
-                    <div class="kpi-title">Infra Cost ($1/hr User-Wise)</div>
+                    <div class="kpi-title">Infra Cost ($0.7/hr User-Wise)</div>
                     <div class="kpi-value" style="color:#bc8cff">$${(summaryData.total_infra_cost || 0).toFixed(2)}</div>
                     <div class="kpi-desc">Active usage duration per user</div>
                 </div>
                 <div class="kpi-card">
                     <div class="kpi-title">Total Organization Spend</div>
                     <div class="kpi-value" style="color:var(--green)">$${(summaryData.total_cost || 0).toFixed(2)}</div>
-                    <div class="kpi-desc">Token Cost + Infra Cost ($1/hr)</div>
+                    <div class="kpi-desc">Token Cost + Infra Cost ($0.7/hr)</div>
                 </div>
             `;
         }

@@ -177,6 +177,41 @@ def _send_email_graph_api(message: EmailMessage, access_token: str, sender_email
     
     subject = message["Subject"]
     to_recipient = message["To"]
+    # Parse To recipients (handle possible comma-separated lists)
+    to_recipients = []
+    if to_recipient:
+        for addr in to_recipient.split(","):
+            addr_str = addr.strip()
+            if addr_str:
+                to_recipients.append({
+                    "emailAddress": {
+                        "address": addr_str
+                    }
+                })
+
+    # Parse CC recipients
+    cc_recipients = []
+    if "Cc" in message and message["Cc"]:
+        for addr in message["Cc"].split(","):
+            addr_str = addr.strip()
+            if addr_str:
+                cc_recipients.append({
+                    "emailAddress": {
+                        "address": addr_str
+                    }
+                })
+
+    # Parse BCC recipients
+    bcc_recipients = []
+    if "Bcc" in message and message["Bcc"]:
+        for addr in message["Bcc"].split(","):
+            addr_str = addr.strip()
+            if addr_str:
+                bcc_recipients.append({
+                    "emailAddress": {
+                        "address": addr_str
+                    }
+                })
     
     html_content = ""
     text_content = ""
@@ -196,16 +231,15 @@ def _send_email_graph_api(message: EmailMessage, access_token: str, sender_email
                 "contentType": body_type,
                 "content": body_content
             },
-            "toRecipients": [
-                {
-                    "emailAddress": {
-                        "address": to_recipient
-                    }
-                }
-            ]
+            "toRecipients": to_recipients
         },
         "saveToSentItems": "true"
     }
+
+    if cc_recipients:
+        payload["message"]["ccRecipients"] = cc_recipients
+    if bcc_recipients:
+        payload["message"]["bccRecipients"] = bcc_recipients
 
     headers = {
         "Authorization": f"Bearer {access_token}",

@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { API_BASE_URL, API_ENDPOINTS } from '../config';
 import { customConfirm } from '../utils/modalHelpers';
-import { Send, AlertCircle, CheckCircle2, AlertTriangle, ChevronRight, ChevronLeft, ArrowRight, Check, Loader2, GitBranch, Code, HardDrive, CalendarDays, Clock, Layers, FolderKanban, Activity, FileCheck, Info, Building2, Target, Shield } from 'lucide-react';
+import { Send, AlertCircle, CheckCircle2, AlertTriangle, ChevronRight, ChevronLeft, ArrowRight, Check, Loader2, GitBranch, Code, HardDrive, CalendarDays, Clock, Layers, FolderKanban, Activity, FileCheck, Info, Building2, Target, Shield, X } from 'lucide-react';
 import { useGovernanceQuestions, useSubmitGovernance } from '../hooks/useGovernance';
 import colors from '../styles/colors';
 import { createDraftProject, getDraftProject, upsertDraftProject } from '../utils/draftProjects';
@@ -79,6 +79,59 @@ const StepIndicator = ({ steps, currentStep, vertical = false, startStepNumber =
             </div>
         </div>
     );
+};
+
+/* ─────────────────────────────────────────────────────────
+   TAGS GRADIENT PALETTE GENERATOR
+───────────────────────────────────────────────────────── */
+const getTagColorTheme = (tag, idx) => {
+    // Hash based on tag id if present, or its position index to ensure 
+    // that editing/renaming the tag name does not change its color!
+    const key = tag?.id ? String(tag.id) : `new-${idx}`;
+    let hash = 0;
+    for (let i = 0; i < key.length; i++) {
+        hash = key.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    const index = Math.abs(hash) % 6;
+    const themes = [
+        { 
+            bg: 'bg-emerald-50/90 dark:bg-emerald-950/20', 
+            border: 'border-emerald-200/60 dark:border-emerald-800/40', 
+            text: 'text-emerald-700 dark:text-emerald-300', 
+            dot: 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' 
+        },
+        { 
+            bg: 'bg-indigo-50/90 dark:bg-indigo-950/20', 
+            border: 'border-indigo-200/60 dark:border-indigo-800/40', 
+            text: 'text-indigo-700 dark:text-indigo-300', 
+            dot: 'bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.5)]' 
+        },
+        { 
+            bg: 'bg-rose-50/90 dark:bg-rose-950/20', 
+            border: 'border-rose-200/60 dark:border-rose-800/40', 
+            text: 'text-rose-700 dark:text-rose-300', 
+            dot: 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.5)]' 
+        },
+        { 
+            bg: 'bg-amber-50/90 dark:bg-amber-950/20', 
+            border: 'border-amber-200/60 dark:border-amber-800/40', 
+            text: 'text-amber-700 dark:text-amber-300', 
+            dot: 'bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]' 
+        },
+        { 
+            bg: 'bg-sky-50/90 dark:bg-sky-950/20', 
+            border: 'border-sky-200/60 dark:border-sky-800/40', 
+            text: 'text-sky-700 dark:text-sky-300', 
+            dot: 'bg-sky-500 shadow-[0_0_8px_rgba(14,165,233,0.5)]' 
+        },
+        { 
+            bg: 'bg-purple-50/90 dark:bg-purple-950/20', 
+            border: 'border-purple-200/60 dark:border-purple-800/40', 
+            text: 'text-purple-700 dark:text-purple-300', 
+            dot: 'bg-purple-500 shadow-[0_0_8px_rgba(168,85,247,0.5)]' 
+        }
+    ];
+    return themes[index];
 };
 
 /* ─────────────────────────────────────────────────────────
@@ -861,6 +914,10 @@ const GovernanceForm = ({
 
     const [answers, setAnswers] = useState({});
     const [projectName, setProjectName] = useState('');
+    const [projectTags, setProjectTags] = useState([]);
+    const [newTagInput, setNewTagInput] = useState('');
+    const [editingTag, setEditingTag] = useState(null);
+    const [editTagValue, setEditTagValue] = useState('');
     const [error, setError] = useState('');
     const [result, setResult] = useState(null);
     const [isHydrated, setIsHydrated] = useState(false);
@@ -980,6 +1037,30 @@ const GovernanceForm = ({
         sessionStorage.setItem('governanceResult', JSON.stringify(res));
     };
 
+    const handleClearAllTags = async () => {
+        const confirmed = await customConfirm(
+            "Are you sure you want to remove all tags from this project?",
+            "This action will immediately delete all tags saved for this project in the database.",
+            "Clear All Tags"
+        );
+        if (!confirmed) return;
+
+        const persistedTags = projectTags.filter(t => t.id !== null);
+        if (persistedTags.length > 0) {
+            try {
+                await Promise.all(persistedTags.map(tag => 
+                    fetch(`${API_BASE_URL}/api/governance/tags/${tag.id}`, {
+                        method: 'DELETE',
+                        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+                    })
+                ));
+            } catch (err) {
+                console.error('Failed to clear some tags:', err);
+            }
+        }
+        setProjectTags([]);
+    };
+
     /* ── mount ── */
     useEffect(() => {
         const params = new URLSearchParams(location.search);
@@ -1019,6 +1100,11 @@ const GovernanceForm = ({
                     const data = await res.json();
                     if (data && data.id) {
                         if (data.project_name) setProjectName(data.project_name);
+                        if (Array.isArray(data.tags)) {
+                            setProjectTags(data.tags);
+                        } else {
+                            setProjectTags([]);
+                        }
                         if (Array.isArray(data.answers)) {
                             const r = {};
                             data.answers.forEach((a) => {
@@ -1045,6 +1131,7 @@ const GovernanceForm = ({
         const hydrateData = async () => {
             if (isNew) {
                 setProjectName('');
+                setProjectTags([]);
                 setAnswers({});
                 setCurrentStep(0);
                 setResult(null);
@@ -1137,6 +1224,14 @@ const GovernanceForm = ({
             // ignore storage errors
         }
     }, [currentStep, selectedProjectKey]);
+
+    useEffect(() => {
+        if (selectedProject && Array.isArray(selectedProject.tags)) {
+            setProjectTags(selectedProject.tags);
+        } else {
+            setProjectTags([]);
+        }
+    }, [selectedProjectKey, selectedProject?.tags]);
 
     useEffect(() => {
         if (queryError) {
@@ -1269,7 +1364,7 @@ const GovernanceForm = ({
         );
     }
 
-    if (result) {
+    if (result && isGovernanceQuestionsPage) {
         return <GovernanceResult 
             result={result} 
             fetchRoadmapData={fetchRoadmapData}
@@ -1349,6 +1444,7 @@ const GovernanceForm = ({
                 body: JSON.stringify({
                     project_token: projectKeyToUse,
                     project_name: trimmedName,
+                    tags: projectTags.map(t => t.name),
                 })
             });
 
@@ -1366,6 +1462,9 @@ const GovernanceForm = ({
             }
 
             const backendProject = await response.json();
+            if (Array.isArray(backendProject.tags)) {
+                setProjectTags(backendProject.tags);
+            }
             
             // Use the backend-generated token as the single source of truth.
             // draft_projects is only kept as a lightweight cache; the backend DB is the primary source.
@@ -1562,6 +1661,154 @@ const GovernanceForm = ({
                                             </div>
                                         </div>
                                         <p className="text-[11px] text-app-text-light mt-2 ml-1">This name will be used to identify your screening assessment.</p>
+
+                                        {/* Tags Editor */}
+                                        <div className="mt-6 space-y-3">
+                                            <div className="flex items-center justify-between px-1">
+                                                <label className="block text-[11px] font-bold text-app-text-muted uppercase tracking-widest">
+                                                    Project Tags
+                                                </label>
+                                                {projectTags.length > 0 && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={handleClearAllTags}
+                                                        className="text-[10px] font-bold text-red-500 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300 uppercase tracking-wider transition-colors focus:outline-none"
+                                                    >
+                                                        Clear All
+                                                    </button>
+                                                )}
+                                            </div>
+                                            
+                                            {/* Tag Pills List */}
+                                            <div className="flex flex-wrap gap-2.5 min-h-[44px] p-3 rounded-2xl bg-app-bg-page/40 border border-app-border/60 shadow-inner backdrop-blur-sm">
+                                                {projectTags.length > 0 ? (
+                                                    projectTags.map((tag, idx) => {
+                                                        const isEditing = editingTag?.id === tag.id && tag.id !== null;
+                                                        return (
+                                                            <div
+                                                                key={tag.id || idx}
+                                                                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full border transition-all duration-200 select-none group/pill
+                                                                    ${isEditing 
+                                                                        ? 'bg-app-bg-page border-app-primary text-app-text-main shadow-sm' 
+                                                                        : 'bg-indigo-50/90 dark:bg-indigo-950/40 border-indigo-200 dark:border-indigo-900/60 text-indigo-900 dark:text-indigo-200 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 hover:-translate-y-0.5 hover:shadow-sm cursor-pointer'
+                                                                    }`}
+                                                            >
+                                                                {isEditing ? (
+                                                                    <input
+                                                                        type="text"
+                                                                        value={editTagValue}
+                                                                        onChange={(e) => setEditTagValue(e.target.value)}
+                                                                        onKeyDown={async (e) => {
+                                                                            if (e.key === 'Enter') {
+                                                                                if (!editTagValue.trim()) return;
+                                                                                try {
+                                                                                    const res = await fetch(`${API_BASE_URL}/api/governance/tags/${tag.id}`, {
+                                                                                        method: 'PUT',
+                                                                                        headers: {
+                                                                                            'Content-Type': 'application/json',
+                                                                                            Authorization: `Bearer ${localStorage.getItem('token')}`
+                                                                                        },
+                                                                                        body: JSON.stringify({ name: editTagValue })
+                                                                                    });
+                                                                                    if (res.ok) {
+                                                                                        const updated = await res.json();
+                                                                                        setProjectTags(prev => prev.map(t => t.id === tag.id ? updated : t));
+                                                                                    }
+                                                                                } catch (err) {
+                                                                                    console.error('Failed to update tag:', err);
+                                                                                }
+                                                                                setEditingTag(null);
+                                                                            } else if (e.key === 'Escape') {
+                                                                                setEditingTag(null);
+                                                                            }
+                                                                        }}
+                                                                        className="bg-transparent border-0 outline-none text-app-text-main text-xs p-0 w-24 font-semibold focus:ring-0 focus:border-0 leading-none h-4"
+                                                                        autoFocus
+                                                                    />
+                                                                ) : (
+                                                                    <div className="relative group/tooltip flex items-center justify-center">
+                                                                        <span
+                                                                            className="cursor-pointer hover:underline font-semibold text-xs leading-none"
+                                                                            onClick={() => {
+                                                                                if (tag.id) {
+                                                                                    setEditingTag(tag);
+                                                                                    setEditTagValue(tag.name);
+                                                                                }
+                                                                            }}
+                                                                        >
+                                                                            {tag.name}
+                                                                        </span>
+                                                                        {tag.id && (
+                                                                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2.5 py-1.5 bg-slate-900 border border-slate-700 text-slate-100 text-[10px] font-semibold rounded-lg shadow-xl whitespace-nowrap opacity-0 scale-90 pointer-events-none group-hover/tooltip:opacity-100 group-hover/tooltip:scale-100 transition-all duration-200 z-50 transform origin-bottom">
+                                                                                <span>Click to rename</span>
+                                                                                <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-900"></div>
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                )}
+                                                                
+                                                                <div className="relative group/tooltip flex items-center justify-center">
+                                                                    <button
+                                                                        onClick={async () => {
+                                                                            if (tag.id) {
+                                                                                try {
+                                                                                    await fetch(`${API_BASE_URL}/api/governance/tags/${tag.id}`, {
+                                                                                        method: 'DELETE',
+                                                                                        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+                                                                                    });
+                                                                                } catch (err) {
+                                                                                    console.error('Failed to delete tag:', err);
+                                                                                }
+                                                                            }
+                                                                            setProjectTags(prev => prev.filter((_, i) => i !== idx));
+                                                                        }}
+                                                                        className={`flex items-center justify-center w-4 h-4 rounded-full transition-all text-xs font-bold
+                                                                            ${isEditing 
+                                                                                ? 'bg-app-bg-muted text-app-text-muted hover:bg-red-500 hover:text-white' 
+                                                                                : 'bg-black/5 dark:bg-white/10 text-current/75 hover:bg-red-500 hover:text-white border border-current/10'
+                                                                            }`}
+                                                                    >
+                                                                        <X className="w-2.5 h-2.5 stroke-[3.5]" />
+                                                                    </button>
+                                                                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2.5 py-1.5 bg-slate-900 border border-rose-900/50 text-rose-300 text-[10px] font-semibold rounded-lg shadow-xl whitespace-nowrap opacity-0 scale-90 pointer-events-none group-hover/tooltip:opacity-100 group-hover/tooltip:scale-100 transition-all duration-200 z-50 transform origin-bottom">
+                                                                        <span>Delete tag</span>
+                                                                        <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-900"></div>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })
+                                                ) : (
+                                                    <span className="text-xs text-app-text-muted/80 font-medium italic px-2 py-1.5 flex items-center gap-1.5">
+                                                        🏷️ No tags added yet. Type below to create.
+                                                    </span>
+                                                )}
+                                            </div>
+
+                                            {/* Tag Input Field */}
+                                            <div className="relative group">
+                                                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-app-text-muted pointer-events-none group-focus-within:text-app-primary transition-colors text-sm">
+                                                    🏷️
+                                                </span>
+                                                <input
+                                                    type="text"
+                                                    value={newTagInput}
+                                                    onChange={(e) => setNewTagInput(e.target.value)}
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === 'Enter' || e.key === ',') {
+                                                            e.preventDefault();
+                                                            const val = newTagInput.trim().replace(/,$/, '');
+                                                            if (val && !projectTags.some(t => t.name.toLowerCase() === val.toLowerCase())) {
+                                                                setProjectTags(prev => [...prev, { id: null, name: val }]);
+                                                            }
+                                                            setNewTagInput('');
+                                                        }
+                                                    }}
+                                                    placeholder="Type tag name and press Enter or comma..."
+                                                    className="w-full pl-10 pr-4 py-3 border border-app-border rounded-xl focus:ring-2 focus:ring-app-primary/20 focus:border-app-primary text-xs bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-text-muted hover:border-app-border font-semibold shadow-sm"
+                                                />
+                                            </div>
+                                        </div>
                                     </div>
                                 )}
 

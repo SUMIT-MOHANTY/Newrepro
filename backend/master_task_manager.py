@@ -191,6 +191,9 @@ class MasterTaskManager:
         available_tasks = []
         for task in self.task_queue:
             if task["status"] == "pending" and self._task_dependencies_met(task):
+                # Phase gate check
+                if not self._phase_gate_dependencies_met(task, self.task_queue):
+                    continue  # Skip this task, phase gate not cleared
                 available_tasks.append(task)
         
         if not available_tasks:
@@ -258,6 +261,15 @@ class MasterTaskManager:
             best_agent = self._choose_best_agent_for_task(task, suitable_agents)
             
             if best_agent and best_agent in idle_agents:
+                # Review queue backpressure — don't assign more if review queue is deep
+                try:
+                    from master_review_queue import review_queue
+                    if review_queue.get_queue_size() > 5:
+                        logger.info(f"Review queue has {review_queue.get_queue_size()} pending — applying backpressure")
+                        continue  # Wait for reviews to drain
+                except ImportError:
+                    pass
+
                 # Assign task
                 self.agent_assignments[best_agent] = task
                 self.agent_status[best_agent] = "assigned"
@@ -377,6 +389,64 @@ class MasterTaskManager:
                 return False
 
         return True
+
+    def _get_task_phase(self, task: Dict[str, Any]) -> int:
+        """Determine the phase of a task. Returns 1-4."""
+        phase = (task.get('phase') or '').lower()
+        if phase in ('frontend', 'ui', 'prototype'):
+            return 1
+        elif phase in ('backend', 'api', 'service', 'database'):
+            return 2
+        elif phase in ('integration', 'wiring'):
+            return 3
+        elif phase in ('testing', 'qa', 'e2e', 'deployment'):
+            return 4
+        
+        # Fallback: use sprint_id
+        sprint = str(task.get('sprint_id') or task.get('sprint') or '').lower()
+        if 'sprint_1' in sprint or 'sprint 1' in sprint:
+            return 1
+        elif 'sprint_2' in sprint or 'sprint 2' in sprint:
+            return 2
+        elif 'sprint_3' in sprint or 'sprint 3' in sprint:
+            return 3
+        elif 'sprint_4' in sprint or 'sprint 4' in sprint:
+            return 4
+        
+        return 1  # Default to phase 1
+
+    def _is_task_completed(self, task: Dict[str, Any]) -> bool:
+        """Check if a task is completed."""
+        status = str(task.get('status') or '').lower()
+        return status in ('completed', 'done', 'closed', 'resolved')
+
+    def _phase_gate_dependencies_met(self, task: Dict[str, Any], all_tasks: List[Dict[str, Any]]) -> bool:
+        """
+        Phase-gate check: A task in phase N can only start if ALL tasks
+        in phase N-1 are completed.
+        
+        Phase ordering: 1 (frontend) → 2 (backend) → 3 (integration) → 4 (testing)
+        
+        This is checked IN ADDITION to explicit linked_tasks dependencies.
+        """
+        task_phase = self._get_task_phase(task)
+        if task_phase <= 1:
+            return True  # Phase 1 tasks have no phase gate
+        
+        # Get all tasks from previous phase
+        prev_phase = task_phase - 1
+        prev_phase_tasks = [
+            t for t in all_tasks 
+            if self._get_task_phase(t) == prev_phase
+        ]
+        
+        if not prev_phase_tasks:
+            return True  # No tasks in previous phase, gate is open
+        
+        # All previous phase tasks must be completed
+        return all(
+            self._is_task_completed(t) for t in prev_phase_tasks
+        )
 
     async def choose_best_agent_for_task_public(
         self,
