@@ -2543,7 +2543,7 @@ def _get_vibecoding_usage_logs(start_dt=None, end_dt=None):
                 
             p_tokens = r["prompt_tokens"] or 0
             c_tokens = r["completion_tokens"] or 0
-            cost = (p_tokens + c_tokens) * 0.000007
+            cost = (p_tokens + c_tokens) * 0.00007
             
             logs.append({
                 "username": r["username"],
@@ -2670,7 +2670,7 @@ def _fetch_vibecoding_data_directly(start_dt=None, end_dt=None):
                 p_tokens = r["prompt_tokens"] or 0
                 c_tokens = r["completion_tokens"] or 0
                 t_tokens = r["total_tokens"] or (p_tokens + c_tokens)
-                cost = round(t_tokens * 0.000007, 6)
+                cost = round(t_tokens * 0.00007, 6)
 
                 logs.append({
                     "id": r["id"],
@@ -2735,7 +2735,7 @@ def _fetch_vibecoding_data_directly(start_dt=None, end_dt=None):
                             "prompt_tokens": p_tok,
                             "completion_tokens": 0,
                             "total_tokens": p_tok,
-                            "cost": round(p_tok * 0.000007, 6),
+                            "cost": round(p_tok * 0.00007, 6),
                             "timestamp": ts_str
                         }
                     elif m["role"] == "assistant" and curr_log:
@@ -2743,7 +2743,7 @@ def _fetch_vibecoding_data_directly(start_dt=None, end_dt=None):
                         c_tok = max(1, len(content) // 4)
                         curr_log["completion_tokens"] += c_tok
                         curr_log["total_tokens"] += c_tok
-                        curr_log["cost"] = round(curr_log["total_tokens"] * 0.000007, 6)
+                        curr_log["cost"] = round(curr_log["total_tokens"] * 0.00007, 6)
 
                 if curr_log:
                     logs.append(curr_log)
@@ -3129,7 +3129,7 @@ def get_superadmin_vibecoding_costs(
         p_tok = log.get("prompt_tokens") or 0
         c_tok = log.get("completion_tokens") or 0
         t_tok = log.get("total_tokens") or (p_tok + c_tok)
-        cost = log.get("cost") or round(t_tok * 0.000007, 6)
+        cost = log.get("cost") or round(t_tok * 0.00007, 6)
 
         total_p_tokens += p_tok
         total_c_tokens += c_tok
