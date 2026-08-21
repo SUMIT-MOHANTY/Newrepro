@@ -248,6 +248,33 @@ def check_api_key(api_key: Optional[str] = None) -> bool:
     return bool(key and key != "your-api-key-here")
 
 
+def check_ai_allowance(user_id: Optional[int] = None, project_token: Optional[str] = None):
+    """
+    Synchronously validates AI allowance using TokenOps before making the LLM call.
+    Raises HTTPException (402 or 403) if blocked or exhausted.
+    """
+    try:
+        from database import SessionLocal
+        from tokenops.services.tokenops_orchestrator import TokenOpsOrchestrator
+
+        u_id = user_id or current_user_id_var.get()
+        p_token = project_token or current_project_token_var.get()
+
+        if u_id and p_token:
+            db = SessionLocal()
+            try:
+                orchestrator = TokenOpsOrchestrator.create(db)
+                orchestrator.pre_execute(user_id=u_id, organization_name=p_token)
+            finally:
+                db.close()
+    except Exception as e:
+        # If it's our own HTTPException (like 402 or 403), bubble it up
+        from fastapi import HTTPException
+        if isinstance(e, HTTPException):
+            raise e
+        logger.error(f"Failed to check AI allowance: {e}", exc_info=True)
+
+
 def log_ai_usage(
     messages: list,
     response_text: str,
@@ -259,18 +286,14 @@ def log_ai_usage(
     response_data: Optional[dict] = None,
 ):
     """
-    Asynchronously logs AI token usage and calculations to the database.
+    Asynchronously logs AI token usage and calculations to the database using TokenOps.
     
     Extracts actual token counts from the API response payload if available (e.g. usage.input_tokens / output_tokens / prompt_tokens / completion_tokens).
-    If token count is not provided by the API, falls back to character estimation (1 token = 4 characters).
-
-    Rates for BRN Llama / BournAI:
-    - Input: $7.00 per 1M tokens ($0.000007 per token)
-    - Output: $7.00 per 1M tokens ($0.000007 per token)
+    If token count is not provided by the API, passes None to TokenOps which sets status to UNKNOWN.
     """
     try:
         from database import SessionLocal
-        import models
+        from tokenops.services.tokenops_orchestrator import TokenOpsOrchestrator
 
         # Get values from ContextVars if not explicitly provided
         u_id = user_id or current_user_id_var.get()
@@ -290,42 +313,24 @@ def log_ai_usage(
                     if isinstance(c_tok, int) and c_tok >= 0:
                         completion_tokens = c_tok
 
-        # 2. Fallback to character estimation (1 token ≈ 4 chars) if not provided by API response
-        if prompt_tokens is None:
-            prompt_text = ""
-            for msg in messages:
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    prompt_text += content + "\n"
-                elif isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            prompt_text += block.get("text", "") + "\n"
-            prompt_tokens = max(1, len(prompt_text) // 4)
-
-        if completion_tokens is None:
-            completion_tokens = max(1, len(response_text) // 4) if response_text else 0
-
-        # Calculate cost based on rate
-        cost = (prompt_tokens * 0.000007) + (completion_tokens * 0.000007)
+        # Note: We NO LONGER estimate tokens if missing. The TokenOpsOrchestrator will 
+        # log it as UNKNOWN and trigger manual reconciliation.
 
         db = SessionLocal()
         try:
-            log_entry = models.AIUsageLog(
+            orchestrator = TokenOpsOrchestrator.create(db)
+            orchestrator.post_execute(
                 user_id=u_id,
-                project_token=p_token,
-                model=model_name,
+                organization_name=p_token,
+                model_name=model_name,
                 prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                cost=round(cost, 6),
+                completion_tokens=completion_tokens
             )
-            db.add(log_entry)
-            db.commit()
-            logger.info(f"Logged AI Usage: {prompt_tokens} prompt, {completion_tokens} completion. Cost: ${cost:.6f}")
+            logger.info(f"Logged AI Usage to TokenOps: {prompt_tokens} prompt, {completion_tokens} completion.")
         finally:
             db.close()
     except Exception as e:
-        logger.error(f"Failed to log AI usage: {e}", exc_info=True)
+        logger.error(f"Failed to log AI usage via TokenOps: {e}", exc_info=True)
 
 
 # ── Core Non-Streaming Call ────────────────────────────────────────────────
@@ -357,6 +362,8 @@ async def call_llm(
         Raw response dict from the API (format varies per provider).
         Use extract_content_from_response() to get the text.
     """
+    check_ai_allowance()
+
     url = resolve_url(api_url)
     model_name = resolve_model(model)
     use_brn = is_brn_llama_enabled() or (url == settings.brn_llama_url)
@@ -497,6 +504,8 @@ async def call_llm_streaming(
     - BRN Llama streaming with Anthropic-style response
     - OpenAI-compatible SSE streaming
     """
+    check_ai_allowance()
+
     url = resolve_url(api_url)
     model_name = resolve_model(model)
     use_brn = is_brn_llama_enabled() or (url == settings.brn_llama_url)

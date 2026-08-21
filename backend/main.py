@@ -500,6 +500,14 @@ from coordination_api import router as coordination_router
 # Add coordination router
 app.include_router(coordination_router)
 
+# Add TokenOps Super Admin router
+from tokenops.api.superadmin import tokenops_admin_router
+app.include_router(tokenops_admin_router)
+
+# Add TokenOps Org Admin router
+from tokenops.api.orgadmin import tokenops_org_router
+app.include_router(tokenops_org_router)
+
 # --- Pydantic Models for AI ---
 class AnalyzeRequest(BaseModel):
     document_content: str
