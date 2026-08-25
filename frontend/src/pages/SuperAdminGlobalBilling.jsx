@@ -315,14 +315,36 @@ export default function SuperAdminGlobalBilling() {
         )}
 
         {/* Global Financial KPI Cards */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
           <div className="p-4 rounded-xl bg-slate-900/70 border border-purple-500/20 backdrop-blur">
+            <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+              <span className="font-semibold uppercase tracking-wider text-[10px]">Dsuite Billing</span>
+              <DollarSign className="w-4 h-4 text-purple-400" />
+            </div>
+            <div className="text-2xl font-black text-purple-300">
+              ${(stats?.dsuite_billing !== undefined ? stats.dsuite_billing : (stats?.platform_billing || totalPlatformCost)).toFixed(2)}
+            </div>
+            <div className="text-[10px] text-purple-400 mt-1">Dsuite AI Governance spend</div>
+          </div>
+
+          <div className="p-4 rounded-xl bg-slate-900/70 border border-cyan-500/20 backdrop-blur">
+            <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+              <span className="font-semibold uppercase tracking-wider text-[10px]">Vibecoding Billing</span>
+              <DollarSign className="w-4 h-4 text-cyan-400" />
+            </div>
+            <div className="text-2xl font-black text-cyan-300">
+              ${(stats?.vibecoding_billing !== undefined ? stats.vibecoding_billing : 0).toFixed(2)}
+            </div>
+            <div className="text-[10px] text-cyan-400 mt-1">Vibecoding AI inference spend</div>
+          </div>
+
+          <div className="p-4 rounded-xl bg-slate-900/70 border border-emerald-500/20 backdrop-blur">
             <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
               <span className="font-semibold uppercase tracking-wider text-[10px]">Total Platform Cost</span>
               <DollarSign className="w-4 h-4 text-emerald-400" />
             </div>
             <div className="text-2xl font-black text-emerald-400">${(stats?.platform_billing || totalPlatformCost).toFixed(2)}</div>
-            <div className="text-[10px] text-slate-400 mt-1">Token inference + compute across all orgs</div>
+            <div className="text-[10px] text-emerald-400 mt-1">Dsuite + Vibecoding combined</div>
           </div>
 
           <div className="p-4 rounded-xl bg-slate-900/70 border border-purple-500/20 backdrop-blur">
@@ -341,15 +363,6 @@ export default function SuperAdminGlobalBilling() {
             </div>
             <div className="text-2xl font-black text-white">{orgs.length}</div>
             <div className="text-[10px] text-cyan-400 mt-1">Registered tenant accounts</div>
-          </div>
-
-          <div className="p-4 rounded-xl bg-slate-900/70 border border-purple-500/20 backdrop-blur">
-            <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
-              <span className="font-semibold uppercase tracking-wider text-[10px]">Total Active Users</span>
-              <Users className="w-4 h-4 text-sky-400" />
-            </div>
-            <div className="text-2xl font-black text-white">{stats?.active_users || totalUsersAcrossOrgs}</div>
-            <div className="text-[10px] text-sky-400 mt-1">Consuming platform capacity</div>
           </div>
         </div>
 

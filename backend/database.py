@@ -40,6 +40,17 @@ with engine.connect() as conn:
     conn.execute(text("PRAGMA journal_mode=WAL"))
     conn.execute(text("PRAGMA busy_timeout=60000"))
     
+    # Check if is_super_admin exists in users table
+    try:
+        u_cursor = conn.execute(text("PRAGMA table_info(users)"))
+        u_columns = [row[1] for row in u_cursor.fetchall()]
+        if u_columns and "is_super_admin" not in u_columns:
+            print("Migrating database: Adding is_super_admin column to users table")
+            conn.execute(text("ALTER TABLE users ADD COLUMN is_super_admin BOOLEAN DEFAULT 0"))
+            conn.commit()
+    except Exception as e:
+        print(f"Users table auto-migration check skipped: {e}")
+
     # Check if project_type and repo columns exist in governance_responses table
     try:
         cursor = conn.execute(text("PRAGMA table_info(governance_responses)"))

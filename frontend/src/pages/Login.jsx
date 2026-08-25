@@ -104,8 +104,8 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
                 const lastPage = progressData.last_page_path;
                 lastProjectToken = progressData.last_project_token;
                 
-                // If user has a last page and it's not login/signup, redirect there
-                if (lastPage && lastPage !== '/login' && lastPage !== '/signup' && lastPage !== '/') {
+                // If user has a last page and it's not login/signup/superadmin, redirect there
+                if (lastPage && lastPage !== '/login' && lastPage !== '/signup' && lastPage !== '/' && !lastPage.startsWith('/superadmin')) {
                     if (nextUrl) {
                         window.location.assign(appendDsuiteToken(nextUrl, accessToken));
                     } else {

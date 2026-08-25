@@ -1589,9 +1589,20 @@ BULLETPROOF SUCCESS RULES - 100% EXECUTION GUARANTEE:
 - Follow language-specific best practices for the detected/specified tech stack
 - Include setup instructions and dependency installation
 
+CRITICAL ENTRY FILE & ROOT CONTEXT REMINDER (MANDATORY FOR ALL CODEBASES):
+- Before completing your task, inspect the workspace using ReAct (`list_dir`, `view_file`, `find`, `ls`) and THINK carefully:
+  1. Does any central entry file or root file for this codebase (e.g. `index.html`, `App.jsx`, `main.jsx`, `Program.cs`, `Application.java`, `main.go`, `urls.py`, `app.routes.ts`, `main.ts`, etc.) need to be created or updated?
+  2. If the feature/component/module you created needs to be mounted, imported, registered, or routed in an entry file, inspect the existing entry file and update it cleanly so the application runs end-to-end without missing entrypoints or broken imports.
+
+UNIVERSAL FRAMEWORK IMPORT & GATEWAY FILE RULES (MANDATORY FOR ALL TECH STACKS):
+- BEFORE writing imports, namespaces, or references in ANY programming language (.NET, Java, Angular, React, Python, Go):
+  1. Inspect physical files on disk using `find` or `ls` to verify the exact module path, file name, and file extension.
+  2. NEVER import non-existent files, missing CSS files (e.g. ./index.css when only ./styles/globals.css exists), missing namespaces, or uninstalled packages.
+  3. For central gateway files (Program.cs in .NET, app.routes.ts in Angular, App.jsx in React, Application.java in Java, urls.py in Python): if another agent has created modular controllers/components, import only existing modular classes. Never duplicate entire application wrappers or paste competing implementations into the same file.
+
 CRITICAL CASE-SENSITIVITY IMPORT RULES (MANDATORY):
 - Docker containers run on Linux, which uses a CASE-SENSITIVE filesystem.
-- Your import statements (e.g. React/JS/TS imports, Python imports) MUST match the physical filename casing on disk exactly.
+- Your import statements (e.g. React/JS/TS imports, C# namespaces, Java packages, Python imports) MUST match the physical filename casing on disk exactly.
 - For example: if the file on disk is `useAuth.js` in directory `./hooks`, importing it as `useauth` or `UseAuth` will fail compilation. You MUST import it exactly as `./hooks/useAuth`.
 - Inspect the physical directories first (e.g., using `ls` or `find`) to verify the exact casing of any files you reference or import.
 
