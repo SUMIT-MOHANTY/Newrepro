@@ -32,6 +32,10 @@ export default function SuperAdminTokenOps() {
     const [addModelModal, setAddModelModal] = useState({ open: false, modelName: '', price: '' });
     const [quotaDecisionModal, setQuotaDecisionModal] = useState({ open: false, request: null, approve: true, remarks: '' });
 
+    const formatCurrency = (amount, pricePerToken = 0.000007) => {
+        return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format((amount || 0) * pricePerToken);
+    };
+
     const getHeaders = () => {
         const token = localStorage.getItem('token');
         return {
@@ -273,39 +277,6 @@ export default function SuperAdminTokenOps() {
         }
     };
 
-    // Handle PAYG Decision
-    const handlePaygDecision = async (e) => {
-        e.preventDefault();
-        setActionLoading(true);
-        setError('');
-        setSuccessMessage('');
-        try {
-            const endpoint = paygDecisionModal.approve 
-                ? API_ENDPOINTS.TOKENOPS_ADMIN_PAYG_APPROVE 
-                : API_ENDPOINTS.TOKENOPS_ADMIN_PAYG_REJECT;
-
-            const res = await fetch(endpoint, {
-                method: 'POST',
-                headers: getHeaders(),
-                body: JSON.stringify({
-                    organization_name: paygDecisionModal.orgName,
-                    remarks: paygDecisionModal.remarks
-                })
-            });
-            const data = await res.json();
-            if (!res.ok || !data.success) {
-                throw new Error(data.error?.message || 'Failed to process PAYG request.');
-            }
-            setSuccessMessage(`PAYG request for '${paygDecisionModal.orgName}' ${paygDecisionModal.approve ? 'Approved' : 'Rejected'}.`);
-            setPaygDecisionModal({ open: false, orgName: '', approve: true, remarks: '' });
-            fetchData();
-        } catch (err) {
-            setError(err.message);
-        } finally {
-            setActionLoading(false);
-        }
-    };
-
     const filteredOrgs = organizations.filter(o => 
         !searchQuery || o.organization_name.toLowerCase().includes(searchQuery.toLowerCase())
     );
@@ -397,10 +368,13 @@ export default function SuperAdminTokenOps() {
                         <div className="text-xl font-bold text-rose-700 dark:text-rose-300 mt-1.5">{stats.blocked_organizations}</div>
                     </div>
                     <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200/80 dark:border-slate-700 shadow-sm">
-                        <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Tokens Burned</span>
-                        <div className="text-xl font-bold text-slate-900 dark:text-white mt-1.5 font-mono">
-                            {Number(stats.total_tokens_consumed || 0).toLocaleString()}
+                        <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Total Consumption Cost</span>
+                        <div className="text-xl font-bold text-slate-900 dark:text-white mt-1.5">
+                            {formatCurrency(stats.total_historical_cost, 1)}
                         </div>
+                        <span className="text-[10px] text-slate-400 mt-0.5 block font-mono">
+                            {Number(stats.total_tokens_consumed || 0).toLocaleString()} tokens
+                        </span>
                     </div>
                     <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200/80 dark:border-slate-700 shadow-sm">
                         <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Total Requests</span>
@@ -479,10 +453,10 @@ export default function SuperAdminTokenOps() {
                                 <thead className="bg-slate-50 dark:bg-slate-750 text-slate-600 dark:text-slate-300 font-semibold border-b border-slate-200 dark:border-slate-700">
                                     <tr>
                                         <th className="px-4 py-3 min-w-[180px]">Organization</th>
-                                        <th className="px-4 py-3 min-w-[100px]">Purchased</th>
-                                        <th className="px-4 py-3 min-w-[100px]">Consumed</th>
-                                        <th className="px-4 py-3 min-w-[100px]">In Reserve</th>
-                                        <th className="px-4 py-3 min-w-[100px]">Remaining</th>
+                                        <th className="px-4 py-3 min-w-[120px]">Purchased Value</th>
+                                        <th className="px-4 py-3 min-w-[120px]">Consumed Value</th>
+                                        <th className="px-4 py-3 min-w-[120px]">Reserve Value</th>
+                                        <th className="px-4 py-3 min-w-[120px]">Remaining Value</th>
                                         <th className="px-4 py-3 min-w-[120px]">Billing Mode</th>
                                         <th className="px-4 py-3 min-w-[90px]">Status</th>
                                         <th className="px-4 py-3 min-w-[210px] text-right">Actions</th>
@@ -502,10 +476,22 @@ export default function SuperAdminTokenOps() {
                                                     <Building2 className="w-4 h-4 text-slate-400 shrink-0" />
                                                     <span className="truncate">{org.organization_name}</span>
                                                 </td>
-                                                <td className="px-4 py-3 font-mono font-medium">{Number(org.purchased_tokens || 0).toLocaleString()}</td>
-                                                <td className="px-4 py-3 font-mono font-medium text-rose-600 dark:text-rose-400">{Number(org.consumed_tokens || 0).toLocaleString()}</td>
-                                                <td className="px-4 py-3 font-mono font-semibold text-indigo-600 dark:text-indigo-400">{Number(org.reserved_tokens || 0).toLocaleString()}</td>
-                                                <td className="px-4 py-3 font-mono font-bold text-emerald-600 dark:text-emerald-400">{Number(org.remaining_tokens || 0).toLocaleString()}</td>
+                                                <td className="px-4 py-3">
+                                                    <div className="font-semibold text-slate-900 dark:text-white">{formatCurrency(org.purchased_tokens, org.reference_price)}</div>
+                                                    <div className="text-[10px] text-slate-500 font-mono mt-0.5">{Number(org.purchased_tokens || 0).toLocaleString()} tokens</div>
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <div className="font-semibold text-rose-600 dark:text-rose-400">{formatCurrency(org.consumed_tokens, org.reference_price)}</div>
+                                                    <div className="text-[10px] text-slate-500 font-mono mt-0.5">{Number(org.consumed_tokens || 0).toLocaleString()} tokens</div>
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <div className="font-semibold text-indigo-600 dark:text-indigo-400">{formatCurrency(org.reserved_tokens, org.reference_price)}</div>
+                                                    <div className="text-[10px] text-slate-500 font-mono mt-0.5">{Number(org.reserved_tokens || 0).toLocaleString()} tokens</div>
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    <div className="font-bold text-emerald-600 dark:text-emerald-400">{formatCurrency(org.remaining_tokens, org.reference_price)}</div>
+                                                    <div className="text-[10px] text-slate-500 font-mono mt-0.5">{Number(org.remaining_tokens || 0).toLocaleString()} tokens</div>
+                                                </td>
                                                 <td className="px-4 py-3">
                                                     {org.payg_enabled ? (
                                                         <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800">

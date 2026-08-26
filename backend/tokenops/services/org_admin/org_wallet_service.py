@@ -4,6 +4,8 @@ from tokenops.services.wallet_service import WalletService
 from tokenops.services.org_admin.org_audit_service import OrgAuditService
 from tokenops.repositories.organization_wallet import OrganizationWalletRepository
 from tokenops.repositories.user_wallet import UserWalletRepository
+from tokenops.services.pricing_service import PricingService
+from config import settings
 from tokenops.models.token_wallet import UserTokenWallet, OrganizationWallet
 from tokenops.schemas.orgadmin import (
     UserWalletView, PaginatedUserWalletResponse, ReserveWalletView
@@ -16,13 +18,15 @@ class OrgWalletService:
         wallet_service: WalletService,
         audit_service: OrgAuditService,
         org_repo: OrganizationWalletRepository,
-        user_repo: UserWalletRepository
+        user_repo: UserWalletRepository,
+        pricing_service: PricingService
     ):
         self.session = session
         self.wallet_service = wallet_service
         self.audit_service = audit_service
         self.org_repo = org_repo
         self.user_repo = user_repo
+        self.pricing_service = pricing_service
 
     def get_users(self, organization_name: str, page: int = 1, size: int = 50, search: str = None) -> PaginatedUserWalletResponse:
         from tokenops.models.token_wallet import UserOrganization
@@ -67,6 +71,8 @@ class OrgWalletService:
             ).all()
             wallets_by_user = {w.user_id: w for w in wallets}
 
+        reference_price = float(self.pricing_service.get_price(settings.ai_model))
+
         items = []
         for uid, info in all_user_map.items():
             u = info["user"]
@@ -88,7 +94,8 @@ class OrgWalletService:
                     allocated_tokens=w.allocated_tokens if w else 0,
                     consumed_tokens=w.consumed_tokens if w else 0,
                     remaining_tokens=w.remaining_tokens if w else 0,
-                    is_blocked=w.is_blocked if w else (not info["is_active"])
+                    is_blocked=w.is_blocked if w else (not info["is_active"]),
+                    reference_price=reference_price
                 )
             )
 
@@ -110,12 +117,15 @@ class OrgWalletService:
         if not w:
             return None
             
+        reference_price = float(self.pricing_service.get_price(settings.ai_model))
+            
         return UserWalletView(
             user_id=w.user_id,
             allocated_tokens=w.allocated_tokens,
             consumed_tokens=w.consumed_tokens,
             remaining_tokens=w.remaining_tokens,
-            is_blocked=w.is_blocked
+            is_blocked=w.is_blocked,
+            reference_price=reference_price
         )
 
     def get_reserve(self, organization_name: str) -> ReserveWalletView:
@@ -128,13 +138,16 @@ class OrgWalletService:
             organization_name=organization_name
         ).scalar() or 0
         
+        reference_price = float(self.pricing_service.get_price(settings.ai_model))
+        
         return ReserveWalletView(
             organization_name=organization_name,
             purchased_tokens=wallet.purchased_tokens,
             reserved_tokens=wallet.reserved_tokens,
             allocated_tokens=allocated,
             consumed_tokens=wallet.consumed_tokens,
-            remaining_tokens=wallet.remaining_tokens
+            remaining_tokens=wallet.remaining_tokens,
+            reference_price=reference_price
         )
 
     def allocate_tokens(self, admin_user_id: int, organization_name: str, request_id: str, user_id: int, token_amount: int, remarks: str = None):

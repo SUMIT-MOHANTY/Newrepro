@@ -26,6 +26,10 @@ export default function OrgTokenOpsPanel({ user }) {
     const token = localStorage.getItem('token');
     const orgName = user?.organization_name || localStorage.getItem('active_org') || '';
 
+    const formatCurrency = (amount, pricePerToken = 0.000007) => {
+        return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format((amount || 0) * pricePerToken);
+    };
+
     const getHeaders = () => ({
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
@@ -330,39 +334,39 @@ export default function OrgTokenOpsPanel({ user }) {
             {reserve && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
                     <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
-                        <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Total Approved Quota</span>
+                        <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Total Approved Value</span>
                         <div className="text-2xl font-bold text-slate-900 dark:text-white mt-2">
-                            {Number(reserve.purchased_tokens || 0).toLocaleString()}
+                            {formatCurrency(reserve.purchased_tokens, reserve.reference_price)}
                         </div>
-                        <span className="text-[11px] text-slate-400 mt-1 block">Input + Output token pool</span>
+                        <span className="text-[11px] text-slate-400 mt-1 block font-mono">{Number(reserve.purchased_tokens || 0).toLocaleString()} tokens</span>
                     </div>
                     <div className="bg-indigo-50/50 dark:bg-indigo-950/20 p-5 rounded-xl border border-indigo-200 dark:border-indigo-800 shadow-sm">
                         <span className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">In Org Reserve</span>
                         <div className="text-2xl font-bold text-indigo-700 dark:text-indigo-300 mt-2">
-                            {Number(reserve.reserved_tokens || 0).toLocaleString()}
+                            {formatCurrency(reserve.reserved_tokens, reserve.reference_price)}
                         </div>
-                        <span className="text-[11px] text-indigo-500 mt-1 block font-medium">Ready to divide to users</span>
+                        <span className="text-[11px] text-indigo-500 mt-1 block font-medium font-mono">{Number(reserve.reserved_tokens || 0).toLocaleString()} tokens</span>
                     </div>
                     <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
-                        <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Allocated to Users</span>
+                        <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Allocated Value</span>
                         <div className="text-2xl font-bold text-slate-900 dark:text-white mt-2">
-                            {Number(reserve.allocated_tokens || 0).toLocaleString()}
+                            {formatCurrency(reserve.allocated_tokens, reserve.reference_price)}
                         </div>
-                        <span className="text-[11px] text-slate-400 mt-1 block">Assigned across team</span>
+                        <span className="text-[11px] text-slate-400 mt-1 block font-mono">{Number(reserve.allocated_tokens || 0).toLocaleString()} tokens</span>
                     </div>
                     <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
-                        <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Total Consumed</span>
+                        <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Consumed Value</span>
                         <div className="text-2xl font-bold text-rose-600 dark:text-rose-400 mt-2">
-                            {Number(reserve.consumed_tokens || 0).toLocaleString()}
+                            {formatCurrency(reserve.consumed_tokens, reserve.reference_price)}
                         </div>
-                        <span className="text-[11px] text-slate-400 mt-1 block">Tokens burned in AI runs</span>
+                        <span className="text-[11px] text-slate-400 mt-1 block font-mono">{Number(reserve.consumed_tokens || 0).toLocaleString()} tokens</span>
                     </div>
                     <div className="bg-emerald-50/50 dark:bg-emerald-950/20 p-5 rounded-xl border border-emerald-200 dark:border-emerald-800 shadow-sm">
-                        <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Net Remaining</span>
+                        <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Net Remaining Value</span>
                         <div className="text-2xl font-bold text-emerald-700 dark:text-emerald-300 mt-2">
-                            {Number(reserve.remaining_tokens || 0).toLocaleString()}
+                            {formatCurrency(reserve.remaining_tokens, reserve.reference_price)}
                         </div>
-                        <span className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 block">Overall balance</span>
+                        <span className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 block font-mono">{Number(reserve.remaining_tokens || 0).toLocaleString()} tokens</span>
                     </div>
                 </div>
             )}
@@ -436,9 +440,9 @@ export default function OrgTokenOpsPanel({ user }) {
                                 <tr>
                                     <th className="px-6 py-4 font-semibold">User</th>
                                     <th className="px-6 py-4 font-semibold">Role</th>
-                                    <th className="px-6 py-4 font-semibold">Allocated Quota</th>
-                                    <th className="px-6 py-4 font-semibold">Consumed</th>
-                                    <th className="px-6 py-4 font-semibold">Remaining</th>
+                                    <th className="px-6 py-4 font-semibold">Allocated Value</th>
+                                    <th className="px-6 py-4 font-semibold">Consumed Value</th>
+                                    <th className="px-6 py-4 font-semibold">Remaining Value</th>
                                     <th className="px-6 py-4 font-semibold">Status</th>
                                     <th className="px-6 py-4 font-semibold text-right">Actions</th>
                                 </tr>
@@ -473,14 +477,17 @@ export default function OrgTokenOpsPanel({ user }) {
                                                     {u.role || 'member'}
                                                 </span>
                                             </td>
-                                            <td className="px-6 py-4 font-semibold">
-                                                {Number(u.allocated_tokens || 0).toLocaleString()}
+                                            <td className="px-6 py-4">
+                                                <div className="font-semibold">{formatCurrency(u.allocated_tokens, u.reference_price)}</div>
+                                                <div className="text-[10px] text-slate-500 font-mono">{Number(u.allocated_tokens || 0).toLocaleString()} tokens</div>
                                             </td>
-                                            <td className="px-6 py-4 text-slate-500 dark:text-slate-400">
-                                                {Number(u.consumed_tokens || 0).toLocaleString()}
+                                            <td className="px-6 py-4">
+                                                <div className="text-rose-600 dark:text-rose-400">{formatCurrency(u.consumed_tokens, u.reference_price)}</div>
+                                                <div className="text-[10px] text-slate-500 font-mono">{Number(u.consumed_tokens || 0).toLocaleString()} tokens</div>
                                             </td>
-                                            <td className="px-6 py-4 font-semibold text-indigo-600 dark:text-indigo-400 font-mono">
-                                                {Number(u.remaining_tokens || 0).toLocaleString()}
+                                            <td className="px-6 py-4">
+                                                <div className="font-semibold text-indigo-600 dark:text-indigo-400">{formatCurrency(u.remaining_tokens, u.reference_price)}</div>
+                                                <div className="text-[10px] text-slate-500 font-mono">{Number(u.remaining_tokens || 0).toLocaleString()} tokens</div>
                                             </td>
                                             <td className="px-6 py-4">
                                                 {u.is_blocked ? (

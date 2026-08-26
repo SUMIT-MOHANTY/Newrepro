@@ -21,6 +21,7 @@ class UserWalletView(BaseModel):
     consumed_tokens: int
     remaining_tokens: int
     is_blocked: bool
+    reference_price: float
 
 class PaginatedUserWalletResponse(BaseModel):
     items: List[UserWalletView]
@@ -54,6 +55,7 @@ class ReserveWalletView(BaseModel):
     allocated_tokens: int # Derived from SUM(user_token_wallet.allocated_tokens) for org
     consumed_tokens: int
     remaining_tokens: int
+    reference_price: float
 
 # Governance
 class BlockUserRequest(BaseModel):

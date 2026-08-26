@@ -18,6 +18,7 @@ from tokenops.services.ledger_service import LedgerService
 from tokenops.repositories.ledger import LedgerRepository
 from tokenops.services.idempotency_service import IdempotencyService
 from tokenops.repositories.idempotency import IdempotencyRepository
+from tokenops.services.pricing_service import PricingService
 
 async def verify_super_admin(current_user: User = Depends(get_current_user)) -> User:
     """
@@ -44,9 +45,11 @@ def get_admin_wallet_service(
     ledger = LedgerService(ledger_repo)
     idempotency_repo = IdempotencyRepository(db)
     idempotency = IdempotencyService(idempotency_repo)
+    pricing_repo = PricingRepository(db)
+    pricing_service = PricingService(pricing_repo)
     
     wallet_service = WalletService(db, org_repo, user_repo, validation, ledger, idempotency)
-    return AdminWalletService(db, wallet_service, audit_service, org_repo)
+    return AdminWalletService(db, wallet_service, audit_service, org_repo, pricing_service)
 
 def get_admin_governance_service(
     db: Session = Depends(get_db),

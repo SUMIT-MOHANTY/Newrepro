@@ -51,21 +51,45 @@ async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)], db: Se
     # Dynamically inject the active organization from JWT token if available
     active_org = payload.get("org")
     if active_org:
-        from sqlalchemy.orm.attributes import set_committed_value
-        set_committed_value(user, "organization_name", active_org)
-        # Evaluate is_org_admin status for the active organization
         import models
         from sqlalchemy import func
+        from sqlalchemy.orm.attributes import set_committed_value
+        
+        # 1. Check if user has an explicit mapping for this org
         role_mapping = db.query(models.UserOrganizationRole).filter(
             models.UserOrganizationRole.user_id == user.id,
             func.lower(models.UserOrganizationRole.organization_name) == active_org.lower()
         ).first()
+        
+        # 2. Check if this is the user's legacy native organization
+        is_legacy_member = bool(
+            user.organization_name and 
+            user.organization_name.lower() == active_org.lower()
+        )
+        
+        # 3. Security Block: Must be mapped, native, or Super Admin
+        if not role_mapping and not is_legacy_member and not getattr(user, "is_super_admin", False):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"User is not a member of organization: {active_org}"
+            )
+            
+        # 4. Apply the override context
+        set_committed_value(user, "organization_name", active_org)
+        
+        # 5. Evaluate is_org_admin status for the active organization
         if role_mapping:
             role = db.query(models.OrganizationRole).filter(models.OrganizationRole.id == role_mapping.role_id).first()
             if role and "admin" in role.name.lower():
                 set_committed_value(user, "is_org_admin", True)
             else:
                 set_committed_value(user, "is_org_admin", False)
+        elif is_legacy_member:
+            # Keep the native user.is_org_admin value if no mapping exists but it matches their native org
+            pass
+        elif getattr(user, "is_super_admin", False):
+            # Super Admins impersonating an org are effectively Org Admins in that context
+            set_committed_value(user, "is_org_admin", True)
                 
     return user
 

@@ -12,6 +12,7 @@ class BaseAPIResponse(BaseModel):
     error: Optional[ErrorDetail] = None
 
 # Wallet Schemas
+
 class OrganizationWalletView(BaseModel):
     organization_name: str
     purchased_tokens: int
@@ -20,6 +21,7 @@ class OrganizationWalletView(BaseModel):
     remaining_tokens: int
     payg_enabled: bool
     is_blocked: bool
+    reference_price: float
 
 class PaginatedOrganizationResponse(BaseModel):
     items: List[OrganizationWalletView]
@@ -73,6 +75,7 @@ class AnalyticsOverview(BaseModel):
     blocked_organizations: int
     total_tokens_consumed: int
     total_requests: int
+    total_historical_cost: float
 
 class DailyUsageView(BaseModel):
     date: str
@@ -89,3 +92,4 @@ class OrganizationAnalytics(BaseModel):
     top_users: List[TopUserView]
     token_burn: int
     remaining_balance: int
+    total_historical_cost: float

@@ -35,7 +35,8 @@ class AdminAnalyticsService:
         # 2. Get Usage Stats from OrganizationUsageSummary
         usage_query = self.session.query(
             func.sum(OrganizationUsageSummary.total_prompt_tokens + OrganizationUsageSummary.total_completion_tokens).label('total_tokens'),
-            func.sum(OrganizationUsageSummary.request_count).label('total_requests')
+            func.sum(OrganizationUsageSummary.request_count).label('total_requests'),
+            func.sum(OrganizationUsageSummary.total_cost).label('total_cost')
         )
         
         if organization:
@@ -49,6 +50,7 @@ class AdminAnalyticsService:
         result = usage_query.first()
         total_tokens = result.total_tokens or 0
         total_requests = result.total_requests or 0
+        total_historical_cost = float(result.total_cost or 0.0)
         
         return AnalyticsOverview(
             total_organizations=total_orgs,
@@ -56,7 +58,8 @@ class AdminAnalyticsService:
             payg_organizations=payg_orgs,
             blocked_organizations=blocked_orgs,
             total_tokens_consumed=total_tokens,
-            total_requests=total_requests
+            total_requests=total_requests,
+            total_historical_cost=total_historical_cost
         )
 
     def get_organization_analytics(self, organization_name: str) -> OrganizationAnalytics:
@@ -67,10 +70,13 @@ class AdminAnalyticsService:
         # For TopUsers, we'd normally aggregate from AIUsageLog but requirement says "Never aggregate AIUsageLog".
         # If we have a UserUsageSummary table, we query that. If not, we return empty list for now.
         
+        usage_summary = self.session.query(OrganizationUsageSummary).filter_by(organization_name=organization_name).first()
+        
         return OrganizationAnalytics(
             organization_name=organization_name,
             daily_usage=[], # Placeholder for actual daily rollup table if it exists
             top_users=[], # Placeholder for actual user rollup table if it exists
             token_burn=wallet.consumed_tokens if wallet else 0,
-            remaining_balance=wallet.remaining_tokens if wallet else 0
+            remaining_balance=wallet.remaining_tokens if wallet else 0,
+            total_historical_cost=float(usage_summary.total_cost) if usage_summary else 0.0
         )

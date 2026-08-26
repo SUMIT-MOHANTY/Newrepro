@@ -15,6 +15,8 @@ from tokenops.services.ledger_service import LedgerService
 from tokenops.repositories.ledger import LedgerRepository
 from tokenops.services.idempotency_service import IdempotencyService
 from tokenops.repositories.idempotency import IdempotencyRepository
+from tokenops.services.pricing_service import PricingService
+from tokenops.repositories.pricing import PricingRepository
 from typing import Optional
 
 async def get_active_organization(
@@ -39,13 +41,20 @@ async def verify_org_admin(
     Dependency that enforces Organization Admin RBAC.
     """
     # 1. Fetch the user's role mapping in the active organization
+    from sqlalchemy import func
     mapping = db.query(UserOrganizationRole).join(OrganizationRole).filter(
         UserOrganizationRole.user_id == current_user.id,
-        UserOrganizationRole.organization_name == active_organization,
+        func.lower(UserOrganizationRole.organization_name) == active_organization.lower(),
         OrganizationRole.name.in_(["ORG_ADMIN", "Admin", "admin"])
     ).first()
     
-    is_admin = bool(mapping or getattr(current_user, "is_org_admin", False) or getattr(current_user, "is_super_admin", False))
+    is_legacy_admin = bool(
+        getattr(current_user, "organization_name", None) and 
+        current_user.organization_name.lower() == active_organization.lower() and 
+        getattr(current_user, "is_org_admin", False)
+    )
+    
+    is_admin = bool(mapping or is_legacy_admin or getattr(current_user, "is_super_admin", False))
     if not is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -72,9 +81,11 @@ def get_org_wallet_service(
     ledger = LedgerService(ledger_repo)
     idempotency_repo = IdempotencyRepository(db)
     idempotency = IdempotencyService(idempotency_repo)
+    pricing_repo = PricingRepository(db)
+    pricing_service = PricingService(pricing_repo)
     
     wallet_service = WalletService(db, org_repo, user_repo, validation, ledger, idempotency)
-    return OrgWalletService(db, wallet_service, audit_service, org_repo, user_repo)
+    return OrgWalletService(db, wallet_service, audit_service, org_repo, user_repo, pricing_service)
 
 def get_org_governance_service(
     db: Session = Depends(get_db),

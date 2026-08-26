@@ -3,10 +3,12 @@ from sqlalchemy.orm import Session
 from tokenops.services.wallet_service import WalletService
 from tokenops.services.admin.admin_audit_service import AdminAuditService
 from tokenops.repositories.organization_wallet import OrganizationWalletRepository
+from tokenops.services.pricing_service import PricingService
 from tokenops.models.token_wallet import OrganizationWallet
 from tokenops.schemas.superadmin import OrganizationWalletView, PaginatedOrganizationResponse
 
 from tokenops.models.organization import Organization
+from config import settings
 
 class AdminWalletService:
     def __init__(
@@ -14,12 +16,14 @@ class AdminWalletService:
         session: Session,
         wallet_service: WalletService,
         audit_service: AdminAuditService,
-        org_repo: OrganizationWalletRepository
+        org_repo: OrganizationWalletRepository,
+        pricing_service: PricingService
     ):
         self.session = session
         self.wallet_service = wallet_service
         self.audit_service = audit_service
         self.org_repo = org_repo
+        self.pricing_service = pricing_service
 
     def get_organizations(self, page: int = 1, size: int = 50, search: str = None) -> PaginatedOrganizationResponse:
         """
@@ -33,6 +37,8 @@ class AdminWalletService:
         total = org_query.count()
         offset = (page - 1) * size
         orgs = org_query.order_by(Organization.name).offset(offset).limit(size).all()
+        
+        reference_price = float(self.pricing_service.get_price(settings.ai_model))
         
         items = []
         for org in orgs:
@@ -49,7 +55,8 @@ class AdminWalletService:
                     reserved_tokens=w.reserved_tokens or 0,
                     remaining_tokens=w.remaining_tokens or 0,
                     payg_enabled=bool(w.payg_enabled),
-                    is_blocked=bool(w.is_blocked)
+                    is_blocked=bool(w.is_blocked),
+                    reference_price=reference_price
                 ))
             else:
                 items.append(OrganizationWalletView(
@@ -59,7 +66,8 @@ class AdminWalletService:
                     reserved_tokens=0,
                     remaining_tokens=0,
                     payg_enabled=False,
-                    is_blocked=False
+                    is_blocked=False,
+                    reference_price=reference_price
                 ))
         
         return PaginatedOrganizationResponse(
@@ -74,6 +82,8 @@ class AdminWalletService:
         Get a specific organization wallet.
         """
         w = self.org_repo.get_by_organization(organization_name)
+        reference_price = float(self.pricing_service.get_price(settings.ai_model))
+        
         if not w:
             return OrganizationWalletView(
                 organization_name=organization_name,
@@ -82,7 +92,8 @@ class AdminWalletService:
                 reserved_tokens=0,
                 remaining_tokens=0,
                 payg_enabled=False,
-                is_blocked=False
+                is_blocked=False,
+                reference_price=reference_price
             )
             
         consumed = max(0, (w.purchased_tokens or 0) - (w.remaining_tokens or 0))
@@ -93,7 +104,8 @@ class AdminWalletService:
             reserved_tokens=w.reserved_tokens or 0,
             remaining_tokens=w.remaining_tokens or 0,
             payg_enabled=bool(w.payg_enabled),
-            is_blocked=bool(w.is_blocked)
+            is_blocked=bool(w.is_blocked),
+            reference_price=reference_price
         )
 
     def purchase_tokens(self, admin_user_id: int, organization_name: str, token_amount: int, remarks: str = None) -> OrganizationWalletView:
