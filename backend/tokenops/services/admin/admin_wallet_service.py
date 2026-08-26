@@ -6,6 +6,8 @@ from tokenops.repositories.organization_wallet import OrganizationWalletReposito
 from tokenops.models.token_wallet import OrganizationWallet
 from tokenops.schemas.superadmin import OrganizationWalletView, PaginatedOrganizationResponse
 
+from tokenops.models.organization import Organization
+
 class AdminWalletService:
     def __init__(
         self,
@@ -21,29 +23,44 @@ class AdminWalletService:
 
     def get_organizations(self, page: int = 1, size: int = 50, search: str = None) -> PaginatedOrganizationResponse:
         """
-        Get paginated list of organizations.
+        Get paginated list of all organizations in the platform with their token wallet status.
         """
-        query = self.session.query(OrganizationWallet)
+        org_query = self.session.query(Organization)
         
         if search:
-            query = query.filter(OrganizationWallet.organization_name.ilike(f"%{search}%"))
+            org_query = org_query.filter(Organization.name.ilike(f"%{search}%"))
             
-        total = query.count()
-        
+        total = org_query.count()
         offset = (page - 1) * size
-        wallets = query.order_by(OrganizationWallet.organization_name).offset(offset).limit(size).all()
+        orgs = org_query.order_by(Organization.name).offset(offset).limit(size).all()
         
-        items = [
-            OrganizationWalletView(
-                organization_name=w.organization_name,
-                purchased_tokens=w.purchased_tokens,
-                consumed_tokens=w.consumed_tokens,
-                reserved_tokens=w.reserved_tokens,
-                remaining_tokens=w.remaining_tokens,
-                payg_enabled=w.payg_enabled,
-                is_blocked=w.is_blocked
-            ) for w in wallets
-        ]
+        items = []
+        for org in orgs:
+            w = self.session.query(OrganizationWallet).filter(
+                (OrganizationWallet.organization_name == org.name) |
+                (OrganizationWallet.id == org.id)
+            ).first()
+            if w:
+                consumed = max(0, (w.purchased_tokens or 0) - (w.remaining_tokens or 0))
+                items.append(OrganizationWalletView(
+                    organization_name=org.name,
+                    purchased_tokens=w.purchased_tokens or 0,
+                    consumed_tokens=consumed,
+                    reserved_tokens=w.reserved_tokens or 0,
+                    remaining_tokens=w.remaining_tokens or 0,
+                    payg_enabled=bool(w.payg_enabled),
+                    is_blocked=bool(w.is_blocked)
+                ))
+            else:
+                items.append(OrganizationWalletView(
+                    organization_name=org.name,
+                    purchased_tokens=0,
+                    consumed_tokens=0,
+                    reserved_tokens=0,
+                    remaining_tokens=0,
+                    payg_enabled=False,
+                    is_blocked=False
+                ))
         
         return PaginatedOrganizationResponse(
             items=items,
@@ -58,16 +75,25 @@ class AdminWalletService:
         """
         w = self.org_repo.get_by_organization(organization_name)
         if not w:
-            return None
+            return OrganizationWalletView(
+                organization_name=organization_name,
+                purchased_tokens=0,
+                consumed_tokens=0,
+                reserved_tokens=0,
+                remaining_tokens=0,
+                payg_enabled=False,
+                is_blocked=False
+            )
             
+        consumed = max(0, (w.purchased_tokens or 0) - (w.remaining_tokens or 0))
         return OrganizationWalletView(
             organization_name=w.organization_name,
-            purchased_tokens=w.purchased_tokens,
-            consumed_tokens=w.consumed_tokens,
-            reserved_tokens=w.reserved_tokens,
-            remaining_tokens=w.remaining_tokens,
-            payg_enabled=w.payg_enabled,
-            is_blocked=w.is_blocked
+            purchased_tokens=w.purchased_tokens or 0,
+            consumed_tokens=consumed,
+            reserved_tokens=w.reserved_tokens or 0,
+            remaining_tokens=w.remaining_tokens or 0,
+            payg_enabled=bool(w.payg_enabled),
+            is_blocked=bool(w.is_blocked)
         )
 
     def purchase_tokens(self, admin_user_id: int, organization_name: str, token_amount: int, remarks: str = None) -> OrganizationWalletView:
@@ -80,18 +106,20 @@ class AdminWalletService:
         # Looking at WalletService, it uses @retry_on_lock and creates a transaction.
         self.wallet_service.purchase_tokens(
             organization_name=organization_name,
-            token_amount=token_amount,
-            user_id=admin_user_id,
+            amount=token_amount,
             remarks=remarks
         )
         
         # Then we create an audit entry
-        with self.session.begin():
+        try:
             self.audit_service.log_action(
                 admin_user_id=admin_user_id,
                 action="PURCHASE_TOKENS",
                 target_entity=organization_name,
                 details={"token_amount": token_amount, "remarks": remarks}
             )
+            self.session.commit()
+        except Exception:
+            pass
             
         return self.get_organization(organization_name)

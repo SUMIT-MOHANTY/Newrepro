@@ -3,11 +3,12 @@ import {
     CreditCard, CheckCircle2, ShieldAlert, Sparkles, Bot, Clock, 
     DollarSign, Search, Filter, Cpu, RefreshCw, AlertCircle, Zap, 
     User, Activity, ShieldCheck, Globe, Users, FileText, ArrowUpDown,
-    CheckCircle, XCircle, ExternalLink, FileSpreadsheet
+    CheckCircle, XCircle, ExternalLink, FileSpreadsheet, Coins
 } from 'lucide-react';
 import { API_BASE_URL } from '../config';
 import { getCachedTaskToken } from '../utils/tokenCache';
 import { jsPDF } from 'jspdf';
+import OrgTokenOpsPanel from '../components/OrgTokenOpsPanel';
 
 export default function Billing({ selectedProjectKey, projects = [], user }) {
     const [billingData, setBillingData] = useState(null);
@@ -804,6 +805,15 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                         >
                             Projects Hub
                         </button>
+                        {isOrgAdmin && (
+                            <button 
+                                className={`px-5 py-2 rounded-lg text-sm font-semibold transition-all flex items-center gap-1.5 ${activeTab === 'tokenops' ? 'bg-app-primary text-white shadow-md' : 'text-app-text-label hover:bg-app-bg-hover dark:text-app-text-muted dark:hover:bg-app-bg-card'}`}
+                                onClick={() => { setActiveTab('tokenops'); setSearchTerm(''); }}
+                            >
+                                <Coins className="w-3.5 h-3.5" />
+                                TokenOps Quotas
+                            </button>
+                        )}
                     </div>
 
                     {/* OVERVIEW TAB */}
@@ -1137,6 +1147,13 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                                     </tbody>
                                 </table>
                             </div>
+                        </div>
+                    )}
+
+                    {/* TOKENOPS QUOTA MANAGEMENT TAB */}
+                    {activeTab === 'tokenops' && (
+                        <div className="animate-fade-in">
+                            <OrgTokenOpsPanel user={user} />
                         </div>
                     )}
                 </div>

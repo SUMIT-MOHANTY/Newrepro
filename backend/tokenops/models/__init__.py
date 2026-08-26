@@ -20,6 +20,12 @@ All models are registered against the shared `database.Base` metadata so that
 package is imported before the call.
 """
 
+import models  # Ensure models.User is registered in Base metadata
+
+from tokenops.models.organization import (
+    Organization,
+    LegacyOrganizationIdentifier,
+)
 from tokenops.models.token_wallet import (
     OrganizationWallet,
     UserOrganization,
@@ -35,6 +41,11 @@ from tokenops.models.payg import (
     PAYGInvoice,
     InvoiceStatus,
 )
+from tokenops.models.quota_request import (
+    TokenQuotaRequest,
+    QuotaRequestType,
+    QuotaRequestStatus,
+)
 from tokenops.models.ledger import (
     TokenTransactionLedger,
     TransactionType,
@@ -46,6 +57,9 @@ from tokenops.models.idempotency import IdempotencyKey
 from tokenops.models.audit import AdminAuditLog
 
 __all__ = [
+    # Organization Master & Legacy Aliases
+    "Organization",
+    "LegacyOrganizationIdentifier",
     # Wallet
     "OrganizationWallet",
     "UserOrganization",
@@ -53,11 +67,14 @@ __all__ = [
     # Pricing
     "ModelPricing",
     "DEFAULT_PRICE_PER_TOKEN",
-    # PAYG
+    # PAYG & Quota Requests
     "PAYGRequest",
     "PAYGStatus",
     "PAYGInvoice",
     "InvoiceStatus",
+    "TokenQuotaRequest",
+    "QuotaRequestType",
+    "QuotaRequestStatus",
     # Ledger
     "TokenTransactionLedger",
     "TransactionType",

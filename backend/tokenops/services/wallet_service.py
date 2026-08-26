@@ -26,6 +26,11 @@ class WalletService:
         self.ledger = ledger
         self.idempotency = idempotency
 
+    def _tx(self):
+        if self.session.in_transaction():
+            return self.session.begin_nested()
+        return self.session.begin()
+
     @retry_on_lock(max_retries=3)
     def purchase_tokens(self, organization_name: str, amount: int, request_id: str | None = None, remarks: str | None = None) -> WalletState:
         """
@@ -35,17 +40,12 @@ class WalletService:
         if amount <= 0:
             raise ValueError("Amount must be positive")
 
-        with self.session.begin():
+        with self._tx():
             if not self.idempotency.create_processing_record(request_id):
-                wallet = self.org_repo.get_wallet(organization_name)
-                if not wallet:
-                    raise ValueError("Organization wallet not found")
+                wallet = self.org_repo.get_or_create(organization_name)
                 return WalletState(0, 0, wallet.remaining_tokens, wallet.reserved_tokens)
 
-            wallet = self.org_repo.get_wallet(organization_name)
-            if not wallet:
-                raise ValueError(f"Wallet not found for organization {organization_name}")
-                
+            wallet = self.org_repo.get_or_create(organization_name)
             new_balance = wallet.reserved_tokens + amount
 
             self.org_repo.update_balance(organization_name, purchased_delta=amount, remaining_delta=amount)
@@ -75,7 +75,7 @@ class WalletService:
         if amount <= 0:
             raise ValueError("Amount must be positive")
 
-        with self.session.begin():
+        with self._tx():
             if not self.idempotency.create_processing_record(request_id):
                 user_wallet = self.user_repo.get_user_wallet(user_id, organization_name)
                 if not user_wallet:
@@ -119,7 +119,7 @@ class WalletService:
         if amount <= 0:
             raise ValueError("Amount must be positive")
 
-        with self.session.begin():
+        with self._tx():
             if not self.idempotency.create_processing_record(request_id):
                 to_wallet = self.user_repo.get_user_wallet(to_user_id, organization_name)
                 if not to_wallet:
@@ -175,7 +175,7 @@ class WalletService:
         if amount <= 0:
             raise ValueError("Amount must be positive")
 
-        with self.session.begin():
+        with self._tx():
             if not self.idempotency.create_processing_record(request_id):
                 user_wallet = self.user_repo.get_user_wallet(user_id, organization_name)
                 if not user_wallet:

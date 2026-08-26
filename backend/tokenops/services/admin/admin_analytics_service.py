@@ -5,6 +5,8 @@ from tokenops.models.summary import OrganizationUsageSummary
 from tokenops.schemas.superadmin import AnalyticsOverview, OrganizationAnalytics, DailyUsageView, TopUserView
 from typing import Optional
 
+from tokenops.models.organization import Organization
+
 class AdminAnalyticsService:
     def __init__(self, session: Session):
         self.session = session
@@ -25,15 +27,15 @@ class AdminAnalyticsService:
             payg = billing_mode.lower() == "payg"
             wallet_query = wallet_query.filter(OrganizationWallet.payg_enabled == payg)
             
-        total_orgs = wallet_query.count()
+        total_orgs = self.session.query(Organization).count() if not organization else wallet_query.count()
         payg_orgs = wallet_query.filter(OrganizationWallet.payg_enabled == True).count()
-        prepaid_orgs = total_orgs - payg_orgs
+        prepaid_orgs = max(0, total_orgs - payg_orgs)
         blocked_orgs = wallet_query.filter(OrganizationWallet.is_blocked == True).count()
         
         # 2. Get Usage Stats from OrganizationUsageSummary
         usage_query = self.session.query(
-            func.sum(OrganizationUsageSummary.prompt_tokens + OrganizationUsageSummary.completion_tokens).label('total_tokens'),
-            func.sum(OrganizationUsageSummary.total_requests).label('total_requests')
+            func.sum(OrganizationUsageSummary.total_prompt_tokens + OrganizationUsageSummary.total_completion_tokens).label('total_tokens'),
+            func.sum(OrganizationUsageSummary.request_count).label('total_requests')
         )
         
         if organization:

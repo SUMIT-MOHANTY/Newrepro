@@ -54,7 +54,13 @@ def get_admin_governance_service(
 ) -> AdminGovernanceService:
     org_repo = OrganizationWalletRepository(db)
     user_repo = UserWalletRepository(db)
-    return AdminGovernanceService(db, audit_service, org_repo, user_repo)
+    validation = ValidationService(org_repo, user_repo)
+    ledger_repo = LedgerRepository(db)
+    ledger = LedgerService(ledger_repo)
+    idempotency_repo = IdempotencyRepository(db)
+    idempotency = IdempotencyService(idempotency_repo)
+    wallet_service = WalletService(db, org_repo, user_repo, validation, ledger, idempotency)
+    return AdminGovernanceService(db, audit_service, org_repo, user_repo, wallet_service)
 
 def get_admin_pricing_service(
     db: Session = Depends(get_db),

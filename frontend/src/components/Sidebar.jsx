@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
-import { X, Plus, FileCheck, History, Activity, Settings, User, LogOut, Trash2, Users, ShieldCheck, Globe, Check, Share2, CreditCard } from 'lucide-react';
+import { X, Plus, FileCheck, History, Activity, Settings, User, LogOut, Trash2, Users, ShieldCheck, Globe, Check, Share2, CreditCard, Coins } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
 import { API_ENDPOINTS } from '../config';
 import NewProjectModal from './NewProjectModal';
@@ -300,6 +300,13 @@ export default function Sidebar({
                                     >
                                         <CreditCard className="w-4 h-4 mr-3 text-purple-400" />
                                         Global Billing Dashboard
+                                    </button>
+                                    <button
+                                        onClick={() => navigate('/superadmin/tokenops')}
+                                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-1.5 ${location.pathname === '/superadmin/tokenops' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-purple-300 hover:bg-purple-900/30'}`}
+                                    >
+                                        <Coins className="w-4 h-4 mr-3 text-purple-400" />
+                                        TokenOps Hub
                                     </button>
                                     <button
                                         onClick={() => navigate('/superadmin/roles')}

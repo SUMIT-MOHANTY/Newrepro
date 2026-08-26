@@ -14,6 +14,9 @@ class BaseAPIResponse(BaseModel):
 # Users
 class UserWalletView(BaseModel):
     user_id: int
+    email: Optional[str] = None
+    name: Optional[str] = None
+    role: Optional[str] = "member"
     allocated_tokens: int
     consumed_tokens: int
     remaining_tokens: int

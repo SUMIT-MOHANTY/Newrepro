@@ -6,6 +6,7 @@ from models import User
 
 router = APIRouter(tags=["Super Admin Pricing"])
 
+@router.get("", response_model=BaseAPIResponse)
 @router.get("/", response_model=BaseAPIResponse)
 def get_pricing(
     current_user: User = Depends(verify_super_admin),

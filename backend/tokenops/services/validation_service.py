@@ -10,7 +10,10 @@ class ValidationService:
         return self.org_repo.get_wallet(organization_name) is not None
 
     def validate_user_wallet_exists(self, user_id: int, organization_name: str) -> bool:
-        return self.user_repo.get_user_wallet(user_id, organization_name) is not None
+        return (
+            self.user_repo.get_user_wallet(user_id, organization_name) is not None or
+            self.user_repo.get_membership(user_id, organization_name) is not None
+        )
 
     def validate_sufficient_org_reserve(self, organization_name: str, amount: int) -> bool:
         wallet = self.org_repo.get_wallet(organization_name)

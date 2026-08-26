@@ -25,27 +25,81 @@ class OrgWalletService:
         self.user_repo = user_repo
 
     def get_users(self, organization_name: str, page: int = 1, size: int = 50, search: str = None) -> PaginatedUserWalletResponse:
-        query = self.session.query(UserTokenWallet).filter(UserTokenWallet.organization_name == organization_name)
+        from tokenops.models.token_wallet import UserOrganization
+        import models
+
+        # 1. Query all users belonging to this organization from users table and UserOrganization
+        org_users = self.session.query(models.User).filter(
+            func.lower(models.User.organization_name) == organization_name.lower()
+        ).all()
+
+        memberships = self.session.query(UserOrganization).filter(
+            func.lower(UserOrganization.organization_name) == organization_name.lower()
+        ).all()
         
-        # We can join with User if we wanted to search by email, but keeping it simple for now based on wallet fields
-        # If we need to search, typically we'd join with User model and filter by User.email.
-        
-        total = query.count()
+        member_dict = {m.user_id: m for m in memberships}
+
+        # Build combined map of users
+        all_user_map = {}
+        for u in org_users:
+            all_user_map[u.id] = {
+                "user": u,
+                "role": member_dict[u.id].role if u.id in member_dict else ("ORG_ADMIN" if u.is_org_admin else "member"),
+                "is_active": member_dict[u.id].is_active if u.id in member_dict else True
+            }
+
+        for m in memberships:
+            if m.user_id not in all_user_map:
+                u = self.session.query(models.User).filter(models.User.id == m.user_id).first()
+                if u:
+                    all_user_map[u.id] = {
+                        "user": u,
+                        "role": m.role,
+                        "is_active": m.is_active
+                    }
+
+        user_ids = list(all_user_map.keys())
+        wallets_by_user = {}
+        if user_ids:
+            wallets = self.session.query(UserTokenWallet).filter(
+                func.lower(UserTokenWallet.organization_name) == organization_name.lower(),
+                UserTokenWallet.user_id.in_(user_ids)
+            ).all()
+            wallets_by_user = {w.user_id: w for w in wallets}
+
+        items = []
+        for uid, info in all_user_map.items():
+            u = info["user"]
+            name_parts = [u.first_name or "", u.last_name or ""]
+            full_name = " ".join([p for p in name_parts if p]).strip() or u.username or u.email.split("@")[0]
+
+            if search:
+                s = search.lower()
+                if s not in (u.email or "").lower() and s not in full_name.lower():
+                    continue
+
+            w = wallets_by_user.get(uid)
+            items.append(
+                UserWalletView(
+                    user_id=uid,
+                    email=u.email,
+                    name=full_name,
+                    role=info["role"],
+                    allocated_tokens=w.allocated_tokens if w else 0,
+                    consumed_tokens=w.consumed_tokens if w else 0,
+                    remaining_tokens=w.remaining_tokens if w else 0,
+                    is_blocked=w.is_blocked if w else (not info["is_active"])
+                )
+            )
+
+        # Sort by user_id
+        items.sort(key=lambda x: x.user_id)
+        total = len(items)
         offset = (page - 1) * size
-        user_wallets = query.order_by(UserTokenWallet.user_id).offset(offset).limit(size).all()
-        
-        items = [
-            UserWalletView(
-                user_id=w.user_id,
-                allocated_tokens=w.allocated_tokens,
-                consumed_tokens=w.consumed_tokens,
-                remaining_tokens=w.remaining_tokens,
-                is_blocked=w.is_blocked
-            ) for w in user_wallets
-        ]
-        
+        paged_items = items[offset:offset + size]
+
         return PaginatedUserWalletResponse(
-            items=items,
+            items=paged_items,
             total=total,
             page=page,
             size=size

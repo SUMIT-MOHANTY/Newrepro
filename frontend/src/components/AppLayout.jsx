@@ -4,12 +4,13 @@ import { API_ENDPOINTS, API_BASE_URL } from '../config';
 import { clearAuthData } from '../utils/auth';
 import { customError } from '../utils/modalHelpers';
 import { useModal } from '../contexts/ModalContext';
-import { Menu, Settings, Moon, Sun, Lock, Mail, ShieldAlert, CheckCircle, BookOpen } from 'lucide-react';
+import { Menu, Settings, Moon, Sun, Lock, Mail, ShieldAlert, CheckCircle, BookOpen, Coins } from 'lucide-react';
 import Sidebar from './Sidebar';
 import RoadmapHeader from './RoadmapHeader';
 import AgentsPage from './AgentsPage';
 import AIConfig from '../components/AIConfig';
 import AssistantBot from '../components/AssistantBot';
+import UserTokenDetailModal from './UserTokenDetailModal';
 import { useProgressTracking } from '../hooks/useProgressTracking';
 
 import { useProjects, useRoadmapData, useInvalidateProjects } from '../hooks/useProjects';
@@ -100,6 +101,31 @@ export default function AppLayout({ children }) {
             return 'project';
         }
     });
+
+    const [userQuota, setUserQuota] = useState(null);
+    const [isQuotaModalOpen, setIsQuotaModalOpen] = useState(false);
+    const [isQuotaLoading, setIsQuotaLoading] = useState(false);
+
+    const fetchUserQuota = useCallback(async () => {
+        const token = localStorage.getItem('token');
+        if (!token) return;
+        setIsQuotaLoading(true);
+        try {
+            const res = await fetch(API_ENDPOINTS.TOKENOPS_USER_MY_QUOTA, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            if (res.ok) {
+                const data = await res.json();
+                if (data.success && data.data) {
+                    setUserQuota(data.data);
+                }
+            }
+        } catch (err) {
+            console.warn('Failed to fetch user token quota:', err);
+        } finally {
+            setIsQuotaLoading(false);
+        }
+    }, []);
 
     // Global AI configuration (shared across pages)
     const [aiConfig, setAiConfig] = useState(() => {
@@ -309,6 +335,13 @@ export default function AppLayout({ children }) {
             .then((data) => setRbac(data))
             .catch(() => setRbac({ is_org_admin: !!user?.is_org_admin, allowed_paths: [], role_name: null }));
     }, [user]);
+
+    // Fetch user token quota on mount and route changes
+    useEffect(() => {
+        if (user) {
+            fetchUserQuota();
+        }
+    }, [user, location.pathname, fetchUserQuota]);
 
     // Evaluate RBAC access synchronously to prevent render flashes
     const hasAccessError = useMemo(() => {
@@ -1341,6 +1374,25 @@ export default function AppLayout({ children }) {
                                     </div>
                                 )}
 
+                                {/* User Token Quota Header Indicator (For Regular Users & Org Admins, not Super Admin) */}
+                                {!user?.is_super_admin && userQuota && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setIsQuotaModalOpen(true)}
+                                        className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-500/15 hover:bg-indigo-500/25 text-white rounded-md border border-indigo-400/30 text-xs font-semibold transition cursor-pointer shadow-sm"
+                                        title="Click to view detailed token quota & cost breakdown"
+                                    >
+                                        <Coins className="w-3.5 h-3.5 text-amber-400" />
+                                        {userQuota.is_payg ? (
+                                            <span className="font-mono text-purple-300">⚡ PAYG Active</span>
+                                        ) : (
+                                            <span className="font-mono">
+                                                {Number(userQuota.remaining_tokens || 0).toLocaleString()} <span className="text-white/40">/</span> {Number(userQuota.allocated_tokens || 0).toLocaleString()} <span className="text-[10px] text-indigo-300 font-normal">Tokens</span>
+                                            </span>
+                                        )}
+                                    </button>
+                                )}
+
                                 {/* User Docs Button */}
                                 <button
                                     type="button"
@@ -1383,7 +1435,7 @@ export default function AppLayout({ children }) {
                     )
                 }
 
-                <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                <div className="flex-1 flex flex-col min-h-0 overflow-y-auto custom-scrollbar">
                     {hasAccessError ? (
                         <div className="flex flex-col items-center justify-center h-full text-center px-6 bg-app-bg-page relative z-[200] animate-in fade-in duration-500">
                             <div className="w-24 h-24 mb-8 bg-app-status-errorBg text-app-status-error flex items-center justify-center rounded-3xl shadow-lg border border-red-200/50 relative overflow-hidden group">
@@ -1517,6 +1569,15 @@ export default function AppLayout({ children }) {
                     </div>
                 </div>
             )}
+            {/* User Token Detail Modal */}
+            <UserTokenDetailModal
+                isOpen={isQuotaModalOpen}
+                onClose={() => setIsQuotaModalOpen(false)}
+                data={userQuota}
+                onRefresh={fetchUserQuota}
+                loading={isQuotaLoading}
+            />
+
             {/* AI Assistant Bot - available on all pages */}
             <AssistantBot />
         </div >

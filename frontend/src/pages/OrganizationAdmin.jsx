@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Building2, Calendar, CheckCircle2, Copy, Eye, EyeOff, KeyRound, Loader2, Plus, Save, ShieldCheck, Trash2, Users } from 'lucide-react';
+import { AlertCircle, Building2, Calendar, CheckCircle2, Coins, Copy, Eye, EyeOff, KeyRound, Loader2, Plus, Save, ShieldCheck, Trash2, Users } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { API_BASE_URL, API_ENDPOINTS } from '../config';
+import OrgTokenOpsPanel from '../components/OrgTokenOpsPanel';
 
 const PROVIDERS = [
     { value: 'azure_ad', label: 'Azure AD / Entra ID' },
@@ -400,6 +401,17 @@ export default function OrganizationAdmin({ user }) {
                                     }`}
                             >
                                 Users
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setActiveTab('tokens')}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors flex items-center gap-1.5 ${activeTab === 'tokens'
+                                    ? 'bg-app-primary text-white border-app-primary'
+                                    : 'bg-app-bg-card text-app-text-muted border-app-border hover:text-app-text-main'
+                                    }`}
+                            >
+                                <Coins className="w-3.5 h-3.5" />
+                                Token Management
                             </button>
                         </div>
                     </div>
@@ -868,7 +880,7 @@ export default function OrganizationAdmin({ user }) {
                                 </section>
                             </div>
                         </div>
-                    ) : (
+                    ) : activeTab === 'users' ? (
                         <div className="p-5">
                             <div className="flex items-center justify-between mb-4">
                                 <div className="flex items-center gap-2">
@@ -968,6 +980,10 @@ export default function OrganizationAdmin({ user }) {
                                     )}
                                 </div>
                             )}
+                        </div>
+                    ) : (
+                        <div className="p-5">
+                            <OrgTokenOpsPanel user={user} />
                         </div>
                     )}
                 </section>

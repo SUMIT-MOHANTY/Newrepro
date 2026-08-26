@@ -39,6 +39,7 @@ from sqlalchemy import (
     BigInteger,
     Column,
     DateTime,
+    ForeignKey,
     Index,
     Integer,
     Numeric,

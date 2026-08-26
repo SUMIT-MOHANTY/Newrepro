@@ -10,6 +10,7 @@ from tokenops.services.wallet_service import WalletService
 from tokenops.services.ledger_service import LedgerService
 from tokenops.services.usage_summary_service import UsageSummaryService
 from tokenops.services.idempotency_service import IdempotencyService
+from tokenops.services.tenant_resolver_service import TenantResolverService
 from tokenops.models.token_wallet import OrganizationWallet, UserOrganization
 from models import AIUsageLog
 from tokenops.models.ledger import TransactionType
@@ -27,7 +28,8 @@ class TokenOpsOrchestrator:
         wallet: WalletService,
         ledger: LedgerService,
         usage_summary: UsageSummaryService,
-        idempotency: IdempotencyService
+        idempotency: IdempotencyService,
+        tenant_resolver: TenantResolverService
     ):
         self.session = session
         self.validation = validation
@@ -36,6 +38,7 @@ class TokenOpsOrchestrator:
         self.ledger = ledger
         self.usage_summary = usage_summary
         self.idempotency = idempotency
+        self.tenant_resolver = tenant_resolver
 
     @classmethod
     def create(cls, session: Session) -> "TokenOpsOrchestrator":
@@ -59,6 +62,7 @@ class TokenOpsOrchestrator:
         idempotency = IdempotencyService(idempotency_repo)
         wallet = WalletService(session, org_repo, user_repo, validation, ledger, idempotency)
         usage_summary = UsageSummaryService(usage_repo)
+        tenant_resolver = TenantResolverService(session)
 
         return cls(
             session=session,
@@ -67,33 +71,38 @@ class TokenOpsOrchestrator:
             wallet=wallet,
             ledger=ledger,
             usage_summary=usage_summary,
-            idempotency=idempotency
+            idempotency=idempotency,
+            tenant_resolver=tenant_resolver
         )
 
     @retry_on_lock(max_retries=3)
     def pre_execute(self, user_id: int, organization_name: Optional[str]) -> None:
         """
         Pre-Execution Hook.
-        1. Validates RBAC (user mapped to org).
-        2. Validates block status.
-        3. Validates PREPAID balance if not PAYG.
+        1. Deterministically resolves tenant identity via TenantResolverService.
+        2. Validates RBAC (user mapped to org).
+        3. Validates block status.
+        4. Validates PREPAID balance if not PAYG.
         """
         if not organization_name:
             raise HTTPException(status_code=403, detail="ORGANIZATION_ACCESS_DENIED")
             
         with self.session.begin():
+            # Resolve tenant deterministically
+            org_id, org = self.tenant_resolver.resolve(organization_name)
+
             # Check if organization exists and user is mapped
-            membership = self.session.query(UserOrganization).filter_by(
-                user_id=user_id,
-                organization_name=organization_name,
-                is_active=True
+            membership = self.session.query(UserOrganization).filter(
+                UserOrganization.user_id == user_id,
+                (UserOrganization.organization_id == org_id) | (UserOrganization.organization_name == org.name),
+                UserOrganization.is_active == True
             ).first()
             
             if not membership:
                 raise HTTPException(status_code=403, detail="ORGANIZATION_ACCESS_DENIED")
                 
-            wallet = self.session.query(OrganizationWallet).filter_by(
-                organization_name=organization_name
+            wallet = self.session.query(OrganizationWallet).filter(
+                (OrganizationWallet.organization_id == org_id) | (OrganizationWallet.organization_name == org.name)
             ).first()
             
             if not wallet:
@@ -135,10 +144,19 @@ class TokenOpsOrchestrator:
             with self.session.begin():
                 if not self.idempotency.create_processing_record(request_id):
                     return
-                    
+                
+                try:
+                    org_id, org = self.tenant_resolver.resolve(organization_name)
+                    canonical_name = org.name
+                except Exception:
+                    org_id = None
+                    canonical_name = organization_name
+
                 log_entry = AIUsageLog(
                     user_id=user_id,
-                    project_token=organization_name,
+                    project_token=canonical_name,
+                    organization_name=canonical_name,
+                    organization_id=org_id,
                     model=model_name,
                     prompt_tokens=0,
                     completion_tokens=0,
@@ -155,8 +173,15 @@ class TokenOpsOrchestrator:
             if not self.idempotency.create_processing_record(request_id):
                 return
                 
-            wallet = self.session.query(OrganizationWallet).filter_by(
-                organization_name=organization_name
+            try:
+                org_id, org = self.tenant_resolver.resolve(organization_name)
+                canonical_name = org.name
+            except Exception:
+                org_id = None
+                canonical_name = organization_name
+
+            wallet = self.session.query(OrganizationWallet).filter(
+                (OrganizationWallet.organization_id == org_id) | (OrganizationWallet.organization_name == canonical_name)
             ).first()
             
             if not wallet:
@@ -173,7 +198,7 @@ class TokenOpsOrchestrator:
             cost = float(price * total_tokens)
             
             tx = TokenTransaction(
-                organization_name=organization_name,
+                organization_name=canonical_name,
                 transaction_type=TransactionType.CONSUMPTION.value,
                 token_delta=-total_tokens,
                 reference_id=request_id,
@@ -184,7 +209,7 @@ class TokenOpsOrchestrator:
             
             # 3. Update Usage Summary
             self.usage_summary.increment_rollup(
-                organization_name=organization_name,
+                organization_name=canonical_name,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_cost=cost
@@ -193,7 +218,9 @@ class TokenOpsOrchestrator:
             # 4. Write AIUsageLog
             log_entry = AIUsageLog(
                 user_id=user_id,
-                project_token=organization_name,
+                project_token=canonical_name,
+                organization_name=canonical_name,
+                organization_id=org_id,
                 model=model_name,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
