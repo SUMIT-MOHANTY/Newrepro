@@ -24,9 +24,14 @@ class AdminGovernanceService:
         self.user_repo = user_repo
         self.wallet_service = wallet_service
 
+    def _tx(self):
+        if self.session.in_transaction():
+            return self.session.begin_nested()
+        return self.session.begin()
+
     @retry_on_lock(max_retries=3)
     def set_organization_block_status(self, admin_user_id: int, organization_name: str, is_blocked: bool):
-        with self.session.begin():
+        with self._tx():
             wallet = self.org_repo.get_by_organization(organization_name)
             if not wallet:
                 raise HTTPException(status_code=404, detail="Organization not found")
@@ -41,7 +46,7 @@ class AdminGovernanceService:
 
     @retry_on_lock(max_retries=3)
     def set_user_block_status(self, admin_user_id: int, user_id: int, organization_name: str, is_active: bool):
-        with self.session.begin():
+        with self._tx():
             # is_active = False means blocked inside this specific organization
             membership = self.user_repo.get_membership(user_id, organization_name)
             if not membership:
@@ -62,7 +67,7 @@ class AdminGovernanceService:
 
     @retry_on_lock(max_retries=3)
     def handle_payg_request(self, admin_user_id: int, organization_name: str, approve: bool, remarks: str = None):
-        with self.session.begin():
+        with self._tx():
             wallet = self.org_repo.get_by_organization(organization_name)
             if not wallet:
                 raise HTTPException(status_code=404, detail="Organization not found")
@@ -88,7 +93,7 @@ class AdminGovernanceService:
 
     @retry_on_lock(max_retries=3)
     def suspend_payg(self, admin_user_id: int, organization_name: str):
-        with self.session.begin():
+        with self._tx():
             wallet = self.org_repo.get_by_organization(organization_name)
             if not wallet:
                 raise HTTPException(status_code=404, detail="Organization not found")
@@ -109,30 +114,30 @@ class AdminGovernanceService:
 
     @retry_on_lock(max_retries=3)
     def handle_quota_request(self, admin_user_id: int, request_id: int, approve: bool, remarks: str = None):
-        req = self.session.query(TokenQuotaRequest).filter(
-            TokenQuotaRequest.id == request_id
-        ).first()
-        if not req:
-            raise HTTPException(status_code=404, detail="Quota request not found")
+        with self._tx():
+            req = self.session.query(TokenQuotaRequest).filter(
+                TokenQuotaRequest.id == request_id
+            ).first()
+            if not req:
+                raise HTTPException(status_code=404, detail="Quota request not found")
 
-        if req.status != QuotaRequestStatus.REQUESTED.value:
-            raise HTTPException(status_code=400, detail=f"Request is already {req.status}")
+            if req.status != QuotaRequestStatus.REQUESTED.value and req.status != QuotaRequestStatus.REQUESTED:
+                raise HTTPException(status_code=400, detail=f"Request is already {req.status}")
 
-        if approve:
-            if req.request_type == QuotaRequestType.TOKEN_INCREASE.value or req.request_type == QuotaRequestType.TOKEN_INCREASE:
-                # Inject tokens into organization wallet reserve and record in ledger
-                if self.wallet_service and req.requested_tokens > 0:
-                    self.wallet_service.purchase_tokens(
-                        organization_name=req.organization_name,
-                        amount=req.requested_tokens,
-                        request_id=f"quota_req_{req.id}",
-                        remarks=f"Approved Quota Request #{req.id}: {remarks or ''}"
-                    )
-            elif req.request_type == QuotaRequestType.PAYG_ENABLEMENT.value or req.request_type == QuotaRequestType.PAYG_ENABLEMENT:
-                wallet = self.org_repo.get_or_create(req.organization_name)
-                wallet.payg_enabled = True
+            if approve:
+                if req.request_type == QuotaRequestType.TOKEN_INCREASE.value or req.request_type == QuotaRequestType.TOKEN_INCREASE:
+                    # Inject tokens into organization wallet reserve and record in ledger
+                    if self.wallet_service and req.requested_tokens > 0:
+                        self.wallet_service.purchase_tokens(
+                            organization_name=req.organization_name,
+                            amount=req.requested_tokens,
+                            request_id=f"quota_req_{req.id}",
+                            remarks=f"Approved Quota Request #{req.id}: {remarks or ''}"
+                        )
+                elif req.request_type == QuotaRequestType.PAYG_ENABLEMENT.value or req.request_type == QuotaRequestType.PAYG_ENABLEMENT:
+                    wallet = self.org_repo.get_or_create(req.organization_name)
+                    wallet.payg_enabled = True
 
-            with self.session.begin():
                 req.status = QuotaRequestStatus.APPROVED.value
                 req.approved_by = admin_user_id
                 req.approved_at = datetime.utcnow()
@@ -143,8 +148,7 @@ class AdminGovernanceService:
                     target_entity=f"{req.organization_name} (req #{req.id})",
                     details={"tokens": req.requested_tokens, "type": str(req.request_type), "notes": remarks}
                 )
-        else:
-            with self.session.begin():
+            else:
                 req.status = QuotaRequestStatus.REJECTED.value
                 req.approved_by = admin_user_id
                 req.approved_at = datetime.utcnow()
@@ -155,4 +159,4 @@ class AdminGovernanceService:
                     target_entity=f"{req.organization_name} (req #{req.id})",
                     details={"tokens": req.requested_tokens, "type": str(req.request_type), "notes": remarks}
                 )
-        return req
+            return req
