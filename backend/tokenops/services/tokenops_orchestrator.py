@@ -106,9 +106,18 @@ class TokenOpsOrchestrator:
             # 2. Verify user membership
             membership = self.session.query(UserOrganization).filter(
                 UserOrganization.user_id == user_id,
-                func.lower(UserOrganization.organization_name) == org.name.lower(),
+                UserOrganization.organization_id == org_id,
                 UserOrganization.is_active == True
             ).first()
+            if not membership:
+                membership = self.session.query(UserOrganization).filter(
+                    UserOrganization.user_id == user_id,
+                    func.lower(UserOrganization.organization_name) == org.name.lower(),
+                    UserOrganization.is_active == True
+                ).first()
+                if membership:
+                    # Auto-heal
+                    membership.organization_id = org_id
 
             if not membership:
                 raise HTTPException(status_code=403, detail="ORGANIZATION_ACCESS_DENIED")
@@ -117,6 +126,8 @@ class TokenOpsOrchestrator:
             org_wallet = self.session.query(OrganizationWallet).filter(
                 (OrganizationWallet.id == org_id) | (func.lower(OrganizationWallet.organization_name) == org.name.lower())
             ).first()
+            if org_wallet and (not org_wallet.organization_id or org_wallet.organization_id != org_id):
+                org_wallet.organization_id = org_id
 
             if not org_wallet:
                 raise HTTPException(status_code=403, detail="ORGANIZATION_ACCESS_DENIED")
@@ -131,11 +142,18 @@ class TokenOpsOrchestrator:
             # 5. PREPAID: UserTokenWallet is mandatory.
             # There is NO fallback to OrganizationWallet.remaining_tokens.
             # A user with no allocation must be blocked, not silently routed to the org pool.
-            canonical_name = org.name
             user_wallet = self.session.query(UserTokenWallet).filter(
                 UserTokenWallet.user_id == user_id,
-                func.lower(UserTokenWallet.organization_name) == canonical_name.lower()
+                UserTokenWallet.organization_id == org_id
             ).first()
+            if not user_wallet:
+                user_wallet = self.session.query(UserTokenWallet).filter(
+                    UserTokenWallet.user_id == user_id,
+                    func.lower(UserTokenWallet.organization_name) == org.name.lower()
+                ).first()
+                if user_wallet:
+                    # Auto-heal
+                    user_wallet.organization_id = org_id
 
             if not user_wallet:
                 raise HTTPException(status_code=402, detail="TOKEN_EXHAUSTED")
@@ -179,7 +197,7 @@ class TokenOpsOrchestrator:
 
         # ── Unknown token usage path ──────────────────────────────────────────
         if prompt_tokens is None or completion_tokens is None:
-            with self.session.begin():
+            with self._tx():
                 if not self.idempotency.create_processing_record(request_id):
                     return
 
@@ -254,8 +272,16 @@ class TokenOpsOrchestrator:
                 # The tokens were already moved out of org reserve during allocation.
                 user_wallet = self.session.query(UserTokenWallet).filter(
                     UserTokenWallet.user_id == user_id,
-                    func.lower(UserTokenWallet.organization_name) == canonical_name.lower()
+                    UserTokenWallet.organization_id == org_id
                 ).first()
+
+                if not user_wallet:
+                    user_wallet = self.session.query(UserTokenWallet).filter(
+                        UserTokenWallet.user_id == user_id,
+                        func.lower(UserTokenWallet.organization_name) == canonical_name.lower()
+                    ).first()
+                    if user_wallet and org_id:
+                        user_wallet.organization_id = org_id
 
                 if not user_wallet:
                     logger.error(

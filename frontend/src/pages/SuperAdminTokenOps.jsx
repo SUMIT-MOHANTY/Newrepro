@@ -353,35 +353,74 @@ export default function SuperAdminTokenOps() {
             {/* Overview KPIs */}
             {stats && (
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-                    <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200/80 dark:border-slate-700 shadow-sm">
-                        <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Total Orgs</span>
-                        <div className="text-xl font-bold text-slate-900 dark:text-white mt-1.5">{stats.total_organizations}</div>
-                    </div>
-                    <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200/80 dark:border-slate-700 shadow-sm">
-                        <span className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">Prepaid Orgs</span>
-                        <div className="text-xl font-bold text-indigo-700 dark:text-indigo-300 mt-1.5">{stats.prepaid_organizations}</div>
-                    </div>
-                    <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200/80 dark:border-slate-700 shadow-sm">
-                        <span className="text-[11px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider">PAYG Orgs</span>
-                        <div className="text-xl font-bold text-amber-700 dark:text-amber-300 mt-1.5">{stats.payg_organizations}</div>
-                    </div>
-                    <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200/80 dark:border-slate-700 shadow-sm">
-                        <span className="text-[11px] font-bold text-rose-600 dark:text-rose-400 uppercase tracking-wider">Blocked Orgs</span>
-                        <div className="text-xl font-bold text-rose-700 dark:text-rose-300 mt-1.5">{stats.blocked_organizations}</div>
-                    </div>
-                    <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200/80 dark:border-slate-700 shadow-sm">
-                        <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Total Consumption Cost</span>
-                        <div className="text-xl font-bold text-slate-900 dark:text-white mt-1.5">
-                            {formatCurrency(stats.total_historical_cost, 1)}
+                    {/* Total Orgs */}
+                    <div className="relative overflow-hidden bg-gradient-to-br from-white to-slate-50 dark:from-slate-800 dark:to-slate-850 p-3.5 rounded-xl border border-slate-250/60 dark:border-slate-700 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 flex items-center justify-between group">
+                        <div className="min-w-0">
+                            <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider block truncate">Total Orgs</span>
+                            <div className="text-xl font-bold text-slate-850 dark:text-slate-100 mt-1">{stats.total_organizations}</div>
                         </div>
-                        <span className="text-[10px] text-slate-400 mt-0.5 block font-mono">
-                            {Number(stats.total_tokens_consumed || 0).toLocaleString()} tokens
-                        </span>
+                        <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-700/50 text-slate-400 dark:text-slate-500 group-hover:bg-slate-100 dark:group-hover:bg-slate-700 transition-colors duration-200 shrink-0 ml-2">
+                            <Building2 className="w-4 h-4" />
+                        </div>
                     </div>
-                    <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200/80 dark:border-slate-700 shadow-sm">
-                        <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Total Requests</span>
-                        <div className="text-xl font-bold text-slate-900 dark:text-white mt-1.5">
-                            {Number(stats.total_requests || 0).toLocaleString()}
+
+                    {/* Prepaid Orgs */}
+                    <div className="relative overflow-hidden bg-gradient-to-br from-white to-indigo-50/10 dark:from-slate-800 dark:to-indigo-950/10 p-3.5 rounded-xl border border-indigo-100/50 dark:border-slate-700 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 flex items-center justify-between group">
+                        <div className="min-w-0">
+                            <span className="text-[10px] font-bold text-indigo-500 dark:text-indigo-400 uppercase tracking-wider block truncate">Prepaid Orgs</span>
+                            <div className="text-xl font-bold text-indigo-700 dark:text-indigo-350 mt-1">{stats.prepaid_organizations}</div>
+                        </div>
+                        <div className="p-2 rounded-lg bg-indigo-50/50 dark:bg-indigo-950/30 text-indigo-600 dark:text-indigo-455 group-hover:bg-indigo-100/50 dark:group-hover:bg-indigo-900/30 transition-colors duration-200 shrink-0 ml-2">
+                            <Coins className="w-4 h-4" />
+                        </div>
+                    </div>
+
+                    {/* PAYG Orgs */}
+                    <div className="relative overflow-hidden bg-gradient-to-br from-white to-amber-50/10 dark:from-slate-800 dark:to-amber-950/10 p-3.5 rounded-xl border border-amber-100/50 dark:border-slate-700 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 flex items-center justify-between group">
+                        <div className="min-w-0">
+                            <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider block truncate">PAYG Orgs</span>
+                            <div className="text-xl font-bold text-amber-700 dark:text-amber-350 mt-1">{stats.payg_organizations}</div>
+                        </div>
+                        <div className="p-2 rounded-lg bg-amber-50/50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-455 group-hover:bg-amber-100/50 dark:group-hover:bg-amber-900/30 transition-colors duration-200 shrink-0 ml-2">
+                            <DollarSign className="w-4 h-4" />
+                        </div>
+                    </div>
+
+                    {/* Blocked Orgs */}
+                    <div className="relative overflow-hidden bg-gradient-to-br from-white to-rose-50/10 dark:from-slate-800 dark:to-rose-950/10 p-3.5 rounded-xl border border-rose-100/50 dark:border-slate-700 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 flex items-center justify-between group">
+                        <div className="min-w-0">
+                            <span className="text-[10px] font-bold text-rose-500 dark:text-rose-400 uppercase tracking-wider block truncate">Blocked Orgs</span>
+                            <div className="text-xl font-bold text-rose-700 dark:text-rose-350 mt-1">{stats.blocked_organizations}</div>
+                        </div>
+                        <div className="p-2 rounded-lg bg-rose-50/50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-455 group-hover:bg-rose-100/50 dark:group-hover:bg-rose-900/30 transition-colors duration-200 shrink-0 ml-2">
+                            <Ban className="w-4 h-4" />
+                        </div>
+                    </div>
+
+                    {/* Total Consumption Cost */}
+                    <div className="relative overflow-hidden bg-gradient-to-br from-white to-emerald-50/10 dark:from-slate-800 dark:to-emerald-950/10 p-3.5 rounded-xl border border-emerald-100/50 dark:border-slate-700 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 flex items-center justify-between group">
+                        <div className="min-w-0 flex-1">
+                            <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider block truncate">Consumption Cost</span>
+                            <div className="text-lg font-bold text-emerald-700 dark:text-emerald-350 mt-1 truncate">
+                                {formatCurrency(stats.total_historical_cost, 1)}
+                            </div>
+                            <span className="text-[9px] text-slate-400 dark:text-slate-500 block truncate font-mono mt-0.5">
+                                {Number(stats.total_tokens_consumed || 0).toLocaleString()} tokens
+                            </span>
+                        </div>
+                        <div className="p-2 rounded-lg bg-emerald-50/50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-455 group-hover:bg-emerald-100/50 dark:group-hover:bg-emerald-900/30 transition-colors duration-200 shrink-0 ml-2">
+                            <Activity className="w-4 h-4" />
+                        </div>
+                    </div>
+
+                    {/* Total Requests */}
+                    <div className="relative overflow-hidden bg-gradient-to-br from-white to-slate-50 dark:from-slate-800 dark:to-slate-850 p-3.5 rounded-xl border border-slate-250/60 dark:border-slate-700 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 flex items-center justify-between group">
+                        <div className="min-w-0">
+                            <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider block truncate">Total Requests</span>
+                            <div className="text-xl font-bold text-slate-850 dark:text-slate-100 mt-1">{Number(stats.total_requests || 0).toLocaleString()}</div>
+                        </div>
+                        <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-700/50 text-slate-450 dark:text-slate-500 group-hover:bg-slate-100 dark:group-hover:bg-slate-700 transition-colors duration-200 shrink-0 ml-2">
+                            <Activity className="w-4 h-4" />
                         </div>
                     </div>
                 </div>

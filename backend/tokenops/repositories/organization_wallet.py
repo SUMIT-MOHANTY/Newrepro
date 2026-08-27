@@ -6,9 +6,28 @@ class OrganizationWalletRepository:
         self.session = session
 
     def get_wallet(self, organization_name: str) -> OrganizationWallet | None:
-        return self.session.query(OrganizationWallet).filter(
-            OrganizationWallet.organization_name == organization_name
+        # 1. Try matching by resolved UUID if possible
+        try:
+            from tokenops.services.tenant_resolver_service import TenantResolverService
+            resolver = TenantResolverService(self.session)
+            org_id, org = resolver.resolve(organization_name)
+            wallet = self.session.query(OrganizationWallet).filter(
+                OrganizationWallet.id == org_id
+            ).first()
+            if wallet:
+                # Auto-heal: set organization_id if missing or mismatching
+                if not wallet.organization_id or wallet.organization_id != org_id:
+                    wallet.organization_id = org_id
+                return wallet
+        except Exception:
+            pass
+
+        # 2. Fallback to case-insensitive name lookup for compatibility
+        from sqlalchemy import func
+        wallet = self.session.query(OrganizationWallet).filter(
+            func.lower(OrganizationWallet.organization_name) == organization_name.lower()
         ).first()
+        return wallet
 
     def get_by_organization(self, organization_name: str) -> OrganizationWallet | None:
         """Alias for get_wallet for service compatibility."""
@@ -16,27 +35,42 @@ class OrganizationWalletRepository:
 
     def update_balance(self, organization_name: str, purchased_delta: int = 0, remaining_delta: int = 0) -> None:
         """Atomic UPDATE to modify wallet balances without SELECT FOR UPDATE."""
-        self.session.query(OrganizationWallet).filter(
-            OrganizationWallet.organization_name == organization_name
-        ).update({
-            OrganizationWallet.purchased_tokens: OrganizationWallet.purchased_tokens + purchased_delta,
-            OrganizationWallet.remaining_tokens: OrganizationWallet.remaining_tokens + remaining_delta
-        })
+        wallet = self.get_wallet(organization_name)
+        if wallet:
+            self.session.query(OrganizationWallet).filter(
+                OrganizationWallet.id == wallet.id
+            ).update({
+                OrganizationWallet.purchased_tokens: OrganizationWallet.purchased_tokens + purchased_delta,
+                OrganizationWallet.remaining_tokens: OrganizationWallet.remaining_tokens + remaining_delta
+            })
 
     def update_reserve(self, organization_name: str, reserved_delta: int) -> None:
         """Atomic UPDATE for reserved tokens."""
-        self.session.query(OrganizationWallet).filter(
-            OrganizationWallet.organization_name == organization_name
-        ).update({
-            OrganizationWallet.reserved_tokens: OrganizationWallet.reserved_tokens + reserved_delta
-        })
+        wallet = self.get_wallet(organization_name)
+        if wallet:
+            self.session.query(OrganizationWallet).filter(
+                OrganizationWallet.id == wallet.id
+            ).update({
+                OrganizationWallet.reserved_tokens: OrganizationWallet.reserved_tokens + reserved_delta
+            })
 
     def get_or_create(self, organization_name: str) -> OrganizationWallet:
         """Get existing wallet or lazily create a zero-balance wallet for the organization."""
         wallet = self.get_wallet(organization_name)
         if not wallet:
+            org_id = None
+            try:
+                from tokenops.services.tenant_resolver_service import TenantResolverService
+                resolver = TenantResolverService(self.session)
+                org_id, org = resolver.resolve(organization_name)
+                organization_name = org.name  # Use canonical name
+            except Exception:
+                pass
+
             wallet = OrganizationWallet(
+                id=org_id,  # Use the authoritative organization UUID if resolved
                 organization_name=organization_name,
+                organization_id=org_id,
                 purchased_tokens=0,
                 remaining_tokens=0,
                 reserved_tokens=0,

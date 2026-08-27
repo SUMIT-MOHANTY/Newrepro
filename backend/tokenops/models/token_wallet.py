@@ -72,6 +72,9 @@ class OrganizationWallet(Base):
     organization_name = Column(
         String, index=True, nullable=False, comment="Tenant identifier"
     )
+    organization_id   = Column(
+        String(36), index=True, nullable=True, comment="Authoritative UUID tenant key"
+    )
 
     # --- Token counters (all in raw token units, not USD) ---
     purchased_tokens = Column(BigInteger, nullable=False, default=0,
@@ -136,6 +139,7 @@ class UserOrganization(Base):
         nullable=False, index=True,
     )
     organization_name = Column(String, nullable=False, index=True)
+    organization_id   = Column(String(36), index=True, nullable=True)
     role              = Column(String, nullable=False, default="member",
                                comment="Role name within this organization")
     is_active         = Column(Boolean, nullable=False, default=True)
@@ -189,6 +193,7 @@ class UserTokenWallet(Base):
         nullable=False, index=True,
     )
     organization_name = Column(String, nullable=False, index=True)
+    organization_id   = Column(String(36), index=True, nullable=True)
 
     # Token counters — maintained by the wallet service; ledger is source of truth.
     allocated_tokens  = Column(BigInteger, nullable=False, default=0,

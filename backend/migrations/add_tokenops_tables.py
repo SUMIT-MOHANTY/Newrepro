@@ -365,6 +365,124 @@ _DDL_STATEMENTS: list[tuple[str, str]] = [
             ON organization_usage_summary (last_updated)
         """,
     ),
+
+    # ── 9. admin_audit_logs ──────────────────────────────────────────────────
+    (
+        "CREATE TABLE admin_audit_logs",
+        """
+        CREATE TABLE IF NOT EXISTS admin_audit_logs (
+            id                INTEGER NOT NULL,
+            admin_user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            actor_type        TEXT    NOT NULL DEFAULT 'SUPER_ADMIN',
+            action            TEXT    NOT NULL,
+            target_entity     TEXT    NOT NULL,
+            organization_name TEXT,
+            request_id        TEXT,
+            details           TEXT,
+            created_at        TEXT    NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (id)
+        )
+        """,
+    ),
+    (
+        "INDEX ix_admin_audit_logs_admin_user_id",
+        """
+        CREATE INDEX IF NOT EXISTS ix_admin_audit_logs_admin_user_id
+            ON admin_audit_logs (admin_user_id)
+        """,
+    ),
+    (
+        "INDEX ix_admin_audit_logs_actor_type",
+        """
+        CREATE INDEX IF NOT EXISTS ix_admin_audit_logs_actor_type
+            ON admin_audit_logs (actor_type)
+        """,
+    ),
+    (
+        "INDEX ix_admin_audit_logs_action",
+        """
+        CREATE INDEX IF NOT EXISTS ix_admin_audit_logs_action
+            ON admin_audit_logs (action)
+        """,
+    ),
+    (
+        "INDEX ix_admin_audit_logs_org_name",
+        """
+        CREATE INDEX IF NOT EXISTS ix_admin_audit_logs_org_name
+            ON admin_audit_logs (organization_name)
+        """,
+    ),
+    (
+        "INDEX ix_admin_audit_logs_request_id",
+        """
+        CREATE INDEX IF NOT EXISTS ix_admin_audit_logs_request_id
+            ON admin_audit_logs (request_id)
+        """,
+    ),
+    (
+        "INDEX ix_admin_audit_logs_created_at",
+        """
+        CREATE INDEX IF NOT EXISTS ix_admin_audit_logs_created_at
+            ON admin_audit_logs (created_at)
+        """,
+    ),
+
+    # ── 10. token_quota_requests ─────────────────────────────────────────────
+    (
+        "CREATE TABLE token_quota_requests",
+        """
+        CREATE TABLE IF NOT EXISTS token_quota_requests (
+            id                INTEGER NOT NULL,
+            organization_name TEXT    NOT NULL,
+            organization_id   TEXT,
+            request_type      TEXT    NOT NULL,
+            requested_tokens  INTEGER NOT NULL DEFAULT 0,
+            requested_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            status            TEXT    NOT NULL DEFAULT 'REQUESTED',
+            remarks           TEXT,
+            admin_notes       TEXT,
+            approved_by       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at        TEXT    NOT NULL DEFAULT (datetime('now')),
+            approved_at       TEXT,
+            PRIMARY KEY (id)
+        )
+        """,
+    ),
+    (
+        "INDEX ix_token_quota_requests_org_name",
+        """
+        CREATE INDEX IF NOT EXISTS ix_token_quota_requests_org_name
+            ON token_quota_requests (organization_name)
+        """,
+    ),
+    (
+        "INDEX ix_token_quota_requests_org_id",
+        """
+        CREATE INDEX IF NOT EXISTS ix_token_quota_requests_org_id
+            ON token_quota_requests (organization_id)
+        """,
+    ),
+    (
+        "INDEX ix_token_quota_requests_type",
+        """
+        CREATE INDEX IF NOT EXISTS ix_token_quota_requests_type
+            ON token_quota_requests (request_type)
+        """,
+    ),
+    (
+        "INDEX ix_token_quota_requests_status",
+        """
+        CREATE INDEX IF NOT EXISTS ix_token_quota_requests_status
+            ON token_quota_requests (status)
+        """,
+    ),
+    (
+        "INDEX ix_token_quota_requests_requested_by",
+        """
+        CREATE INDEX IF NOT EXISTS ix_token_quota_requests_requested_by
+            ON token_quota_requests (requested_by)
+        """,
+    ),
 ]
 
 # Default pricing seed row — mirrors the hardcoded rate in llm_gateway.py.
@@ -418,6 +536,8 @@ def downgrade() -> None:
     WARNING: This is destructive and irreversible in production.
     """
     drop_order = [
+        "token_quota_requests",
+        "admin_audit_logs",
         "token_transaction_ledger",
         "organization_usage_summary",
         "payg_invoice",

@@ -18,6 +18,11 @@ class AdminPricingService:
         self.audit_service = audit_service
         self.pricing_repo = pricing_repo
 
+    def _tx(self):
+        if self.session.in_transaction():
+            return self.session.begin_nested()
+        return self.session.begin()
+
     def get_all_pricing(self) -> List[PricingView]:
         models = self.session.query(ModelPricing).all()
         return [
@@ -29,7 +34,7 @@ class AdminPricingService:
         ]
 
     def add_model(self, admin_user_id: int, model_name: str, price_per_token: float):
-        with self.session.begin():
+        with self._tx():
             m = self.session.query(ModelPricing).filter_by(model_name=model_name).first()
             if m:
                 # If exists, we don't recreate, we just ensure it exists.
@@ -50,7 +55,7 @@ class AdminPricingService:
             )
 
     def update_price(self, admin_user_id: int, model_name: str, price_per_token: float):
-        with self.session.begin():
+        with self._tx():
             m = self.session.query(ModelPricing).filter_by(model_name=model_name).first()
             if not m:
                 # Add if not exists but we activate it?

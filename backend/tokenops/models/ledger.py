@@ -133,6 +133,7 @@ class TokenTransactionLedger(Base):
                                autoincrement=True)
     organization_name = Column(String, nullable=False, index=True,
                                comment="Tenant — matches organization_wallet.organization_name")
+    organization_id   = Column(String(36), index=True, nullable=True)
     user_id           = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True, index=True,

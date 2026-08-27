@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { API_BASE_URL, API_ENDPOINTS } from '../config';
 import { customConfirm } from '../utils/modalHelpers';
-import { Send, AlertCircle, CheckCircle2, AlertTriangle, ChevronRight, ChevronLeft, ArrowRight, Check, Loader2, X } from 'lucide-react';
+import { Send, AlertCircle, CheckCircle2, AlertTriangle, ChevronRight, ChevronLeft, ArrowRight, Check, Loader2, GitBranch, Code, HardDrive, CalendarDays, Clock, Layers, FolderKanban, Activity, FileCheck, Info, Building2, Target, Shield, X } from 'lucide-react';
 import { useGovernanceQuestions, useSubmitGovernance } from '../hooks/useGovernance';
 import colors from '../styles/colors';
 import { createDraftProject, getDraftProject, upsertDraftProject } from '../utils/draftProjects';
@@ -137,6 +137,729 @@ const getTagColorTheme = (tag, idx) => {
 /* ─────────────────────────────────────────────────────────
    MAIN FORM COMPONENT
 ───────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────
+   MODERNIZATION ASSESSMENT VIEW
+───────────────────────────────────────────────────────── */
+const ModernizationAssessmentView = ({ goNext, navigate, projectName }) => {
+    const [activeTab, setActiveTab] = useState('scoring');
+    const [modAnswers, setModAnswers] = useState({
+        outcome: 'Impacts revenue or efficiency for team',
+        impact: 'Financial or process delay',
+        users: '50-200',
+        existing: 'No'
+    });
+
+    // Dynamic calculations
+    const scoreVal = useMemo(() => {
+        let pts = 0;
+        // Outcome
+        if (modAnswers.outcome === 'Informational only') pts += 5;
+        else if (modAnswers.outcome === 'Saves <5 hrs/week') pts += 10;
+        else if (modAnswers.outcome === 'Impacts revenue or efficiency for team') pts += 15;
+        else if (modAnswers.outcome === 'Impacts customer or regulatory process') pts += 20;
+
+        // Impact
+        if (modAnswers.impact === 'Nothing significant') pts += 5;
+        else if (modAnswers.impact === 'Minor inefficiency') pts += 10;
+        else if (modAnswers.impact === 'Financial or process delay') pts += 15;
+        else if (modAnswers.impact === 'Compliance or customer risk') pts += 20;
+
+        // Users
+        if (modAnswers.users === '<10') pts += 5;
+        else if (modAnswers.users === '10-50') pts += 10;
+        else if (modAnswers.users === '50-200') pts += 15;
+        else if (modAnswers.users === '200+') pts += 20;
+
+        // Existing
+        if (modAnswers.existing === 'Yes') pts += 5;
+        else if (modAnswers.existing === 'No') pts += 15;
+
+        // Calculate score
+        const score = Math.round(40 + ((pts - 20) / 55) * 55);
+        return Math.min(Math.max(score, 40), 99);
+    }, [modAnswers]);
+
+    const archScore = useMemo(() => 65 + (modAnswers.existing === 'No' ? 9 : 0), [modAnswers.existing]);
+    const maintScore = useMemo(() => 50 + (modAnswers.users === '50-200' ? 8 : modAnswers.users === '200+' ? 15 : 0), [modAnswers.users]);
+    const securityScore = useMemo(() => 60 + (modAnswers.impact === 'Financial or process delay' ? 9 : modAnswers.impact === 'Compliance or customer risk' ? 15 : 0), [modAnswers.impact]);
+    const cloudScore = useMemo(() => 35 + (modAnswers.outcome === 'Impacts revenue or efficiency for team' ? 10 : modAnswers.outcome === 'Impacts customer or regulatory process' ? 20 : 0), [modAnswers.outcome]);
+
+    // Trend Week 4 coordinate
+    const week4Y = useMemo(() => 100 - ((scoreVal - 40) / 60) * 60, [scoreVal]);
+
+    return (
+        <div className="flex flex-col w-full text-app-text-main">
+            {/* Header section with Action Buttons */}
+            <div className="p-6 border-b border-app-border/40">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div>
+                        <h2 className="text-xl font-bold text-app-text-main tracking-tight">Modernization Assessment</h2>
+                        <p className="text-xs text-app-text-muted mt-1">Answer a few questions to generate your modernization score and recommendations.</p>
+                    </div>
+                    <div className="flex items-center gap-2.5">
+                        <button
+                            type="button"
+                            onClick={() => navigate('/dashboard')}
+                            className="px-4 py-2 text-xs font-semibold rounded-xl text-app-text-muted bg-slate-100 dark:bg-slate-800/40 border border-app-border/60 hover:bg-slate-200 dark:hover:bg-slate-800/80 transition-all cursor-pointer"
+                        >
+                            Save & Exit
+                        </button>
+                        {activeTab === 'scoring' ? (
+                            <button
+                                type="button"
+                                onClick={() => setActiveTab('repo')}
+                                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-xl text-white bg-blue-600 hover:bg-blue-700 active:scale-[0.97] transition-all cursor-pointer"
+                            >
+                                Next Step <ChevronRight className="w-3.5 h-3.5" />
+                            </button>
+                        ) : (
+                            <button
+                                type="button"
+                                onClick={goNext}
+                                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-xl text-white bg-blue-600 hover:bg-blue-700 active:scale-[0.97] transition-all cursor-pointer"
+                            >
+                                Save & Download Roadmap <ArrowRight className="w-3.5 h-3.5" />
+                            </button>
+                        )}
+                    </div>
+                </div>
+
+                {/* Tabs */}
+                <div className="flex items-center gap-6 mt-6 border-b border-slate-200 dark:border-white/5">
+                    <button
+                        type="button"
+                        onClick={() => setActiveTab('scoring')}
+                        className={`pb-2.5 text-xs font-bold transition-all relative cursor-pointer ${
+                            activeTab === 'scoring' ? 'text-blue-400 font-extrabold' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                        }`}
+                    >
+                        Scoring Questions
+                        {activeTab === 'scoring' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-400 rounded-full" />}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => setActiveTab('repo')}
+                        className={`pb-2.5 text-xs font-bold transition-all relative cursor-pointer ${
+                            activeTab === 'repo' ? 'text-blue-400 font-extrabold' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                        }`}
+                    >
+                        Repository Context
+                        {activeTab === 'repo' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-400 rounded-full" />}
+                    </button>
+                </div>
+            </div>
+
+            {/* Grid Container */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 p-6">
+                
+                {/* SECTION 1: Top Row Left Column (8 cols) */}
+                <div className="lg:col-span-8 space-y-6">
+                    {activeTab === 'scoring' ? (
+                        <div className="space-y-5">
+                            {/* Header banner */}
+                            <div className="flex items-center justify-between border-b border-app-border/40 pb-3">
+                                <h3 className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                                    <Building2 className="w-4.5 h-4.5 text-blue-400" />
+                                    Business Value & Urgency
+                                </h3>
+                                <span className="text-[10px] font-extrabold text-blue-400 bg-blue-400/10 border border-blue-400/20 px-2.5 py-0.5 rounded-full">
+                                    4/4
+                                </span>
+                            </div>
+
+                            {/* Question 1 */}
+                            <div className="p-5 rounded-xl border border-app-border/40 bg-slate-50 dark:bg-slate-900/10 space-y-4">
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2.5">
+                                        <div className="w-5 h-5 rounded-full bg-blue-500/15 flex items-center justify-center border border-blue-500/30">
+                                            <Check className="w-3.5 h-3.5 text-blue-400" />
+                                        </div>
+                                        <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-200">What measurable outcome does this app produce?</h4>
+                                    </div>
+                                    <button type="button" className="text-xs text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white transition-colors cursor-pointer">Skip</button>
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    {[
+                                        'Informational only',
+                                        'Saves <5 hrs/week',
+                                        'Impacts revenue or efficiency for team',
+                                        'Impacts customer or regulatory process'
+                                    ].map((option) => (
+                                        <button
+                                            type="button"
+                                            key={option}
+                                            onClick={() => setModAnswers(prev => ({ ...prev, outcome: option }))}
+                                            className={`flex items-center gap-2.5 p-3 rounded-lg text-xs font-semibold border transition-all text-left cursor-pointer ${
+                                                modAnswers.outcome === option
+                                                    ? 'border-blue-500 bg-blue-500/10 text-blue-600 dark:text-white'
+                                                    : 'border-slate-200 dark:border-white/5 bg-slate-100 dark:bg-slate-900/40 text-slate-600 dark:text-slate-300 hover:border-slate-300 dark:hover:border-white/10 hover:bg-slate-200 dark:hover:bg-slate-900/60'
+                                            }`}
+                                        >
+                                            <div className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${
+                                                modAnswers.outcome === option ? 'border-blue-500 bg-blue-500' : 'border-slate-600'
+                                            }`}>
+                                                {modAnswers.outcome === option && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                                            </div>
+                                            {option}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Question 2 */}
+                            <div className="p-5 rounded-xl border border-app-border/40 bg-slate-50 dark:bg-slate-900/10 space-y-4">
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2.5">
+                                        <div className="w-5 h-5 rounded-full bg-blue-500/15 flex items-center justify-center border border-blue-500/30">
+                                            <Check className="w-3.5 h-3.5 text-blue-400" />
+                                        </div>
+                                        <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-200">What happens if not built in 90 days?</h4>
+                                    </div>
+                                    <button type="button" className="text-xs text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white transition-colors cursor-pointer">Skip</button>
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    {[
+                                        'Nothing significant',
+                                        'Minor inefficiency',
+                                        'Financial or process delay',
+                                        'Compliance or customer risk'
+                                    ].map((option) => (
+                                        <button
+                                            type="button"
+                                            key={option}
+                                            onClick={() => setModAnswers(prev => ({ ...prev, impact: option }))}
+                                            className={`flex items-center gap-2.5 p-3 rounded-lg text-xs font-semibold border transition-all text-left cursor-pointer ${
+                                                modAnswers.impact === option
+                                                    ? 'border-blue-500 bg-blue-500/10 text-blue-600 dark:text-white'
+                                                    : 'border-slate-200 dark:border-white/5 bg-slate-100 dark:bg-slate-900/40 text-slate-600 dark:text-slate-300 hover:border-slate-300 dark:hover:border-white/10 hover:bg-slate-200 dark:hover:bg-slate-900/60'
+                                            }`}
+                                        >
+                                            <div className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${
+                                                modAnswers.impact === option ? 'border-blue-500 bg-blue-500' : 'border-slate-600'
+                                            }`}>
+                                                {modAnswers.impact === option && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                                            </div>
+                                            {option}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Question 3 */}
+                            <div className="p-5 rounded-xl border border-app-border/40 bg-slate-50 dark:bg-slate-900/10 space-y-4">
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2.5">
+                                        <div className="w-5 h-5 rounded-full bg-blue-500/15 flex items-center justify-center border border-blue-500/30">
+                                            <Check className="w-3.5 h-3.5 text-blue-400" />
+                                        </div>
+                                        <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Number of users in 6 months?</h4>
+                                    </div>
+                                    <button type="button" className="text-xs text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white transition-colors cursor-pointer">Skip</button>
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    {[
+                                        '<10',
+                                        '10-50',
+                                        '50-200',
+                                        '200+'
+                                    ].map((option) => (
+                                        <button
+                                            type="button"
+                                            key={option}
+                                            onClick={() => setModAnswers(prev => ({ ...prev, users: option }))}
+                                            className={`flex items-center gap-2.5 p-3 rounded-lg text-xs font-semibold border transition-all text-left cursor-pointer ${
+                                                modAnswers.users === option
+                                                    ? 'border-blue-500 bg-blue-500/10 text-blue-600 dark:text-white'
+                                                    : 'border-slate-200 dark:border-white/5 bg-slate-100 dark:bg-slate-900/40 text-slate-600 dark:text-slate-300 hover:border-slate-300 dark:hover:border-white/10 hover:bg-slate-200 dark:hover:bg-slate-900/60'
+                                            }`}
+                                        >
+                                            <div className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${
+                                                modAnswers.users === option ? 'border-blue-500 bg-blue-500' : 'border-slate-600'
+                                            }`}>
+                                                {modAnswers.users === option && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                                            </div>
+                                            {option}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Question 4 */}
+                            <div className="p-5 rounded-xl border border-app-border/40 bg-slate-50 dark:bg-slate-900/10 space-y-4">
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2.5">
+                                        <div className="w-5 h-5 rounded-full bg-blue-500/15 flex items-center justify-center border border-blue-500/30">
+                                            <Check className="w-3.5 h-3.5 text-blue-400" />
+                                        </div>
+                                        <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Is there an existing enterprise system that covers 70% of this?</h4>
+                                    </div>
+                                    <button type="button" className="text-xs text-slate-505 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white transition-colors cursor-pointer">Skip</button>
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    {[
+                                        'Yes',
+                                        'No'
+                                    ].map((option) => (
+                                        <button
+                                            type="button"
+                                            key={option}
+                                            onClick={() => setModAnswers(prev => ({ ...prev, existing: option }))}
+                                            className={`flex items-center gap-2.5 p-3 rounded-lg text-xs font-semibold border transition-all text-left cursor-pointer ${
+                                                modAnswers.existing === option
+                                                    ? 'border-blue-500 bg-blue-500/10 text-blue-600 dark:text-white'
+                                                    : 'border-slate-200 dark:border-white/5 bg-slate-100 dark:bg-slate-900/40 text-slate-600 dark:text-slate-300 hover:border-slate-300 dark:hover:border-white/10 hover:bg-slate-200 dark:hover:bg-slate-900/60'
+                                            }`}
+                                        >
+                                            <div className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${
+                                                modAnswers.existing === option ? 'border-blue-500 bg-blue-500' : 'border-slate-600'
+                                            }`}>
+                                                {modAnswers.existing === option && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                                            </div>
+                                            {option}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="space-y-6">
+                            {/* Repository Overview */}
+                            <div className="p-5 bg-slate-50 dark:bg-slate-900/20 border border-app-border/40 rounded-xl space-y-4 animate-fadeIn">
+                                <div className="flex items-center justify-between border-b border-slate-200 dark:border-white/5 pb-3">
+                                    <h4 className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                                        <Layers className="w-4 h-4 text-blue-400" />
+                                        Repository Overview
+                                    </h4>
+                                    <span className="text-[10px] font-extrabold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                                        Analysis Complete
+                                    </span>
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-3 gap-5">
+                                    {[
+                                        { label: 'Repository', val: 'apache/struts', icon: GitBranch },
+                                        { label: 'Type', val: 'Java Web Application', icon: Layers },
+                                        { label: 'Primary Language', val: 'Java', icon: Code },
+                                        { label: 'Size', val: '~1.2M LOC', icon: HardDrive },
+                                        { label: 'Created', val: '2003', icon: CalendarDays },
+                                        { label: 'Last Commit', val: '2 days ago', icon: Clock },
+                                    ].map((stat, idx) => {
+                                        const Icon = stat.icon;
+                                        return (
+                                            <div key={idx} className="flex items-center gap-2.5">
+                                                <div className="w-7 h-7 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-550 dark:text-slate-400 border border-slate-200 dark:border-white/5">
+                                                    <Icon className="w-3.5 h-3.5" />
+                                                </div>
+                                                <div>
+                                                    <div className="text-[10px] text-slate-500 dark:text-slate-400">{stat.label}</div>
+                                                    <div className="text-xs font-bold text-slate-800 dark:text-white mt-0.5">{stat.val}</div>
+                                                </div>
+                                            </div>
+                                        )
+                                    })}
+                                </div>
+                            </div>
+
+                            {/* Technology & Structure Split */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-5 animate-fadeIn">
+                                {/* Technology & Frameworks */}
+                                <div className="p-5 bg-slate-50 dark:bg-slate-900/20 border border-app-border/40 rounded-xl space-y-3.5">
+                                    <h4 className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                                        <Code className="w-4 h-4 text-indigo-400" />
+                                        Technology & Frameworks
+                                    </h4>
+                                    <div className="grid grid-cols-2 gap-y-3 gap-x-2.5 pt-1.5">
+                                        {[
+                                            { label: 'Framework', val: 'Apache Struts 1.3.10' },
+                                            { label: 'Build Tool', val: 'Maven' },
+                                            { label: 'Java Version', val: '1.6 - 1.8' },
+                                            { label: 'Web Layer', val: 'JSP, Servlets' },
+                                            { label: 'DI Framework', val: 'Spring (partial)' },
+                                            { label: 'Logging', val: 'Log4j 1.x' },
+                                        ].map((tech, idx) => (
+                                            <div key={idx} className="space-y-0.5">
+                                                <div className="text-[9px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider">{tech.label}</div>
+                                                <div className="text-xs font-semibold text-slate-750 dark:text-slate-200">{tech.val}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                {/* Repository Structure */}
+                                <div className="p-5 bg-slate-50 dark:bg-slate-900/20 border border-app-border/40 rounded-xl space-y-3.5">
+                                    <div className="flex items-center justify-between">
+                                        <h4 className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                                            <FolderKanban className="w-4 h-4 text-blue-400" />
+                                            Repository Structure
+                                        </h4>
+                                        <button type="button" className="text-[10px] font-bold text-blue-400 hover:text-blue-300 cursor-pointer">View Full Tree</button>
+                                    </div>
+                                    <div className="space-y-2.5 pt-1">
+                                        {[
+                                            { path: '/src/main/java', val: 32 },
+                                            { path: '/src/main/webapp', val: 28 },
+                                            { path: '/src/main/resources', val: 18 },
+                                            { path: '/src/test/java', val: 12 },
+                                            { path: '/lib', val: 10 },
+                                        ].map((folder, idx) => (
+                                            <div key={idx} className="space-y-1">
+                                                <div className="flex justify-between text-[11px] font-semibold">
+                                                    <span className="text-slate-500 dark:text-slate-400 truncate max-w-[150px] font-mono text-[10px]">{folder.path}</span>
+                                                    <span className="text-slate-700 dark:text-slate-200">{folder.val}%</span>
+                                                </div>
+                                                <div className="w-full bg-slate-200 dark:bg-slate-900 rounded-full h-1 overflow-hidden border border-slate-100 dark:border-white/5">
+                                                    <div className="bg-blue-500 h-full rounded-full" style={{ width: `${folder.val}%` }} />
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+
+                {/* Right Column (4 cols) - Sticky on desktop */}
+                <div className="lg:col-span-4 space-y-6 lg:sticky lg:top-6 self-start">
+                    {/* Modernization Score Banner */}
+                    <div className="p-5 bg-slate-50 dark:bg-slate-900/20 border border-app-border/40 rounded-xl space-y-5">
+                        <h4 className="text-sm font-bold text-slate-800 dark:text-white border-b border-slate-200 dark:border-white/5 pb-2">
+                            Modernization Score
+                        </h4>
+
+                        {/* Radial Chart */}
+                        <div className="relative flex items-center justify-center w-36 h-36 mx-auto">
+                            <svg className="w-full h-full transform -rotate-90">
+                                <circle cx="72" cy="72" r="60" className="stroke-slate-200 dark:stroke-slate-800" strokeWidth="8" fill="transparent" />
+                                <circle cx="72" cy="72" r="60" className="transition-all duration-500 ease-out stroke-blue-500" strokeWidth="8" fill="transparent"
+                                    strokeDasharray={377}
+                                    strokeDashoffset={377 - (377 * scoreVal) / 100}
+                                    strokeLinecap="round"
+                                />
+                            </svg>
+                            <div className="absolute text-center">
+                                <span className="text-4xl font-extrabold text-slate-800 dark:text-white">{scoreVal}</span>
+                                <div className="text-[9px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider mt-0.5">Overall Score</div>
+                                <span className="inline-block mt-1.5 px-2.5 py-0.5 bg-emerald-500/20 text-emerald-400 rounded-full text-[9px] font-extrabold uppercase border border-emerald-500/30">
+                                    Good
+                                </span>
+                            </div>
+                        </div>
+
+                        {/* Category Progress Bars */}
+                        <div className="space-y-3.5 pt-2">
+                            {[
+                                { label: 'Architecture', val: archScore, color: 'bg-emerald-500' },
+                                { label: 'Maintainability', val: maintScore, color: 'bg-amber-500' },
+                                { label: 'Security', val: securityScore, color: 'bg-emerald-500' },
+                                { label: 'Cloud Ready', val: cloudScore, color: 'bg-orange-500' },
+                                { label: 'Testing', val: 33, color: 'bg-red-500' },
+                                { label: 'Documentation', val: 12, color: 'bg-red-500' },
+                            ].map((item) => (
+                                <div key={item.label} className="space-y-1">
+                                    <div className="flex justify-between text-xs font-semibold">
+                                        <span className="text-slate-600 dark:text-slate-300">{item.label}</span>
+                                        <span className="text-slate-800 dark:text-white font-bold">{item.val}</span>
+                                    </div>
+                                    <div className="w-full bg-slate-200 dark:bg-slate-900 rounded-full h-1.5 overflow-hidden border border-slate-100 dark:border-white/5">
+                                        <div className={`${item.color} h-full transition-all duration-500`} style={{ width: `${item.val}%` }} />
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+
+                {/* SECTION 2: Full-Width Dashboard Footer Band (Spans all 12 columns) */}
+                {activeTab === 'scoring' ? (
+                    <div className="lg:col-span-12 border-t border-app-border/40 pt-6 mt-4 space-y-6 animate-fadeIn">
+                        {/* Info Card & What this means side-by-side */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                            <div className="flex items-start gap-3 p-5 bg-blue-500/5 border border-blue-500/10 rounded-2xl">
+                                <Info className="w-4.5 h-4.5 text-blue-400 shrink-0 mt-0.5" />
+                                <div>
+                                    <div className="text-xs font-bold text-blue-705 dark:text-blue-200">Complete questions to calculate score</div>
+                                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
+                                        Your responses generate real-time viability insights and recommendation metrics.
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="p-5 bg-slate-50 dark:bg-slate-900/20 border border-app-border/40 rounded-2xl space-y-2">
+                                <div className="text-xs font-bold text-slate-800 dark:text-white flex items-center gap-1.5">
+                                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                                    What this means
+                                </div>
+                                <p className="text-[11px] text-slate-550 dark:text-slate-400 leading-relaxed font-medium">
+                                    Your application has good architectural foundation but needs improvements in testing, documentation, and cloud readiness. Refactoring approach recommended for optimal results.
+                                </p>
+                            </div>
+                        </div>
+
+                        {/* Indicators Grid */}
+                        <div className="space-y-4 pt-2">
+                            <h4 className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+                                <Activity className="w-4 h-4 text-blue-400" />
+                                Key Assessment Indicators
+                            </h4>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+                                {[
+                                    { label: 'Technical Debt', val: 'High', desc: 'Significant refactoring needed', color: 'text-red-400 bg-red-500/10 border-red-500/20', icon: Code },
+                                    { label: 'Migration Risk', val: 'Medium', desc: 'Some risks identified', color: 'text-amber-400 bg-amber-500/10 border-amber-500/20', icon: AlertTriangle },
+                                    { label: 'Estimated Effort', val: '16 weeks', desc: 'Based on analysis and similar projects', color: 'text-blue-400 bg-blue-500/10 border-blue-500/20', icon: Clock },
+                                    { label: 'Recommended Strategy', val: 'Refactor', desc: 'Modernize incrementally', color: 'text-purple-400 bg-purple-500/10 border-purple-500/20', icon: Target },
+                                    { label: 'Confidence', val: '91%', desc: 'High confidence in assessment', color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20', icon: Shield },
+                                ].map((ind) => {
+                                    const Icon = ind.icon;
+                                    return (
+                                        <div key={ind.label} className="flex flex-col justify-between p-3.5 bg-slate-50 dark:bg-slate-900/20 rounded-xl border border-app-border/40 space-y-3">
+                                            <div className="flex items-start justify-between">
+                                                <div className="w-7 h-7 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center border border-slate-200 dark:border-white/5 text-slate-500 dark:text-slate-400 shrink-0">
+                                                    <Icon className="w-3.5 h-3.5" />
+                                                </div>
+                                                <span className={`px-1.5 py-0.5 text-[10px] font-black rounded-md border ${ind.color}`}>
+                                                    {ind.val}
+                                                </span>
+                                            </div>
+                                            <div>
+                                                <div className="text-xs font-bold text-slate-800 dark:text-white leading-tight">{ind.label}</div>
+                                                <div className="text-[9px] text-slate-550 dark:text-slate-400 mt-1 leading-normal">{ind.desc}</div>
+                                            </div>
+                                        </div>
+                                    )
+                                })}
+                            </div>
+                        </div>
+                    </div>
+                ) : (
+                    <div className="lg:col-span-12 border-t border-app-border/40 pt-6 mt-4 space-y-6 animate-fadeIn">
+                        {/* Code Quality Snapshot */}
+                        <div className="p-5 bg-slate-50 dark:bg-slate-900/20 border border-app-border/40 rounded-xl space-y-4">
+                            <h4 className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                                <Activity className="w-4 h-4 text-emerald-400" />
+                                Code Quality Snapshot
+                            </h4>
+                            <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3">
+                                {[
+                                    { label: 'Cyclomatic Complexity', val: '22.4', severity: 'High', color: 'text-red-400 bg-red-500/10' },
+                                    { label: 'Duplicated Code', val: '18.6%', severity: 'High', color: 'text-red-400 bg-red-500/10' },
+                                    { label: 'Code Smells', val: '2,314', severity: 'Medium', color: 'text-amber-400 bg-amber-500/10' },
+                                    { label: 'Dead Code', val: '14.2%', severity: 'High', color: 'text-red-400 bg-red-500/10' },
+                                    { label: 'Comment Ratio', val: '16%', severity: 'Low', color: 'text-red-400 bg-red-500/10' },
+                                    { label: 'Test Coverage', val: '21%', severity: 'Low', color: 'text-red-400 bg-red-500/10' },
+                                ].map((metric, idx) => (
+                                    <div key={idx} className="p-3 bg-slate-100 dark:bg-slate-900/40 border border-slate-200 dark:border-white/5 rounded-xl text-center space-y-1.5">
+                                        <div className="text-[9px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider leading-tight h-6 flex items-center justify-center">
+                                            {metric.label}
+                                        </div>
+                                        <div className="text-base font-black text-slate-800 dark:text-white">{metric.val}</div>
+                                        <div className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider ${metric.color}`}>
+                                            <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
+                                            {metric.severity}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* Analytics & Metrics: Score Distribution & Trend Charts */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                            {/* Score Distribution Hexagon Radar Graph */}
+                            <div className="p-5 bg-slate-50 dark:bg-slate-900/20 border border-app-border/40 rounded-xl space-y-4">
+                                <h4 className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                                    <Layers className="w-4 h-4 text-blue-400" />
+                                    Score Distribution
+                                </h4>
+                                <div className="flex items-center justify-center p-2 rounded-xl">
+                                    <svg className="w-40 h-40" viewBox="0 0 150 150">
+                                        <circle cx="75" cy="75" r="50" className="stroke-slate-200 dark:stroke-slate-800" strokeWidth="1" fill="none" strokeDasharray="3,3" />
+                                        <circle cx="75" cy="75" r="35" className="stroke-slate-200 dark:stroke-slate-800" strokeWidth="1" fill="none" strokeDasharray="3,3" />
+                                        <circle cx="75" cy="75" r="20" className="stroke-slate-200 dark:stroke-slate-800" strokeWidth="1" fill="none" strokeDasharray="3,3" />
+                                        <line x1="75" y1="15" x2="75" y2="135" className="stroke-slate-300/60 dark:stroke-slate-800/60" strokeWidth="1" strokeDasharray="1,2" />
+                                        <line x1="15" y1="75" x2="135" y2="75" className="stroke-slate-300/60 dark:stroke-slate-800/60" strokeWidth="1" strokeDasharray="1,2" />
+                                        <line x1="32.5" y1="32.5" x2="117.5" y2="117.5" className="stroke-slate-300/60 dark:stroke-slate-800/60" strokeWidth="1" strokeDasharray="1,2" />
+                                        <line x1="32.5" y1="117.5" x2="117.5" y2="32.5" className="stroke-slate-300/60 dark:stroke-slate-800/60" strokeWidth="1" strokeDasharray="1,2" />
+                                        <text x="75" y="10" textAnchor="middle" className="fill-slate-500 dark:fill-slate-400 text-[8px] font-bold">Architecture</text>
+                                        <text x="140" y="78" textAnchor="start" className="fill-slate-500 dark:fill-slate-400 text-[8px] font-bold">Security</text>
+                                        <text x="75" y="145" textAnchor="middle" className="fill-slate-500 dark:fill-slate-400 text-[8px] font-bold">Testing</text>
+                                        <text x="10" y="78" textAnchor="end" className="fill-slate-500 dark:fill-slate-400 text-[8px] font-bold">Docs</text>
+                                        <polygon 
+                                            points="75,25 110,60 95,105 75,115 45,95 40,55" 
+                                            fill="rgba(59, 130, 246, 0.25)" 
+                                            stroke="#3b82f6" 
+                                            strokeWidth="1.5" 
+                                        />
+                                        <circle cx="75" cy="25" r="2.5" fill="#3b82f6" />
+                                        <circle cx="110" cy="60" r="2.5" fill="#3b82f6" />
+                                        <circle cx="95" cy="105" r="2.5" fill="#3b82f6" />
+                                        <circle cx="75" cy="115" r="2.5" fill="#3b82f6" />
+                                        <circle cx="45" cy="95" r="2.5" fill="#3b82f6" />
+                                        <circle cx="40" cy="55" r="2.5" fill="#3b82f6" />
+                                    </svg>
+                                </div>
+                            </div>
+
+                            {/* Score Trend Simulated Line Chart */}
+                            <div className="p-5 bg-slate-50 dark:bg-slate-900/20 border border-app-border/40 rounded-xl space-y-4">
+                                <h4 className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                                    <Activity className="w-4 h-4 text-emerald-400" />
+                                    Score Trend (Simulated)
+                                </h4>
+                                <div className="flex items-center justify-center p-2 rounded-xl">
+                                    <svg className="w-full h-36" viewBox="0 0 240 120">
+                                        <line x1="20" y1="10" x2="220" y2="10" className="stroke-slate-300/60 dark:stroke-slate-800/60" strokeWidth="1" />
+                                        <line x1="20" y1="40" x2="220" y2="40" className="stroke-slate-300/60 dark:stroke-slate-800/60" strokeWidth="1" />
+                                        <line x1="20" y1="70" x2="220" y2="70" className="stroke-slate-300/60 dark:stroke-slate-800/60" strokeWidth="1" />
+                                        <line x1="20" y1="100" x2="220" y2="100" className="stroke-slate-300/60 dark:stroke-slate-800/60" strokeWidth="1" />
+                                        <path 
+                                            d={`M 30 100 L 90 84 L 150 72 L 210 ${week4Y}`} 
+                                            fill="none" 
+                                            stroke="#10b981" 
+                                            strokeWidth="2.5" 
+                                            strokeLinecap="round"
+                                            className="transition-all duration-500 ease-out"
+                                        />
+                                        <path 
+                                            d={`M 30 100 L 90 84 L 150 72 L 210 ${week4Y} L 210 100 L 30 100 Z`} 
+                                            fill="url(#trendGrad)" 
+                                            className="transition-all duration-500 ease-out"
+                                        />
+                                        <defs>
+                                            <linearGradient id="trendGrad" x1="0" y1="0" x2="0" y2="1">
+                                                <stop offset="0%" stopColor="#10b981" stopOpacity="0.15" />
+                                                <stop offset="100%" stopColor="#10b981" stopOpacity="0.0" />
+                                            </linearGradient>
+                                        </defs>
+                                        {[
+                                            { x: 30, y: 100, label: '48', week: 'Week 1' },
+                                            { x: 90, y: 84, label: '56', week: 'Week 2' },
+                                            { x: 150, y: 72, label: '62', week: 'Week 3' },
+                                            { x: 210, y: week4Y, label: String(scoreVal), week: 'Week 4' },
+                                        ].map((pt, idx) => (
+                                            <g key={idx}>
+                                                <circle cx={pt.x} cy={pt.y} r="4" fill="#10b981" className="stroke-white dark:stroke-slate-950 transition-all duration-500 ease-out" strokeWidth="1.5" />
+                                                <text x={pt.x} y={pt.y - 7} textAnchor="middle" className="fill-slate-800 dark:fill-white text-[9px] font-extrabold transition-all duration-500 ease-out">{pt.label}</text>
+                                                <text x={pt.x} y="112" textAnchor="middle" className="fill-slate-500 dark:fill-slate-400 text-[8px] font-bold">{pt.week}</text>
+                                            </g>
+                                        ))}
+                                    </svg>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Strategy Details - Premium Split Card */}
+                        <div className="p-6 bg-slate-50 dark:bg-slate-900/20 border border-app-border/40 rounded-2xl grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            {/* Left Side: Strategy Header & Rationale */}
+                            <div className="space-y-4 lg:border-r lg:border-slate-200 lg:dark:border-white/5 lg:pr-6">
+                                <div className="flex items-center justify-between">
+                                    <div>
+                                        <div className="text-[10px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider">Recommended Strategy</div>
+                                        <div className="text-lg font-black text-purple-400 mt-1">Brownfield Refactor</div>
+                                    </div>
+                                    <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400">
+                                        <Target className="w-5 h-5" />
+                                    </div>
+                                </div>
+                                <div className="space-y-2">
+                                    <div className="text-xs font-bold text-slate-800 dark:text-white">Why this strategy?</div>
+                                    <p className="text-xs text-slate-550 dark:text-slate-400 leading-relaxed font-medium">
+                                        The application has good architectural foundation but requires significant refactoring to improve maintainability, test coverage, and cloud readiness. Refactoring incrementally reduces disruption.
+                                    </p>
+                                </div>
+                                <div className="grid grid-cols-2 gap-3 pt-2">
+                                    <div className="p-3 bg-slate-100 dark:bg-slate-950/40 rounded-xl border border-slate-200 dark:border-white/5 text-center">
+                                        <div className="text-[9px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider">Estimated Effort</div>
+                                        <div className="text-sm font-black text-blue-400 mt-1">16 weeks</div>
+                                    </div>
+                                    <div className="p-3 bg-slate-100 dark:bg-slate-955/40 rounded-xl border border-slate-200 dark:border-white/5 text-center">
+                                        <div className="text-[9px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider">Confidence Level</div>
+                                        <div className="text-sm font-black text-emerald-400 mt-1">91% (High)</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Right Side: Key Actions checklist */}
+                            <div className="space-y-4">
+                                <div className="text-xs font-bold text-slate-800 dark:text-white">Key Modernization Actions</div>
+                                <div className="space-y-3 text-xs text-slate-650 dark:text-slate-300 font-semibold">
+                                    {[
+                                        'Migrate from Struts 1 to Spring Boot (Java Core)',
+                                        'Replace legacy JSP with React web layer components',
+                                        'Resolve security vulnerabilities and update log4j/servlet packages',
+                                        'Implement automated unit testing (JUnit 5) and CI/CD pipelines',
+                                        'Containerize application with Docker & deploy to Cloud environment'
+                                    ].map((action, idx) => (
+                                        <div key={idx} className="flex items-start gap-2.5">
+                                            <Check className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                                            <span className="leading-tight">{action}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Top Dependencies & Risk Indicators */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                            {/* Top Dependencies */}
+                            <div className="p-5 bg-slate-50 dark:bg-slate-900/20 border border-app-border/40 rounded-xl space-y-4">
+                                <div className="flex items-center justify-between border-b border-slate-200 dark:border-white/5 pb-2">
+                                    <h4 className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                                        <FileCheck className="w-4 h-4 text-blue-400" />
+                                        Top Dependencies
+                                    </h4>
+                                    <button type="button" className="text-[10px] font-bold text-blue-400 hover:text-blue-300 cursor-pointer">View All</button>
+                                </div>
+                                <div className="divide-y divide-slate-200 dark:divide-white/5 text-xs">
+                                    {[
+                                        { name: 'commons-logging:commons-logging', ver: '1.1.1', status: 'Outdated', color: 'text-amber-400 bg-amber-500/10 border-amber-500/20' },
+                                        { name: 'log4j:log4j', ver: '1.2.17', status: 'Outdated', color: 'text-amber-400 bg-amber-500/10 border-amber-500/20' },
+                                        { name: 'javax.servlet:servlet-api', ver: '2.5', status: 'Outdated', color: 'text-amber-400 bg-amber-500/10 border-amber-500/20' },
+                                        { name: 'junit:junit', ver: '3.8.1', status: 'OK', color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' },
+                                        { name: 'mysql:mysql-connector-java', ver: '5.1.49', status: 'Outdated', color: 'text-amber-400 bg-amber-500/10 border-amber-500/20' },
+                                    ].map((dep, idx) => (
+                                        <div key={idx} className="flex items-center justify-between py-2.5">
+                                            <span className="font-semibold text-slate-700 dark:text-slate-300 font-mono text-[10px] truncate max-w-[170px]">{dep.name}</span>
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-slate-500 dark:text-slate-400 font-mono text-[10px]">{dep.ver}</span>
+                                                <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold uppercase border ${dep.color}`}>{dep.status}</span>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Risk Indicators */}
+                            <div className="p-5 bg-slate-50 dark:bg-slate-900/20 border border-app-border/40 rounded-xl space-y-4">
+                                <div className="flex items-center justify-between border-b border-slate-200 dark:border-white/5 pb-2">
+                                    <h4 className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                                        <AlertTriangle className="w-4 h-4 text-amber-400" />
+                                        Risk Indicators
+                                    </h4>
+                                </div>
+                                <div className="divide-y divide-slate-200 dark:divide-white/5 text-xs">
+                                    {[
+                                        { name: 'Deprecated APIs', count: 342, severity: 'High', color: 'text-red-400 bg-red-500/10 border-red-500/20' },
+                                        { name: 'Security Vulnerabilities', count: 7, severity: 'Medium', color: 'text-amber-400 bg-amber-500/10 border-amber-500/20' },
+                                        { name: 'Outdated Dependencies', count: 26, severity: 'High', color: 'text-red-400 bg-red-500/10 border-red-500/20' },
+                                        { name: 'Hardcoded Secrets', count: 3, severity: 'Medium', color: 'text-amber-400 bg-amber-500/10 border-amber-500/20' },
+                                        { name: 'SQL Injection Risks', count: 4, severity: 'Medium', color: 'text-amber-400 bg-amber-500/10 border-amber-500/20' },
+                                    ].map((risk, idx) => (
+                                        <div key={idx} className="flex items-center justify-between py-2.5">
+                                            <span className="font-semibold text-slate-700 dark:text-slate-300">{risk.name}</span>
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-slate-800 dark:text-white font-black font-mono text-xs">{risk.count}</span>
+                                                <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold uppercase border ${risk.color}`}>{risk.severity}</span>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+};
+
 const GovernanceForm = ({
     fetchRoadmapData,
     selectedProjectKey,
@@ -204,6 +927,94 @@ const GovernanceForm = ({
     // Step state: 0 = Project Name page, 1…N = dimension steps, N+1 = review
     const [currentStep, setCurrentStep] = useState(0);
     const lastHydratedProjectKeyRef = useRef(null);
+
+    /* ── build dimension list ── */
+    const questionsByDimension = useMemo(() => {
+        const obj = {};
+        questions.forEach((q) => {
+            if (!obj[q.dimension]) obj[q.dimension] = [];
+            obj[q.dimension].push(q);
+        });
+        return obj;
+    }, [questions]);
+
+    const baseDimensions = useMemo(() => Object.keys(questionsByDimension), [questionsByDimension]);
+
+    const projectType = useMemo(() => {
+        // 1. Check if a repository is connected for this project key in sessionStorage/localStorage candidates
+        if (selectedProjectKey) {
+            const repoMetaKey = `repo_context_meta_${selectedProjectKey}`;
+            const storedMeta = localStorage.getItem(repoMetaKey) || sessionStorage.getItem(repoMetaKey);
+            if (storedMeta) {
+                try {
+                    const parsed = JSON.parse(storedMeta);
+                    if (parsed && (parsed.repo || parsed.url || parsed.repo_url || parsed.provider)) {
+                        return 'brownfield';
+                    }
+                } catch (e) {}
+            }
+        }
+
+        // 2. Check active session repoContext
+        const activeRepo = sessionStorage.getItem('repoContext') || localStorage.getItem('repoContext');
+        if (activeRepo) {
+            try {
+                const parsed = JSON.parse(activeRepo);
+                if (parsed && (parsed.repo || parsed.url || parsed.repo_url || parsed.context)) {
+                    return 'brownfield';
+                }
+            } catch (e) {}
+        }
+
+        // 3. Check if the selected project from the backend list has repository context in its documents
+        if (selectedProject) {
+            // Check latest document's screening_inputs
+            const latestDoc = selectedProject.latestDocument || (selectedProject.documents && selectedProject.documents[0]);
+            if (latestDoc) {
+                const screeningInputs = latestDoc.screening_inputs;
+                if (screeningInputs && screeningInputs.repository_context) {
+                    const repoCtx = screeningInputs.repository_context;
+                    if (repoCtx && (repoCtx.repo || repoCtx.url || repoCtx.provider)) {
+                        return 'brownfield';
+                    }
+                }
+            }
+            // Check if any document contains repository context
+            if (Array.isArray(selectedProject.documents)) {
+                for (const doc of selectedProject.documents) {
+                    if (doc.screening_inputs?.repository_context) {
+                        const repoCtx = doc.screening_inputs.repository_context;
+                        if (repoCtx && (repoCtx.repo || repoCtx.url || repoCtx.provider)) {
+                            return 'brownfield';
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Explicit project type override from localStorage as fallback
+        if (selectedProjectKey) {
+            const savedType = localStorage.getItem(`project_type_${selectedProjectKey}`);
+            if (savedType) return savedType;
+        }
+
+        return 'greenfield';
+    }, [selectedProjectKey, selectedProject]);
+
+    const dimensions = useMemo(() => {
+        if (baseDimensions.length === 0) return [];
+        if (projectType === 'brownfield') {
+            const dims = [...baseDimensions];
+            const govIdx = dims.indexOf('Governance');
+            if (govIdx !== -1) {
+                dims.splice(govIdx + 1, 0, 'Modernization Scoring');
+            } else {
+                dims.splice(2, 0, 'Modernization Scoring');
+            }
+            return dims;
+        }
+        return baseDimensions;
+    }, [projectType, baseDimensions]);
 
     /* ── helpers ── */
     const getStoredJson = (key) => {
@@ -576,13 +1387,7 @@ const GovernanceForm = ({
         />;
     }
 
-    /* ── build dimension list ── */
-    const questionsByDimension = {};
-    questions.forEach((q) => {
-        if (!questionsByDimension[q.dimension]) questionsByDimension[q.dimension] = [];
-        questionsByDimension[q.dimension].push(q);
-    });
-    const dimensions = Object.keys(questionsByDimension);
+
 
     // Cross-page flow:
     // /new-project -> Project Initiation only
@@ -597,13 +1402,16 @@ const GovernanceForm = ({
     const isDimensionStep = isGovernanceQuestionsPage && currentStep >= 1 && currentStep <= dimensions.length;
     const isReviewStep = isGovernanceQuestionsPage && currentStep === dimensions.length + 1;
     const activeDimension = isDimensionStep ? dimensions[currentStep - 1] : null;
-    const activeQuestions = activeDimension ? questionsByDimension[activeDimension] : [];
+    const activeQuestions = activeDimension ? (questionsByDimension[activeDimension] || []) : [];
 
 
 
     const canProceed = () => {
         if (!isGovernanceQuestionsPage) return projectName.trim().length > 0;
-        if (isDimensionStep) return activeQuestions.every((q) => answers[q.id] !== undefined);
+        if (isDimensionStep) {
+            if (activeDimension === 'Modernization Scoring') return true;
+            return activeQuestions.every((q) => answers[q.id] !== undefined);
+        }
         return true;
     };
 
@@ -740,7 +1548,7 @@ const GovernanceForm = ({
 
     /* ── render ── */
     const mainContentClass = isGovernanceQuestionsPage
-        ? 'flex-1 min-w-0 max-w-4xl'
+        ? (activeDimension === 'Modernization Scoring' ? 'flex-1 min-w-0 max-w-6xl w-full' : 'flex-1 min-w-0 max-w-4xl')
         : 'flex-1 min-w-0 w-full';
 
     return (
@@ -1006,7 +1814,14 @@ const GovernanceForm = ({
 
                                 {/* ── STEP 1…N: Dimension questions ── */}
                                 {isDimensionStep && (
-                                    <div className="p-6 sm:p-8">
+                                    activeDimension === 'Modernization Scoring' ? (
+                                        <ModernizationAssessmentView
+                                            goNext={goNext}
+                                            navigate={navigate}
+                                            projectName={projectName}
+                                        />
+                                    ) : (
+                                        <div className="p-6 sm:p-8">
                                         {/* Dimension header */}
                                         <div className="mb-6">
                                             <div className="flex items-center gap-3 mb-1.5">
@@ -1101,6 +1916,7 @@ const GovernanceForm = ({
                                             })}
                                         </div>
                                     </div>
+                                    )
                                 )}
 
                                 {/* ── REVIEW STEP ── */}
@@ -1180,7 +1996,7 @@ const GovernanceForm = ({
                                 )}
 
     <div className="flex items-center gap-3">
-        {isDimensionStep && (
+        {isDimensionStep && activeDimension !== 'Modernization Scoring' && (
             <button type="button" onClick={handleSkipAll}
                 className="inline-flex items-center gap-1.5 py-2.5 px-5 text-sm font-semibold rounded-xl text-app-primary bg-app-primary-light border border-app-primary-light hover:bg-app-primary-light/80 transition-all shadow-sm"
             >
