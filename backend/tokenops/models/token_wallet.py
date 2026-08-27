@@ -18,6 +18,7 @@ Design rules:
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
@@ -27,6 +28,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     UniqueConstraint,
 )
@@ -84,11 +86,21 @@ class OrganizationWallet(Base):
     reserved_tokens  = Column(BigInteger, nullable=False, default=0,
                               comment="Tokens reserved for in-flight requests (soft lock)")
 
-    # --- Feature flags ---
-    payg_enabled = Column(Boolean, nullable=False, default=False,
-                          comment="True = org may consume beyond wallet balance at PAYG rate")
-    is_blocked   = Column(Boolean, nullable=False, default=False,
-                          comment="True = all LLM calls rejected; admin override required")
+    # --- Feature flags & PAYG Option C Limits ---
+    payg_enabled           = Column(Boolean, nullable=False, default=False,
+                                    comment="True = org may consume beyond wallet balance at PAYG rate")
+    payg_soft_limit_usd    = Column(Numeric(precision=10, scale=2), nullable=True, default=None,
+                                    comment="Configurable soft spending warning limit in USD")
+    payg_hard_limit_usd    = Column(Numeric(precision=10, scale=2), nullable=True, default=None,
+                                    comment="Configurable hard spending cap in USD (blocks consumption once reached)")
+    payg_current_spend_usd  = Column(Numeric(precision=20, scale=8), nullable=False, default=Decimal("0.0"),
+                                     comment="Accumulated PAYG dollar spend in the current billing cycle")
+    payg_reserved_spend_usd = Column(Numeric(precision=20, scale=8), nullable=False, default=Decimal("0.0"),
+                                     comment="In-flight dollar reservations for pending PAYG LLM calls")
+    payg_billing_email      = Column(String, nullable=True,
+                                     comment="Dedicated billing contact email for PAYG invoices and alerts")
+    is_blocked              = Column(Boolean, nullable=False, default=False,
+                                     comment="True = all LLM calls rejected; admin override required")
     payg_grace_period_months = Column(Integer, nullable=False, default=3,
                                       comment="Months an invoice can remain overdue before auto-blocking access")
 

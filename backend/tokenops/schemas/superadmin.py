@@ -75,6 +75,49 @@ class PAYGDecisionRequest(BaseModel):
     organization_name: str
     remarks: Optional[str] = None
 
+class PAYGLimitsUpdateRequest(BaseModel):
+    organization_name: str
+    soft_limit_usd: Optional[float] = None
+    hard_limit_usd: Optional[float] = None
+    billing_email: Optional[str] = None
+
+class GenerateInvoiceRequest(BaseModel):
+    organization_name: str
+    billing_month: str
+    force_regenerate: Optional[bool] = False
+    recipient_email: Optional[str] = None
+    send_email: Optional[bool] = True
+
+class GenerateMonthlyInvoicesRequest(BaseModel):
+    billing_month: Optional[str] = None
+
+class InvoiceLineItem(BaseModel):
+    model: str
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    rate_per_token: float
+    input_cost: float
+    output_cost: float
+    total_cost: float
+
+class PAYGInvoiceView(BaseModel):
+    id: int
+    organization_name: str
+    organization_id: Optional[str] = None
+    billing_month: str
+    total_tokens: int
+    prompt_tokens: int
+    completion_tokens: int
+    input_cost: float
+    output_cost: float
+    total_cost: float
+    line_items: Optional[List[Dict[str, Any]]] = None
+    invoice_status: str
+    recipient_email: Optional[str] = None
+    generated_at: str
+    paid_at: Optional[str] = None
+
 # Analytics Schemas
 class AnalyticsOverview(BaseModel):
     total_organizations: int

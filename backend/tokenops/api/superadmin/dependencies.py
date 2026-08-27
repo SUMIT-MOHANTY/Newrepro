@@ -19,6 +19,7 @@ from tokenops.repositories.ledger import LedgerRepository
 from tokenops.services.idempotency_service import IdempotencyService
 from tokenops.repositories.idempotency import IdempotencyRepository
 from tokenops.services.pricing_service import PricingService
+from tokenops.services.payg_invoice_service import PAYGInvoiceService
 
 async def verify_super_admin(current_user: User = Depends(get_current_user)) -> User:
     """
@@ -76,3 +77,11 @@ def get_admin_analytics_service(
     db: Session = Depends(get_db)
 ) -> AdminAnalyticsService:
     return AdminAnalyticsService(db)
+
+def get_payg_invoice_service(
+    db: Session = Depends(get_db)
+) -> PAYGInvoiceService:
+    from tokenops.services.payg_invoice_service import PAYGInvoiceService
+    pricing_repo = PricingRepository(db)
+    pricing_service = PricingService(pricing_repo)
+    return PAYGInvoiceService(db, pricing_service)

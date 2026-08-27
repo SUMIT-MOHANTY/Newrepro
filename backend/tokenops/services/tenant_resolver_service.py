@@ -78,6 +78,15 @@ class TenantResolverService:
         except Exception as e:
             logger.warning(f"Failed resolving tenant via GovernanceResponse project_token: {e}")
 
+        # 3. Direct Match on Organization.name
+        org = self.session.query(Organization).filter(
+            func.lower(Organization.name) == func.lower(cleaned)
+        ).first()
+        if org:
+            if enforce_active and not org.is_active:
+                raise HTTPException(status_code=403, detail="ORGANIZATION_INACTIVE")
+            return org.id, org
+
         # 3. Normalized Case-Insensitive Discovery
         normalized_aliases = self.session.query(LegacyOrganizationIdentifier).filter(
             func.lower(LegacyOrganizationIdentifier.legacy_name) == func.lower(cleaned),

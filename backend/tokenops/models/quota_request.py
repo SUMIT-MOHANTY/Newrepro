@@ -7,6 +7,7 @@ from sqlalchemy import (
     Enum as SAEnum,
     ForeignKey,
     Integer,
+    Numeric,
     String,
     Text,
 )
@@ -18,6 +19,7 @@ from database import Base
 class QuotaRequestType(str, enum.Enum):
     TOKEN_INCREASE = "TOKEN_INCREASE"
     PAYG_ENABLEMENT = "PAYG_ENABLEMENT"
+    LIMIT_INCREASE = "LIMIT_INCREASE"
 
 
 class QuotaRequestStatus(str, enum.Enum):
@@ -31,6 +33,7 @@ class TokenQuotaRequest(Base):
     Stores requests from Organization Admins to Super Admins for:
     1. Token Quota Increase (adding tokens to the organization's reserve)
     2. PAYG Enablement (enabling post-paid unlimited billing for the organization)
+    3. PAYG Limit Increase (raising soft/hard spending caps)
     """
     __tablename__ = "token_quota_requests"
 
@@ -44,6 +47,7 @@ class TokenQuotaRequest(Base):
         index=True
     )
     requested_tokens = Column(BigInteger, nullable=False, default=0)
+    requested_limit_usd = Column(Numeric(precision=10, scale=2), nullable=True, comment="Requested dollar limit for LIMIT_INCREASE")
     requested_by = Column(
         Integer,
         ForeignKey("users.id", ondelete="SET NULL"),

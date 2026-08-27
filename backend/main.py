@@ -269,6 +269,96 @@ def _run_startup_migrations():
                 except Exception as e:
                     logging.getLogger(__name__).warning(f"Migration: Could not add is_virtual_shared to organization_agent_mappings: {e}")
 
+        # 7. Add PAYG Option C columns to organization_wallet
+        if "organization_wallet" in table_names:
+            ow_cols = [c["name"] for c in inspector.get_columns("organization_wallet")]
+            if "payg_soft_limit_usd" not in ow_cols:
+                try:
+                    conn.execute(sql_text("ALTER TABLE organization_wallet ADD COLUMN payg_soft_limit_usd NUMERIC(10, 2) NULL"))
+                    conn.commit()
+                except Exception:
+                    pass
+            if "payg_hard_limit_usd" not in ow_cols:
+                try:
+                    conn.execute(sql_text("ALTER TABLE organization_wallet ADD COLUMN payg_hard_limit_usd NUMERIC(10, 2) NULL"))
+                    conn.commit()
+                except Exception:
+                    pass
+            if "payg_current_spend_usd" not in ow_cols:
+                try:
+                    conn.execute(sql_text("ALTER TABLE organization_wallet ADD COLUMN payg_current_spend_usd NUMERIC(20, 8) DEFAULT 0.0"))
+                    conn.commit()
+                except Exception:
+                    pass
+            if "payg_reserved_spend_usd" not in ow_cols:
+                try:
+                    conn.execute(sql_text("ALTER TABLE organization_wallet ADD COLUMN payg_reserved_spend_usd NUMERIC(20, 8) DEFAULT 0.0"))
+                    conn.commit()
+                except Exception:
+                    pass
+            if "payg_billing_email" not in ow_cols:
+                try:
+                    conn.execute(sql_text("ALTER TABLE organization_wallet ADD COLUMN payg_billing_email VARCHAR NULL"))
+                    conn.commit()
+                except Exception:
+                    pass
+
+        # 8. Add requested_limit_usd to token_quota_requests
+        if "token_quota_requests" in table_names:
+            tqr_cols = [c["name"] for c in inspector.get_columns("token_quota_requests")]
+            if "requested_limit_usd" not in tqr_cols:
+                try:
+                    conn.execute(sql_text("ALTER TABLE token_quota_requests ADD COLUMN requested_limit_usd NUMERIC(10, 2) NULL"))
+                    conn.commit()
+                except Exception:
+                    pass
+
+        # 9. Add detailed invoice columns to payg_invoice
+        if "payg_invoice" in table_names:
+            pi_cols = [c["name"] for c in inspector.get_columns("payg_invoice")]
+            if "prompt_tokens" not in pi_cols:
+                try:
+                    conn.execute(sql_text("ALTER TABLE payg_invoice ADD COLUMN prompt_tokens BIGINT DEFAULT 0"))
+                    conn.commit()
+                except Exception:
+                    pass
+            if "completion_tokens" not in pi_cols:
+                try:
+                    conn.execute(sql_text("ALTER TABLE payg_invoice ADD COLUMN completion_tokens BIGINT DEFAULT 0"))
+                    conn.commit()
+                except Exception:
+                    pass
+            if "input_cost" not in pi_cols:
+                try:
+                    conn.execute(sql_text("ALTER TABLE payg_invoice ADD COLUMN input_cost NUMERIC(20, 8) DEFAULT 0.0"))
+                    conn.commit()
+                except Exception:
+                    pass
+            if "output_cost" not in pi_cols:
+                try:
+                    conn.execute(sql_text("ALTER TABLE payg_invoice ADD COLUMN output_cost NUMERIC(20, 8) DEFAULT 0.0"))
+                    conn.commit()
+                except Exception:
+                    pass
+            if "line_items" not in pi_cols:
+                try:
+                    conn.execute(sql_text("ALTER TABLE payg_invoice ADD COLUMN line_items TEXT NULL"))
+                    conn.commit()
+                except Exception:
+                    pass
+            if "recipient_email" not in pi_cols:
+                try:
+                    conn.execute(sql_text("ALTER TABLE payg_invoice ADD COLUMN recipient_email VARCHAR NULL"))
+                    conn.commit()
+                except Exception:
+                    pass
+            if "paid_at" not in pi_cols:
+                try:
+                    conn.execute(sql_text("ALTER TABLE payg_invoice ADD COLUMN paid_at DATETIME NULL"))
+                    conn.commit()
+                except Exception:
+                    pass
+
 _run_startup_migrations()
 
 @asynccontextmanager

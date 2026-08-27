@@ -248,11 +248,21 @@ def check_api_key(api_key: Optional[str] = None) -> bool:
     return bool(key and key != "your-api-key-here")
 
 
-def check_ai_allowance(user_id: Optional[int] = None, project_token: Optional[str] = None):
+def check_ai_allowance(
+    user_id: Optional[int] = None,
+    project_token: Optional[str] = None,
+    model_name: Optional[str] = None,
+    messages: Optional[list] = None,
+    estimated_tokens: Optional[int] = None,
+    estimated_cost: Optional[float] = None,
+) -> float:
     """
     Synchronously validates AI allowance using TokenOps before making the LLM call.
+    For PAYG organizations, atomically reserves estimated cost in-flight.
     Raises HTTPException (402 or 403) if blocked or exhausted.
+    Returns the reserved cost amount (float).
     """
+    reserved_cost = 0.0
     try:
         from database import SessionLocal
         from tokenops.services.tokenops_orchestrator import TokenOpsOrchestrator
@@ -261,10 +271,20 @@ def check_ai_allowance(user_id: Optional[int] = None, project_token: Optional[st
         p_token = project_token or current_project_token_var.get()
 
         if u_id and p_token:
+            if estimated_tokens is None and messages and isinstance(messages, list):
+                total_input_chars = sum(len(str(m.get("content", ""))) for m in messages if isinstance(m, dict))
+                estimated_tokens = max(100, total_input_chars // 4)
+
             db = SessionLocal()
             try:
                 orchestrator = TokenOpsOrchestrator.create(db)
-                orchestrator.pre_execute(user_id=u_id, organization_name=p_token)
+                reserved_cost = orchestrator.pre_execute(
+                    user_id=u_id,
+                    organization_name=p_token,
+                    model_name=model_name,
+                    estimated_tokens=estimated_tokens,
+                    estimated_cost=estimated_cost
+                )
             finally:
                 db.close()
     except Exception as e:
@@ -273,6 +293,7 @@ def check_ai_allowance(user_id: Optional[int] = None, project_token: Optional[st
         if isinstance(e, HTTPException):
             raise e
         logger.error(f"Failed to check AI allowance: {e}", exc_info=True)
+    return reserved_cost
 
 
 def log_ai_usage(
@@ -284,6 +305,7 @@ def log_ai_usage(
     prompt_tokens: Optional[int] = None,
     completion_tokens: Optional[int] = None,
     response_data: Optional[dict] = None,
+    reserved_cost: Optional[float] = None,
 ):
     """
     Asynchronously logs AI token usage and calculations to the database using TokenOps.
@@ -324,7 +346,8 @@ def log_ai_usage(
                 organization_name=p_token,
                 model_name=model_name,
                 prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens
+                completion_tokens=completion_tokens,
+                reserved_cost=reserved_cost
             )
             logger.info(f"Logged AI Usage to TokenOps: {prompt_tokens} prompt, {completion_tokens} completion.")
         finally:
@@ -362,10 +385,10 @@ async def call_llm(
         Raw response dict from the API (format varies per provider).
         Use extract_content_from_response() to get the text.
     """
-    check_ai_allowance()
-
     url = resolve_url(api_url)
     model_name = resolve_model(model)
+    reserved_cost = check_ai_allowance(model_name=model_name, messages=messages)
+
     use_brn = is_brn_llama_enabled() or (url == settings.brn_llama_url)
 
     if use_brn:
@@ -402,10 +425,10 @@ async def call_llm(
                 response.raise_for_status()
                 data = response.json()
                 
-                # Log usage
+                # Log usage with reservation settlement
                 try:
                     response_text = extract_content_from_response(data)
-                    log_ai_usage(messages, response_text, model_name, response_data=data)
+                    log_ai_usage(messages, response_text, model_name, response_data=data, reserved_cost=reserved_cost)
                 except Exception as log_err:
                     logger.error(f"Failed to log AI usage inside call_llm: {log_err}")
                 
@@ -428,9 +451,25 @@ async def call_llm(
                 last_err = e
                 logger.warning(f"LLM call attempt {attempt + 1}/{retries} failed ({type(e).__name__}: {e}). Retrying in {retry_delay * (attempt + 1)}s...")
                 if attempt == retries - 1:
-                    raise
+                    break
         if last_err:
+            if reserved_cost and reserved_cost > 0:
+                try:
+                    from database import SessionLocal
+                    from tokenops.services.tokenops_orchestrator import TokenOpsOrchestrator
+                    p_token = current_project_token_var.get()
+                    if p_token:
+                        db = SessionLocal()
+                        try:
+                            orchestrator = TokenOpsOrchestrator.create(db)
+                            orchestrator.release_reservation(organization_name=p_token, reserved_cost=reserved_cost)
+                        finally:
+                            db.close()
+                except Exception:
+                    pass
             raise last_err
+
+    return data
 
     return data
 
@@ -504,10 +543,9 @@ async def call_llm_streaming(
     - BRN Llama streaming with Anthropic-style response
     - OpenAI-compatible SSE streaming
     """
-    check_ai_allowance()
-
     url = resolve_url(api_url)
     model_name = resolve_model(model)
+    reserved_cost = check_ai_allowance(model_name=model_name, messages=messages)
     use_brn = is_brn_llama_enabled() or (url == settings.brn_llama_url)
 
     client = httpx.AsyncClient(timeout=timeout)
@@ -688,7 +726,7 @@ async def call_llm_streaming(
         # Log AI Cost usage
         try:
             full_response_text = "".join(response_content_buffer)
-            log_ai_usage(messages, full_response_text, model_name)
+            log_ai_usage(messages, full_response_text, model_name, reserved_cost=reserved_cost)
         except Exception as log_err:
             logger.error(f"Failed to log AI usage in call_llm_streaming finally block: {log_err}")
 

@@ -13,8 +13,9 @@ router = APIRouter(tags=["Org Admin Quota Requests"])
 
 
 class CreateQuotaRequestBody(BaseModel):
-    request_type: str = Field("TOKEN_INCREASE", description="'TOKEN_INCREASE' or 'PAYG_ENABLEMENT'")
+    request_type: str = Field("TOKEN_INCREASE", description="'TOKEN_INCREASE', 'PAYG_ENABLEMENT', or 'LIMIT_INCREASE'")
     requested_tokens: int = Field(0, ge=0, description="Requested token amount (for TOKEN_INCREASE)")
+    requested_limit_usd: Optional[float] = Field(None, ge=0.0, description="Requested dollar spending limit (for LIMIT_INCREASE)")
     remarks: Optional[str] = Field(None, description="Reason or justification for the quota request")
 
 
@@ -25,16 +26,16 @@ def submit_quota_request(
     db: Session = Depends(get_db),
 ):
     """
-    Submit a Token Increase or PAYG Enablement request from Org Admin to Super Admin.
+    Submit a Token Increase, PAYG Enablement, or PAYG Limit Increase request from Org Admin to Super Admin.
     """
     user: User = current_user
     org_name = current_user.active_organization
 
     req_type = body.request_type.upper()
-    if req_type not in ["TOKEN_INCREASE", "PAYG_ENABLEMENT"]:
+    if req_type not in ["TOKEN_INCREASE", "PAYG_ENABLEMENT", "LIMIT_INCREASE"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid request_type. Must be 'TOKEN_INCREASE' or 'PAYG_ENABLEMENT'."
+            detail="Invalid request_type. Must be 'TOKEN_INCREASE', 'PAYG_ENABLEMENT', or 'LIMIT_INCREASE'."
         )
 
     if req_type == "TOKEN_INCREASE" and body.requested_tokens <= 0:
@@ -43,15 +44,23 @@ def submit_quota_request(
             detail="requested_tokens must be greater than 0 for TOKEN_INCREASE."
         )
 
+    if req_type == "LIMIT_INCREASE" and (body.requested_limit_usd is None or body.requested_limit_usd <= 0):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="requested_limit_usd must be greater than 0 for LIMIT_INCREASE."
+        )
+
     # Resolve organization_id
     resolver = TenantResolverService(db)
     org_id, org = resolver.resolve(org_name)
 
+    from decimal import Decimal
     quota_req = TokenQuotaRequest(
         organization_name=org.name,
         organization_id=org_id,
         request_type=QuotaRequestType[req_type],
         requested_tokens=body.requested_tokens if req_type == "TOKEN_INCREASE" else 0,
+        requested_limit_usd=Decimal(str(round(body.requested_limit_usd, 2))) if req_type == "LIMIT_INCREASE" and body.requested_limit_usd else None,
         requested_by=user.id,
         status=QuotaRequestStatus.REQUESTED,
         remarks=body.remarks,
@@ -67,6 +76,7 @@ def submit_quota_request(
             "organization_name": quota_req.organization_name,
             "request_type": quota_req.request_type.value,
             "requested_tokens": quota_req.requested_tokens,
+            "requested_limit_usd": float(quota_req.requested_limit_usd) if quota_req.requested_limit_usd else None,
             "status": quota_req.status.value,
             "created_at": quota_req.created_at.isoformat(),
         }
@@ -95,6 +105,7 @@ def get_my_org_quota_requests(
             "organization_name": r.organization_name,
             "request_type": r.request_type.value if hasattr(r.request_type, "value") else str(r.request_type),
             "requested_tokens": r.requested_tokens,
+            "requested_limit_usd": float(r.requested_limit_usd) if r.requested_limit_usd else None,
             "status": r.status.value if hasattr(r.status, "value") else str(r.status),
             "remarks": r.remarks,
             "admin_notes": r.admin_notes,
