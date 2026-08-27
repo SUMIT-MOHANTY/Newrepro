@@ -530,3 +530,243 @@ def test_invoice_email_dispatch(env, monkeypatch):
     assert "Acme Corp" in sent_emails[0]["subject"]
     assert "2026-08" in sent_emails[0]["subject"]
     assert "Total Tokens" in sent_emails[0]["body"]
+
+
+# ── 11. Single-Request Hard-Limit Overshoot Protection ───────────────────────
+
+def test_single_request_hard_limit_overshoot(env):
+    """
+    Verifies that a request whose estimated cost would push current_spend over the hard limit
+    is rejected BEFORE execution (e.g. Current $95 + Estimate $10 > Limit $100 -> 402).
+    """
+    orchestrator = env["orchestrator"]
+    session = env["session"]
+    
+    # Configure $100 hard limit, set current spend to $95
+    wallet = session.query(OrganizationWallet).filter_by(organization_name="Acme Corp").first()
+    wallet.payg_enabled = True
+    wallet.payg_hard_limit_usd = Decimal("100.00")
+    wallet.payg_current_spend_usd = Decimal("95.00")
+    wallet.payg_reserved_spend_usd = Decimal("0.00")
+    session.commit()
+    
+    # Request costing $10 ($95 + $10 = $105 > $100)
+    with pytest.raises(HTTPException) as exc_info:
+        orchestrator.pre_execute(
+            user_id=1,
+            organization_name="Acme Corp",
+            estimated_cost=10.00
+        )
+    assert exc_info.value.status_code == 402
+    assert exc_info.value.detail == "PAYG_HARD_LIMIT_REACHED"
+    
+    # Verify spend and reservations were NOT modified
+    session.refresh(wallet)
+    assert float(wallet.payg_current_spend_usd) == 95.00
+    assert float(wallet.payg_reserved_spend_usd) == 0.00
+
+
+# ── 12. Request Exactly Within Remaining Limit ──────────────────────────────
+
+def test_request_exactly_within_remaining_limit(env):
+    """
+    Verifies that a request whose estimated cost brings total spend exactly to the hard limit
+    is permitted and atomically reserved (e.g. Current $95 + Estimate $5 = Limit $100 -> Allowed).
+    Subsequent requests are then rejected.
+    """
+    orchestrator = env["orchestrator"]
+    session = env["session"]
+    
+    wallet = session.query(OrganizationWallet).filter_by(organization_name="Acme Corp").first()
+    wallet.payg_enabled = True
+    wallet.payg_hard_limit_usd = Decimal("100.00")
+    wallet.payg_current_spend_usd = Decimal("95.00")
+    wallet.payg_reserved_spend_usd = Decimal("0.00")
+    session.commit()
+    
+    # Exactly $5 estimate brings total committed spend to $100 <= $100
+    res_cost = orchestrator.pre_execute(
+        user_id=1,
+        organization_name="Acme Corp",
+        estimated_cost=5.00
+    )
+    assert res_cost == 5.00
+    
+    session.refresh(wallet)
+    assert float(wallet.payg_current_spend_usd) == 95.00
+    assert float(wallet.payg_reserved_spend_usd) == 5.00
+    
+    # A second request of even $0.01 exceeds the hard limit ($95 + $5 + $0.01 = $100.01 > $100)
+    with pytest.raises(HTTPException) as exc_info:
+        orchestrator.pre_execute(
+            user_id=1,
+            organization_name="Acme Corp",
+            estimated_cost=0.01
+        )
+    assert exc_info.value.status_code == 402
+    assert exc_info.value.detail == "PAYG_HARD_LIMIT_REACHED"
+
+
+# ── 13. Concurrent Requests Competing for Remaining Limit ───────────────────
+
+def test_concurrent_requests_competing_for_remaining_limit(tmp_path):
+    """
+    Verifies that when multiple concurrent threads compete for remaining limit headroom:
+    Hard limit = $100, Current spend = $90, Headroom = $10.
+    5 threads each try to reserve $4. Exactly 2 succeed ($90 + $4 + $4 = $98), 3 fail with 402.
+    No overshoot occurs under race conditions.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    
+    db_file = str(tmp_path / "test_concurrency.db")
+    engine = create_engine(f"sqlite:///{db_file}", connect_args={"timeout": 30, "check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    SessionFactory = sessionmaker(bind=engine)
+    
+    # Setup initial test org and wallet
+    setup_db = SessionFactory()
+    org = Organization(id="org-concurrent", name="Concurrent Org", is_active=True)
+    setup_db.add(org)
+    user = User(id=10, email="c@org.com", organization_name="Concurrent Org", is_active=True)
+    setup_db.add(user)
+    uo = UserOrganization(user_id=10, organization_id="org-concurrent", organization_name="Concurrent Org", is_active=True)
+    setup_db.add(uo)
+    wallet = OrganizationWallet(
+        id="org-concurrent",
+        organization_id="org-concurrent",
+        organization_name="Concurrent Org",
+        payg_enabled=True,
+        payg_hard_limit_usd=Decimal("100.00"),
+        payg_current_spend_usd=Decimal("90.00"),
+        payg_reserved_spend_usd=Decimal("0.00")
+    )
+    setup_db.add(wallet)
+    setup_db.commit()
+    setup_db.close()
+    
+    success_count = 0
+    failure_count = 0
+    lock = threading.Lock()
+    
+    def run_pre_execute():
+        nonlocal success_count, failure_count
+        db = SessionFactory()
+        try:
+            orch = TokenOpsOrchestrator.create(db)
+            orch.pre_execute(
+                user_id=10,
+                organization_name="Concurrent Org",
+                estimated_cost=4.00
+            )
+            with lock:
+                success_count += 1
+        except HTTPException as e:
+            if e.status_code == 402:
+                with lock:
+                    failure_count += 1
+        finally:
+            db.close()
+            
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(run_pre_execute) for _ in range(5)]
+        for f in futures:
+            f.result()
+            
+    assert success_count == 2
+    assert failure_count == 3
+    
+    verify_db = SessionFactory()
+    final_wallet = verify_db.query(OrganizationWallet).filter_by(organization_name="Concurrent Org").first()
+    assert float(final_wallet.payg_current_spend_usd) == 90.00
+    assert float(final_wallet.payg_reserved_spend_usd) == 8.00
+    assert float(final_wallet.payg_current_spend_usd) + float(final_wallet.payg_reserved_spend_usd) <= 100.00
+    verify_db.close()
+
+
+# ── 14. Reservation Release on Failed Execution ──────────────────────────────
+
+def test_reservation_release_on_failed_execution(env):
+    """
+    Verifies that when an execution fails or encounters an exception after pre_execute,
+    calling release_reservation() cleanly restores the reserved spend without increasing actual spend.
+    """
+    orchestrator = env["orchestrator"]
+    session = env["session"]
+    
+    wallet = session.query(OrganizationWallet).filter_by(organization_name="Acme Corp").first()
+    wallet.payg_enabled = True
+    wallet.payg_hard_limit_usd = Decimal("100.00")
+    wallet.payg_current_spend_usd = Decimal("90.00")
+    wallet.payg_reserved_spend_usd = Decimal("0.00")
+    session.commit()
+    
+    # 1. Reserve $8 in-flight
+    reserved_cost = orchestrator.pre_execute(
+        user_id=1,
+        organization_name="Acme Corp",
+        estimated_cost=8.00
+    )
+    assert reserved_cost == 8.00
+    
+    session.refresh(wallet)
+    assert float(wallet.payg_reserved_spend_usd) == 8.00
+    
+    # 2. Simulate failure & release reservation
+    orchestrator.release_reservation(
+        organization_name="Acme Corp",
+        reserved_cost=reserved_cost
+    )
+    
+    session.refresh(wallet)
+    assert float(wallet.payg_reserved_spend_usd) == 0.00
+    assert float(wallet.payg_current_spend_usd) == 90.00
+    
+    # 3. Verify headroom restored: another $8 request can now succeed
+    res_cost2 = orchestrator.pre_execute(
+        user_id=1,
+        organization_name="Acme Corp",
+        estimated_cost=8.00
+    )
+    assert res_cost2 == 8.00
+
+
+# ── 15. Actual-Cost Settlement After Successful Execution ───────────────────
+
+def test_actual_cost_settlement_after_successful_execution(env):
+    """
+    Verifies that on successful execution, post_execute releases the in-flight reservation
+    and settles using the actual LLM cost (e.g. Reserved $8, Actual $6.50 -> Reserved $0, Current $96.50).
+    """
+    orchestrator = env["orchestrator"]
+    session = env["session"]
+    
+    wallet = session.query(OrganizationWallet).filter_by(organization_name="Acme Corp").first()
+    wallet.payg_enabled = True
+    wallet.payg_hard_limit_usd = Decimal("100.00")
+    wallet.payg_current_spend_usd = Decimal("90.00")
+    wallet.payg_reserved_spend_usd = Decimal("0.00")
+    session.commit()
+    
+    # 1. Reserve $8 in-flight
+    reserved_cost = orchestrator.pre_execute(
+        user_id=1,
+        organization_name="Acme Corp",
+        estimated_cost=8.00
+    )
+    assert reserved_cost == 8.00
+    
+    # 2. Complete execution with actual cost (e.g. 100,000 tokens @ $0.00003/token = $3.00)
+    orchestrator.post_execute(
+        user_id=1,
+        organization_name="Acme Corp",
+        model_name="gpt-4o",
+        prompt_tokens=50000,
+        completion_tokens=50000,
+        request_id=str(uuid.uuid4()),
+        reserved_cost=reserved_cost
+    )
+    
+    session.refresh(wallet)
+    assert float(wallet.payg_reserved_spend_usd) == 0.00
+    assert float(wallet.payg_current_spend_usd) == 93.00

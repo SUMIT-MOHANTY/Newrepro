@@ -93,12 +93,14 @@ class OrganizationWallet(Base):
                                     comment="Configurable soft spending warning limit in USD")
     payg_hard_limit_usd    = Column(Numeric(precision=10, scale=2), nullable=True, default=None,
                                     comment="Configurable hard spending cap in USD (blocks consumption once reached)")
-    payg_current_spend_usd = Column(Numeric(precision=20, scale=8), nullable=False, default=Decimal("0.0"),
-                                    comment="Accumulated PAYG dollar spend in the current billing cycle")
-    payg_billing_email     = Column(String, nullable=True,
-                                    comment="Dedicated billing contact email for PAYG invoices and alerts")
-    is_blocked             = Column(Boolean, nullable=False, default=False,
-                                    comment="True = all LLM calls rejected; admin override required")
+    payg_current_spend_usd  = Column(Numeric(precision=20, scale=8), nullable=False, default=Decimal("0.0"),
+                                     comment="Accumulated PAYG dollar spend in the current billing cycle")
+    payg_reserved_spend_usd = Column(Numeric(precision=20, scale=8), nullable=False, default=Decimal("0.0"),
+                                     comment="In-flight dollar reservations for pending PAYG LLM calls")
+    payg_billing_email      = Column(String, nullable=True,
+                                     comment="Dedicated billing contact email for PAYG invoices and alerts")
+    is_blocked              = Column(Boolean, nullable=False, default=False,
+                                     comment="True = all LLM calls rejected; admin override required")
 
     # --- Audit timestamps ---
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

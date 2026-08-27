@@ -290,6 +290,12 @@ def _run_startup_migrations():
                     conn.commit()
                 except Exception:
                     pass
+            if "payg_reserved_spend_usd" not in ow_cols:
+                try:
+                    conn.execute(sql_text("ALTER TABLE organization_wallet ADD COLUMN payg_reserved_spend_usd NUMERIC(20, 8) DEFAULT 0.0"))
+                    conn.commit()
+                except Exception:
+                    pass
             if "payg_billing_email" not in ow_cols:
                 try:
                     conn.execute(sql_text("ALTER TABLE organization_wallet ADD COLUMN payg_billing_email VARCHAR NULL"))
