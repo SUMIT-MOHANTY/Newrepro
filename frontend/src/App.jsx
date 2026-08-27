@@ -31,6 +31,7 @@ import SuperAdminCapacityRequests from './pages/SuperAdminCapacityRequests';
 import SuperAdminGlobalBilling from './pages/SuperAdminGlobalBilling';
 import SuperAdminRoles from './pages/SuperAdminRoles';
 import SuperAdminAuditLogs from './pages/SuperAdminAuditLogs';
+import SuperAdminTokenOps from './pages/SuperAdminTokenOps';
 
 function App() {
   return (
@@ -146,6 +147,11 @@ function App() {
         <Route path="/superadmin/global-billing" element={
           <AppLayout>
             {(layoutProps) => <SuperAdminGlobalBilling {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/superadmin/tokenops" element={
+          <AppLayout>
+            {(layoutProps) => <SuperAdminTokenOps {...layoutProps} />}
           </AppLayout>
         } />
         <Route path="/superadmin/roles" element={

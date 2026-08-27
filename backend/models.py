@@ -680,10 +680,13 @@ class AIUsageLog(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=True)
     project_token = Column(String, index=True, nullable=True)
+    organization_name = Column(String, index=True, nullable=True)
+    organization_id = Column(String(36), index=True, nullable=True)
     model = Column(String, nullable=True)
     prompt_tokens = Column(Integer, default=0)
     completion_tokens = Column(Integer, default=0)
     cost = Column(Float, default=0.0)
+    usage_status = Column(String, nullable=False, default="COMPLETED")  # COMPLETED or UNKNOWN
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 

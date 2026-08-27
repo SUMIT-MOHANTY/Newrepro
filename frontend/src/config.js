@@ -163,6 +163,41 @@ export const API_ENDPOINTS = {
     KG_STATS: (projectToken) => `${API_BASE_URL}/api/knowledge-graph/stats/${projectToken}`,
     KG_DELETE: (projectToken) => `${API_BASE_URL}/api/knowledge-graph/${projectToken}`,
     KG_AGENT_CONTEXT: `${API_BASE_URL}/api/knowledge-graph/agent-context`,
+
+    // TokenOps Super Admin
+    TOKENOPS_ADMIN_ORGS: `${API_BASE_URL}/api/tokenops/admin/wallet/organizations`,
+    TOKENOPS_ADMIN_ORG: (orgName) => `${API_BASE_URL}/api/tokenops/admin/wallet/organization/${encodeURIComponent(orgName)}`,
+    TOKENOPS_ADMIN_PURCHASE: `${API_BASE_URL}/api/tokenops/admin/wallet/purchase`,
+    TOKENOPS_ADMIN_PRICING: `${API_BASE_URL}/api/tokenops/admin/pricing/`,
+    TOKENOPS_ADMIN_PRICING_UPDATE: (modelName) => `${API_BASE_URL}/api/tokenops/admin/pricing/${encodeURIComponent(modelName)}`,
+    TOKENOPS_ADMIN_PRICING_ADD: `${API_BASE_URL}/api/tokenops/admin/pricing/model`,
+    TOKENOPS_ADMIN_BLOCK_ORG: `${API_BASE_URL}/api/tokenops/admin/block/organization`,
+    TOKENOPS_ADMIN_BLOCK_USER: `${API_BASE_URL}/api/tokenops/admin/block/user`,
+    TOKENOPS_ADMIN_PAYG_REQUESTS: `${API_BASE_URL}/api/tokenops/admin/payg/requests`,
+    TOKENOPS_ADMIN_PAYG_APPROVE: `${API_BASE_URL}/api/tokenops/admin/payg/approve`,
+    TOKENOPS_ADMIN_PAYG_REJECT: `${API_BASE_URL}/api/tokenops/admin/payg/reject`,
+    TOKENOPS_ADMIN_QUOTA_REQUESTS: `${API_BASE_URL}/api/tokenops/admin/payg/quota-requests`,
+    TOKENOPS_ADMIN_QUOTA_APPROVE: (id) => `${API_BASE_URL}/api/tokenops/admin/payg/quota-requests/${id}/approve`,
+    TOKENOPS_ADMIN_QUOTA_REJECT: (id) => `${API_BASE_URL}/api/tokenops/admin/payg/quota-requests/${id}/reject`,
+    TOKENOPS_ADMIN_ANALYTICS: `${API_BASE_URL}/api/tokenops/admin/analytics/overview`,
+
+    // TokenOps Org Admin
+    TOKENOPS_ORG_USERS: `${API_BASE_URL}/api/org/tokenops/users`,
+    TOKENOPS_ORG_USER: (userId) => `${API_BASE_URL}/api/org/tokenops/users/${userId}`,
+    TOKENOPS_ORG_RESERVE: `${API_BASE_URL}/api/org/tokenops/reserve`,
+    TOKENOPS_ORG_ALLOCATE: `${API_BASE_URL}/api/org/tokenops/allocation/allocate`,
+    TOKENOPS_ORG_REALLOCATE: `${API_BASE_URL}/api/org/tokenops/allocation/reallocate`,
+    TOKENOPS_ORG_REVOKE: `${API_BASE_URL}/api/org/tokenops/allocation/revoke`,
+    TOKENOPS_ORG_BLOCK_USER: `${API_BASE_URL}/api/org/tokenops/block/user`,
+    TOKENOPS_ORG_REQUEST_QUOTA: `${API_BASE_URL}/api/org/tokenops/quota/request-quota`,
+    TOKENOPS_ORG_QUOTA_REQUESTS: `${API_BASE_URL}/api/org/tokenops/quota/quota-requests`,
+    TOKENOPS_ORG_ANALYTICS_KPIS: `${API_BASE_URL}/api/org/tokenops/analytics/kpis`,
+    TOKENOPS_ORG_ANALYTICS_TOP_USERS: `${API_BASE_URL}/api/org/tokenops/analytics/top-users`,
+    TOKENOPS_ORG_REPORTS_DAILY: `${API_BASE_URL}/api/org/tokenops/reports/usage`,
+    TOKENOPS_ORG_REPORTS_LEDGER: `${API_BASE_URL}/api/org/tokenops/reports/ledger`,
+
+    // TokenOps User Transparency
+    TOKENOPS_USER_MY_QUOTA: `${API_BASE_URL}/api/tokenops/user/my-quota`,
 };
 
 export default {

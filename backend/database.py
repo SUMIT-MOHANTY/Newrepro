@@ -70,6 +70,20 @@ with engine.connect() as conn:
             if "is_archived" not in sp_columns:
                 print("Migrating database: Adding is_archived column to share_projects")
                 conn.execute(text("ALTER TABLE share_projects ADD COLUMN is_archived BOOLEAN DEFAULT 0"))
+
+        # Ensure ai_usage_logs has organization_name and usage_status columns
+        ai_cursor = conn.execute(text("PRAGMA table_info(ai_usage_logs)"))
+        ai_columns = [row[1] for row in ai_cursor.fetchall()]
+        if ai_columns:
+            if "organization_name" not in ai_columns:
+                print("Migrating database: Adding organization_name column to ai_usage_logs")
+                conn.execute(text("ALTER TABLE ai_usage_logs ADD COLUMN organization_name VARCHAR"))
+            if "organization_id" not in ai_columns:
+                print("Migrating database: Adding organization_id column to ai_usage_logs")
+                conn.execute(text("ALTER TABLE ai_usage_logs ADD COLUMN organization_id VARCHAR(36)"))
+            if "usage_status" not in ai_columns:
+                print("Migrating database: Adding usage_status column to ai_usage_logs")
+                conn.execute(text("ALTER TABLE ai_usage_logs ADD COLUMN usage_status VARCHAR NOT NULL DEFAULT 'COMPLETED'"))
     except Exception as e:
         print(f"Database migration check skipped: {e}")
         
