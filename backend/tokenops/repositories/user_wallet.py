@@ -9,13 +9,13 @@ class UserWalletRepository:
     def get_membership(self, user_id: int, organization_name: str) -> UserOrganization | None:
         return self.session.query(UserOrganization).filter(
             UserOrganization.user_id == user_id,
-            UserOrganization.organization_name == organization_name
+            func.lower(UserOrganization.organization_name) == organization_name.lower()
         ).first()
 
     def get_user_wallet(self, user_id: int, organization_name: str) -> UserTokenWallet | None:
         return self.session.query(UserTokenWallet).filter(
             UserTokenWallet.user_id == user_id,
-            UserTokenWallet.organization_name == organization_name
+            func.lower(UserTokenWallet.organization_name) == organization_name.lower()
         ).first()
 
     def update_wallet(self, user_id: int, organization_name: str, allocated_delta: int = 0, consumed_delta: int = 0, remaining_delta: int = 0) -> None:
@@ -33,8 +33,7 @@ class UserWalletRepository:
             self.session.flush()
         else:
             self.session.query(UserTokenWallet).filter(
-                UserTokenWallet.user_id == user_id,
-                UserTokenWallet.organization_name == organization_name
+                UserTokenWallet.id == wallet.id
             ).update({
                 UserTokenWallet.allocated_tokens: UserTokenWallet.allocated_tokens + allocated_delta,
                 UserTokenWallet.consumed_tokens: UserTokenWallet.consumed_tokens + consumed_delta,
@@ -43,6 +42,6 @@ class UserWalletRepository:
 
     def get_total_allocated(self, organization_name: str) -> int:
         total = self.session.query(func.sum(UserTokenWallet.allocated_tokens)).filter(
-            UserTokenWallet.organization_name == organization_name
+            func.lower(UserTokenWallet.organization_name) == organization_name.lower()
         ).scalar()
         return total or 0

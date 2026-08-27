@@ -134,7 +134,7 @@ class TokenOpsOrchestrator:
             canonical_name = org.name
             user_wallet = self.session.query(UserTokenWallet).filter(
                 UserTokenWallet.user_id == user_id,
-                UserTokenWallet.organization_name == canonical_name
+                func.lower(UserTokenWallet.organization_name) == canonical_name.lower()
             ).first()
 
             if not user_wallet:
@@ -254,7 +254,7 @@ class TokenOpsOrchestrator:
                 # The tokens were already moved out of org reserve during allocation.
                 user_wallet = self.session.query(UserTokenWallet).filter(
                     UserTokenWallet.user_id == user_id,
-                    UserTokenWallet.organization_name == canonical_name
+                    func.lower(UserTokenWallet.organization_name) == canonical_name.lower()
                 ).first()
 
                 if not user_wallet:
@@ -284,8 +284,7 @@ class TokenOpsOrchestrator:
                 # The actual provider-reported consumption must always be preserved.
                 # If remaining goes negative, the next pre_execute will block this user.
                 self.session.query(UserTokenWallet).filter(
-                    UserTokenWallet.user_id == user_id,
-                    UserTokenWallet.organization_name == canonical_name
+                    UserTokenWallet.id == user_wallet.id
                 ).update({
                     UserTokenWallet.consumed_tokens: UserTokenWallet.consumed_tokens + total_tokens,
                     UserTokenWallet.remaining_tokens: UserTokenWallet.remaining_tokens - total_tokens

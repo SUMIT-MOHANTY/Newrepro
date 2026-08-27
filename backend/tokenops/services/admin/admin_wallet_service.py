@@ -1,10 +1,11 @@
 from typing import List, Tuple
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from tokenops.services.wallet_service import WalletService
 from tokenops.services.admin.admin_audit_service import AdminAuditService
 from tokenops.repositories.organization_wallet import OrganizationWalletRepository
 from tokenops.services.pricing_service import PricingService
-from tokenops.models.token_wallet import OrganizationWallet
+from tokenops.models.token_wallet import OrganizationWallet, UserTokenWallet
 from tokenops.schemas.superadmin import OrganizationWalletView, PaginatedOrganizationResponse
 
 from tokenops.models.organization import Organization
@@ -47,7 +48,9 @@ class AdminWalletService:
                 (OrganizationWallet.id == org.id)
             ).first()
             if w:
-                consumed = max(0, (w.purchased_tokens or 0) - (w.remaining_tokens or 0))
+                consumed = self.session.query(func.sum(UserTokenWallet.consumed_tokens)).filter(
+                    func.lower(UserTokenWallet.organization_name) == org.name.lower()
+                ).scalar() or 0
                 items.append(OrganizationWalletView(
                     organization_name=org.name,
                     purchased_tokens=w.purchased_tokens or 0,
@@ -96,7 +99,9 @@ class AdminWalletService:
                 reference_price=reference_price
             )
             
-        consumed = max(0, (w.purchased_tokens or 0) - (w.remaining_tokens or 0))
+        consumed = self.session.query(func.sum(UserTokenWallet.consumed_tokens)).filter(
+            func.lower(UserTokenWallet.organization_name) == organization_name.lower()
+        ).scalar() or 0
         return OrganizationWalletView(
             organization_name=w.organization_name,
             purchased_tokens=w.purchased_tokens or 0,
