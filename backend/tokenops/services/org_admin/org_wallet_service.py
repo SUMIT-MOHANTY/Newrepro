@@ -28,6 +28,11 @@ class OrgWalletService:
         self.user_repo = user_repo
         self.pricing_service = pricing_service
 
+    def _tx(self):
+        if self.session.in_transaction():
+            return self.session.begin_nested()
+        return self.session.begin()
+
     def get_users(self, organization_name: str, page: int = 1, size: int = 50, search: str = None) -> PaginatedUserWalletResponse:
         from tokenops.models.token_wallet import UserOrganization
         import models
@@ -170,7 +175,7 @@ class OrgWalletService:
             request_id=request_id
         )
         
-        with self.session.begin():
+        with self._tx():
             self.audit_service.log_action(
                 admin_user_id=admin_user_id,
                 organization_name=organization_name,
@@ -190,7 +195,7 @@ class OrgWalletService:
             request_id=request_id
         )
         
-        with self.session.begin():
+        with self._tx():
             self.audit_service.log_action(
                 admin_user_id=admin_user_id,
                 organization_name=organization_name,
@@ -209,7 +214,7 @@ class OrgWalletService:
             request_id=request_id
         )
         
-        with self.session.begin():
+        with self._tx():
             self.audit_service.log_action(
                 admin_user_id=admin_user_id,
                 organization_name=organization_name,

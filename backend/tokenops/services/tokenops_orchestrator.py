@@ -179,7 +179,7 @@ class TokenOpsOrchestrator:
 
         # ── Unknown token usage path ──────────────────────────────────────────
         if prompt_tokens is None or completion_tokens is None:
-            with self.session.begin():
+            with self._tx():
                 if not self.idempotency.create_processing_record(request_id):
                     return
 

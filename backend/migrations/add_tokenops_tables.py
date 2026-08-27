@@ -365,6 +365,67 @@ _DDL_STATEMENTS: list[tuple[str, str]] = [
             ON organization_usage_summary (last_updated)
         """,
     ),
+
+    # ── 9. admin_audit_logs ──────────────────────────────────────────────────
+    (
+        "CREATE TABLE admin_audit_logs",
+        """
+        CREATE TABLE IF NOT EXISTS admin_audit_logs (
+            id                INTEGER NOT NULL,
+            admin_user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            actor_type        TEXT    NOT NULL DEFAULT 'SUPER_ADMIN',
+            action            TEXT    NOT NULL,
+            target_entity     TEXT    NOT NULL,
+            organization_name TEXT,
+            request_id        TEXT,
+            details           TEXT,
+            created_at        TEXT    NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (id)
+        )
+        """,
+    ),
+    (
+        "INDEX ix_admin_audit_logs_admin_user_id",
+        """
+        CREATE INDEX IF NOT EXISTS ix_admin_audit_logs_admin_user_id
+            ON admin_audit_logs (admin_user_id)
+        """,
+    ),
+    (
+        "INDEX ix_admin_audit_logs_actor_type",
+        """
+        CREATE INDEX IF NOT EXISTS ix_admin_audit_logs_actor_type
+            ON admin_audit_logs (actor_type)
+        """,
+    ),
+    (
+        "INDEX ix_admin_audit_logs_action",
+        """
+        CREATE INDEX IF NOT EXISTS ix_admin_audit_logs_action
+            ON admin_audit_logs (action)
+        """,
+    ),
+    (
+        "INDEX ix_admin_audit_logs_org_name",
+        """
+        CREATE INDEX IF NOT EXISTS ix_admin_audit_logs_org_name
+            ON admin_audit_logs (organization_name)
+        """,
+    ),
+    (
+        "INDEX ix_admin_audit_logs_request_id",
+        """
+        CREATE INDEX IF NOT EXISTS ix_admin_audit_logs_request_id
+            ON admin_audit_logs (request_id)
+        """,
+    ),
+    (
+        "INDEX ix_admin_audit_logs_created_at",
+        """
+        CREATE INDEX IF NOT EXISTS ix_admin_audit_logs_created_at
+            ON admin_audit_logs (created_at)
+        """,
+    ),
 ]
 
 # Default pricing seed row — mirrors the hardcoded rate in llm_gateway.py.
@@ -418,6 +479,7 @@ def downgrade() -> None:
     WARNING: This is destructive and irreversible in production.
     """
     drop_order = [
+        "admin_audit_logs",
         "token_transaction_ledger",
         "organization_usage_summary",
         "payg_invoice",
