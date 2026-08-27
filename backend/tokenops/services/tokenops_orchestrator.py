@@ -14,7 +14,7 @@ from tokenops.services.idempotency_service import IdempotencyService
 from tokenops.services.tenant_resolver_service import TenantResolverService
 from tokenops.models.token_wallet import OrganizationWallet, UserOrganization, UserTokenWallet
 from models import AIUsageLog
-from tokenops.models.ledger import TransactionType
+from tokenops.models.ledger import TransactionType, TokenTransactionLedger
 from tokenops.domain import TokenTransaction
 from tokenops.utils.retry import retry_on_lock
 
@@ -135,8 +135,22 @@ class TokenOpsOrchestrator:
             if org_wallet.is_blocked:
                 raise HTTPException(status_code=403, detail="ORGANIZATION_BLOCKED")
 
-            # 4. PAYG: no balance gate — proceed
+            # 4. PAYG Option C: check soft and hard dollar spending limits
             if org_wallet.payg_enabled:
+                # Check hard spending cap if configured (blocks consumption once reached)
+                if org_wallet.payg_hard_limit_usd is not None and float(org_wallet.payg_hard_limit_usd) > 0:
+                    current_spend = float(org_wallet.payg_current_spend_usd or 0.0)
+                    if current_spend >= float(org_wallet.payg_hard_limit_usd):
+                        raise HTTPException(status_code=402, detail="PAYG_HARD_LIMIT_REACHED")
+
+                # Check soft spending warning threshold if configured (warn only, does not block)
+                if org_wallet.payg_soft_limit_usd is not None and float(org_wallet.payg_soft_limit_usd) > 0:
+                    current_spend = float(org_wallet.payg_current_spend_usd or 0.0)
+                    if current_spend >= float(org_wallet.payg_soft_limit_usd):
+                        logger.warning(
+                            f"PAYG soft limit warning for org '{org.name}': current spend ${current_spend:.2f} "
+                            f"reached soft limit ${float(org_wallet.payg_soft_limit_usd):.2f}"
+                        )
                 return
 
             # 5. PREPAID: UserTokenWallet is mandatory.
@@ -253,17 +267,25 @@ class TokenOpsOrchestrator:
 
             if org_wallet.payg_enabled:
                 # ── PAYG PATH ─────────────────────────────────────────────────
-                # No prepaid wallet is touched. Record usage and cost attribution only.
-                # balance_after for PAYG = org remaining_tokens (unchanged for PAYG).
+                # No prepaid wallet is touched. Record usage, increment cycle spend, and log financial ledger.
+                org_wallet.payg_current_spend_usd = float(org_wallet.payg_current_spend_usd or 0.0) + cost
+
+                # Meaningful accumulated PAYG token debt semantics for balance_after
+                prev_payg = self.session.query(func.sum(TokenTransactionLedger.token_delta)).filter(
+                    func.lower(TokenTransactionLedger.organization_name) == canonical_name.lower(),
+                    TokenTransactionLedger.transaction_type == TransactionType.PAYG_USAGE.value
+                ).scalar() or 0
+                accumulated_payg_balance = prev_payg - total_tokens
+
                 tx = TokenTransaction(
                     organization_name=canonical_name,
                     transaction_type=TransactionType.PAYG_USAGE.value,
                     token_delta=-total_tokens,
                     reference_id=request_id,
                     user_id=user_id,
-                    remarks=f"Model: {model_name} (PAYG)"
+                    remarks=f"Model: {model_name} (PAYG, Cost: ${cost:.6f})"
                 )
-                self.ledger.write_entry(tx, balance_after=org_wallet.remaining_tokens)
+                self.ledger.write_entry(tx, balance_after=accumulated_payg_balance)
 
             else:
                 # ── PREPAID PATH ──────────────────────────────────────────────

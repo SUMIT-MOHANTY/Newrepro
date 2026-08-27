@@ -168,16 +168,35 @@ class PAYGInvoice(Base):
 
     id                = Column(Integer, primary_key=True, index=True)
     organization_name = Column(String, nullable=False, index=True)
+    organization_id   = Column(String(36), nullable=True, index=True)
     billing_month     = Column(String(7), nullable=False, index=True,
                                comment="Format: YYYY-MM, e.g. '2026-08'")
     total_tokens      = Column(BigInteger, nullable=False, default=0,
                                comment="Total PAYG tokens consumed this month")
+    prompt_tokens     = Column(BigInteger, nullable=False, default=0,
+                               comment="Total input/prompt tokens")
+    completion_tokens = Column(BigInteger, nullable=False, default=0,
+                               comment="Total output/completion tokens")
+    input_cost        = Column(
+        Numeric(precision=20, scale=8),
+        nullable=False,
+        default=Decimal("0.0"),
+        comment="Total USD cost for input tokens",
+    )
+    output_cost       = Column(
+        Numeric(precision=20, scale=8),
+        nullable=False,
+        default=Decimal("0.0"),
+        comment="Total USD cost for output tokens",
+    )
     total_cost        = Column(
         Numeric(precision=20, scale=8),
         nullable=False,
         default=Decimal("0.0"),
         comment="Total USD cost for PAYG tokens this month",
     )
+    line_items        = Column(Text, nullable=True, comment="JSON snapshot of per-model usage, pricing rates, tokens, and costs")
+    recipient_email   = Column(String, nullable=True, comment="Billing recipient email invoice was dispatched to")
     invoice_status    = Column(
         String,
         nullable=False,
@@ -186,6 +205,7 @@ class PAYGInvoice(Base):
         comment="One of: PENDING, PAID, OVERDUE, WAIVED",
     )
     generated_at      = Column(DateTime, nullable=False, default=datetime.utcnow)
+    paid_at           = Column(DateTime, nullable=True, comment="Timestamp when invoice was marked paid")
 
     @property
     def status_enum(self) -> InvoiceStatus:

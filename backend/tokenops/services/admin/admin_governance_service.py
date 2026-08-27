@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Optional, List, Dict, Any, Tuple
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
 from tokenops.services.admin.admin_audit_service import AdminAuditService
@@ -172,6 +173,58 @@ class AdminGovernanceService:
                 target_entity=org.name
             )
 
+    @retry_on_lock(max_retries=3)
+    def set_payg_limits(
+        self,
+        admin_user_id: int,
+        organization_name: str,
+        soft_limit_usd: Optional[float] = None,
+        hard_limit_usd: Optional[float] = None,
+        billing_email: Optional[str] = None
+    ):
+        from tokenops.services.tenant_resolver_service import TenantResolverService
+        from tokenops.models.token_wallet import OrganizationWallet
+        from decimal import Decimal
+        from sqlalchemy import func
+
+        resolver = TenantResolverService(self.session)
+        with self._tx():
+            org_id, org = resolver.resolve(organization_name)
+            wallet = self.session.query(OrganizationWallet).filter(
+                (OrganizationWallet.id == org_id) | (func.lower(OrganizationWallet.organization_name) == org.name.lower())
+            ).first()
+            if not wallet:
+                wallet = OrganizationWallet(
+                    id=org_id,
+                    organization_name=org.name,
+                    purchased_tokens=0,
+                    remaining_tokens=0,
+                    reserved_tokens=0,
+                    payg_enabled=False,
+                    is_blocked=False,
+                )
+                self.session.add(wallet)
+                self.session.flush()
+
+            if soft_limit_usd is not None:
+                wallet.payg_soft_limit_usd = Decimal(str(round(soft_limit_usd, 2)))
+            if hard_limit_usd is not None:
+                wallet.payg_hard_limit_usd = Decimal(str(round(hard_limit_usd, 2)))
+            if billing_email is not None:
+                wallet.payg_billing_email = billing_email.strip()
+
+            self.audit_service.log_action(
+                admin_user_id=admin_user_id,
+                action="UPDATE_PAYG_LIMITS",
+                target_entity=org.name,
+                details={
+                    "soft_limit_usd": float(wallet.payg_soft_limit_usd) if wallet.payg_soft_limit_usd else None,
+                    "hard_limit_usd": float(wallet.payg_hard_limit_usd) if wallet.payg_hard_limit_usd else None,
+                    "billing_email": wallet.payg_billing_email
+                }
+            )
+            return wallet
+
     def get_quota_requests(self, status: str = None):
         query = self.session.query(TokenQuotaRequest)
         if status:
@@ -180,30 +233,34 @@ class AdminGovernanceService:
 
     @retry_on_lock(max_retries=3)
     def handle_quota_request(self, admin_user_id: int, request_id: int, approve: bool, remarks: str = None):
-        req = self.session.query(TokenQuotaRequest).filter(
-            TokenQuotaRequest.id == request_id
-        ).first()
-        if not req:
-            raise HTTPException(status_code=404, detail="Quota request not found")
+        with self._tx():
+            req = self.session.query(TokenQuotaRequest).filter(
+                TokenQuotaRequest.id == request_id
+            ).first()
+            if not req:
+                raise HTTPException(status_code=404, detail="Quota request not found")
 
-        if req.status != QuotaRequestStatus.REQUESTED.value and req.status != QuotaRequestStatus.REQUESTED:
-            raise HTTPException(status_code=400, detail=f"Request is already {req.status}")
+            if req.status != QuotaRequestStatus.REQUESTED.value and req.status != QuotaRequestStatus.REQUESTED:
+                raise HTTPException(status_code=400, detail=f"Request is already {req.status}")
 
-        if approve:
-            if req.request_type == QuotaRequestType.TOKEN_INCREASE.value or req.request_type == QuotaRequestType.TOKEN_INCREASE:
-                # Inject tokens into organization wallet reserve and record in ledger
-                if self.wallet_service and req.requested_tokens > 0:
-                    self.wallet_service.purchase_tokens(
-                        organization_name=req.organization_name,
-                        amount=req.requested_tokens,
-                        request_id=f"quota_req_{req.id}",
-                        remarks=f"Approved Quota Request #{req.id}: {remarks or ''}"
-                    )
-            elif req.request_type == QuotaRequestType.PAYG_ENABLEMENT.value or req.request_type == QuotaRequestType.PAYG_ENABLEMENT:
-                wallet = self.org_repo.get_or_create(req.organization_name)
-                wallet.payg_enabled = True
+            if approve:
+                if req.request_type == QuotaRequestType.TOKEN_INCREASE.value or req.request_type == QuotaRequestType.TOKEN_INCREASE:
+                    # Inject tokens into organization wallet reserve and record in ledger
+                    if self.wallet_service and req.requested_tokens > 0:
+                        self.wallet_service.purchase_tokens(
+                            organization_name=req.organization_name,
+                            amount=req.requested_tokens,
+                            request_id=f"quota_req_{req.id}",
+                            remarks=f"Approved Quota Request #{req.id}: {remarks or ''}"
+                        )
+                elif req.request_type == QuotaRequestType.PAYG_ENABLEMENT.value or req.request_type == QuotaRequestType.PAYG_ENABLEMENT:
+                    wallet = self.org_repo.get_or_create(req.organization_name)
+                    wallet.payg_enabled = True
+                elif req.request_type == QuotaRequestType.LIMIT_INCREASE.value or req.request_type == QuotaRequestType.LIMIT_INCREASE:
+                    wallet = self.org_repo.get_or_create(req.organization_name)
+                    if req.requested_limit_usd is not None and req.requested_limit_usd > 0:
+                        wallet.payg_hard_limit_usd = req.requested_limit_usd
 
-            with self._tx():
                 req.status = QuotaRequestStatus.APPROVED.value
                 req.approved_by = admin_user_id
                 req.approved_at = datetime.utcnow()
@@ -212,10 +269,9 @@ class AdminGovernanceService:
                     admin_user_id=admin_user_id,
                     action="APPROVE_QUOTA_REQUEST",
                     target_entity=f"{req.organization_name} (req #{req.id})",
-                    details={"tokens": req.requested_tokens, "type": str(req.request_type), "notes": remarks}
+                    details={"tokens": req.requested_tokens, "limit_usd": float(req.requested_limit_usd) if req.requested_limit_usd else None, "type": str(req.request_type), "notes": remarks}
                 )
-        else:
-            with self._tx():
+            else:
                 req.status = QuotaRequestStatus.REJECTED.value
                 req.approved_by = admin_user_id
                 req.approved_at = datetime.utcnow()
@@ -224,6 +280,6 @@ class AdminGovernanceService:
                     admin_user_id=admin_user_id,
                     action="REJECT_QUOTA_REQUEST",
                     target_entity=f"{req.organization_name} (req #{req.id})",
-                    details={"tokens": req.requested_tokens, "type": str(req.request_type), "notes": remarks}
+                    details={"tokens": req.requested_tokens, "limit_usd": float(req.requested_limit_usd) if req.requested_limit_usd else None, "type": str(req.request_type), "notes": remarks}
                 )
-        return req
+            return req
