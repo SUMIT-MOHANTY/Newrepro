@@ -15,9 +15,14 @@ class OrgGovernanceService:
         self.session = session
         self.audit_service = audit_service
 
+    def _tx(self):
+        if self.session.in_transaction():
+            return self.session.begin_nested()
+        return self.session.begin()
+
     @retry_on_lock(max_retries=3)
     def set_user_block_status(self, admin_user_id: int, organization_name: str, user_id: int, is_blocked: bool):
-        with self.session.begin():
+        with self._tx():
             # Check if target is an org admin
             role_mapping = self.session.query(UserOrganizationRole).join(OrganizationRole).filter(
                 UserOrganizationRole.user_id == user_id,
