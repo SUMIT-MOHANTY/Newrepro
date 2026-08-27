@@ -244,7 +244,10 @@ export default function OrgTokenOpsPanel({ user }) {
         setActionLoading(true);
         setError('');
         try {
-            const res = await fetch(API_ENDPOINTS.TOKENOPS_ORG_BLOCK_USER, {
+            const endpoint = currentBlocked
+                ? API_ENDPOINTS.TOKENOPS_ORG_UNBLOCK_USER
+                : API_ENDPOINTS.TOKENOPS_ORG_BLOCK_USER;
+            const res = await fetch(endpoint, {
                 method: 'POST',
                 headers: getHeaders(),
                 body: JSON.stringify({ user_id: userId })
