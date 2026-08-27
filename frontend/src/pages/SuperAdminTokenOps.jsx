@@ -253,12 +253,14 @@ export default function SuperAdminTokenOps() {
         setActionLoading(true);
         setError('');
         try {
-            const res = await fetch(API_ENDPOINTS.TOKENOPS_ADMIN_BLOCK_ORG, {
+            const endpoint = currentBlocked
+                ? API_ENDPOINTS.TOKENOPS_ADMIN_UNBLOCK_ORG
+                : API_ENDPOINTS.TOKENOPS_ADMIN_BLOCK_ORG;
+            const res = await fetch(endpoint, {
                 method: 'POST',
                 headers: getHeaders(),
                 body: JSON.stringify({
-                    organization_name: orgName,
-                    is_blocked: !currentBlocked
+                    organization_name: orgName
                 })
             });
             const data = await res.json();
