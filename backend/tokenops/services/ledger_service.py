@@ -11,8 +11,19 @@ class LedgerService:
         Creates an immutable ledger entry.
         Note: The actual DB insertion happens when the parent transaction commits.
         """
+        org_id = None
+        org_name = tx.organization_name
+        try:
+            from tokenops.services.tenant_resolver_service import TenantResolverService
+            resolver = TenantResolverService(self.repo.session)
+            org_id, org = resolver.resolve(tx.organization_name)
+            org_name = org.name
+        except Exception:
+            pass
+
         entry = TokenTransactionLedger(
-            organization_name=tx.organization_name,
+            organization_name=org_name,
+            organization_id=org_id,
             user_id=tx.user_id,
             transaction_type=tx.transaction_type,
             token_delta=tx.token_delta,

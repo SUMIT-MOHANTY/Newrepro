@@ -79,6 +79,7 @@ class OrganizationUsageSummary(Base):
     id                      = Column(Integer, primary_key=True, index=True)
     organization_name       = Column(String, nullable=False, unique=True, index=True,
                                      comment="Tenant identifier")
+    organization_id         = Column(String(36), index=True, nullable=True)
 
     # --- Incremental counters (prefix sums) ---
     total_prompt_tokens     = Column(BigInteger, nullable=False, default=0,
@@ -129,6 +130,7 @@ class UserUsageSummary(Base):
     id                      = Column(Integer, primary_key=True, index=True)
     user_id                 = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     organization_name       = Column(String, nullable=False, index=True)
+    organization_id         = Column(String(36), index=True, nullable=True)
 
     total_prompt_tokens     = Column(BigInteger, nullable=False, default=0)
     total_completion_tokens = Column(BigInteger, nullable=False, default=0)

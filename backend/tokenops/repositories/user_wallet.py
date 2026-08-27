@@ -6,24 +6,69 @@ class UserWalletRepository:
     def __init__(self, session: Session):
         self.session = session
 
+    def _resolve_tenant(self, organization_name: str) -> tuple[str | None, str]:
+        try:
+            from tokenops.services.tenant_resolver_service import TenantResolverService
+            resolver = TenantResolverService(self.session)
+            org_id, org = resolver.resolve(organization_name)
+            return org_id, org.name
+        except Exception:
+            return None, organization_name
+
     def get_membership(self, user_id: int, organization_name: str) -> UserOrganization | None:
-        return self.session.query(UserOrganization).filter(
+        org_id, canonical_name = self._resolve_tenant(organization_name)
+        if org_id:
+            membership = self.session.query(UserOrganization).filter(
+                UserOrganization.user_id == user_id,
+                UserOrganization.organization_id == org_id
+            ).first()
+            if membership:
+                # Auto-heal: ensure organization_id is set
+                if not membership.organization_id:
+                    membership.organization_id = org_id
+                return membership
+
+        # Fallback to name check
+        membership = self.session.query(UserOrganization).filter(
             UserOrganization.user_id == user_id,
-            func.lower(UserOrganization.organization_name) == organization_name.lower()
+            func.lower(UserOrganization.organization_name) == canonical_name.lower()
         ).first()
+        if membership and org_id:
+            # Auto-heal
+            membership.organization_id = org_id
+        return membership
 
     def get_user_wallet(self, user_id: int, organization_name: str) -> UserTokenWallet | None:
-        return self.session.query(UserTokenWallet).filter(
+        org_id, canonical_name = self._resolve_tenant(organization_name)
+        if org_id:
+            wallet = self.session.query(UserTokenWallet).filter(
+                UserTokenWallet.user_id == user_id,
+                UserTokenWallet.organization_id == org_id
+            ).first()
+            if wallet:
+                # Auto-heal: ensure organization_id is set
+                if not wallet.organization_id:
+                    wallet.organization_id = org_id
+                return wallet
+
+        # Fallback to name check
+        wallet = self.session.query(UserTokenWallet).filter(
             UserTokenWallet.user_id == user_id,
-            func.lower(UserTokenWallet.organization_name) == organization_name.lower()
+            func.lower(UserTokenWallet.organization_name) == canonical_name.lower()
         ).first()
+        if wallet and org_id:
+            # Auto-heal
+            wallet.organization_id = org_id
+        return wallet
 
     def update_wallet(self, user_id: int, organization_name: str, allocated_delta: int = 0, consumed_delta: int = 0, remaining_delta: int = 0) -> None:
+        org_id, canonical_name = self._resolve_tenant(organization_name)
         wallet = self.get_user_wallet(user_id, organization_name)
         if not wallet:
             wallet = UserTokenWallet(
                 user_id=user_id,
-                organization_name=organization_name,
+                organization_name=canonical_name,
+                organization_id=org_id,
                 allocated_tokens=max(0, allocated_delta),
                 consumed_tokens=max(0, consumed_delta),
                 remaining_tokens=max(0, remaining_delta),
@@ -41,7 +86,15 @@ class UserWalletRepository:
             })
 
     def get_total_allocated(self, organization_name: str) -> int:
+        org_id, canonical_name = self._resolve_tenant(organization_name)
+        if org_id:
+            total = self.session.query(func.sum(UserTokenWallet.allocated_tokens)).filter(
+                UserTokenWallet.organization_id == org_id
+            ).scalar()
+            if total is not None:
+                return total
+
         total = self.session.query(func.sum(UserTokenWallet.allocated_tokens)).filter(
-            func.lower(UserTokenWallet.organization_name) == organization_name.lower()
+            func.lower(UserTokenWallet.organization_name) == canonical_name.lower()
         ).scalar()
         return total or 0
