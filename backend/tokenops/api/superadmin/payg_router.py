@@ -18,7 +18,7 @@ def get_payg_requests(
                 id=r.id,
                 organization_name=r.organization_name,
                 status=r.status,
-                requested_by=r.requested_by_id,
+                requested_by=r.requested_by,
                 created_at=r.created_at.isoformat() if r.created_at else ""
             ) for r in reqs
         ]

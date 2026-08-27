@@ -76,8 +76,8 @@ class OrgWalletService:
         items = []
         for uid, info in all_user_map.items():
             u = info["user"]
-            name_parts = [u.first_name or "", u.last_name or ""]
-            full_name = " ".join([p for p in name_parts if p]).strip() or u.username or u.email.split("@")[0]
+            name_parts = [getattr(u, "first_name", None) or "", getattr(u, "last_name", None) or ""]
+            full_name = " ".join([p for p in name_parts if p]).strip() or getattr(u, "username", None) or (u.email.split("@")[0] if getattr(u, "email", None) else f"User {uid}")
 
             if search:
                 s = search.lower()
@@ -137,15 +137,27 @@ class OrgWalletService:
         allocated = self.session.query(func.sum(UserTokenWallet.allocated_tokens)).filter_by(
             organization_name=organization_name
         ).scalar() or 0
-        
+
+        # Calculate consumed tokens from UserTokenWallet allocations or OrganizationUsageSummary
+        consumed = self.session.query(func.sum(UserTokenWallet.consumed_tokens)).filter_by(
+            organization_name=organization_name
+        ).scalar() or 0
+        if consumed == 0:
+            from tokenops.models.summary import OrganizationUsageSummary
+            usage = self.session.query(OrganizationUsageSummary).filter_by(
+                organization_name=organization_name
+            ).first()
+            if usage:
+                consumed = usage.total_tokens or 0
+
         reference_price = float(self.pricing_service.get_price(settings.ai_model))
-        
+
         return ReserveWalletView(
             organization_name=organization_name,
             purchased_tokens=wallet.purchased_tokens,
             reserved_tokens=wallet.reserved_tokens,
             allocated_tokens=allocated,
-            consumed_tokens=wallet.consumed_tokens,
+            consumed_tokens=consumed,
             remaining_tokens=wallet.remaining_tokens,
             reference_price=reference_price
         )

@@ -76,7 +76,7 @@ class AdminAnalyticsService:
             organization_name=organization_name,
             daily_usage=[], # Placeholder for actual daily rollup table if it exists
             top_users=[], # Placeholder for actual user rollup table if it exists
-            token_burn=wallet.consumed_tokens if wallet else 0,
+            token_burn=usage_summary.total_tokens if usage_summary else 0,
             remaining_balance=wallet.remaining_tokens if wallet else 0,
             total_historical_cost=float(usage_summary.total_cost) if usage_summary else 0.0
         )

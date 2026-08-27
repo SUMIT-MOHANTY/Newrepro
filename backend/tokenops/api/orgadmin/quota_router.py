@@ -45,10 +45,10 @@ def submit_quota_request(
 
     # Resolve organization_id
     resolver = TenantResolverService(db)
-    org_id = resolver.get_organization_id(org_name)
+    org_id, org = resolver.resolve(org_name)
 
     quota_req = TokenQuotaRequest(
-        organization_name=org_name,
+        organization_name=org.name,
         organization_id=org_id,
         request_type=QuotaRequestType[req_type],
         requested_tokens=body.requested_tokens if req_type == "TOKEN_INCREASE" else 0,
@@ -82,8 +82,11 @@ def get_my_org_quota_requests(
     Get all quota / PAYG requests submitted by this organization.
     """
     org_name = current_user.active_organization
+    resolver = TenantResolverService(db)
+    org_id, org = resolver.resolve(org_name)
+
     requests = db.query(TokenQuotaRequest).filter(
-        TokenQuotaRequest.organization_name == org_name
+        (TokenQuotaRequest.organization_id == org_id) | (TokenQuotaRequest.organization_name == org.name)
     ).order_by(TokenQuotaRequest.created_at.desc()).all()
 
     data = [
