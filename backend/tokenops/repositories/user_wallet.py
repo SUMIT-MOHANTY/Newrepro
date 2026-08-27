@@ -36,7 +36,27 @@ class UserWalletRepository:
         if membership and org_id:
             # Auto-heal
             membership.organization_id = org_id
-        return membership
+            return membership
+
+        # --- LAZY CREATION/AUTO-HEAL ---
+        # If user is in core DB and their org name matches (case insensitive), auto-create membership
+        try:
+            from models import User
+            core_user = self.session.query(User).filter(User.id == user_id).first()
+            if core_user and core_user.organization_name and core_user.organization_name.lower() == canonical_name.lower():
+                membership = UserOrganization(
+                    user_id=user_id,
+                    organization_id=org_id or "00000000-0000-0000-0000-000000000000",
+                    organization_name=core_user.organization_name,
+                    is_active=True
+                )
+                self.session.add(membership)
+                self.session.flush()
+                return membership
+        except Exception:
+            pass
+
+        return None
 
     def get_user_wallet(self, user_id: int, organization_name: str) -> UserTokenWallet | None:
         org_id, canonical_name = self._resolve_tenant(organization_name)
@@ -59,7 +79,29 @@ class UserWalletRepository:
         if wallet and org_id:
             # Auto-heal
             wallet.organization_id = org_id
-        return wallet
+            return wallet
+
+        # --- LAZY CREATION/AUTO-HEAL ---
+        # If user has a membership (either existing or lazy created), auto-create wallet with 0 tokens
+        try:
+            membership = self.get_membership(user_id, organization_name)
+            if membership:
+                wallet = UserTokenWallet(
+                    user_id=user_id,
+                    organization_id=org_id or "00000000-0000-0000-0000-000000000000",
+                    organization_name=membership.organization_name,
+                    allocated_tokens=0,
+                    remaining_tokens=0,
+                    consumed_tokens=0,
+                    is_blocked=False
+                )
+                self.session.add(wallet)
+                self.session.flush()
+                return wallet
+        except Exception:
+            pass
+
+        return None
 
     def update_wallet(self, user_id: int, organization_name: str, allocated_delta: int = 0, consumed_delta: int = 0, remaining_delta: int = 0) -> None:
         org_id, canonical_name = self._resolve_tenant(organization_name)

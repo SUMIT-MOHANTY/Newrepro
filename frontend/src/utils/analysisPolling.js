@@ -7,13 +7,17 @@ import { API_ENDPOINTS } from '../config';
 /**
  * Start an analysis job and return the job ID
  */
-export async function startAnalysisJob(payload, token) {
+export async function startAnalysisJob(payload, token, projectKey = null) {
+    const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+    };
+    if (projectKey) {
+        headers['x-task-token'] = projectKey;
+    }
     const response = await fetch(API_ENDPOINTS.AI_ANALYZE, {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-        },
+        headers: headers,
         body: JSON.stringify(payload)
     });
 
@@ -144,7 +148,7 @@ export async function startAndPollAnalysis(
     projectKey = null
 ) {
     // Start the job
-    const { jobId, isJob, result } = await startAnalysisJob(payload, token);
+    const { jobId, isJob, result } = await startAnalysisJob(payload, token, projectKey);
 
     // If not a job (streaming mode), return result directly
     if (!isJob) {

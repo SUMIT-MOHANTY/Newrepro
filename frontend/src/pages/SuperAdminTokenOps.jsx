@@ -31,6 +31,8 @@ export default function SuperAdminTokenOps() {
     const [pricingModal, setPricingModal] = useState({ open: false, modelName: '', price: '' });
     const [addModelModal, setAddModelModal] = useState({ open: false, modelName: '', price: '' });
     const [quotaDecisionModal, setQuotaDecisionModal] = useState({ open: false, request: null, approve: true, remarks: '' });
+    const [graceModal, setGraceModal] = useState({ open: false, orgName: '', months: 3 });
+    const [bulkGraceModal, setBulkGraceModal] = useState({ open: false, months: 3 });
 
     const formatCurrency = (amount, pricePerToken = 0.000007) => {
         return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format((amount || 0) * pricePerToken);
@@ -279,6 +281,69 @@ export default function SuperAdminTokenOps() {
         }
     };
 
+    // Handle Set Grace Period
+    const handleSetGracePeriod = async (e) => {
+        e.preventDefault();
+        setActionLoading(true);
+        setError('');
+        setSuccessMessage('');
+        try {
+            const res = await fetch(API_ENDPOINTS.TOKENOPS_ADMIN_GRACE_PERIOD, {
+                method: 'POST',
+                headers: getHeaders(),
+                body: JSON.stringify({
+                    organization_name: graceModal.orgName,
+                    grace_period_months: parseInt(graceModal.months, 10)
+                })
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+                throw new Error(data.error?.message || 'Failed to update grace period.');
+            }
+            const msg = `🎉 Grace period of ${graceModal.months} month(s) set for ${graceModal.orgName}.`;
+            setSuccessMessage(msg);
+            showToast(msg, 'success');
+            setGraceModal({ open: false, orgName: '', months: 3 });
+            fetchData();
+        } catch (err) {
+            setError(err.message);
+            showToast(err.message || 'Failed to update grace period.', 'error');
+        } finally {
+            setActionLoading(false);
+        }
+    };
+
+    // Handle Bulk Set Grace Period
+    const handleBulkSetGracePeriod = async (e) => {
+        e.preventDefault();
+        setActionLoading(true);
+        setError('');
+        setSuccessMessage('');
+        try {
+            const res = await fetch(API_ENDPOINTS.TOKENOPS_ADMIN_GRACE_PERIOD_BULK, {
+                method: 'POST',
+                headers: getHeaders(),
+                body: JSON.stringify({
+                    grace_period_months: parseInt(bulkGraceModal.months, 10)
+                })
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+                throw new Error(data.error?.message || 'Failed to apply bulk grace period.');
+            }
+            const msg = `🎉 Applied global grace period of ${bulkGraceModal.months} month(s) to all organizations (stored as setting for current and future PAYG transitions).`;
+            setSuccessMessage(msg);
+            showToast(msg, 'success');
+            setBulkGraceModal({ open: false, months: 3 });
+            fetchData();
+        } catch (err) {
+            setError(err.message);
+            showToast(err.message || 'Failed to apply bulk grace period.', 'error');
+        } finally {
+            setActionLoading(false);
+        }
+    };
+
     const filteredOrgs = organizations.filter(o => 
         !searchQuery || o.organization_name.toLowerCase().includes(searchQuery.toLowerCase())
     );
@@ -486,6 +551,14 @@ export default function SuperAdminTokenOps() {
                                 className="w-full pl-9 pr-4 py-2 text-xs sm:text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                             />
                         </div>
+                        <button
+                            onClick={() => setBulkGraceModal({ open: true, months: 3 })}
+                            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-100 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition border border-slate-200 dark:border-slate-600 shadow-sm cursor-pointer"
+                            title="Apply a grace period rule to all organizations in bulk"
+                        >
+                            <Shield className="w-3.5 h-3.5" />
+                            <span>Bulk Grace Period</span>
+                        </button>
                     </div>
 
                     <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200/80 dark:border-slate-700 overflow-hidden shadow-sm">
@@ -499,14 +572,15 @@ export default function SuperAdminTokenOps() {
                                         <th className="px-4 py-3 min-w-[120px]">Reserve Value</th>
                                         <th className="px-4 py-3 min-w-[120px]">Remaining Value</th>
                                         <th className="px-4 py-3 min-w-[120px]">Billing Mode</th>
+                                        <th className="px-4 py-3 min-w-[120px]">Grace Period</th>
                                         <th className="px-4 py-3 min-w-[90px]">Status</th>
-                                        <th className="px-4 py-3 min-w-[210px] text-right">Actions</th>
+                                        <th className="px-4 py-3 min-w-[180px] text-right">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-100 dark:divide-slate-700/60 text-slate-800 dark:text-slate-200">
                                     {filteredOrgs.length === 0 ? (
                                         <tr>
-                                            <td colSpan="8" className="px-4 py-8 text-center text-slate-400">
+                                            <td colSpan="9" className="px-4 py-8 text-center text-slate-400">
                                                 No organization wallets found.
                                             </td>
                                         </tr>
@@ -542,6 +616,24 @@ export default function SuperAdminTokenOps() {
                                                         <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-800">
                                                             Prepaid
                                                         </span>
+                                                    )}
+                                                </td>
+                                                <td className="px-4 py-3">
+                                                    {org.payg_enabled ? (
+                                                        <div className="flex items-center gap-1.5">
+                                                            <span className="font-semibold text-slate-800 dark:text-slate-200">
+                                                                {org.payg_grace_period_months} month{org.payg_grace_period_months > 1 ? 's' : ''}
+                                                            </span>
+                                                            <button
+                                                                onClick={() => setGraceModal({ open: true, orgName: org.organization_name, months: org.payg_grace_period_months || 3 })}
+                                                                className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-400 hover:text-indigo-600 rounded transition cursor-pointer"
+                                                                title="Edit Grace Period"
+                                                            >
+                                                                <Edit className="w-3.5 h-3.5" />
+                                                            </button>
+                                                        </div>
+                                                    ) : (
+                                                        <span className="text-slate-400 dark:text-slate-500 font-medium">N/A (Prepaid)</span>
                                                     )}
                                                 </td>
                                                 <td className="px-4 py-3">
@@ -978,6 +1070,125 @@ export default function SuperAdminTokenOps() {
                                     }`}
                                 >
                                     {actionLoading ? 'Processing...' : (quotaDecisionModal.approve ? 'Confirm Approval' : 'Confirm Rejection')}
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* MODAL 5: Set Grace Period Modal */}
+            {graceModal.open && (
+                <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-md w-full p-6 border border-slate-200/80 dark:border-slate-700 shadow-2xl animate-in zoom-in-95 duration-200">
+                        <div className="flex items-center gap-3 mb-3">
+                            <div className="p-2.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400">
+                                <Shield className="w-5 h-5" />
+                            </div>
+                            <div>
+                                <h3 className="text-lg font-bold text-slate-900 dark:text-white">
+                                    Set PAYG Grace Period
+                                </h3>
+                                <p className="text-xs text-slate-500 dark:text-slate-400">
+                                    Define maximum months overdue allowed before suspension.
+                                </p>
+                            </div>
+                        </div>
+
+                        <p className="text-sm text-slate-600 dark:text-slate-350 mb-5 leading-relaxed">
+                            Configure allowed overdue period for organization: <span className="font-bold text-indigo-600 dark:text-indigo-400">{graceModal.orgName}</span>.
+                        </p>
+
+                        <form onSubmit={handleSetGracePeriod} className="space-y-4">
+                            <div>
+                                <label className="block text-[11px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">
+                                    Grace Period (Months)
+                                </label>
+                                <input
+                                    type="number"
+                                    min="1"
+                                    max="24"
+                                    required
+                                    value={graceModal.months}
+                                    onChange={(e) => setGraceModal({ ...graceModal, months: e.target.value })}
+                                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition duration-155"
+                                />
+                            </div>
+                            <div className="flex justify-end gap-3 pt-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setGraceModal({ open: false, orgName: '', months: 3 })}
+                                    className="px-4 py-2 text-xs sm:text-sm font-semibold text-slate-550 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-xl transition cursor-pointer"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={actionLoading}
+                                    className="px-4.5 py-2 text-xs sm:text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl transition shadow-md shadow-indigo-600/10 cursor-pointer"
+                                >
+                                    {actionLoading ? 'Saving...' : 'Save Settings'}
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* MODAL 6: Bulk Set Grace Period Modal */}
+            {bulkGraceModal.open && (
+                <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-md w-full p-6 border border-slate-200/80 dark:border-slate-700 shadow-2xl animate-in zoom-in-95 duration-200">
+                        <div className="flex items-center gap-3 mb-3">
+                            <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400">
+                                <Shield className="w-5 h-5" />
+                            </div>
+                            <div>
+                                <h3 className="text-lg font-bold text-slate-900 dark:text-white">
+                                    Bulk Set PAYG Grace Period
+                                </h3>
+                                <p className="text-xs text-slate-500 dark:text-slate-400">
+                                    Set global overdue threshold for all tenants.
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200/85 dark:border-amber-900/60 rounded-xl p-3.5 flex items-start gap-2.5 mb-5 text-amber-800 dark:text-amber-300">
+                            <AlertCircle className="w-5 h-5 shrink-0 text-amber-500 mt-0.5" />
+                            <p className="text-xs leading-relaxed font-medium">
+                                This will apply a global grace period threshold to all organizations in the system. The setting will activate automatically whenever a tenant is switched to PAYG mode.
+                            </p>
+                        </div>
+
+                        <form onSubmit={handleBulkSetGracePeriod} className="space-y-4">
+                            <div>
+                                <label className="block text-[11px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">
+                                    Global Grace Period (Months)
+                                </label>
+                                <input
+                                    type="number"
+                                    min="1"
+                                    max="24"
+                                    required
+                                    value={bulkGraceModal.months}
+                                    onChange={(e) => setBulkGraceModal({ ...bulkGraceModal, months: e.target.value })}
+                                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-sm focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition duration-155"
+                                />
+                            </div>
+                            <div className="flex justify-end gap-3 pt-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setBulkGraceModal({ open: false, months: 3 })}
+                                    className="px-4 py-2 text-xs sm:text-sm font-semibold text-slate-550 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-xl transition cursor-pointer"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={actionLoading}
+                                    className="px-4.5 py-2 text-xs sm:text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl transition shadow-md shadow-indigo-600/10 cursor-pointer"
+                                >
+                                    {actionLoading ? 'Applying...' : 'Apply to All'}
                                 </button>
                             </div>
                         </form>

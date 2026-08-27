@@ -182,6 +182,8 @@ export const API_ENDPOINTS = {
     TOKENOPS_ADMIN_QUOTA_APPROVE: (id) => `${API_BASE_URL}/api/tokenops/admin/payg/quota-requests/${id}/approve`,
     TOKENOPS_ADMIN_QUOTA_REJECT: (id) => `${API_BASE_URL}/api/tokenops/admin/payg/quota-requests/${id}/reject`,
     TOKENOPS_ADMIN_ANALYTICS: `${API_BASE_URL}/api/tokenops/admin/analytics/overview`,
+    TOKENOPS_ADMIN_GRACE_PERIOD: `${API_BASE_URL}/api/tokenops/admin/wallet/grace-period`,
+    TOKENOPS_ADMIN_GRACE_PERIOD_BULK: `${API_BASE_URL}/api/tokenops/admin/wallet/grace-period/bulk`,
 
     // TokenOps Org Admin
     TOKENOPS_ORG_USERS: `${API_BASE_URL}/api/org/tokenops/users`,

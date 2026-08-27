@@ -663,10 +663,24 @@ export default function OrgTokenOpsPanel({ user }) {
                                                 </span>
                                             </td>
                                             <td className="px-6 py-4 text-slate-600 dark:text-slate-400">
-                                                {tx.user_id ? `User #${tx.user_id}` : 'Organization'}
+                                                {tx.user_name ? (
+                                                    <div>
+                                                        <div className="font-semibold text-slate-800 dark:text-slate-200">{tx.user_name}</div>
+                                                        {tx.user_email && <div className="text-[10px] text-slate-500 mt-0.5">{tx.user_email}</div>}
+                                                    </div>
+                                                ) : (
+                                                    tx.user_id ? `User #${tx.user_id}` : 'Organization'
+                                                )}
                                             </td>
                                             <td className={`px-6 py-4 font-bold ${tx.token_delta >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
-                                                {tx.token_delta >= 0 ? `+${Number(tx.token_delta).toLocaleString()}` : Number(tx.token_delta).toLocaleString()}
+                                                <div className="font-semibold text-sm">
+                                                    {tx.token_delta >= 0 ? '+' : ''}
+                                                    {formatCurrency(tx.token_delta, reserve?.reference_price || 0.000007)}
+                                                </div>
+                                                <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                                                    {tx.token_delta >= 0 ? '+' : ''}
+                                                    {Number(tx.token_delta).toLocaleString()} tokens
+                                                </div>
                                             </td>
                                             <td className="px-6 py-4 text-xs text-slate-500 truncate max-w-xs">
                                                 {tx.remarks || tx.reference_id || '—'}

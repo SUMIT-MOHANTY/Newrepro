@@ -89,6 +89,8 @@ class OrganizationWallet(Base):
                           comment="True = org may consume beyond wallet balance at PAYG rate")
     is_blocked   = Column(Boolean, nullable=False, default=False,
                           comment="True = all LLM calls rejected; admin override required")
+    payg_grace_period_months = Column(Integer, nullable=False, default=3,
+                                      comment="Months an invoice can remain overdue before auto-blocking access")
 
     # --- Audit timestamps ---
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Query, HTTPException
 from tokenops.schemas.superadmin import (
-    BaseAPIResponse, PaginatedOrganizationResponse, OrganizationWalletView, PurchaseRequest
+    BaseAPIResponse, PaginatedOrganizationResponse, OrganizationWalletView, PurchaseRequest,
+    SetGracePeriodRequest, BulkSetGracePeriodRequest
 )
 from tokenops.services.admin.admin_wallet_service import AdminWalletService
 from .dependencies import verify_super_admin, get_admin_wallet_service
@@ -50,6 +51,41 @@ def purchase_tokens(
             remarks=request.remarks
         )
         return BaseAPIResponse(success=True, data=data)
+    except HTTPException as e:
+        return BaseAPIResponse(success=False, error={"code": "WALLET_ERROR", "message": e.detail})
+    except Exception as e:
+        return BaseAPIResponse(success=False, error={"code": "UNKNOWN_ERROR", "message": str(e)})
+
+@router.post("/grace-period", response_model=BaseAPIResponse)
+def set_grace_period(
+    request: SetGracePeriodRequest,
+    current_user: User = Depends(verify_super_admin),
+    wallet_service: AdminWalletService = Depends(get_admin_wallet_service)
+):
+    try:
+        data = wallet_service.set_grace_period(
+            admin_user_id=current_user.id,
+            organization_name=request.organization_name,
+            grace_period_months=request.grace_period_months
+        )
+        return BaseAPIResponse(success=True, data=data)
+    except HTTPException as e:
+        return BaseAPIResponse(success=False, error={"code": "WALLET_ERROR", "message": e.detail})
+    except Exception as e:
+        return BaseAPIResponse(success=False, error={"code": "UNKNOWN_ERROR", "message": str(e)})
+
+@router.post("/grace-period/bulk", response_model=BaseAPIResponse)
+def bulk_set_grace_period(
+    request: BulkSetGracePeriodRequest,
+    current_user: User = Depends(verify_super_admin),
+    wallet_service: AdminWalletService = Depends(get_admin_wallet_service)
+):
+    try:
+        wallet_service.bulk_set_grace_period(
+            admin_user_id=current_user.id,
+            grace_period_months=request.grace_period_months
+        )
+        return BaseAPIResponse(success=True)
     except HTTPException as e:
         return BaseAPIResponse(success=False, error={"code": "WALLET_ERROR", "message": e.detail})
     except Exception as e:

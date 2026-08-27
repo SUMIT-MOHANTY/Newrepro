@@ -1386,8 +1386,10 @@ export default function AppLayout({ children }) {
                                         {userQuota.is_payg ? (
                                             <span className="font-mono text-purple-300">⚡ PAYG Active</span>
                                         ) : (
-                                            <span className="font-mono">
-                                                {Number(userQuota.remaining_tokens || 0).toLocaleString()} <span className="text-white/40">/</span> {Number(userQuota.allocated_tokens || 0).toLocaleString()} <span className="text-[10px] text-indigo-300 font-normal">Tokens</span>
+                                            <span className="font-mono flex items-center gap-1">
+                                                <span>{new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format((userQuota.remaining_tokens || 0) * (userQuota.reference_price || 0.000007))}</span>
+                                                <span className="text-white/40">/</span>
+                                                <span>{new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format((userQuota.allocated_tokens || 0) * (userQuota.reference_price || 0.000007))}</span>
                                             </span>
                                         )}
                                     </button>

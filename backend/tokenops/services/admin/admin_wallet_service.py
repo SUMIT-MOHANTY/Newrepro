@@ -59,7 +59,8 @@ class AdminWalletService:
                     remaining_tokens=w.remaining_tokens or 0,
                     payg_enabled=bool(w.payg_enabled),
                     is_blocked=bool(w.is_blocked),
-                    reference_price=reference_price
+                    reference_price=reference_price,
+                    payg_grace_period_months=getattr(w, "payg_grace_period_months", 3)
                 ))
             else:
                 items.append(OrganizationWalletView(
@@ -70,7 +71,8 @@ class AdminWalletService:
                     remaining_tokens=0,
                     payg_enabled=False,
                     is_blocked=False,
-                    reference_price=reference_price
+                    reference_price=reference_price,
+                    payg_grace_period_months=3
                 ))
         
         return PaginatedOrganizationResponse(
@@ -96,7 +98,8 @@ class AdminWalletService:
                 remaining_tokens=0,
                 payg_enabled=False,
                 is_blocked=False,
-                reference_price=reference_price
+                reference_price=reference_price,
+                payg_grace_period_months=3
             )
             
         consumed = self.session.query(func.sum(UserTokenWallet.consumed_tokens)).filter(
@@ -110,7 +113,8 @@ class AdminWalletService:
             remaining_tokens=w.remaining_tokens or 0,
             payg_enabled=bool(w.payg_enabled),
             is_blocked=bool(w.is_blocked),
-            reference_price=reference_price
+            reference_price=reference_price,
+            payg_grace_period_months=getattr(w, "payg_grace_period_months", 3)
         )
 
     def purchase_tokens(self, admin_user_id: int, organization_name: str, token_amount: int, remarks: str = None) -> OrganizationWalletView:
@@ -140,3 +144,45 @@ class AdminWalletService:
             pass
             
         return self.get_organization(organization_name)
+
+    def set_grace_period(self, admin_user_id: int, organization_name: str, grace_period_months: int) -> OrganizationWalletView:
+        if grace_period_months < 0:
+            raise ValueError("Grace period must be a non-negative integer")
+            
+        w = self.org_repo.get_or_create(organization_name)
+        w.payg_grace_period_months = grace_period_months
+        self.session.commit()
+        
+        try:
+            self.audit_service.log_action(
+                admin_user_id=admin_user_id,
+                action="SET_PAYG_GRACE_PERIOD",
+                target_entity=organization_name,
+                details={"grace_period_months": grace_period_months}
+            )
+            self.session.commit()
+        except Exception:
+            pass
+            
+        return self.get_organization(organization_name)
+
+    def bulk_set_grace_period(self, admin_user_id: int, grace_period_months: int) -> None:
+        if grace_period_months < 0:
+            raise ValueError("Grace period must be a non-negative integer")
+            
+        # Update all wallets
+        self.session.query(OrganizationWallet).update({
+            OrganizationWallet.payg_grace_period_months: grace_period_months
+        })
+        self.session.commit()
+        
+        try:
+            self.audit_service.log_action(
+                admin_user_id=admin_user_id,
+                action="BULK_SET_PAYG_GRACE_PERIOD",
+                target_entity="ALL_ORGANIZATIONS",
+                details={"grace_period_months": grace_period_months}
+            )
+            self.session.commit()
+        except Exception:
+            pass

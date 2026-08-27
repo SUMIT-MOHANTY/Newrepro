@@ -388,9 +388,29 @@ const hasCompletedStoredAnalysis = (analysis) => {
 
 // Format error messages to be user-friendly
 const formatAnalysisError = (error) => {
-    const errorMessage = error?.message || String(error);
+    let errorMessage = error?.message || String(error);
+
+    // Attempt to extract detail from JSON-formatted backend errors
+    try {
+        if (errorMessage.startsWith('{') || errorMessage.includes('"detail"')) {
+            const parsed = JSON.parse(errorMessage);
+            if (parsed && parsed.detail) {
+                errorMessage = parsed.detail;
+            }
+        }
+    } catch (e) {
+        // Not a valid JSON string or parse error, fallback to raw message
+    }
 
     // Check for specific error patterns and provide custom messages
+    if (errorMessage.includes('ORGANIZATION_BLOCKED')) {
+        return 'Your organization has been blocked. Please contact the administrator or review your billing status.';
+    }
+
+    if (errorMessage.includes('PAYMENT_REQUIRED') || errorMessage.includes('402')) {
+        return 'Payment required. Your organization has overdue invoices exceeding its grace period.';
+    }
+
     if (errorMessage.includes('Analysis job not found') || errorMessage.includes('job not found')) {
         return 'The analysis session has expired or was not found. Please try starting the analysis again.';
     }
@@ -1181,6 +1201,7 @@ export default function AgentAnalysis({
             setCompletedStages({});  // Clear stages on error
             setProcessing(false);  // Stop showing the loader
             setAnalysisInProgress(false);  // Clear the in-progress flag
+            throw err;
         } finally {
             setProcessing(false);  // Ensure processing is stopped
             setAnalysisInProgress(false);  // Ensure flag is cleared
@@ -1306,6 +1327,7 @@ export default function AgentAnalysis({
             // Clean up localStorage keys on error
             localStorage.removeItem('active_analysis_job_id');
             localStorage.removeItem('active_analysis_project_key');
+            throw err;
         } finally {
             setProcessing(false);
             setAnalysisInProgress(false);
@@ -2085,6 +2107,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
         } catch (err) {
             const userFriendlyError = formatAnalysisError(err);
             setError(userFriendlyError || 'Failed to update analysis');
+            throw err;
         } finally {
             setProcessing(false);
         }
@@ -2215,10 +2238,11 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
             setChatMessages(prev => [...prev, assistantMsg]);
             await saveChatMessage(assistantMsg);
         } catch (err) {
+            const friendlyErr = formatAnalysisError(err);
             const errMsg = {
                 id: `err_${Date.now()}`,
                 role: 'assistant',
-                content: `Update failed: ${err.message || 'Unknown error'}`,
+                content: friendlyErr.startsWith('Error:') ? friendlyErr : `Update failed: ${friendlyErr}`,
                 isError: true,
                 timestamp: new Date().toISOString(),
             };
@@ -2258,10 +2282,11 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                 setChatMessages(prev => [...prev, assistantMsg]);
                 await saveChatMessage(assistantMsg);
             } catch (err) {
+                const friendlyErr = formatAnalysisError(err);
                 const errMsg = {
                     id: `err_${Date.now()}`,
                     role: 'assistant',
-                    content: `Failed to generate techniques: ${err.message || 'Unknown error'}`,
+                    content: friendlyErr.startsWith('Error:') ? friendlyErr : `Failed to generate techniques: ${friendlyErr}`,
                     isError: true,
                     timestamp: new Date().toISOString(),
                 };
@@ -2350,10 +2375,11 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                 await saveChatMessage(assistantMsg);
             }
         } catch (err) {
+            const friendlyErr = formatAnalysisError(err);
             const errMsg = {
                 id: `err_${Date.now()}`,
                 role: 'assistant',
-                content: `Error: ${err.message || 'Unknown error'}`,
+                content: friendlyErr.startsWith('Error:') ? friendlyErr : `Error: ${friendlyErr}`,
                 isError: true,
                 timestamp: new Date().toISOString(),
             };
@@ -2404,10 +2430,11 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
             setChatMessages(prev => [...prev, assistantMsg]);
             await saveChatMessage(assistantMsg);
         } catch (err) {
+            const friendlyErr = formatAnalysisError(err);
             const errMsg = {
                 id: `err_${Date.now()}`,
                 role: 'assistant',
-                content: `Technique application failed: ${err.message || 'Unknown error'}`,
+                content: friendlyErr.startsWith('Error:') ? friendlyErr : `Technique application failed: ${friendlyErr}`,
                 isError: true,
                 timestamp: new Date().toISOString(),
             };
@@ -2463,10 +2490,11 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
             // Save assistant message to database
             await saveChatMessage(assistantMsg);
         } catch (err) {
+            const friendlyErr = formatAnalysisError(err);
             const errMsg = {
                 id: `qa_err_${Date.now()}`,
                 role: 'assistant',
-                content: `Failed to apply answers: ${err.message || 'Unknown error'}`,
+                content: friendlyErr.startsWith('Error:') ? friendlyErr : `Failed to apply answers: ${friendlyErr}`,
                 isError: true,
                 timestamp: new Date().toISOString(),
             };

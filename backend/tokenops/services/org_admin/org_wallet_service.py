@@ -51,9 +51,17 @@ class OrgWalletService:
         # Build combined map of users
         all_user_map = {}
         for u in org_users:
+            role = "MEMBER"
+            if u.is_super_admin:
+                role = "SUPER_ADMIN"
+            elif u.is_org_admin:
+                role = "ORG_ADMIN"
+            elif u.id in member_dict and member_dict[u.id].role:
+                role = member_dict[u.id].role.upper()
+
             all_user_map[u.id] = {
                 "user": u,
-                "role": member_dict[u.id].role if u.id in member_dict else ("ORG_ADMIN" if u.is_org_admin else "member"),
+                "role": role,
                 "is_active": member_dict[u.id].is_active if u.id in member_dict else True
             }
 
@@ -61,9 +69,14 @@ class OrgWalletService:
             if m.user_id not in all_user_map:
                 u = self.session.query(models.User).filter(models.User.id == m.user_id).first()
                 if u:
+                    role = m.role.upper() if m.role else "MEMBER"
+                    if u.is_super_admin:
+                        role = "SUPER_ADMIN"
+                    elif u.is_org_admin:
+                        role = "ORG_ADMIN"
                     all_user_map[u.id] = {
                         "user": u,
-                        "role": m.role,
+                        "role": role,
                         "is_active": m.is_active
                     }
 

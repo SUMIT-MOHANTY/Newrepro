@@ -7,10 +7,13 @@ class OrganizationWalletRepository:
 
     def get_wallet(self, organization_name: str) -> OrganizationWallet | None:
         # 1. Try matching by resolved UUID if possible
+        org_id = None
+        canonical_name = organization_name
         try:
             from tokenops.services.tenant_resolver_service import TenantResolverService
             resolver = TenantResolverService(self.session)
             org_id, org = resolver.resolve(organization_name)
+            canonical_name = org.name
             wallet = self.session.query(OrganizationWallet).filter(
                 OrganizationWallet.id == org_id
             ).first()
@@ -25,9 +28,39 @@ class OrganizationWalletRepository:
         # 2. Fallback to case-insensitive name lookup for compatibility
         from sqlalchemy import func
         wallet = self.session.query(OrganizationWallet).filter(
-            func.lower(OrganizationWallet.organization_name) == organization_name.lower()
+            func.lower(OrganizationWallet.organization_name) == canonical_name.lower()
         ).first()
-        return wallet
+        if wallet:
+            # Auto-heal: set organization_id / id if missing
+            if org_id and (not wallet.organization_id or wallet.organization_id != org_id):
+                wallet.organization_id = org_id
+                if not wallet.id:
+                    wallet.id = org_id
+                self.session.add(wallet)
+                self.session.flush()
+            return wallet
+
+        # --- LAZY CREATION/AUTO-HEAL ---
+        # If the organization actually exists in the core DB, auto-create a default wallet with 0 tokens
+        if org_id:
+            try:
+                wallet = OrganizationWallet(
+                    id=org_id,
+                    organization_name=canonical_name,
+                    organization_id=org_id,
+                    purchased_tokens=0,
+                    remaining_tokens=0,
+                    reserved_tokens=0,
+                    payg_enabled=False,
+                    is_blocked=False
+                )
+                self.session.add(wallet)
+                self.session.flush()
+                return wallet
+            except Exception:
+                pass
+
+        return None
 
     def get_by_organization(self, organization_name: str) -> OrganizationWallet | None:
         """Alias for get_wallet for service compatibility."""

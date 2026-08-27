@@ -838,6 +838,9 @@ async def analyze_document_with_ai(
     
     # Start analysis in background
     async def run_analysis():
+        # Bind context variables explicitly inside the async task context
+        current_user_id_var.set(current_user.id)
+        current_project_token_var.set(project_token)
         try:
             job.set_processing()
             job.update_progress(10, "Starting AI analysis...")
@@ -1017,6 +1020,10 @@ async def brd_chat(
     Conversational chat endpoint for project BRD and analysis.
     """
     import llm_gateway
+    # Bind context variables explicitly inside the handler
+    llm_gateway.current_user_id_var.set(current_user.id)
+    llm_gateway.current_project_token_var.set(payload.project_token)
+
     import json
     from config import settings
     # Look up GovernanceResponse for project context
@@ -1127,6 +1134,8 @@ CONTEXT INFO:
             timeout=120.0
         )
         return {"response": reply}
+    except HTTPException as he:
+        raise he
     except Exception as e:
         logger.error(f"Error in BRD chat: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
@@ -9082,6 +9091,10 @@ async def get_elicitation_techniques(
     import re
     import json
     import llm_gateway
+    # Bind context variables explicitly
+    llm_gateway.current_user_id_var.set(current_user.id)
+    llm_gateway.current_project_token_var.set(project_token)
+
     from config import settings
 
     # 1. Fetch project/governance

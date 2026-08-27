@@ -135,8 +135,56 @@ class TokenOpsOrchestrator:
             if org_wallet.is_blocked:
                 raise HTTPException(status_code=403, detail="ORGANIZATION_BLOCKED")
 
-            # 4. PAYG: no balance gate — proceed
+            # 4. PAYG: check overdue invoices against grace period and user caps
             if org_wallet.payg_enabled:
+                from tokenops.models.payg import PAYGInvoice, InvoiceStatus
+                from datetime import datetime
+                
+                # Fetch all OVERDUE invoices for this organization
+                overdue_invoices = self.session.query(PAYGInvoice).filter(
+                    (PAYGInvoice.organization_id == org_id) |
+                    (func.lower(PAYGInvoice.organization_name) == org.name.lower()),
+                    PAYGInvoice.invoice_status == InvoiceStatus.OVERDUE.value
+                ).all()
+
+                grace_period = getattr(org_wallet, "payg_grace_period_months", 3)
+
+                for invoice in overdue_invoices:
+                    try:
+                        by, bm = map(int, invoice.billing_month.split("-"))
+                        today = datetime.utcnow()
+                        cy, cm = today.year, today.month
+                        diff_months = (cy - by) * 12 + (cm - bm)
+                    except Exception:
+                        diff_months = 0
+                    
+                    if diff_months >= grace_period:
+                        raise HTTPException(
+                            status_code=402,
+                            detail=f"PAYG access suspended: invoice for {invoice.billing_month} has been overdue for {diff_months} months. Grace period threshold is {grace_period} months."
+                        )
+                
+                # Hybrid PAYG Check: enforce user-level block or budget cap limits if wallet exists
+                user_wallet = self.session.query(UserTokenWallet).filter(
+                    UserTokenWallet.user_id == user_id,
+                    UserTokenWallet.organization_id == org_id
+                ).first()
+                if not user_wallet:
+                    user_wallet = self.session.query(UserTokenWallet).filter(
+                        UserTokenWallet.user_id == user_id,
+                        func.lower(UserTokenWallet.organization_name) == org.name.lower()
+                    ).first()
+                    if user_wallet and org_id:
+                        user_wallet.organization_id = org_id
+                
+                if user_wallet:
+                    if user_wallet.is_blocked:
+                        raise HTTPException(status_code=403, detail="USER_BLOCKED")
+                    
+                    # If allocated_tokens > 0, treat it as a budget cap
+                    if user_wallet.allocated_tokens > 0 and user_wallet.remaining_tokens <= 0:
+                        raise HTTPException(status_code=402, detail="TOKEN_EXHAUSTED")
+                        
                 return
 
             # 5. PREPAID: UserTokenWallet is mandatory.
@@ -264,6 +312,25 @@ class TokenOpsOrchestrator:
                     remarks=f"Model: {model_name} (PAYG)"
                 )
                 self.ledger.write_entry(tx, balance_after=org_wallet.remaining_tokens)
+
+                # Hybrid PAYG: if UserTokenWallet exists, decrement balance cap
+                user_wallet = self.session.query(UserTokenWallet).filter(
+                    UserTokenWallet.user_id == user_id,
+                    UserTokenWallet.organization_id == org_id
+                ).first()
+                if not user_wallet:
+                    user_wallet = self.session.query(UserTokenWallet).filter(
+                        UserTokenWallet.user_id == user_id,
+                        func.lower(UserTokenWallet.organization_name) == canonical_name.lower()
+                    ).first()
+                
+                if user_wallet:
+                    self.session.query(UserTokenWallet).filter(
+                        UserTokenWallet.id == user_wallet.id
+                    ).update({
+                        UserTokenWallet.consumed_tokens: UserTokenWallet.consumed_tokens + total_tokens,
+                        UserTokenWallet.remaining_tokens: UserTokenWallet.remaining_tokens - total_tokens
+                    })
 
             else:
                 # ── PREPAID PATH ──────────────────────────────────────────────

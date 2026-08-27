@@ -67,6 +67,11 @@ def get_my_quota(
         for log in recent_logs
     ]
 
+    from tokenops.services.pricing_service import PricingService
+    from config import settings
+    pricing_service = PricingService(db)
+    reference_price = float(pricing_service.get_price(settings.ai_model))
+
     return BaseAPIResponse(
         success=True,
         data={
@@ -80,5 +85,6 @@ def get_my_quota(
             "remaining_tokens": remaining_tokens,
             "total_cost_usd": round(total_cost, 4),
             "recent_usage": logs_data,
+            "reference_price": reference_price,
         }
     )

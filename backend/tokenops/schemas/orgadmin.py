@@ -94,6 +94,8 @@ class UserConsumptionView(BaseModel):
 class FinancialLedgerView(BaseModel):
     transaction_id: int
     user_id: Optional[int]
+    user_name: Optional[str] = None
+    user_email: Optional[str] = None
     transaction_type: str
     token_delta: int
     created_at: str

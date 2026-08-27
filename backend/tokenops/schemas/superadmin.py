@@ -22,6 +22,7 @@ class OrganizationWalletView(BaseModel):
     payg_enabled: bool
     is_blocked: bool
     reference_price: float
+    payg_grace_period_months: int
 
 class PaginatedOrganizationResponse(BaseModel):
     items: List[OrganizationWalletView]
@@ -33,6 +34,13 @@ class PurchaseRequest(BaseModel):
     organization_name: str
     token_amount: int
     remarks: Optional[str] = None
+
+class SetGracePeriodRequest(BaseModel):
+    organization_name: str
+    grace_period_months: int
+
+class BulkSetGracePeriodRequest(BaseModel):
+    grace_period_months: int
 
 # Pricing Schemas
 class PricingView(BaseModel):

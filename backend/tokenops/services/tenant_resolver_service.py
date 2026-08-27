@@ -61,6 +61,23 @@ class TenantResolverService:
                 raise HTTPException(status_code=403, detail="ORGANIZATION_INACTIVE")
             return org.id, org
 
+        # 2.5. Governance Project Token Lookup (Resolve project_token UUID to Organization)
+        try:
+            from models import GovernanceResponse
+            gov = self.session.query(GovernanceResponse).filter(
+                GovernanceResponse.project_token == cleaned
+            ).first()
+            if gov and gov.organization_name:
+                org = self.session.query(Organization).filter(
+                    func.lower(Organization.name) == gov.organization_name.lower()
+                ).first()
+                if org:
+                    if enforce_active and not org.is_active:
+                        raise HTTPException(status_code=403, detail="ORGANIZATION_INACTIVE")
+                    return org.id, org
+        except Exception as e:
+            logger.warning(f"Failed resolving tenant via GovernanceResponse project_token: {e}")
+
         # 3. Normalized Case-Insensitive Discovery
         normalized_aliases = self.session.query(LegacyOrganizationIdentifier).filter(
             func.lower(LegacyOrganizationIdentifier.legacy_name) == func.lower(cleaned),

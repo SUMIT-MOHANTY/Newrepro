@@ -79,10 +79,26 @@ class OrgAnalyticsService:
         offset = (page - 1) * size
         entries = query.order_by(TokenTransactionLedger.created_at.desc()).offset(offset).limit(size).all()
         
+        # Load user details for user_ids in entries to avoid n+1 query patterns
+        user_ids = list(set([e.user_id for e in entries if e.user_id]))
+        user_map = {}
+        if user_ids:
+            from models import User
+            users = self.session.query(User).filter(User.id.in_(user_ids)).all()
+            for u in users:
+                name_parts = [u.first_name or "", u.last_name or ""]
+                full_name = " ".join([p for p in name_parts if p]).strip() or (u.email.split("@")[0] if u.email else f"User #{u.id}")
+                user_map[u.id] = {
+                    "name": full_name,
+                    "email": u.email
+                }
+
         items = [
             FinancialLedgerView(
                 transaction_id=e.id,
                 user_id=e.user_id,
+                user_name=user_map.get(e.user_id, {}).get("name") if e.user_id else None,
+                user_email=user_map.get(e.user_id, {}).get("email") if e.user_id else None,
                 transaction_type=e.transaction_type,
                 token_delta=e.token_delta,
                 created_at=e.created_at.isoformat(),
