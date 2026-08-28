@@ -63,6 +63,7 @@ class AdminGovernanceService:
                 action="BLOCK_ORG" if is_blocked else "UNBLOCK_ORG",
                 target_entity=org.name
             )
+        self.session.commit()
 
     @retry_on_lock(max_retries=3)
     def set_user_block_status(self, admin_user_id: int, user_id: int, organization_name: str, is_active: bool):
@@ -88,6 +89,7 @@ class AdminGovernanceService:
                 action="UNBLOCK_USER" if is_active else "BLOCK_USER",
                 target_entity=f"{user_id}@{org.name}"
             )
+        self.session.commit()
 
     def get_payg_requests(self):
         return self.session.query(PAYGRequest).filter(
@@ -138,6 +140,7 @@ class AdminGovernanceService:
                 target_entity=org.name,
                 details={"remarks": remarks}
             )
+        self.session.commit()
 
     @retry_on_lock(max_retries=3)
     def suspend_payg(self, admin_user_id: int, organization_name: str):
@@ -172,6 +175,7 @@ class AdminGovernanceService:
                 action="SUSPEND_PAYG",
                 target_entity=org.name
             )
+        self.session.commit()
 
     @retry_on_lock(max_retries=3)
     def set_payg_limits(
@@ -223,7 +227,8 @@ class AdminGovernanceService:
                     "billing_email": wallet.payg_billing_email
                 }
             )
-            return wallet
+        self.session.commit()
+        return wallet
 
     def get_quota_requests(self, status: str = None):
         query = self.session.query(TokenQuotaRequest)
@@ -282,4 +287,5 @@ class AdminGovernanceService:
                     target_entity=f"{req.organization_name} (req #{req.id})",
                     details={"tokens": req.requested_tokens, "limit_usd": float(req.requested_limit_usd) if req.requested_limit_usd else None, "type": str(req.request_type), "notes": remarks}
                 )
-            return req
+        self.session.commit()
+        return req

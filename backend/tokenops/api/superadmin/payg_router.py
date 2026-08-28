@@ -99,6 +99,7 @@ def list_quota_requests(
                 "requested_tokens": r.requested_tokens,
                 "requested_by": r.requested_by,
                 "requester_email": r.requester.email if r.requester else None,
+                "requester_name": f"{r.requester.first_name or ''} {r.requester.last_name or ''}".strip() or (r.requester.email.split('@')[0] if r.requester and r.requester.email else f"User #{r.requested_by}"),
                 "status": r.status.value if hasattr(r.status, "value") else str(r.status),
                 "remarks": r.remarks,
                 "admin_notes": r.admin_notes,

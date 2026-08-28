@@ -813,7 +813,9 @@ export default function SuperAdminTokenOps() {
                                                     : 'Unlimited PAYG'
                                                 }
                                             </td>
-                                            <td className="px-4 py-3 text-slate-500 dark:text-slate-400 text-xs">User #{req.requested_by}</td>
+                                            <td className="px-4 py-3 text-slate-500 dark:text-slate-400 text-xs" title={req.requester_email || ''}>
+                                                {req.requester_name || `User #${req.requested_by}`}
+                                            </td>
                                             <td className="px-4 py-3 text-slate-600 dark:text-slate-300 text-xs max-w-xs truncate" title={req.remarks || ''}>
                                                 {req.remarks || <span className="text-slate-400 italic">None provided</span>}
                                             </td>
