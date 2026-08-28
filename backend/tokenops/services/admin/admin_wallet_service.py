@@ -117,31 +117,29 @@ class AdminWalletService:
             payg_grace_period_months=getattr(w, "payg_grace_period_months", 3)
         )
 
+    def _tx(self):
+        if self.session.in_transaction():
+            return self.session.begin_nested()
+        return self.session.begin()
+
     def purchase_tokens(self, admin_user_id: int, organization_name: str, token_amount: int, remarks: str = None) -> OrganizationWalletView:
         """
         Purchase prepaid tokens for an organization.
+        Atomically executes financial mutation, ledger entry, and audit log.
         """
-        # We reuse the existing WalletService to perform the transaction.
-        # But we create an audit log.
-        # Note: wallet_service.purchase_tokens should commit internally, or we wrap it in a transaction if needed.
-        # Looking at WalletService, it uses @retry_on_lock and creates a transaction.
-        self.wallet_service.purchase_tokens(
-            organization_name=organization_name,
-            amount=token_amount,
-            remarks=remarks
-        )
-        
-        # Then we create an audit entry
-        try:
+        with self._tx():
+            self.wallet_service.purchase_tokens(
+                organization_name=organization_name,
+                amount=token_amount,
+                remarks=remarks
+            )
+            
             self.audit_service.log_action(
                 admin_user_id=admin_user_id,
                 action="PURCHASE_TOKENS",
                 target_entity=organization_name,
                 details={"token_amount": token_amount, "remarks": remarks}
             )
-            self.session.commit()
-        except Exception:
-            pass
             
         return self.get_organization(organization_name)
 

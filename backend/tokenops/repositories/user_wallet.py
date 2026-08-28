@@ -33,9 +33,10 @@ class UserWalletRepository:
             UserOrganization.user_id == user_id,
             func.lower(UserOrganization.organization_name) == canonical_name.lower()
         ).first()
-        if membership and org_id:
-            # Auto-heal
-            membership.organization_id = org_id
+        if membership:
+            if org_id:
+                # Auto-heal
+                membership.organization_id = org_id
             return membership
 
         # --- LAZY CREATION/AUTO-HEAL ---
@@ -76,9 +77,10 @@ class UserWalletRepository:
             UserTokenWallet.user_id == user_id,
             func.lower(UserTokenWallet.organization_name) == canonical_name.lower()
         ).first()
-        if wallet and org_id:
-            # Auto-heal
-            wallet.organization_id = org_id
+        if wallet:
+            if org_id:
+                # Auto-heal
+                wallet.organization_id = org_id
             return wallet
 
         # --- LAZY CREATION/AUTO-HEAL ---

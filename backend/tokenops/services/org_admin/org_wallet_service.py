@@ -181,14 +181,13 @@ class OrgWalletService:
         )
 
     def allocate_tokens(self, admin_user_id: int, organization_name: str, request_id: str, user_id: int, token_amount: int, remarks: str = None):
-        state = self.wallet_service.allocate_tokens(
-            user_id=user_id,
-            organization_name=organization_name,
-            amount=token_amount,
-            request_id=request_id
-        )
-        
         with self._tx():
+            state = self.wallet_service.allocate_tokens(
+                user_id=user_id,
+                organization_name=organization_name,
+                amount=token_amount,
+                request_id=request_id
+            )
             self.audit_service.log_action(
                 admin_user_id=admin_user_id,
                 organization_name=organization_name,
@@ -197,18 +196,17 @@ class OrgWalletService:
                 request_id=request_id,
                 details={"token_amount": token_amount, "remarks": remarks}
             )
-        return state
+            return state
 
     def reallocate_tokens(self, admin_user_id: int, organization_name: str, request_id: str, source_user_id: int, destination_user_id: int, token_amount: int):
-        state = self.wallet_service.reallocate_tokens(
-            from_user_id=source_user_id,
-            to_user_id=destination_user_id,
-            organization_name=organization_name,
-            amount=token_amount,
-            request_id=request_id
-        )
-        
         with self._tx():
+            state = self.wallet_service.reallocate_tokens(
+                from_user_id=source_user_id,
+                to_user_id=destination_user_id,
+                organization_name=organization_name,
+                amount=token_amount,
+                request_id=request_id
+            )
             self.audit_service.log_action(
                 admin_user_id=admin_user_id,
                 organization_name=organization_name,
@@ -217,17 +215,16 @@ class OrgWalletService:
                 request_id=request_id,
                 details={"token_amount": token_amount}
             )
-        return state
+            return state
 
     def revoke_tokens(self, admin_user_id: int, organization_name: str, request_id: str, user_id: int, token_amount: int):
-        state = self.wallet_service.revoke_tokens(
-            user_id=user_id,
-            organization_name=organization_name,
-            amount=token_amount,
-            request_id=request_id
-        )
-        
         with self._tx():
+            state = self.wallet_service.revoke_tokens(
+                user_id=user_id,
+                organization_name=organization_name,
+                amount=token_amount,
+                request_id=request_id
+            )
             self.audit_service.log_action(
                 admin_user_id=admin_user_id,
                 organization_name=organization_name,
@@ -236,4 +233,4 @@ class OrgWalletService:
                 request_id=request_id,
                 details={"token_amount": token_amount}
             )
-        return state
+            return state
