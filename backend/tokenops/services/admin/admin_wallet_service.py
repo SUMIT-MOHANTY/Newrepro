@@ -60,7 +60,12 @@ class AdminWalletService:
                     payg_enabled=bool(w.payg_enabled),
                     is_blocked=bool(w.is_blocked),
                     reference_price=reference_price,
-                    payg_grace_period_months=getattr(w, "payg_grace_period_months", 3)
+                    payg_grace_period_months=getattr(w, "payg_grace_period_months", 3),
+                    payg_current_spend_usd=float(w.payg_current_spend_usd or 0.0),
+                    payg_reserved_spend_usd=float(w.payg_reserved_spend_usd or 0.0),
+                    payg_soft_limit_usd=float(w.payg_soft_limit_usd) if w.payg_soft_limit_usd is not None else None,
+                    payg_hard_limit_usd=float(w.payg_hard_limit_usd) if w.payg_hard_limit_usd is not None else None,
+                    payg_billing_email=w.payg_billing_email
                 ))
             else:
                 items.append(OrganizationWalletView(
@@ -72,7 +77,12 @@ class AdminWalletService:
                     payg_enabled=False,
                     is_blocked=False,
                     reference_price=reference_price,
-                    payg_grace_period_months=3
+                    payg_grace_period_months=3,
+                    payg_current_spend_usd=0.0,
+                    payg_reserved_spend_usd=0.0,
+                    payg_soft_limit_usd=None,
+                    payg_hard_limit_usd=None,
+                    payg_billing_email=None
                 ))
         
         return PaginatedOrganizationResponse(
@@ -99,7 +109,12 @@ class AdminWalletService:
                 payg_enabled=False,
                 is_blocked=False,
                 reference_price=reference_price,
-                payg_grace_period_months=3
+                payg_grace_period_months=3,
+                payg_current_spend_usd=0.0,
+                payg_reserved_spend_usd=0.0,
+                payg_soft_limit_usd=None,
+                payg_hard_limit_usd=None,
+                payg_billing_email=None
             )
             
         consumed = self.session.query(func.sum(UserTokenWallet.consumed_tokens)).filter(
@@ -114,7 +129,12 @@ class AdminWalletService:
             payg_enabled=bool(w.payg_enabled),
             is_blocked=bool(w.is_blocked),
             reference_price=reference_price,
-            payg_grace_period_months=getattr(w, "payg_grace_period_months", 3)
+            payg_grace_period_months=getattr(w, "payg_grace_period_months", 3),
+            payg_current_spend_usd=float(w.payg_current_spend_usd or 0.0),
+            payg_reserved_spend_usd=float(w.payg_reserved_spend_usd or 0.0),
+            payg_soft_limit_usd=float(w.payg_soft_limit_usd) if w.payg_soft_limit_usd is not None else None,
+            payg_hard_limit_usd=float(w.payg_hard_limit_usd) if w.payg_hard_limit_usd is not None else None,
+            payg_billing_email=w.payg_billing_email
         )
 
     def _tx(self):

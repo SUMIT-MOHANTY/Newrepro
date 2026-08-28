@@ -22,9 +22,10 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-# Thread-safe and async-safe context variables to track user and project token
+# Thread-safe and async-safe context variables to track user, project token, and active organization
 current_user_id_var = contextvars.ContextVar("current_user_id", default=None)
 current_project_token_var = contextvars.ContextVar("current_project_token", default=None)
+current_user_org_var = contextvars.ContextVar("current_user_org", default=None)
 
 
 # ── Response Extraction ────────────────────────────────────────────────────
@@ -259,40 +260,69 @@ def check_ai_allowance(
     """
     Synchronously validates AI allowance using TokenOps before making the LLM call.
     For PAYG organizations, atomically reserves estimated cost in-flight.
-    Raises HTTPException (402 or 403) if blocked or exhausted.
+    Raises HTTPException (402 or 403) if blocked, unauthorized, or exhausted.
     Returns the reserved cost amount (float).
     """
     reserved_cost = 0.0
+    from fastapi import HTTPException
+    from database import SessionLocal
+    from tokenops.services.tokenops_orchestrator import TokenOpsOrchestrator
+    from tokenops.services.tenant_resolver_service import TenantResolverService
+
+    u_id = user_id or current_user_id_var.get()
+    p_token = project_token or current_project_token_var.get()
+    user_org = current_user_org_var.get()
+
+    target_tenant = None
+    db = SessionLocal()
     try:
-        from database import SessionLocal
-        from tokenops.services.tokenops_orchestrator import TokenOpsOrchestrator
+        resolver = TenantResolverService(db)
 
-        u_id = user_id or current_user_id_var.get()
-        p_token = project_token or current_project_token_var.get()
+        if p_token:
+            # 1. Resolve project owner organization UUID
+            project_org_id, project_org = resolver.resolve(p_token)
+            target_tenant = project_org.name
 
-        if u_id and p_token:
+            # 2. If user active organization is present in context, enforce strict UUID match
+            if user_org:
+                active_org_id, active_org = resolver.resolve(user_org)
+                if active_org_id != project_org_id:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="CROSS_TENANT_PROJECT_ACCESS_DENIED"
+                    )
+        elif user_org:
+            # Non-project request with active user organization context
+            active_org_id, active_org = resolver.resolve(user_org)
+            target_tenant = active_org.name
+        elif u_id:
+            # Authenticated user without project or active org context
+            raise HTTPException(
+                status_code=403,
+                detail="ORGANIZATION_NOT_FOUND"
+            )
+
+        if target_tenant:
             if estimated_tokens is None and messages and isinstance(messages, list):
                 total_input_chars = sum(len(str(m.get("content", ""))) for m in messages if isinstance(m, dict))
                 estimated_tokens = max(100, total_input_chars // 4)
 
-            db = SessionLocal()
-            try:
-                orchestrator = TokenOpsOrchestrator.create(db)
-                reserved_cost = orchestrator.pre_execute(
-                    user_id=u_id,
-                    organization_name=p_token,
-                    model_name=model_name,
-                    estimated_tokens=estimated_tokens,
-                    estimated_cost=estimated_cost
-                )
-            finally:
-                db.close()
+            orchestrator = TokenOpsOrchestrator.create(db)
+            reserved_cost = orchestrator.pre_execute(
+                user_id=u_id,
+                organization_name=target_tenant,
+                model_name=model_name,
+                estimated_tokens=estimated_tokens,
+                estimated_cost=estimated_cost
+            )
+    except HTTPException:
+        raise
     except Exception as e:
-        # If it's our own HTTPException (like 402 or 403), bubble it up
-        from fastapi import HTTPException
-        if isinstance(e, HTTPException):
-            raise e
         logger.error(f"Failed to check AI allowance: {e}", exc_info=True)
+        raise HTTPException(status_code=403, detail="ORGANIZATION_NOT_FOUND")
+    finally:
+        db.close()
+
     return reserved_cost
 
 
@@ -320,6 +350,8 @@ def log_ai_usage(
         # Get values from ContextVars if not explicitly provided
         u_id = user_id or current_user_id_var.get()
         p_token = project_token or current_project_token_var.get()
+        user_org = current_user_org_var.get()
+        target_tenant = p_token or user_org
 
         # 1. Extract actual token counts from API response payload if present
         if response_data and isinstance(response_data, dict):
@@ -338,20 +370,21 @@ def log_ai_usage(
         # Note: We NO LONGER estimate tokens if missing. The TokenOpsOrchestrator will 
         # log it as UNKNOWN and trigger manual reconciliation.
 
-        db = SessionLocal()
-        try:
-            orchestrator = TokenOpsOrchestrator.create(db)
-            orchestrator.post_execute(
-                user_id=u_id,
-                organization_name=p_token,
-                model_name=model_name,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                reserved_cost=reserved_cost
-            )
-            logger.info(f"Logged AI Usage to TokenOps: {prompt_tokens} prompt, {completion_tokens} completion.")
-        finally:
-            db.close()
+        if target_tenant:
+            db = SessionLocal()
+            try:
+                orchestrator = TokenOpsOrchestrator.create(db)
+                orchestrator.post_execute(
+                    user_id=u_id,
+                    organization_name=target_tenant,
+                    model_name=model_name,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    reserved_cost=reserved_cost
+                )
+                logger.info(f"Logged AI Usage to TokenOps: {prompt_tokens} prompt, {completion_tokens} completion for tenant {target_tenant}.")
+            finally:
+                db.close()
     except Exception as e:
         logger.error(f"Failed to log AI usage via TokenOps: {e}", exc_info=True)
 
@@ -457,7 +490,7 @@ async def call_llm(
                 try:
                     from database import SessionLocal
                     from tokenops.services.tokenops_orchestrator import TokenOpsOrchestrator
-                    p_token = current_project_token_var.get()
+                    p_token = current_project_token_var.get() or current_user_org_var.get()
                     if p_token:
                         db = SessionLocal()
                         try:
