@@ -108,6 +108,13 @@ class TenantResolverService:
                     self.session.flush()
                     logger.info(f"Auto-healed / lazy created tokenops Organization & Wallet via GovernanceResponse project_token lookup for '{gov.organization_name}' with ID: {org.id}")
 
+                if not org:
+                    alias = self.session.query(LegacyOrganizationIdentifier).filter(
+                        func.lower(LegacyOrganizationIdentifier.legacy_name) == gov.organization_name.lower(),
+                        LegacyOrganizationIdentifier.is_active == True
+                    ).first()
+                    if alias:
+                        org = self.session.query(Organization).filter(Organization.id == alias.organization_id).first()
                 if org:
                     if enforce_active and not org.is_active:
                         raise HTTPException(status_code=403, detail="ORGANIZATION_INACTIVE")

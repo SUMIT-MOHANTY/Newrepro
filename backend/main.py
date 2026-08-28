@@ -425,7 +425,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from llm_gateway import current_user_id_var, current_project_token_var
+from llm_gateway import current_user_id_var, current_project_token_var, current_user_org_var
 from database import SessionLocal
 import models
 from jose import jwt
@@ -506,12 +506,14 @@ async def log_user_activities(request: Request, call_next):
     # 1. Resolve user and project from auth token without extra DB queries
     auth_header = request.headers.get("Authorization")
     user_id = None
+    user_org = None
     if auth_header and auth_header.startswith("Bearer "):
         try:
             token = auth_header.split(" ")[1]
             payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
             # Check if user_id is directly in token payload
             user_id = payload.get("user_id") or payload.get("id")
+            user_org = payload.get("org")
             if not user_id:
                 email = payload.get("sub")
                 if email:
@@ -551,12 +553,14 @@ async def log_user_activities(request: Request, call_next):
     # Set context variables for LLM log tracking
     token_user = current_user_id_var.set(user_id)
     token_proj = current_project_token_var.set(project_token)
+    token_org = current_user_org_var.set(user_org)
 
     try:
         response = await call_next(request)
     finally:
         current_user_id_var.reset(token_user)
         current_project_token_var.reset(token_proj)
+        current_user_org_var.reset(token_org)
 
     # 2. Log ONLY major application steps asynchronously in background
     if _is_major_action(path):
@@ -931,6 +935,7 @@ async def analyze_document_with_ai(
         # Bind context variables explicitly inside the async task context
         current_user_id_var.set(current_user.id)
         current_project_token_var.set(project_token)
+        current_user_org_var.set(getattr(current_user, "organization_name", None))
         try:
             job.set_processing()
             job.update_progress(10, "Starting AI analysis...")
@@ -1113,6 +1118,7 @@ async def brd_chat(
     # Bind context variables explicitly inside the handler
     llm_gateway.current_user_id_var.set(current_user.id)
     llm_gateway.current_project_token_var.set(payload.project_token)
+    llm_gateway.current_user_org_var.set(getattr(current_user, "organization_name", None))
 
     import json
     from config import settings
@@ -3015,13 +3021,29 @@ def get_superadmin_organizations(
 
         user_ids = [u.id for u in users]
 
-        # Calculate AI token usage and costs for all users in this org
-        ai_query = db.query(models.AIUsageLog).filter(models.AIUsageLog.user_id.in_(user_ids)) if user_ids else None
-        if ai_query is not None and start_dt:
+        # Resolve canonical tenant UUID & name for accurate attribution
+        try:
+            from tokenops.services.tenant_resolver_service import TenantResolverService
+            resolver = TenantResolverService(db)
+            org_id, org_obj = resolver.resolve(name)
+            canonical_org_name = org_obj.name
+        except Exception:
+            org_id = None
+            canonical_org_name = name
+
+        tenant_filter = or_(
+            models.AIUsageLog.organization_id == org_id,
+            and_(
+                models.AIUsageLog.organization_id.is_(None),
+                func.lower(models.AIUsageLog.organization_name) == canonical_org_name.lower()
+            )
+        )
+        ai_query = db.query(models.AIUsageLog).filter(tenant_filter)
+        if start_dt:
             ai_query = ai_query.filter(models.AIUsageLog.created_at >= start_dt)
-        if ai_query is not None and end_dt:
+        if end_dt:
             ai_query = ai_query.filter(models.AIUsageLog.created_at <= end_dt)
-        org_ai_logs = ai_query.all() if ai_query is not None else []
+        org_ai_logs = ai_query.all()
         
         # Convert ORM logs to dictionaries so we can merge VibeCoding logs
         logs_list = []
@@ -4249,9 +4271,24 @@ def get_org_billing_and_logs(
         if p.submission_date:
             onboard_dates.append(p.submission_date)
 
-    all_org_ai_logs = db.query(models.AIUsageLog).filter(
-        models.AIUsageLog.user_id.in_(org_user_ids)
-    ).all()
+    try:
+        from tokenops.services.tenant_resolver_service import TenantResolverService
+        resolver = TenantResolverService(db)
+        org_id, org_obj = resolver.resolve(organization_name)
+        canonical_org_name = org_obj.name
+    except Exception:
+        org_id = None
+        canonical_org_name = organization_name
+
+    tenant_filter = or_(
+        models.AIUsageLog.organization_id == org_id,
+        and_(
+            models.AIUsageLog.organization_id.is_(None),
+            func.lower(models.AIUsageLog.organization_name) == canonical_org_name.lower()
+        )
+    )
+
+    all_org_ai_logs = db.query(models.AIUsageLog).filter(tenant_filter).all()
     for l in all_org_ai_logs:
         if l.created_at:
             onboard_dates.append(l.created_at)
@@ -4273,9 +4310,7 @@ def get_org_billing_and_logs(
     org_projects = org_projects_query.all()
     
     # Aggregate AI stats
-    ai_logs_query = db.query(models.AIUsageLog).filter(
-        models.AIUsageLog.user_id.in_(org_user_ids)
-    )
+    ai_logs_query = db.query(models.AIUsageLog).filter(tenant_filter)
     if start_dt:
         ai_logs_query = ai_logs_query.filter(models.AIUsageLog.created_at >= start_dt)
     if end_dt:
@@ -4578,9 +4613,24 @@ def download_org_billing_report(
     org_projects = org_projects_query.all()
     
     # Aggregate AI stats
-    ai_logs_query = db.query(models.AIUsageLog).filter(
-        models.AIUsageLog.user_id.in_(org_user_ids)
+    try:
+        from tokenops.services.tenant_resolver_service import TenantResolverService
+        resolver = TenantResolverService(db)
+        org_id, org_obj = resolver.resolve(organization_name)
+        canonical_org_name = org_obj.name
+    except Exception:
+        org_id = None
+        canonical_org_name = organization_name
+
+    tenant_filter = or_(
+        models.AIUsageLog.organization_id == org_id,
+        and_(
+            models.AIUsageLog.organization_id.is_(None),
+            func.lower(models.AIUsageLog.organization_name) == canonical_org_name.lower()
+        )
     )
+
+    ai_logs_query = db.query(models.AIUsageLog).filter(tenant_filter)
     if start_dt:
         ai_logs_query = ai_logs_query.filter(models.AIUsageLog.created_at >= start_dt)
     if end_dt:
@@ -9184,6 +9234,7 @@ async def get_elicitation_techniques(
     # Bind context variables explicitly
     llm_gateway.current_user_id_var.set(current_user.id)
     llm_gateway.current_project_token_var.set(project_token)
+    llm_gateway.current_user_org_var.set(getattr(current_user, "organization_name", None))
 
     from config import settings
 

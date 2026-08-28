@@ -17,20 +17,32 @@ def get_my_quota(
 ):
     """
     Get personal token allocation, consumed tokens, remaining tokens,
-    cost calculations, and recent usage history for the logged-in user.
+    cost calculations, and recent usage history for the logged-in user in their active organization.
     """
-    org_name = current_user.organization_name or "Default Organization"
+    from sqlalchemy import or_, and_
+    from tokenops.services.tenant_resolver_service import TenantResolverService
+
+    org_identifier = getattr(current_user, "organization_name", None)
+    if not org_identifier or not org_identifier.strip() or org_identifier == "Default Organization":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="ORGANIZATION_SELECTION_REQUIRED"
+        )
+
+    resolver = TenantResolverService(db)
+    org_id, org = resolver.resolve(org_identifier)
+    canonical_name = org.name
 
     # Check org PAYG status
     org_wallet = db.query(OrganizationWallet).filter(
-        OrganizationWallet.organization_name == org_name
+        (OrganizationWallet.id == org_id) | (func.lower(OrganizationWallet.organization_name) == canonical_name.lower())
     ).first()
     is_payg = bool(org_wallet.payg_enabled) if org_wallet else False
 
     # Get user wallet
     user_wallet = db.query(UserTokenWallet).filter(
         UserTokenWallet.user_id == current_user.id,
-        UserTokenWallet.organization_name == org_name
+        (UserTokenWallet.organization_id == org_id) | (func.lower(UserTokenWallet.organization_name) == canonical_name.lower())
     ).first()
 
     allocated_tokens = user_wallet.allocated_tokens if user_wallet else 0
@@ -38,19 +50,30 @@ def get_my_quota(
     remaining_tokens = user_wallet.remaining_tokens if user_wallet else 0
     is_blocked = bool(user_wallet.is_blocked) if user_wallet else False
 
-    # Calculate total cost from AI usage logs
+    # Tenant filter: UUID-first with NULL-only legacy fallback
+    tenant_filter = or_(
+        AIUsageLog.organization_id == org_id,
+        and_(
+            AIUsageLog.organization_id.is_(None),
+            func.lower(AIUsageLog.organization_name) == canonical_name.lower()
+        )
+    )
+
+    # Calculate total cost from AI usage logs for this user in this active organization
     cost_res = db.query(
         func.sum(AIUsageLog.cost).label("total_cost"),
         func.sum(AIUsageLog.prompt_tokens + AIUsageLog.completion_tokens).label("total_tokens_used")
     ).filter(
-        AIUsageLog.user_id == current_user.id
+        AIUsageLog.user_id == current_user.id,
+        tenant_filter
     ).first()
 
     total_cost = float(cost_res.total_cost or 0.0) if cost_res else 0.0
 
     # Get recent AI logs for transparency
     recent_logs = db.query(AIUsageLog).filter(
-        AIUsageLog.user_id == current_user.id
+        AIUsageLog.user_id == current_user.id,
+        tenant_filter
     ).order_by(AIUsageLog.created_at.desc()).limit(20).all()
 
     logs_data = [
@@ -79,7 +102,8 @@ def get_my_quota(
         data={
             "user_id": current_user.id,
             "email": current_user.email,
-            "organization_name": org_name,
+            "organization_name": canonical_name,
+            "organization_id": org_id,
             "is_payg": is_payg,
             "is_blocked": is_blocked,
             "allocated_tokens": allocated_tokens,

@@ -93,6 +93,19 @@ class OrgAnalyticsService:
                     "email": u.email
                 }
 
+        import re
+
+        def _extract_payg_cost(remarks: str | None) -> float | None:
+            if not remarks:
+                return None
+            match = re.search(r"Cost:\s*\$([0-9.]+)", remarks)
+            if match:
+                try:
+                    return float(match.group(1))
+                except (ValueError, TypeError):
+                    return None
+            return None
+
         items = [
             FinancialLedgerView(
                 transaction_id=e.id,
@@ -101,6 +114,8 @@ class OrgAnalyticsService:
                 user_email=user_map.get(e.user_id, {}).get("email") if e.user_id else None,
                 transaction_type=e.transaction_type,
                 token_delta=e.token_delta,
+                balance_after=e.balance_after,
+                payg_cost_usd=_extract_payg_cost(e.remarks),
                 created_at=e.created_at.isoformat(),
                 reference_id=e.reference_id,
                 remarks=e.remarks

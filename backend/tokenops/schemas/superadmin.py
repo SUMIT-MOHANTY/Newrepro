@@ -23,6 +23,11 @@ class OrganizationWalletView(BaseModel):
     is_blocked: bool
     reference_price: float
     payg_grace_period_months: int
+    payg_current_spend_usd: Optional[float] = 0.0
+    payg_reserved_spend_usd: Optional[float] = 0.0
+    payg_soft_limit_usd: Optional[float] = None
+    payg_hard_limit_usd: Optional[float] = None
+    payg_billing_email: Optional[str] = None
 
 class PaginatedOrganizationResponse(BaseModel):
     items: List[OrganizationWalletView]
