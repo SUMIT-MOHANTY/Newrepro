@@ -13,7 +13,7 @@ router = APIRouter(tags=["Org Admin Quota Requests"])
 
 
 class CreateQuotaRequestBody(BaseModel):
-    request_type: str = Field("TOKEN_INCREASE", description="'TOKEN_INCREASE', 'PAYG_ENABLEMENT', or 'LIMIT_INCREASE'")
+    request_type: str = Field("TOKEN_INCREASE", description="'TOKEN_INCREASE', 'PAYG_ENABLEMENT', 'LIMIT_INCREASE', or 'PAYG_DISABLEMENT'")
     requested_tokens: int = Field(0, ge=0, description="Requested token amount (for TOKEN_INCREASE)")
     requested_limit_usd: Optional[float] = Field(None, ge=0.0, description="Requested dollar spending limit (for LIMIT_INCREASE)")
     remarks: Optional[str] = Field(None, description="Reason or justification for the quota request")
@@ -26,16 +26,16 @@ def submit_quota_request(
     db: Session = Depends(get_db),
 ):
     """
-    Submit a Token Increase, PAYG Enablement, or PAYG Limit Increase request from Org Admin to Super Admin.
+    Submit a Token Increase, PAYG Enablement, PAYG Limit Increase, or PAYG Disablement request from Org Admin to Super Admin.
     """
     user: User = current_user
     org_name = current_user.active_organization
 
     req_type = body.request_type.upper()
-    if req_type not in ["TOKEN_INCREASE", "PAYG_ENABLEMENT", "LIMIT_INCREASE"]:
+    if req_type not in ["TOKEN_INCREASE", "PAYG_ENABLEMENT", "LIMIT_INCREASE", "PAYG_DISABLEMENT"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid request_type. Must be 'TOKEN_INCREASE', 'PAYG_ENABLEMENT', or 'LIMIT_INCREASE'."
+            detail="Invalid request_type. Must be 'TOKEN_INCREASE', 'PAYG_ENABLEMENT', 'LIMIT_INCREASE', or 'PAYG_DISABLEMENT'."
         )
 
     if req_type == "TOKEN_INCREASE" and body.requested_tokens <= 0:

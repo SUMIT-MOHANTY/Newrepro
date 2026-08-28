@@ -136,9 +136,9 @@ export default function SuperAdminTokenOps() {
                 throw new Error(data.error?.message || 'Failed to process request');
             }
             const isApproved = quotaDecisionModal.approve;
-            const successText = isApproved
-                ? `🎉 Successfully approved ${req.request_type === 'TOKEN_INCREASE' ? `${Number(req.requested_tokens || 0).toLocaleString()} tokens for` : 'PAYG for'} ${req.organization_name}!`
-                : `Request #${req.id} rejected.`;
+             const successText = isApproved
+                 ? `🎉 Successfully approved ${req.request_type === 'TOKEN_INCREASE' ? `${Number(req.requested_tokens || 0).toLocaleString()} tokens for` : req.request_type === 'PAYG_DISABLEMENT' ? 'Prepaid Switch for' : 'PAYG for'} ${req.organization_name}!`
+                 : `Request #${req.id} rejected.`;
             setSuccessMessage(successText);
             showToast(successText, isApproved ? 'success' : 'info');
             setQuotaDecisionModal({ open: false, request: null, approve: true, remarks: '' });
@@ -907,20 +907,24 @@ export default function SuperAdminTokenOps() {
                                                 <span className="truncate">{req.organization_name}</span>
                                             </td>
                                             <td className="px-4 py-3">
-                                                <span className={`px-2 py-0.5 text-[11px] font-semibold rounded-full border ${
-                                                    req.request_type === 'TOKEN_INCREASE'
-                                                        ? 'bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-800'
-                                                        : 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800'
-                                                }`}>
-                                                    {req.request_type === 'TOKEN_INCREASE' ? 'Token Increase' : 'PAYG Enable'}
-                                                </span>
-                                            </td>
-                                            <td className="px-4 py-3 font-mono font-bold text-indigo-600 dark:text-indigo-400">
-                                                {req.request_type === 'TOKEN_INCREASE'
-                                                    ? `+${Number(req.requested_tokens || 0).toLocaleString()} tokens`
-                                                    : 'Unlimited PAYG'
-                                                }
-                                            </td>
+                                                 <span className={`px-2 py-0.5 text-[11px] font-semibold rounded-full border ${
+                                                     req.request_type === 'TOKEN_INCREASE'
+                                                         ? 'bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-800'
+                                                         : req.request_type === 'PAYG_DISABLEMENT'
+                                                             ? 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800'
+                                                             : 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800'
+                                                 }`}>
+                                                     {req.request_type === 'TOKEN_INCREASE' ? 'Token Increase' : req.request_type === 'PAYG_DISABLEMENT' ? 'Prepaid Switch' : 'PAYG Enable'}
+                                                 </span>
+                                             </td>
+                                             <td className="px-4 py-3 font-mono font-bold text-indigo-600 dark:text-indigo-400">
+                                                 {req.request_type === 'TOKEN_INCREASE'
+                                                     ? `+${Number(req.requested_tokens || 0).toLocaleString()} tokens`
+                                                     : req.request_type === 'PAYG_DISABLEMENT'
+                                                         ? 'Prepaid Mode'
+                                                         : 'Unlimited PAYG'
+                                                 }
+                                             </td>
                                             <td className="px-4 py-3 text-slate-500 dark:text-slate-400 text-xs" title={req.requester_email || ''}>
                                                 {req.requester_name || `User #${req.requested_by}`}
                                             </td>

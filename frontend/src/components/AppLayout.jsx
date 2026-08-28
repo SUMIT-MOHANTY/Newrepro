@@ -1332,7 +1332,11 @@ export default function AppLayout({ children }) {
                                                         currentView === 'resourceOnboarding' ? 'Resource Onboarding' :
                                                             currentView === 'agentAnalysis' ? 'Agent Analysis' :
                                                                 currentView === 'shareDoc' ? 'Secure Document Share' :
-                                                                    'Requirements Analyzer'}
+                                                                    currentView === 'billing' ? 'Billing & Activity' :
+                                                                        currentView === 'governanceManagement' ? 'Governance Management' :
+                                                                            currentView === 'agents' ? 'Agents' :
+                                                                                currentView === 'plugins' ? 'Plugins' :
+                                                                                    'Requirements Analyzer'}
                                 </h1>
                                 <h2 className="text-[10px] md:text-sm italic text-white/60 mt-0.5 md:mt-1 truncate">
                                     {currentView === 'statusDashboard' ? '' :
@@ -1343,7 +1347,11 @@ export default function AppLayout({ children }) {
                                                         currentView === 'resourceOnboarding' ? 'Onboard AI agents for this project' :
                                                             currentView === 'agentAnalysis' ? 'Executive Summary & Agent Analysis' :
                                                                 currentView === 'shareDoc' ? 'Upload, Manage, and Share Project Documents' :
-                                                                    'Project Insight & AI Assessment'}
+                                                                    currentView === 'billing' ? 'Centralized cost, usage & operations tracking' :
+                                                                        currentView === 'governanceManagement' ? 'Access control & policy administration' :
+                                                                            currentView === 'agents' ? 'Manage and monitor AI agents' :
+                                                                                currentView === 'plugins' ? 'Extend DSuite with integrated plugins' :
+                                                                                    'Project Insight & AI Assessment'}
                                 </h2>
                             </div>
 

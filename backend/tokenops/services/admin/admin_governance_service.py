@@ -267,6 +267,9 @@ class AdminGovernanceService:
                     wallet = self.org_repo.get_or_create(req.organization_name)
                     if req.requested_limit_usd is not None and req.requested_limit_usd > 0:
                         wallet.payg_hard_limit_usd = req.requested_limit_usd
+                elif req.request_type == QuotaRequestType.PAYG_DISABLEMENT.value or req.request_type == QuotaRequestType.PAYG_DISABLEMENT:
+                    wallet = self.org_repo.get_or_create(req.organization_name)
+                    wallet.payg_enabled = False
 
                 req.status = QuotaRequestStatus.APPROVED.value
                 req.approved_by = admin_user_id
