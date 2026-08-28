@@ -157,13 +157,20 @@ export default function OrgTokenOpsPanel({ user }) {
         setActionLoading(true);
         setError('');
         setSuccessMessage('');
+        const reqAmount = parseInt(allocateModal.amount, 10);
+        const availReserved = reserve?.reserved_tokens || 0;
+        if (reqAmount > availReserved) {
+            setError(`Cannot allocate ${reqAmount.toLocaleString()} tokens. Only ${availReserved.toLocaleString()} tokens are available in your organization's reserve.`);
+            setActionLoading(false);
+            return;
+        }
         try {
             const res = await fetch(API_ENDPOINTS.TOKENOPS_ORG_ALLOCATE, {
                 method: 'POST',
                 headers: getHeaders(),
                 body: JSON.stringify({
                     user_id: parseInt(allocateModal.userId, 10),
-                    token_amount: parseInt(allocateModal.amount, 10),
+                    token_amount: reqAmount,
                     remarks: allocateModal.remarks
                 })
             });
@@ -188,6 +195,15 @@ export default function OrgTokenOpsPanel({ user }) {
         setActionLoading(true);
         setError('');
         setSuccessMessage('');
+        const reqAmount = parseInt(reallocateModal.amount, 10);
+        const sourceUser = usersList.find(u => String(u.user_id) === String(reallocateModal.fromUserId));
+        const sourceRemaining = sourceUser?.remaining_tokens || 0;
+        const sourceName = reallocateModal.fromUserName || sourceUser?.name || `User #${reallocateModal.fromUserId}`;
+        if (reqAmount > sourceRemaining) {
+            setError(`Cannot transfer ${reqAmount.toLocaleString()} tokens. ${sourceName} only has ${sourceRemaining.toLocaleString()} tokens remaining.`);
+            setActionLoading(false);
+            return;
+        }
         try {
             const res = await fetch(API_ENDPOINTS.TOKENOPS_ORG_REALLOCATE, {
                 method: 'PUT',
@@ -195,14 +211,13 @@ export default function OrgTokenOpsPanel({ user }) {
                 body: JSON.stringify({
                     source_user_id: parseInt(reallocateModal.fromUserId, 10),
                     destination_user_id: parseInt(reallocateModal.toUserId, 10),
-                    token_amount: parseInt(reallocateModal.amount, 10)
+                    token_amount: reqAmount
                 })
             });
             const data = await res.json();
             if (!res.ok || !data.success) {
                 throw new Error(data.error?.message || 'Failed to transfer tokens.');
             }
-            const sourceName = reallocateModal.fromUserName || usersList.find(u => String(u.user_id) === String(reallocateModal.fromUserId))?.name || `User #${reallocateModal.fromUserId}`;
             const destUser = usersList.find(u => String(u.user_id) === String(reallocateModal.toUserId));
             const destName = destUser ? (destUser.name || destUser.email) : `User #${reallocateModal.toUserId}`;
             setSuccessMessage(`Successfully transferred ${Number(reallocateModal.amount).toLocaleString()} tokens from ${sourceName} to ${destName}`);
@@ -221,21 +236,29 @@ export default function OrgTokenOpsPanel({ user }) {
         setActionLoading(true);
         setError('');
         setSuccessMessage('');
+        const reqAmount = parseInt(revokeModal.amount, 10);
+        const targetUser = usersList.find(u => String(u.user_id) === String(revokeModal.userId));
+        const userRemaining = targetUser?.remaining_tokens || 0;
+        const targetName = revokeModal.userName || targetUser?.name || `User #${revokeModal.userId}`;
+        if (reqAmount > userRemaining) {
+            setError(`Cannot revoke ${reqAmount.toLocaleString()} tokens. ${targetName} only has ${userRemaining.toLocaleString()} tokens remaining.`);
+            setActionLoading(false);
+            return;
+        }
         try {
             const res = await fetch(API_ENDPOINTS.TOKENOPS_ORG_REVOKE, {
                 method: 'POST',
                 headers: getHeaders(),
                 body: JSON.stringify({
                     user_id: parseInt(revokeModal.userId, 10),
-                    token_amount: parseInt(revokeModal.amount, 10)
+                    token_amount: reqAmount
                 })
             });
             const data = await res.json();
             if (!res.ok || !data.success) {
                 throw new Error(data.error?.message || 'Failed to revoke tokens.');
             }
-            const revokeTargetName = revokeModal.userName || usersList.find(u => String(u.user_id) === String(revokeModal.userId))?.name || `User #${revokeModal.userId}`;
-            setSuccessMessage(`Successfully revoked ${Number(revokeModal.amount).toLocaleString()} tokens from ${revokeTargetName} back to Org Reserve.`);
+            setSuccessMessage(`Successfully revoked ${Number(revokeModal.amount).toLocaleString()} tokens from ${targetName} back to Org Reserve.`);
             setRevokeModal({ open: false, userId: null, userName: '', amount: '' });
             fetchData();
         } catch (err) {
@@ -289,7 +312,7 @@ export default function OrgTokenOpsPanel({ user }) {
                 </div>
                 <div className="flex items-center gap-2">
                     <button
-                        onClick={() => setRequestModal({ open: true, requestType: 'TOKEN_INCREASE', amount: '', remarks: '' })}
+                        onClick={() => { setError(''); setRequestModal({ open: true, requestType: 'TOKEN_INCREASE', amount: '', remarks: '' }); }}
                         className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl transition text-sm font-semibold shadow-sm cursor-pointer"
                     >
                         <PlusCircle className="w-4 h-4" />
@@ -308,23 +331,15 @@ export default function OrgTokenOpsPanel({ user }) {
 
             {/* Pending Requests Alert Banner */}
             {quotaRequests.some(r => r.status === 'REQUESTED') && (
-                <div className="p-4 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-xl flex items-center justify-between gap-3 text-amber-800 dark:text-amber-300 text-sm">
-                    <div className="flex items-center gap-2">
-                        <AlertCircle className="w-5 h-5 flex-shrink-0" />
-                        <span>
-                            <strong>Pending Quota Request:</strong> A request for{' '}
-                            {quotaRequests.find(r => r.status === 'REQUESTED')?.request_type === 'TOKEN_INCREASE'
-                                ? `+${Number(quotaRequests.find(r => r.status === 'REQUESTED')?.requested_tokens || 0).toLocaleString()} tokens`
-                                : 'PAYG Enablement'}{' '}
-                            is currently awaiting Super Admin approval.
-                        </span>
-                    </div>
-                    <button
-                        onClick={() => setActiveSubTab('requests')}
-                        className="text-xs font-bold underline hover:no-underline"
-                    >
-                        View Status
-                    </button>
+                <div className="p-4 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-xl flex items-center gap-3 text-amber-800 dark:text-amber-300 text-sm">
+                    <AlertCircle className="w-5 h-5 flex-shrink-0" />
+                    <span>
+                        <strong>Pending Quota Request:</strong> A request for{' '}
+                        {quotaRequests.find(r => r.status === 'REQUESTED')?.request_type === 'TOKEN_INCREASE'
+                            ? `+${Number(quotaRequests.find(r => r.status === 'REQUESTED')?.requested_tokens || 0).toLocaleString()} tokens`
+                            : 'PAYG Enablement'}{' '}
+                        is currently awaiting Super Admin approval.
+                    </span>
                 </div>
             )}
 
@@ -518,7 +533,7 @@ export default function OrgTokenOpsPanel({ user }) {
                                              <td className="px-6 py-4 text-right whitespace-nowrap relative">
                                                 <div className="flex items-center justify-end gap-1.5">
                                                     <button
-                                                        onClick={() => setAllocateModal({ open: true, userId: u.user_id, userName: u.name || u.email, amount: '', remarks: '' })}
+                                                        onClick={() => { setError(''); setAllocateModal({ open: true, userId: u.user_id, userName: u.name || u.email, amount: '', remarks: '' }); }}
                                                         className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold inline-flex items-center gap-1 transition shadow-sm"
                                                     >
                                                         <PlusCircle className="w-3.5 h-3.5" />
@@ -544,6 +559,7 @@ export default function OrgTokenOpsPanel({ user }) {
                                                                 }`}>
                                                                     <button
                                                                         onClick={() => {
+                                                                            setError('');
                                                                             setOpenDropdownUserId(null);
                                                                             setReallocateModal({ open: true, fromUserId: u.user_id, fromUserName: u.name || u.email, toUserId: '', amount: '' });
                                                                         }}
@@ -554,6 +570,7 @@ export default function OrgTokenOpsPanel({ user }) {
                                                                     </button>
                                                                     <button
                                                                         onClick={() => {
+                                                                            setError('');
                                                                             setOpenDropdownUserId(null);
                                                                             setRevokeModal({ open: true, userId: u.user_id, userName: u.name || u.email, amount: u.remaining_tokens || '' });
                                                                         }}
@@ -601,7 +618,7 @@ export default function OrgTokenOpsPanel({ user }) {
                             <p className="text-xs text-slate-500 mt-0.5">Track submitted token increases and PAYG requests for your organization.</p>
                         </div>
                         <button
-                            onClick={() => setRequestModal({ open: true, requestType: 'TOKEN_INCREASE', amount: '', remarks: '' })}
+                            onClick={() => { setError(''); setRequestModal({ open: true, requestType: 'TOKEN_INCREASE', amount: '', remarks: '' }); }}
                             className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold inline-flex items-center gap-1 shadow-sm"
                         >
                             <PlusCircle className="w-3.5 h-3.5" />
@@ -793,6 +810,12 @@ export default function OrgTokenOpsPanel({ user }) {
                             </span>
                         </p>
                         <form onSubmit={handleAllocate} className="space-y-4">
+                            {error && (
+                                <div className="p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 rounded-xl flex items-center gap-2 text-rose-700 dark:text-rose-300 text-xs">
+                                    <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                                    <span className="font-semibold">{error}</span>
+                                </div>
+                            )}
                             <div>
                                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                                     Token Amount
@@ -800,7 +823,6 @@ export default function OrgTokenOpsPanel({ user }) {
                                 <input
                                     type="number"
                                     min="1"
-                                    max={reserve?.reserved_tokens || 999999999}
                                     required
                                     value={allocateModal.amount}
                                     onChange={(e) => setAllocateModal({ ...allocateModal, amount: e.target.value })}
@@ -828,7 +850,7 @@ export default function OrgTokenOpsPanel({ user }) {
                             <div className="flex justify-end gap-3 mt-6">
                                 <button
                                     type="button"
-                                    onClick={() => setAllocateModal({ open: false, userId: null, userName: '', amount: '', remarks: '' })}
+                                    onClick={() => { setError(''); setAllocateModal({ open: false, userId: null, userName: '', amount: '', remarks: '' }); }}
                                     className="px-4 py-2 text-sm font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl transition"
                                 >
                                     Cancel
@@ -857,6 +879,12 @@ export default function OrgTokenOpsPanel({ user }) {
                             Transfer tokens from <span className="font-semibold text-slate-800 dark:text-slate-200">{reallocateModal.fromUserName || `User #${reallocateModal.fromUserId}`}</span> to another team member.
                         </p>
                         <form onSubmit={handleReallocate} className="space-y-4">
+                            {error && (
+                                <div className="p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 rounded-xl flex items-center gap-2 text-rose-700 dark:text-rose-300 text-xs">
+                                    <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                                    <span className="font-semibold">{error}</span>
+                                </div>
+                            )}
                             <div>
                                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                                     Target Organization Member
@@ -899,7 +927,7 @@ export default function OrgTokenOpsPanel({ user }) {
                             <div className="flex justify-end gap-3 mt-6">
                                 <button
                                     type="button"
-                                    onClick={() => setReallocateModal({ open: false, fromUserId: null, fromUserName: '', toUserId: '', amount: '' })}
+                                    onClick={() => { setError(''); setReallocateModal({ open: false, fromUserId: null, fromUserName: '', toUserId: '', amount: '' }); }}
                                     className="px-4 py-2 text-sm font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl transition"
                                 >
                                     Cancel
@@ -928,6 +956,12 @@ export default function OrgTokenOpsPanel({ user }) {
                             Reclaim unused token quota from <span className="font-semibold text-slate-800 dark:text-slate-200">{revokeModal.userName || `User #${revokeModal.userId}`}</span> back to the organization reserve.
                         </p>
                         <form onSubmit={handleRevoke} className="space-y-4">
+                            {error && (
+                                <div className="p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 rounded-xl flex items-center gap-2 text-rose-700 dark:text-rose-300 text-xs">
+                                    <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                                    <span className="font-semibold">{error}</span>
+                                </div>
+                            )}
                             <div>
                                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                                     Token Amount to Revoke
@@ -950,7 +984,7 @@ export default function OrgTokenOpsPanel({ user }) {
                             <div className="flex justify-end gap-3 mt-6">
                                 <button
                                     type="button"
-                                    onClick={() => setRevokeModal({ open: false, userId: null, userName: '', amount: '' })}
+                                    onClick={() => { setError(''); setRevokeModal({ open: false, userId: null, userName: '', amount: '' }); }}
                                     className="px-4 py-2 text-sm font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl transition"
                                 >
                                     Cancel
@@ -980,6 +1014,12 @@ export default function OrgTokenOpsPanel({ user }) {
                             Submit a request for token increase or PAYG enablement for <strong>{orgName}</strong>.
                         </p>
                         <form onSubmit={handleQuotaRequest} className="space-y-4">
+                            {error && (
+                                <div className="p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 rounded-xl flex items-center gap-2 text-rose-700 dark:text-rose-300 text-xs">
+                                    <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                                    <span className="font-semibold">{error}</span>
+                                </div>
+                            )}
                             <div>
                                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                                     Request Type
@@ -1054,7 +1094,7 @@ export default function OrgTokenOpsPanel({ user }) {
                             <div className="flex justify-end gap-3 mt-6">
                                 <button
                                     type="button"
-                                    onClick={() => setRequestModal({ open: false, requestType: 'TOKEN_INCREASE', amount: '', remarks: '' })}
+                                    onClick={() => { setError(''); setRequestModal({ open: false, requestType: 'TOKEN_INCREASE', amount: '', remarks: '' }); }}
                                     className="px-4 py-2 text-sm font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl transition"
                                 >
                                     Cancel

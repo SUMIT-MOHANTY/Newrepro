@@ -129,6 +129,49 @@ class TokenOpsOrchestrator:
                     # Auto-heal
                     membership.organization_id = org_id
 
+             # --- LAZY CREATION/AUTO-HEAL OF MEMBERSHIP ---
+            if not membership:
+                try:
+                    from models import User, UserOrganizationRole
+                    # Check if user has this organization as their native org in core DB
+                    core_user = self.session.query(User).filter(User.id == user_id).first()
+                    is_member = False
+                    role_str = "member"
+
+                    if core_user and core_user.organization_name and core_user.organization_name.lower() == org.name.lower():
+                        is_member = True
+                        if getattr(core_user, "is_org_admin", False):
+                            role_str = "admin"
+                    
+                    # Or if they have a mapped role in UserOrganizationRole
+                    if not is_member:
+                        role_mapping = self.session.query(UserOrganizationRole).filter(
+                            UserOrganizationRole.user_id == user_id,
+                            func.lower(UserOrganizationRole.organization_name) == org.name.lower()
+                        ).first()
+                        if role_mapping:
+                            is_member = True
+                            # Check if the mapped role is Admin
+                            from models import OrganizationRole
+                            mapped_role = self.session.query(OrganizationRole).filter(
+                                OrganizationRole.id == role_mapping.role_id
+                            ).first()
+                            if mapped_role and mapped_role.name.lower() == "admin":
+                                role_str = "admin"
+
+                    if is_member:
+                        membership = UserOrganization(
+                            user_id=user_id,
+                            organization_id=org_id,
+                            organization_name=org.name,
+                            role=role_str,
+                            is_active=True
+                        )
+                        self.session.add(membership)
+                        self.session.flush()
+                except Exception as e:
+                    logger.warning(f"Failed to auto-heal UserOrganization membership for user {user_id}: {e}")
+
             if not membership:
                 raise HTTPException(status_code=403, detail="ORGANIZATION_ACCESS_DENIED")
 

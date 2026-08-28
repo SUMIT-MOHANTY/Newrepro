@@ -71,6 +71,43 @@ class TenantResolverService:
                 org = self.session.query(Organization).filter(
                     func.lower(Organization.name) == gov.organization_name.lower()
                 ).first()
+                if not org:
+                    import uuid
+                    from tokenops.models import OrganizationWallet
+
+                    org_uuid = str(uuid.uuid4())
+                    # Create Organization record
+                    org = Organization(
+                        id=org_uuid,
+                        name=gov.organization_name,
+                        is_active=True
+                    )
+                    self.session.add(org)
+
+                    # Create legacy mapping
+                    legacy = LegacyOrganizationIdentifier(
+                        organization_id=org_uuid,
+                        legacy_name=gov.organization_name,
+                        alias_type="LEGACY_NAME",
+                        is_active=True
+                    )
+                    self.session.add(legacy)
+
+                    # Create default OrganizationWallet
+                    wallet = OrganizationWallet(
+                        id=org_uuid,
+                        organization_name=gov.organization_name,
+                        organization_id=org_uuid,
+                        purchased_tokens=0,
+                        remaining_tokens=0,
+                        reserved_tokens=0,
+                        payg_enabled=False,
+                        is_blocked=False
+                    )
+                    self.session.add(wallet)
+                    self.session.flush()
+                    logger.info(f"Auto-healed / lazy created tokenops Organization & Wallet via GovernanceResponse project_token lookup for '{gov.organization_name}' with ID: {org.id}")
+
                 if org:
                     if enforce_active and not org.is_active:
                         raise HTTPException(status_code=403, detail="ORGANIZATION_INACTIVE")
@@ -109,6 +146,76 @@ class TenantResolverService:
             if enforce_active and not org.is_active:
                 raise HTTPException(status_code=403, detail="ORGANIZATION_INACTIVE")
             return org.id, org
+
+        # --- AUTO-HEAL / LAZY CREATION ---
+        # If the organization name is not in tokenops organizations but exists in the core system DB,
+        # dynamically provision Organization UUID, Legacy Mapping, and Org Wallet.
+        try:
+            from models import User, UserOrganizationRole
+            exists_in_users = self.session.query(User).filter(
+                func.lower(User.organization_name) == func.lower(cleaned)
+            ).first() is not None
+
+            if not exists_in_users:
+                exists_in_users = self.session.query(UserOrganizationRole).filter(
+                    func.lower(UserOrganizationRole.organization_name) == func.lower(cleaned)
+                ).first() is not None
+
+            if exists_in_users:
+                import uuid
+                from tokenops.models import OrganizationWallet
+
+                # Find canonical casing
+                canonical_org_name = cleaned
+                user_record = self.session.query(User).filter(
+                    func.lower(User.organization_name) == func.lower(cleaned)
+                ).first()
+                if user_record and user_record.organization_name:
+                    canonical_org_name = user_record.organization_name
+                else:
+                    role_record = self.session.query(UserOrganizationRole).filter(
+                        func.lower(UserOrganizationRole.organization_name) == func.lower(cleaned)
+                    ).first()
+                    if role_record and role_record.organization_name:
+                        canonical_org_name = role_record.organization_name
+
+                # Create Organization record
+                import uuid
+                org_uuid = str(uuid.uuid4())
+                org = Organization(
+                    id=org_uuid,
+                    name=canonical_org_name,
+                    is_active=True
+                )
+                self.session.add(org)
+
+                # Create legacy mapping
+                legacy = LegacyOrganizationIdentifier(
+                    organization_id=org_uuid,
+                    legacy_name=canonical_org_name,
+                    alias_type="LEGACY_NAME",
+                    is_active=True
+                )
+                self.session.add(legacy)
+
+                # Create default OrganizationWallet
+                wallet = OrganizationWallet(
+                    id=org_uuid,
+                    organization_name=canonical_org_name,
+                    organization_id=org_uuid,
+                    purchased_tokens=0,
+                    remaining_tokens=0,
+                    reserved_tokens=0,
+                    payg_enabled=False,
+                    is_blocked=False
+                )
+                self.session.add(wallet)
+                self.session.flush()
+
+                logger.info(f"Auto-healed / lazy created tokenops Organization & Wallet for '{canonical_org_name}' with ID: {org.id}")
+                return org.id, org
+        except Exception as e:
+            logger.warning(f"Failed to auto-heal organization '{cleaned}': {e}")
 
         # 4. No Match Found
         raise HTTPException(status_code=404, detail=f"ORGANIZATION_NOT_FOUND: No tenant matches '{cleaned}'")

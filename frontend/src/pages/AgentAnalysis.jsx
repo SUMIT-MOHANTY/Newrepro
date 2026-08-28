@@ -1215,6 +1215,7 @@ export default function AgentAnalysis({
             console.error('Analysis error:', err);
             const userFriendlyError = formatAnalysisError(err);
             setError(`Analysis Error: ${userFriendlyError}`);
+            sessionStorage.setItem(`analysis_error_${(initialContext || result)?.id}`, `Analysis Error: ${userFriendlyError}`);
             setProgress(0);
             setProgressMessage('');
             setCompletedStages({});  // Clear stages on error
@@ -1339,6 +1340,7 @@ export default function AgentAnalysis({
             console.error('Resumed analysis polling error:', err);
             const userFriendlyError = formatAnalysisError(err);
             setError(`Analysis Error: ${userFriendlyError}`);
+            sessionStorage.setItem(`analysis_error_${initialResult?.id}`, `Analysis Error: ${userFriendlyError}`);
             setProgress(0);
             setProgressMessage('');
             setCompletedStages({});
@@ -1499,6 +1501,7 @@ export default function AgentAnalysis({
         } catch (err) {
             const userFriendlyError = formatAnalysisError(err);
             setError(`Stream Error: ${userFriendlyError}`);
+            sessionStorage.setItem(`analysis_error_${(initialContext || result)?.id}`, `Stream Error: ${userFriendlyError}`);
         }
     }, [governanceContext, repoContext, userAnswers, userFeedback, result, selectedProjectKey, saveToHistory]);
 
@@ -1899,17 +1902,20 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                         try {
                             const jobIdPattern = /analysis_\d+_\d+_[a-f0-9]+/;
                             const potentialJobId = `analysis_${token ? JSON.parse(atob(token.split('.')[1])).user_id : 'unknown'}_`;
-
-                            // Try to find if there's an active analysis job
+                            // Try to find if there's an active analysis job
                             // We'll check if result exists OR if we should just not show error yet
-                            const hasResult = result && result.analysis;
-
+                            const hasResult = hasCompletedDocumentAnalysis(latestDocument);
+ 
                             if (!hasResult) {
-                                // Don't immediately show error - analysis might be starting
-                                // Only show error if we're sure it's not running
+                                const activeJobId = localStorage.getItem('active_analysis_job_id');
+                                if (!activeJobId) {
+                                    const savedErr = sessionStorage.getItem(`analysis_error_${latestDocument.id}`);
+                                    setError(savedErr || 'The background analysis job failed or was interrupted. Please check organization permissions and try running the analysis again.');
+                                    setLoading(false);
+                                    return;
+                                }
                                 console.log('Analysis was marked as started, but no result yet - might still be initializing');
                                 setLoading(false);
-                                // Don't set error here - let the analysis continue
                                 return;
                             }
                         } catch (err) {
@@ -3868,6 +3874,16 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                                     <div className="flex items-center gap-1.5">
                                                         <div className="w-2.5 h-2.5 bg-amber-500 rounded-full animate-pulse"></div>
                                                         <span className="font-semibold text-amber-600">Analysis in Progress</span>
+                                                    </div>
+                                                ) : error ? (
+                                                    <div className="flex items-center gap-1.5">
+                                                        <div className="w-2 h-2 bg-rose-500 rounded-full"></div>
+                                                        <span className="font-semibold text-rose-600">Analysis Failed</span>
+                                                    </div>
+                                                ) : !(result?.analysis || result?.techniques || result?.components) ? (
+                                                    <div className="flex items-center gap-1.5">
+                                                        <div className="w-2 h-2 bg-slate-400 rounded-full"></div>
+                                                        <span className="font-semibold text-slate-500">Analysis Not Started</span>
                                                     </div>
                                                 ) : (
                                                     <div className="flex items-center gap-1.5">
