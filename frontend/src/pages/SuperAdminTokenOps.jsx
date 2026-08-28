@@ -33,6 +33,7 @@ export default function SuperAdminTokenOps() {
     const [quotaDecisionModal, setQuotaDecisionModal] = useState({ open: false, request: null, approve: true, remarks: '' });
     const [graceModal, setGraceModal] = useState({ open: false, orgName: '', months: 3 });
     const [bulkGraceModal, setBulkGraceModal] = useState({ open: false, months: 3 });
+    const [limitsModal, setLimitsModal] = useState({ open: false, orgName: '', softLimit: '', hardLimit: '', billingEmail: '' });
 
     const formatCurrency = (amount, pricePerToken = 0.000007) => {
         return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format((amount || 0) * pricePerToken);
@@ -178,6 +179,40 @@ export default function SuperAdminTokenOps() {
         } catch (err) {
             setError(err.message);
             showToast(err.message || 'Failed to inject tokens.', 'error');
+        } finally {
+            setActionLoading(false);
+        }
+    };
+
+    // Handle PAYG Limits Update
+    const handleUpdateLimits = async (e) => {
+        e.preventDefault();
+        setActionLoading(true);
+        setError('');
+        setSuccessMessage('');
+        try {
+            const res = await fetch(API_ENDPOINTS.TOKENOPS_ADMIN_LIMITS, {
+                method: 'POST',
+                headers: getHeaders(),
+                body: JSON.stringify({
+                    organization_name: limitsModal.orgName,
+                    soft_limit_usd: limitsModal.softLimit ? parseFloat(limitsModal.softLimit) : null,
+                    hard_limit_usd: limitsModal.hardLimit ? parseFloat(limitsModal.hardLimit) : null,
+                    billing_email: limitsModal.billingEmail ? limitsModal.billingEmail.trim() : null
+                })
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+                throw new Error(data.error?.message || 'Failed to update PAYG limits.');
+            }
+            const msg = `🎉 Successfully updated PAYG limits for ${limitsModal.orgName}!`;
+            setSuccessMessage(msg);
+            showToast(msg, 'success');
+            setLimitsModal({ open: false, orgName: '', softLimit: '', hardLimit: '', billingEmail: '' });
+            fetchData();
+        } catch (err) {
+            setError(err.message);
+            showToast(err.message || 'Failed to update PAYG limits.', 'error');
         } finally {
             setActionLoading(false);
         }
@@ -609,15 +644,42 @@ export default function SuperAdminTokenOps() {
                                                     <div className="text-[10px] text-slate-500 font-mono mt-0.5">{Number(org.remaining_tokens || 0).toLocaleString()} tokens</div>
                                                 </td>
                                                 <td className="px-4 py-3">
-                                                    {org.payg_enabled ? (
-                                                        <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800">
-                                                            PAYG Post-Paid
-                                                        </span>
-                                                    ) : (
-                                                        <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-800">
-                                                            Prepaid
-                                                        </span>
-                                                    )}
+                                                     {org.payg_enabled ? (
+                                                         <div className="relative group inline-block">
+                                                             <span className="px-2.5 py-1 text-[11px] font-bold rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20 whitespace-nowrap cursor-help inline-flex items-center gap-1.5 shadow-sm">
+                                                                 <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+                                                                 PAYG Active
+                                                             </span>
+                                                             {/* Popover Tooltip */}
+                                                             <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-3 bg-slate-900/95 dark:bg-slate-950/95 text-slate-200 rounded-xl shadow-xl border border-slate-700/50 dark:border-slate-800/50 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50 text-left backdrop-blur-sm space-y-2">
+                                                                 <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-700/40 pb-1 mb-1">
+                                                                     PAYG Spending Limits
+                                                                 </div>
+                                                                 <div className="space-y-1 text-xs">
+                                                                     <div className="flex justify-between items-center">
+                                                                         <span className="text-slate-400">Current Spend:</span>
+                                                                         <span className="font-bold text-white font-mono">${Number(org.payg_current_spend_usd || 0).toFixed(2)}</span>
+                                                                     </div>
+                                                                     <div className="flex justify-between items-center">
+                                                                         <span className="text-slate-400">Soft Limit:</span>
+                                                                         <span className="font-semibold text-amber-400 font-mono">
+                                                                             {org.payg_soft_limit_usd ? `$${Number(org.payg_soft_limit_usd).toFixed(2)}` : 'None'}
+                                                                         </span>
+                                                                     </div>
+                                                                     <div className="flex justify-between items-center">
+                                                                         <span className="text-slate-400">Hard Limit:</span>
+                                                                         <span className="font-semibold text-rose-400 font-mono">
+                                                                             {org.payg_hard_limit_usd ? `$${Number(org.payg_hard_limit_usd).toFixed(2)}` : 'None'}
+                                                                         </span>
+                                                                     </div>
+                                                                 </div>
+                                                             </div>
+                                                         </div>
+                                                     ) : (
+                                                         <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-800">
+                                                             Prepaid
+                                                         </span>
+                                                     )}
                                                 </td>
                                                 <td className="px-4 py-3 min-w-[170px]">
                                                     {org.payg_enabled ? (
@@ -678,14 +740,31 @@ export default function SuperAdminTokenOps() {
                                                 </td>
                                                 <td className="px-4 py-3 text-right whitespace-nowrap">
                                                     <div className="flex items-center justify-end gap-1.5">
-                                                        <button
-                                                            onClick={() => setPurchaseModal({ open: true, orgName: org.organization_name, amount: '', remarks: '' })}
-                                                            className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold inline-flex items-center gap-1 transition shadow-sm shrink-0 cursor-pointer"
-                                                            title="Inject / Credit tokens to this organization"
-                                                        >
-                                                            <Plus className="w-3.5 h-3.5" />
-                                                            <span>Inject Tokens</span>
-                                                        </button>
+                                                        {org.payg_enabled ? (
+                                                            <button
+                                                                onClick={() => setLimitsModal({
+                                                                    open: true,
+                                                                    orgName: org.organization_name,
+                                                                    softLimit: org.payg_soft_limit_usd || '',
+                                                                    hardLimit: org.payg_hard_limit_usd || '',
+                                                                    billingEmail: org.payg_billing_email || ''
+                                                                })}
+                                                                className="px-2.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-semibold inline-flex items-center gap-1 transition shadow-sm shrink-0 cursor-pointer animate-in fade-in duration-200"
+                                                                title="Configure PAYG soft and hard spending limits"
+                                                            >
+                                                                <Edit className="w-3.5 h-3.5" />
+                                                                <span>Configure Limits</span>
+                                                            </button>
+                                                        ) : (
+                                                            <button
+                                                                onClick={() => setPurchaseModal({ open: true, orgName: org.organization_name, amount: '', remarks: '' })}
+                                                                className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold inline-flex items-center gap-1 transition shadow-sm shrink-0 cursor-pointer"
+                                                                title="Inject / Credit tokens to this organization"
+                                                            >
+                                                                <Plus className="w-3.5 h-3.5" />
+                                                                <span>Inject Tokens</span>
+                                                            </button>
+                                                        )}
                                                         <button
                                                             onClick={() => handleToggleBlockOrg(org.organization_name, org.is_blocked)}
                                                             className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1 transition border shrink-0 cursor-pointer ${
@@ -842,7 +921,9 @@ export default function SuperAdminTokenOps() {
                                                     : 'Unlimited PAYG'
                                                 }
                                             </td>
-                                            <td className="px-4 py-3 text-slate-500 dark:text-slate-400 text-xs">User #{req.requested_by}</td>
+                                            <td className="px-4 py-3 text-slate-500 dark:text-slate-400 text-xs" title={req.requester_email || ''}>
+                                                {req.requester_name || `User #${req.requested_by}`}
+                                            </td>
                                             <td className="px-4 py-3 text-slate-600 dark:text-slate-300 text-xs max-w-xs truncate" title={req.remarks || ''}>
                                                 {req.remarks || <span className="text-slate-400 italic">None provided</span>}
                                             </td>
@@ -884,6 +965,116 @@ export default function SuperAdminTokenOps() {
                                 )}
                             </tbody>
                         </table>
+                    </div>
+                </div>
+            )}
+
+            {/* MODAL 0: Configure PAYG Limits Modal */}
+            {limitsModal.open && (
+                <div className="fixed inset-0 bg-black/55 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
+                    <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-md w-full p-6 border border-slate-200 dark:border-slate-700 shadow-2xl">
+                        <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-1 flex items-center gap-2">
+                            <DollarSign className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+                            Configure PAYG Limits: {limitsModal.orgName}
+                        </h3>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
+                            Set spending controls and billing email for Pay As You Go post-paid consumption.
+                        </p>
+                        <form onSubmit={handleUpdateLimits} className="space-y-4">
+                            {error && (
+                                <div className="p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 rounded-xl flex items-center gap-2 text-rose-700 dark:text-rose-300 text-xs">
+                                    <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                                    <span className="font-semibold">{error}</span>
+                                </div>
+                            )}
+                            <div>
+                                <div className="flex justify-between items-center mb-1">
+                                    <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                                        Soft Spending Limit (USD)
+                                    </label>
+                                    {limitsModal.softLimit && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setLimitsModal({ ...limitsModal, softLimit: '' })}
+                                            className="text-[10px] text-rose-500 hover:text-rose-700 font-semibold cursor-pointer"
+                                        >
+                                            Clear Limit
+                                        </button>
+                                    )}
+                                </div>
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    min="0"
+                                    value={limitsModal.softLimit}
+                                    onChange={(e) => setLimitsModal({ ...limitsModal, softLimit: e.target.value })}
+                                    placeholder="e.g. 50.00"
+                                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-sm focus:ring-2 focus:ring-amber-500 focus:outline-none transition-all"
+                                />
+                                <p className="text-[10px] text-slate-400 mt-1">
+                                    Triggers notifications when spending crosses this threshold.
+                                </p>
+                            </div>
+                            <div>
+                                <div className="flex justify-between items-center mb-1">
+                                    <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                                        Hard Spending Limit (USD)
+                                    </label>
+                                    {limitsModal.hardLimit && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setLimitsModal({ ...limitsModal, hardLimit: '' })}
+                                            className="text-[10px] text-rose-500 hover:text-rose-700 font-semibold cursor-pointer"
+                                        >
+                                            Clear Limit
+                                        </button>
+                                    )}
+                                </div>
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    min="0"
+                                    value={limitsModal.hardLimit}
+                                    onChange={(e) => setLimitsModal({ ...limitsModal, hardLimit: e.target.value })}
+                                    placeholder="e.g. 100.00"
+                                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-sm focus:ring-2 focus:ring-amber-500 focus:outline-none transition-all"
+                                />
+                                <p className="text-[10px] text-slate-400 mt-1">
+                                    Blocks all user analysis executions once spending reaches this cap.
+                                </p>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                                    Billing Email Address
+                                </label>
+                                <input
+                                    type="email"
+                                    value={limitsModal.billingEmail}
+                                    onChange={(e) => setLimitsModal({ ...limitsModal, billingEmail: e.target.value })}
+                                    placeholder="e.g. billing@company.com"
+                                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-amber-500 focus:outline-none transition-all"
+                                />
+                                <p className="text-[10px] text-slate-400 mt-1">
+                                    Recipient email for monthly invoices and limit alerts.
+                                </p>
+                            </div>
+                            <div className="flex justify-end gap-3 mt-6">
+                                <button
+                                    type="button"
+                                    onClick={() => { setError(''); setLimitsModal({ open: false, orgName: '', softLimit: '', hardLimit: '', billingEmail: '' }); }}
+                                    className="px-4 py-2 text-sm font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl transition cursor-pointer"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={actionLoading}
+                                    className="px-4 py-2 text-sm font-semibold bg-amber-600 hover:bg-amber-700 text-white rounded-xl transition cursor-pointer"
+                                >
+                                    {actionLoading ? 'Saving...' : 'Save Configuration'}
+                                </button>
+                            </div>
+                        </form>
                     </div>
                 </div>
             )}

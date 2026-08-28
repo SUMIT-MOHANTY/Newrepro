@@ -99,6 +99,7 @@ def list_quota_requests(
                 "requested_tokens": r.requested_tokens,
                 "requested_by": r.requested_by,
                 "requester_email": r.requester.email if r.requester else None,
+                "requester_name": f"{r.requester.first_name or ''} {r.requester.last_name or ''}".strip() or (r.requester.email.split('@')[0] if r.requester and r.requester.email else f"User #{r.requested_by}"),
                 "status": r.status.value if hasattr(r.status, "value") else str(r.status),
                 "remarks": r.remarks,
                 "admin_notes": r.admin_notes,
@@ -171,12 +172,18 @@ def update_payg_limits(
     gov_service: AdminGovernanceService = Depends(get_admin_governance_service)
 ):
     try:
+        kwargs = {}
+        if "soft_limit_usd" in request.model_fields_set:
+            kwargs["soft_limit_usd"] = request.soft_limit_usd
+        if "hard_limit_usd" in request.model_fields_set:
+            kwargs["hard_limit_usd"] = request.hard_limit_usd
+        if "billing_email" in request.model_fields_set:
+            kwargs["billing_email"] = request.billing_email
+
         wallet = gov_service.set_payg_limits(
             admin_user_id=current_user.id,
             organization_name=request.organization_name,
-            soft_limit_usd=request.soft_limit_usd,
-            hard_limit_usd=request.hard_limit_usd,
-            billing_email=request.billing_email
+            **kwargs
         )
         return BaseAPIResponse(
             success=True,

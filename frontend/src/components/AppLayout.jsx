@@ -1407,7 +1407,12 @@ export default function AppLayout({ children }) {
                                                 <span className="font-mono text-purple-300">⚡ PAYG Active</span>
                                             ) : (
                                                 <span className="font-mono flex items-center gap-1">
-                                                    <span>{new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format((userQuota.remaining_tokens || 0) * (userQuota.reference_price || 0.000007))}</span>
+                                                     <span>{(() => {
+                                                         const price = userQuota.reference_price || 0.000007;
+                                                         const allocatedUsd = Number(((userQuota.allocated_tokens || 0) * price).toFixed(2));
+                                                         const consumedUsd = Number(((userQuota.consumed_tokens || 0) * price).toFixed(2));
+                                                         return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(allocatedUsd - consumedUsd);
+                                                     })()}</span>
                                                     <span className={isQuotaExhausted ? "text-rose-400/60 font-bold" : "text-white/40"}>/</span>
                                                     <span>{new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format((userQuota.allocated_tokens || 0) * (userQuota.reference_price || 0.000007))}</span>
                                                 </span>
@@ -1446,9 +1451,11 @@ export default function AppLayout({ children }) {
                     </div>
                 </header>
 
-                {/* ── Project-level Roadmap Stepper — shown on all pages except /agents, /plugins, and /superadmin/* ── */}
+                {/* ── Project-level Roadmap Stepper — shown on project workflow pages only ── */}
                 {
-                    roadmapDataForView && location.pathname !== '/agents' && location.pathname !== '/plugins' && location.pathname !== '/share-doc' && !location.pathname.startsWith('/superadmin') && (
+                    roadmapDataForView && 
+                    !['/agents', '/plugins', '/share-doc', '/organization-admin', '/billing', '/docs'].includes(location.pathname) && 
+                    !location.pathname.startsWith('/superadmin') && (
                         <div className="bg-app-bg-card border-b border-app-border-light shadow-sm shrink-0 overflow-x-auto z-[240] relative">
                             <RoadmapHeader
                                 steps={roadmapDataForView.steps || []}

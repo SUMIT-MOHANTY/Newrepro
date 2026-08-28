@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
     Coins, Users, ShieldAlert, ArrowRightLeft, PlusCircle, MinusCircle, 
-    RefreshCw, AlertCircle, CheckCircle2, DollarSign, Activity, FileText, Ban, Check, MoreVertical
+    RefreshCw, AlertCircle, CheckCircle2, DollarSign, Activity, FileText, Ban, Check, MoreVertical, Info
 } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 
@@ -359,40 +359,87 @@ export default function OrgTokenOpsPanel({ user }) {
             {/* KPI Cards: Organization Current Limits */}
             {reserve && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-                    <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
-                        <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Total Approved Value</span>
+                    <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm relative">
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Total Approved Value</span>
+                            <div className="relative group">
+                                <Info className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors cursor-help" />
+                                <div className="absolute bottom-full right-0 mb-2 w-56 p-2.5 bg-slate-900/95 dark:bg-slate-950/95 text-slate-200 text-[10px] leading-normal rounded-lg shadow-lg border border-slate-700/50 dark:border-slate-800/50 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50 text-left font-medium backdrop-blur-sm">
+                                    The total quantity of tokens approved for your organization by the platform Super Admin through quota requests.
+                                </div>
+                            </div>
+                        </div>
                         <div className="text-2xl font-bold text-slate-900 dark:text-white mt-2">
                             {formatCurrency(reserve.purchased_tokens, reserve.reference_price)}
                         </div>
                         <span className="text-[11px] text-slate-400 mt-1 block font-mono">{Number(reserve.purchased_tokens || 0).toLocaleString()} tokens</span>
                     </div>
-                    <div className="bg-indigo-50/50 dark:bg-indigo-950/20 p-5 rounded-xl border border-indigo-200 dark:border-indigo-800 shadow-sm">
-                        <span className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">In Org Reserve</span>
+                    <div className="bg-indigo-50/50 dark:bg-indigo-950/20 p-5 rounded-xl border border-indigo-200 dark:border-indigo-800 shadow-sm relative">
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">In Org Reserve</span>
+                            <div className="relative group">
+                                <Info className="w-3.5 h-3.5 text-indigo-400 dark:text-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-300 transition-colors cursor-help" />
+                                <div className="absolute bottom-full right-0 mb-2 w-56 p-2.5 bg-slate-900/95 dark:bg-slate-950/95 text-slate-200 text-[10px] leading-normal rounded-lg shadow-lg border border-slate-700/50 dark:border-slate-800/50 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50 text-left font-medium backdrop-blur-sm">
+                                    Unallocated tokens currently held in your organization's central pool. These are ready to be distributed to team members.
+                                </div>
+                            </div>
+                        </div>
                         <div className="text-2xl font-bold text-indigo-700 dark:text-indigo-300 mt-2">
                             {formatCurrency(reserve.reserved_tokens, reserve.reference_price)}
                         </div>
                         <span className="text-[11px] text-indigo-500 mt-1 block font-medium font-mono">{Number(reserve.reserved_tokens || 0).toLocaleString()} tokens</span>
                     </div>
-                    <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
-                        <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Allocated Value</span>
+                    <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm relative">
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Allocated Value</span>
+                            <div className="relative group">
+                                <Info className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors cursor-help" />
+                                <div className="absolute bottom-full right-0 mb-2 w-56 p-2.5 bg-slate-900/95 dark:bg-slate-950/95 text-slate-200 text-[10px] leading-normal rounded-lg shadow-lg border border-slate-700/50 dark:border-slate-800/50 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50 text-left font-medium backdrop-blur-sm">
+                                    The sum of all tokens currently allocated across your team members' individual wallets.
+                                </div>
+                            </div>
+                        </div>
                         <div className="text-2xl font-bold text-slate-900 dark:text-white mt-2">
                             {formatCurrency(reserve.allocated_tokens, reserve.reference_price)}
                         </div>
                         <span className="text-[11px] text-slate-400 mt-1 block font-mono">{Number(reserve.allocated_tokens || 0).toLocaleString()} tokens</span>
                     </div>
-                    <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
-                        <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Consumed Value</span>
+                    <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm relative">
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Consumed Value</span>
+                            <div className="relative group">
+                                <Info className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors cursor-help" />
+                                <div className="absolute bottom-full right-0 mb-2 w-56 p-2.5 bg-slate-900/95 dark:bg-slate-950/95 text-slate-200 text-[10px] leading-normal rounded-lg shadow-lg border border-slate-700/50 dark:border-slate-800/50 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50 text-left font-medium backdrop-blur-sm">
+                                    The total quantity of tokens consumed by all members of your organization during AI analysis runs.
+                                </div>
+                            </div>
+                        </div>
                         <div className="text-2xl font-bold text-rose-600 dark:text-rose-400 mt-2">
                             {formatCurrency(reserve.consumed_tokens, reserve.reference_price)}
                         </div>
                         <span className="text-[11px] text-slate-400 mt-1 block font-mono">{Number(reserve.consumed_tokens || 0).toLocaleString()} tokens</span>
                     </div>
-                    <div className="bg-emerald-50/50 dark:bg-emerald-950/20 p-5 rounded-xl border border-emerald-200 dark:border-emerald-800 shadow-sm">
-                        <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Net Remaining Value</span>
-                        <div className="text-2xl font-bold text-emerald-700 dark:text-emerald-300 mt-2">
-                            {formatCurrency(reserve.remaining_tokens, reserve.reference_price)}
+                    <div className="bg-emerald-50/50 dark:bg-emerald-950/20 p-5 rounded-xl border border-emerald-200 dark:border-emerald-800 shadow-sm relative">
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Net Remaining Value</span>
+                            <div className="relative group">
+                                <Info className="w-3.5 h-3.5 text-emerald-400 dark:text-emerald-500 hover:text-emerald-600 dark:hover:text-slate-300 transition-colors cursor-help" />
+                                <div className="absolute bottom-full right-0 mb-2 w-56 p-2.5 bg-slate-900/95 dark:bg-slate-950/95 text-slate-200 text-[10px] leading-normal rounded-lg shadow-lg border border-slate-700/50 dark:border-slate-800/50 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50 text-left font-medium backdrop-blur-sm">
+                                    The current overall balance of your organization's tokens (Total Approved Value minus Consumed Value).
+                                </div>
+                            </div>
                         </div>
-                        <span className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 block font-mono">{Number(reserve.remaining_tokens || 0).toLocaleString()} tokens</span>
+                        <div className="text-2xl font-bold text-emerald-700 dark:text-emerald-300 mt-2">
+                            {(() => {
+                                const price = reserve.reference_price || 0.000007;
+                                const approvedUsd = Number(((reserve.purchased_tokens || 0) * price).toFixed(2));
+                                const consumedUsd = Number(((reserve.consumed_tokens || 0) * price).toFixed(2));
+                                return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(approvedUsd - consumedUsd);
+                            })()}
+                        </div>
+                        <span className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 block font-mono">
+                            {Number((reserve.purchased_tokens || 0) - (reserve.consumed_tokens || 0)).toLocaleString()} tokens
+                        </span>
                     </div>
                 </div>
             )}
@@ -515,7 +562,14 @@ export default function OrgTokenOpsPanel({ user }) {
                                                 <div className="text-[10px] text-slate-500 font-mono">{Number(u.consumed_tokens || 0).toLocaleString()} tokens</div>
                                             </td>
                                             <td className="px-6 py-4">
-                                                <div className="font-semibold text-indigo-600 dark:text-indigo-400">{formatCurrency(u.remaining_tokens, u.reference_price)}</div>
+                                                <div className="font-semibold text-indigo-600 dark:text-indigo-400">
+                                                    {(() => {
+                                                        const price = u.reference_price || 0.000007;
+                                                        const allocatedUsd = Number(((u.allocated_tokens || 0) * price).toFixed(2));
+                                                        const consumedUsd = Number(((u.consumed_tokens || 0) * price).toFixed(2));
+                                                        return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(allocatedUsd - consumedUsd);
+                                                    })()}
+                                                </div>
                                                 <div className="text-[10px] text-slate-500 font-mono">{Number(u.remaining_tokens || 0).toLocaleString()} tokens</div>
                                             </td>
                                             <td className="px-6 py-4">
@@ -552,7 +606,7 @@ export default function OrgTokenOpsPanel({ user }) {
                                                                     onClick={() => setOpenDropdownUserId(null)} 
                                                                 />
                                                                 <div className={`absolute right-0 w-44 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-lg py-1.5 z-20 text-left ${
-                                                                    index >= usersList.length - 2 && usersList.length > 2
+                                                                    index >= usersList.length - 2
                                                                         ? 'bottom-full mb-1'
                                                                         : 'mt-1'
                                                                 }`}>
@@ -1058,10 +1112,25 @@ export default function OrgTokenOpsPanel({ user }) {
                                         }`}
                                     >
                                         <div className="font-bold">PAYG Enablement</div>
-                                        <div className="text-[11px] text-slate-400 font-normal mt-0.5">Post-paid consumption</div>
+                                        <div className="text-[11px] text-slate-400 font-normal mt-0.5">Pay As You Go (Post-paid)</div>
                                     </button>
                                 </div>
                             </div>
+
+                            {requestModal.requestType === 'PAYG_ENABLEMENT' && (
+                                <div className="p-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/50 rounded-xl text-amber-800 dark:text-amber-300 space-y-1.5 animate-in fade-in slide-in-from-top-2 duration-200">
+                                    <div className="text-xs font-bold flex items-center gap-1.5">
+                                        <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0" />
+                                        PAYG (Pay As You Go) Mode Disclaimer
+                                    </div>
+                                    <p className="text-[10px] leading-relaxed font-medium">
+                                        Enabling Pay As You Go (PAYG) mode shifts your organization to post-paid billing. 
+                                        <strong className="block mt-1 text-amber-900 dark:text-amber-200">
+                                            ⚠️ Note: Any tokens currently remaining in your prepaid organization reserve or user wallets will be locked. Platform calculations and usage limits will be based entirely on Pay As You Go consumption rates.
+                                        </strong>
+                                    </p>
+                                </div>
+                            )}
 
                             {requestModal.requestType === 'TOKEN_INCREASE' && (
                                 <div>
