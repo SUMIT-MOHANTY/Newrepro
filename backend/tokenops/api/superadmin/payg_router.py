@@ -172,12 +172,18 @@ def update_payg_limits(
     gov_service: AdminGovernanceService = Depends(get_admin_governance_service)
 ):
     try:
+        kwargs = {}
+        if "soft_limit_usd" in request.model_fields_set:
+            kwargs["soft_limit_usd"] = request.soft_limit_usd
+        if "hard_limit_usd" in request.model_fields_set:
+            kwargs["hard_limit_usd"] = request.hard_limit_usd
+        if "billing_email" in request.model_fields_set:
+            kwargs["billing_email"] = request.billing_email
+
         wallet = gov_service.set_payg_limits(
             admin_user_id=current_user.id,
             organization_name=request.organization_name,
-            soft_limit_usd=request.soft_limit_usd,
-            hard_limit_usd=request.hard_limit_usd,
-            billing_email=request.billing_email
+            **kwargs
         )
         return BaseAPIResponse(
             success=True,

@@ -10,6 +10,8 @@ from tokenops.models.quota_request import TokenQuotaRequest, QuotaRequestType, Q
 from tokenops.services.wallet_service import WalletService
 from tokenops.utils.retry import retry_on_lock
 
+UNSET = object()
+
 class AdminGovernanceService:
     def __init__(
         self,
@@ -182,9 +184,9 @@ class AdminGovernanceService:
         self,
         admin_user_id: int,
         organization_name: str,
-        soft_limit_usd: Optional[float] = None,
-        hard_limit_usd: Optional[float] = None,
-        billing_email: Optional[str] = None
+        soft_limit_usd: Any = UNSET,
+        hard_limit_usd: Any = UNSET,
+        billing_email: Any = UNSET
     ):
         from tokenops.services.tenant_resolver_service import TenantResolverService
         from tokenops.models.token_wallet import OrganizationWallet
@@ -210,12 +212,12 @@ class AdminGovernanceService:
                 self.session.add(wallet)
                 self.session.flush()
 
-            if soft_limit_usd is not None:
-                wallet.payg_soft_limit_usd = Decimal(str(round(soft_limit_usd, 2)))
-            if hard_limit_usd is not None:
-                wallet.payg_hard_limit_usd = Decimal(str(round(hard_limit_usd, 2)))
-            if billing_email is not None:
-                wallet.payg_billing_email = billing_email.strip()
+            if soft_limit_usd is not UNSET:
+                wallet.payg_soft_limit_usd = Decimal(str(round(soft_limit_usd, 2))) if soft_limit_usd is not None else None
+            if hard_limit_usd is not UNSET:
+                wallet.payg_hard_limit_usd = Decimal(str(round(hard_limit_usd, 2))) if hard_limit_usd is not None else None
+            if billing_email is not UNSET:
+                wallet.payg_billing_email = billing_email.strip() if billing_email is not None else None
 
             self.audit_service.log_action(
                 admin_user_id=admin_user_id,
