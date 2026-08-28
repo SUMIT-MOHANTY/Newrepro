@@ -174,7 +174,7 @@ class TokenOpsOrchestrator:
                             detail=f"PAYG access suspended: invoice for {invoice.billing_month} has been overdue for {diff_months} months. Grace period threshold is {grace_period} months."
                         )
                 
-                # Hybrid PAYG Check: enforce user-level block or budget cap limits if wallet exists
+                # PAYG Check: enforce user-level block if wallet exists
                 user_wallet = self.session.query(UserTokenWallet).filter(
                     UserTokenWallet.user_id == user_id,
                     UserTokenWallet.organization_id == org_id
@@ -187,13 +187,8 @@ class TokenOpsOrchestrator:
                     if user_wallet and org_id:
                         user_wallet.organization_id = org_id
                 
-                if user_wallet:
-                    if user_wallet.is_blocked:
-                        raise HTTPException(status_code=403, detail="USER_BLOCKED")
-                    
-                    # If allocated_tokens > 0, treat it as a budget cap
-                    if user_wallet.allocated_tokens > 0 and user_wallet.remaining_tokens <= 0:
-                        raise HTTPException(status_code=402, detail="TOKEN_EXHAUSTED")
+                if user_wallet and user_wallet.is_blocked:
+                    raise HTTPException(status_code=403, detail="USER_BLOCKED")
                         
                 est_cost = 0.0
                 if estimated_cost is not None and float(estimated_cost) > 0:
@@ -388,44 +383,6 @@ class TokenOpsOrchestrator:
                     remarks=f"Model: {model_name} (PAYG, Cost: ${cost:.6f})"
                 )
                 self.ledger.write_entry(tx, balance_after=accumulated_payg_balance)
-
-                # Hybrid PAYG: if UserTokenWallet exists, decrement balance cap
-                user_wallet = self.session.query(UserTokenWallet).filter(
-                    UserTokenWallet.user_id == user_id,
-                    UserTokenWallet.organization_id == org_id
-                ).first()
-                if not user_wallet:
-                    user_wallet = self.session.query(UserTokenWallet).filter(
-                        UserTokenWallet.user_id == user_id,
-                        func.lower(UserTokenWallet.organization_name) == canonical_name.lower()
-                    ).first()
-                
-                if user_wallet:
-                    self.session.query(UserTokenWallet).filter(
-                        UserTokenWallet.id == user_wallet.id
-                    ).update({
-                        UserTokenWallet.consumed_tokens: UserTokenWallet.consumed_tokens + total_tokens,
-                        UserTokenWallet.remaining_tokens: UserTokenWallet.remaining_tokens - total_tokens
-                    })
-
-                # Hybrid PAYG: if UserTokenWallet exists, decrement balance cap
-                user_wallet = self.session.query(UserTokenWallet).filter(
-                    UserTokenWallet.user_id == user_id,
-                    UserTokenWallet.organization_id == org_id
-                ).first()
-                if not user_wallet:
-                    user_wallet = self.session.query(UserTokenWallet).filter(
-                        UserTokenWallet.user_id == user_id,
-                        func.lower(UserTokenWallet.organization_name) == canonical_name.lower()
-                    ).first()
-                
-                if user_wallet:
-                    self.session.query(UserTokenWallet).filter(
-                        UserTokenWallet.id == user_wallet.id
-                    ).update({
-                        UserTokenWallet.consumed_tokens: UserTokenWallet.consumed_tokens + total_tokens,
-                        UserTokenWallet.remaining_tokens: UserTokenWallet.remaining_tokens - total_tokens
-                    })
 
             else:
                 # ── PREPAID PATH ──────────────────────────────────────────────
