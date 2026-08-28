@@ -139,9 +139,11 @@ export default function OrgTokenOpsPanel({ user }) {
             setSuccessMessage(
                 requestModal.requestType === 'TOKEN_INCREASE'
                     ? `Token Increase request for ${Number(requestModal.amount).toLocaleString()} tokens submitted! Waiting for Super Admin approval.`
-                    : 'PAYG Enablement request submitted! Waiting for Super Admin approval.'
+                    : requestModal.requestType === 'PAYG_DISABLEMENT'
+                        ? 'Request to switch back to prepaid mode submitted! Waiting for Super Admin approval.'
+                        : 'PAYG Enablement request submitted! Waiting for Super Admin approval.'
             );
-            setRequestModal({ open: false, requestType: 'TOKEN_INCREASE', amount: '', remarks: '' });
+            setRequestModal({ open: false, requestType: reserve?.payg_enabled ? 'PAYG_DISABLEMENT' : 'TOKEN_INCREASE', amount: '', remarks: '' });
             fetchData();
         } catch (err) {
             setError(err.message);
@@ -311,11 +313,11 @@ export default function OrgTokenOpsPanel({ user }) {
                 </div>
                 <div className="flex items-center gap-2">
                     <button
-                        onClick={() => { setError(''); setRequestModal({ open: true, requestType: 'TOKEN_INCREASE', amount: '', remarks: '' }); }}
+                        onClick={() => { setError(''); setRequestModal({ open: true, requestType: reserve?.payg_enabled ? 'PAYG_DISABLEMENT' : 'TOKEN_INCREASE', amount: '', remarks: '' }); }}
                         className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl transition text-sm font-semibold shadow-sm cursor-pointer"
                     >
                         <PlusCircle className="w-4 h-4" />
-                        Request Quota / PAYG
+                        {reserve?.payg_enabled ? 'Request Prepaid Switch' : 'Request Quota / PAYG'}
                     </button>
                     <button 
                         onClick={fetchData} 
@@ -358,90 +360,186 @@ export default function OrgTokenOpsPanel({ user }) {
 
             {/* KPI Cards: Organization Current Limits */}
             {reserve && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-                    <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm relative">
-                        <div className="flex items-center justify-between">
-                            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Total Approved Value</span>
-                            <div className="relative group">
-                                <Info className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors cursor-help" />
-                                <div className="absolute bottom-full right-0 mb-2 w-56 p-2.5 bg-slate-900/95 dark:bg-slate-950/95 text-slate-200 text-[10px] leading-normal rounded-lg shadow-lg border border-slate-700/50 dark:border-slate-800/50 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50 text-left font-medium backdrop-blur-sm">
-                                    The total quantity of tokens approved for your organization by the platform Super Admin through quota requests.
+                reserve.payg_enabled ? (
+                    /* PAYG KPI CARDS */
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+                        {/* Card 1: Billing Mode */}
+                        <div className="bg-amber-50/50 dark:bg-amber-950/20 p-5 rounded-xl border border-amber-200 dark:border-amber-800 shadow-sm relative">
+                            <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-amber-700 dark:text-amber-400 uppercase tracking-wider">Billing Mode</span>
+                                <div className="relative group">
+                                    <Info className="w-3.5 h-3.5 text-amber-400 dark:text-amber-500 hover:text-amber-600 dark:hover:text-amber-300 transition-colors cursor-help" />
+                                    <div className="absolute bottom-full right-0 mb-2 w-56 p-2.5 bg-slate-900/95 dark:bg-slate-950/95 text-slate-200 text-[10px] leading-normal rounded-lg shadow-lg border border-slate-700/50 dark:border-slate-800/50 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50 text-left font-medium backdrop-blur-sm">
+                                        Your organization is billed dynamically based on actual usage, instead of paying in advance.
+                                    </div>
                                 </div>
                             </div>
+                            <div className="text-2xl font-bold text-amber-750 dark:text-amber-400 mt-2 flex items-center gap-1.5">
+                                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse inline-block"></span>
+                                PAYG Active
+                            </div>
+                            <span className="text-[11px] text-slate-400 mt-1 block font-medium">Billed monthly post-paid</span>
                         </div>
-                        <div className="text-2xl font-bold text-slate-900 dark:text-white mt-2">
-                            {formatCurrency(reserve.purchased_tokens, reserve.reference_price)}
-                        </div>
-                        <span className="text-[11px] text-slate-400 mt-1 block font-mono">{Number(reserve.purchased_tokens || 0).toLocaleString()} tokens</span>
-                    </div>
-                    <div className="bg-indigo-50/50 dark:bg-indigo-950/20 p-5 rounded-xl border border-indigo-200 dark:border-indigo-800 shadow-sm relative">
-                        <div className="flex items-center justify-between">
-                            <span className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">In Org Reserve</span>
-                            <div className="relative group">
-                                <Info className="w-3.5 h-3.5 text-indigo-400 dark:text-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-300 transition-colors cursor-help" />
-                                <div className="absolute bottom-full right-0 mb-2 w-56 p-2.5 bg-slate-900/95 dark:bg-slate-950/95 text-slate-200 text-[10px] leading-normal rounded-lg shadow-lg border border-slate-700/50 dark:border-slate-800/50 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50 text-left font-medium backdrop-blur-sm">
-                                    Unallocated tokens currently held in your organization's central pool. These are ready to be distributed to team members.
+
+                        {/* Card 2: MTD Spend */}
+                        <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm relative">
+                            <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Current MTD Spend</span>
+                                <div className="relative group">
+                                    <Info className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors cursor-help" />
+                                    <div className="absolute bottom-full right-0 mb-2 w-56 p-2.5 bg-slate-900/95 dark:bg-slate-950/95 text-slate-200 text-[10px] leading-normal rounded-lg shadow-lg border border-slate-700/50 dark:border-slate-800/50 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50 text-left font-medium backdrop-blur-sm">
+                                        The total cost incurred by your organization's members during the current monthly billing cycle.
+                                    </div>
                                 </div>
                             </div>
+                            <div className="text-2xl font-bold text-slate-900 dark:text-white mt-2 font-mono">
+                                {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(reserve.payg_current_spend_usd || 0)}
+                            </div>
+                            <span className="text-[11px] text-slate-400 mt-1 block font-medium font-mono">
+                                {Number(Math.round((reserve.payg_current_spend_usd || 0) / (reserve.reference_price || 0.000007))).toLocaleString()} MTD tokens
+                            </span>
                         </div>
-                        <div className="text-2xl font-bold text-indigo-700 dark:text-indigo-300 mt-2">
-                            {formatCurrency(reserve.reserved_tokens, reserve.reference_price)}
-                        </div>
-                        <span className="text-[11px] text-indigo-500 mt-1 block font-medium font-mono">{Number(reserve.reserved_tokens || 0).toLocaleString()} tokens</span>
-                    </div>
-                    <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm relative">
-                        <div className="flex items-center justify-between">
-                            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Allocated Value</span>
-                            <div className="relative group">
-                                <Info className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors cursor-help" />
-                                <div className="absolute bottom-full right-0 mb-2 w-56 p-2.5 bg-slate-900/95 dark:bg-slate-950/95 text-slate-200 text-[10px] leading-normal rounded-lg shadow-lg border border-slate-700/50 dark:border-slate-800/50 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50 text-left font-medium backdrop-blur-sm">
-                                    The sum of all tokens currently allocated across your team members' individual wallets.
+
+                        {/* Card 3: Soft Limit */}
+                        <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm relative">
+                            <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Soft Spending Limit</span>
+                                <div className="relative group">
+                                    <Info className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors cursor-help" />
+                                    <div className="absolute bottom-full right-0 mb-2 w-56 p-2.5 bg-slate-900/95 dark:bg-slate-950/95 text-slate-200 text-[10px] leading-normal rounded-lg shadow-lg border border-slate-700/50 dark:border-slate-800/50 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50 text-left font-medium backdrop-blur-sm">
+                                        An alert threshold. If spending crosses this value, warning notifications are sent to organization administrators.
+                                    </div>
                                 </div>
                             </div>
+                            <div className="text-2xl font-bold text-amber-600 dark:text-amber-400 mt-2 font-mono">
+                                {reserve.payg_soft_limit_usd ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(reserve.payg_soft_limit_usd) : 'No Limit'}
+                            </div>
+                            <span className="text-[11px] text-slate-400 mt-1 block font-medium">Alert notification trigger</span>
                         </div>
-                        <div className="text-2xl font-bold text-slate-900 dark:text-white mt-2">
-                            {formatCurrency(reserve.allocated_tokens, reserve.reference_price)}
-                        </div>
-                        <span className="text-[11px] text-slate-400 mt-1 block font-mono">{Number(reserve.allocated_tokens || 0).toLocaleString()} tokens</span>
-                    </div>
-                    <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm relative">
-                        <div className="flex items-center justify-between">
-                            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Consumed Value</span>
-                            <div className="relative group">
-                                <Info className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors cursor-help" />
-                                <div className="absolute bottom-full right-0 mb-2 w-56 p-2.5 bg-slate-900/95 dark:bg-slate-950/95 text-slate-200 text-[10px] leading-normal rounded-lg shadow-lg border border-slate-700/50 dark:border-slate-800/50 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50 text-left font-medium backdrop-blur-sm">
-                                    The total quantity of tokens consumed by all members of your organization during AI analysis runs.
+
+                        {/* Card 4: Hard Limit */}
+                        <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm relative">
+                            <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Hard Spending Limit</span>
+                                <div className="relative group">
+                                    <Info className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors cursor-help" />
+                                    <div className="absolute bottom-full right-0 mb-2 w-56 p-2.5 bg-slate-900/95 dark:bg-slate-950/95 text-slate-200 text-[10px] leading-normal rounded-lg shadow-lg border border-slate-700/50 dark:border-slate-800/50 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50 text-left font-medium backdrop-blur-sm">
+                                        The absolute ceiling. All AI operations are blocked for the organization once spending reaches this cap.
+                                    </div>
                                 </div>
                             </div>
+                            <div className="text-2xl font-bold text-rose-600 dark:text-rose-400 mt-2 font-mono">
+                                {reserve.payg_hard_limit_usd ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(reserve.payg_hard_limit_usd) : 'No Limit'}
+                            </div>
+                            <span className="text-[11px] text-slate-400 mt-1 block font-medium">Hard execution block</span>
                         </div>
-                        <div className="text-2xl font-bold text-rose-600 dark:text-rose-400 mt-2">
-                            {formatCurrency(reserve.consumed_tokens, reserve.reference_price)}
-                        </div>
-                        <span className="text-[11px] text-slate-400 mt-1 block font-mono">{Number(reserve.consumed_tokens || 0).toLocaleString()} tokens</span>
-                    </div>
-                    <div className="bg-emerald-50/50 dark:bg-emerald-950/20 p-5 rounded-xl border border-emerald-200 dark:border-emerald-800 shadow-sm relative">
-                        <div className="flex items-center justify-between">
-                            <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Net Remaining Value</span>
-                            <div className="relative group">
-                                <Info className="w-3.5 h-3.5 text-emerald-400 dark:text-emerald-500 hover:text-emerald-600 dark:hover:text-slate-300 transition-colors cursor-help" />
-                                <div className="absolute bottom-full right-0 mb-2 w-56 p-2.5 bg-slate-900/95 dark:bg-slate-950/95 text-slate-200 text-[10px] leading-normal rounded-lg shadow-lg border border-slate-700/50 dark:border-slate-800/50 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50 text-left font-medium backdrop-blur-sm">
-                                    The current overall balance of your organization's tokens (Total Approved Value minus Consumed Value).
+
+                        {/* Card 5: Total Consumed */}
+                        <div className="bg-emerald-50/50 dark:bg-emerald-950/20 p-5 rounded-xl border border-emerald-200 dark:border-emerald-800 shadow-sm relative">
+                            <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Total Consumed Value</span>
+                                <div className="relative group">
+                                    <Info className="w-3.5 h-3.5 text-emerald-400 dark:text-emerald-500 hover:text-emerald-600 dark:hover:text-slate-300 transition-colors cursor-help" />
+                                    <div className="absolute bottom-full right-0 mb-2 w-56 p-2.5 bg-slate-900/95 dark:bg-slate-950/95 text-slate-200 text-[10px] leading-normal rounded-lg shadow-lg border border-slate-700/50 dark:border-slate-800/50 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50 text-left font-medium backdrop-blur-sm">
+                                        The total cost equivalent of all tokens consumed since organization inception across both Prepaid and PAYG billing modes.
+                                    </div>
                                 </div>
                             </div>
+                            <div className="text-2xl font-bold text-emerald-700 dark:text-emerald-300 mt-2 font-mono">
+                                {formatCurrency(reserve.consumed_tokens, reserve.reference_price)}
+                            </div>
+                            <span className="text-[11px] text-emerald-650 dark:text-emerald-400 mt-1 block font-mono">
+                                {Number(reserve.consumed_tokens || 0).toLocaleString()} total tokens
+                            </span>
                         </div>
-                        <div className="text-2xl font-bold text-emerald-700 dark:text-emerald-300 mt-2">
-                            {(() => {
-                                const price = reserve.reference_price || 0.000007;
-                                const approvedUsd = Number(((reserve.purchased_tokens || 0) * price).toFixed(2));
-                                const consumedUsd = Number(((reserve.consumed_tokens || 0) * price).toFixed(2));
-                                return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(approvedUsd - consumedUsd);
-                            })()}
-                        </div>
-                        <span className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 block font-mono">
-                            {Number((reserve.purchased_tokens || 0) - (reserve.consumed_tokens || 0)).toLocaleString()} tokens
-                        </span>
                     </div>
-                </div>
+                ) : (
+                    /* PREPAID KPI CARDS */
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+                        <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm relative">
+                            <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Total Approved Value</span>
+                                <div className="relative group">
+                                    <Info className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors cursor-help" />
+                                    <div className="absolute bottom-full right-0 mb-2 w-56 p-2.5 bg-slate-900/95 dark:bg-slate-950/95 text-slate-200 text-[10px] leading-normal rounded-lg shadow-lg border border-slate-700/50 dark:border-slate-800/50 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50 text-left font-medium backdrop-blur-sm">
+                                        The total quantity of tokens approved for your organization by the platform Super Admin through quota requests.
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="text-2xl font-bold text-slate-900 dark:text-white mt-2">
+                                {formatCurrency(reserve.purchased_tokens, reserve.reference_price)}
+                            </div>
+                            <span className="text-[11px] text-slate-400 mt-1 block font-mono">{Number(reserve.purchased_tokens || 0).toLocaleString()} tokens</span>
+                        </div>
+                        <div className="bg-indigo-50/50 dark:bg-indigo-950/20 p-5 rounded-xl border border-indigo-200 dark:border-indigo-800 shadow-sm relative">
+                            <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">In Org Reserve</span>
+                                <div className="relative group">
+                                    <Info className="w-3.5 h-3.5 text-indigo-400 dark:text-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-300 transition-colors cursor-help" />
+                                    <div className="absolute bottom-full right-0 mb-2 w-56 p-2.5 bg-slate-900/95 dark:bg-slate-950/95 text-slate-200 text-[10px] leading-normal rounded-lg shadow-lg border border-slate-700/50 dark:border-slate-800/50 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50 text-left font-medium backdrop-blur-sm">
+                                        Unallocated tokens currently held in your organization's central pool. These are ready to be distributed to team members.
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="text-2xl font-bold text-indigo-700 dark:text-indigo-300 mt-2">
+                                {formatCurrency(reserve.reserved_tokens, reserve.reference_price)}
+                            </div>
+                            <span className="text-[11px] text-indigo-500 mt-1 block font-medium font-mono">{Number(reserve.reserved_tokens || 0).toLocaleString()} tokens</span>
+                        </div>
+                        <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm relative">
+                            <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Allocated Value</span>
+                                <div className="relative group">
+                                    <Info className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors cursor-help" />
+                                    <div className="absolute bottom-full right-0 mb-2 w-56 p-2.5 bg-slate-900/95 dark:bg-slate-950/95 text-slate-200 text-[10px] leading-normal rounded-lg shadow-lg border border-slate-700/50 dark:border-slate-800/50 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50 text-left font-medium backdrop-blur-sm">
+                                        The sum of all tokens currently allocated across your team members' individual wallets.
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="text-2xl font-bold text-slate-900 dark:text-white mt-2">
+                                {formatCurrency(reserve.allocated_tokens, reserve.reference_price)}
+                            </div>
+                            <span className="text-[11px] text-slate-400 mt-1 block font-mono">{Number(reserve.allocated_tokens || 0).toLocaleString()} tokens</span>
+                        </div>
+                        <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm relative">
+                            <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Consumed Value</span>
+                                <div className="relative group">
+                                    <Info className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors cursor-help" />
+                                    <div className="absolute bottom-full right-0 mb-2 w-56 p-2.5 bg-slate-900/95 dark:bg-slate-950/95 text-slate-200 text-[10px] leading-normal rounded-lg shadow-lg border border-slate-700/50 dark:border-slate-800/50 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50 text-left font-medium backdrop-blur-sm">
+                                        The total quantity of tokens consumed by all members of your organization during AI analysis runs.
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="text-2xl font-bold text-rose-600 dark:text-rose-400 mt-2">
+                                {formatCurrency(reserve.consumed_tokens, reserve.reference_price)}
+                            </div>
+                            <span className="text-[11px] text-slate-400 mt-1 block font-mono">{Number(reserve.consumed_tokens || 0).toLocaleString()} tokens</span>
+                        </div>
+                        <div className="bg-emerald-50/50 dark:bg-emerald-950/20 p-5 rounded-xl border border-emerald-200 dark:border-emerald-800 shadow-sm relative">
+                            <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Net Remaining Value</span>
+                                <div className="relative group">
+                                    <Info className="w-3.5 h-3.5 text-emerald-400 dark:text-emerald-500 hover:text-emerald-600 dark:hover:text-slate-300 transition-colors cursor-help" />
+                                    <div className="absolute bottom-full right-0 mb-2 w-56 p-2.5 bg-slate-900/95 dark:bg-slate-950/95 text-slate-200 text-[10px] leading-normal rounded-lg shadow-lg border border-slate-700/50 dark:border-slate-800/50 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200 z-50 text-left font-medium backdrop-blur-sm">
+                                        The current overall balance of your organization's tokens (Total Approved Value minus Consumed Value).
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="text-2xl font-bold text-emerald-700 dark:text-emerald-300 mt-2">
+                                {(() => {
+                                    const price = reserve.reference_price || 0.000007;
+                                    const approvedUsd = Number(((reserve.purchased_tokens || 0) * price).toFixed(2));
+                                    const consumedUsd = Number(((reserve.consumed_tokens || 0) * price).toFixed(2));
+                                    return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(approvedUsd - consumedUsd);
+                                })()}
+                            </div>
+                            <span className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 block font-mono">
+                                {Number((reserve.purchased_tokens || 0) - (reserve.consumed_tokens || 0)).toLocaleString()} tokens
+                            </span>
+                        </div>
+                    </div>
+                )
             )}
 
             {/* Sub Tabs */}
@@ -500,15 +598,21 @@ export default function OrgTokenOpsPanel({ user }) {
                             <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200">Team Member Quotas</h3>
                             <p className="text-xs text-slate-500 mt-0.5">Divide and manage token quotas allocated to individual users in your organization.</p>
                         </div>
-                        <div className="text-xs text-slate-500 dark:text-slate-400">
-                            Available in Org Reserve:{' '}
-                            <span className="font-bold text-indigo-600 dark:text-indigo-400 font-mono">
-                                {formatCurrency(reserve?.reserved_tokens || 0, reserve?.reference_price || 0.000007)}
-                            </span>
-                            <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono ml-1">
-                                ({Number(reserve?.reserved_tokens || 0).toLocaleString()} tokens)
-                            </span>
-                        </div>
+                        {reserve?.payg_enabled ? (
+                            <div className="text-xs font-semibold bg-amber-500/10 text-amber-700 dark:text-amber-400 px-3 py-1 rounded-full border border-amber-500/25">
+                                Pay As You Go Active
+                            </div>
+                        ) : (
+                            <div className="text-xs text-slate-500 dark:text-slate-400">
+                                Available in Org Reserve:{' '}
+                                <span className="font-bold text-indigo-600 dark:text-indigo-400 font-mono">
+                                    {formatCurrency(reserve?.reserved_tokens || 0, reserve?.reference_price || 0.000007)}
+                                </span>
+                                <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono ml-1">
+                                    ({Number(reserve?.reserved_tokens || 0).toLocaleString()} tokens)
+                                </span>
+                            </div>
+                        )}
                     </div>
                     <div className="overflow-x-auto">
                         <table className="w-full text-left text-sm">
@@ -554,23 +658,35 @@ export default function OrgTokenOpsPanel({ user }) {
                                                 </span>
                                             </td>
                                             <td className="px-6 py-4">
-                                                <div className="font-semibold">{formatCurrency(u.allocated_tokens, u.reference_price)}</div>
-                                                <div className="text-[10px] text-slate-500 font-mono">{Number(u.allocated_tokens || 0).toLocaleString()} tokens</div>
+                                                {reserve?.payg_enabled ? (
+                                                    <span className="text-slate-400 dark:text-slate-500 font-medium text-xs">N/A (PAYG)</span>
+                                                ) : (
+                                                    <>
+                                                        <div className="font-semibold">{formatCurrency(u.allocated_tokens, u.reference_price)}</div>
+                                                        <div className="text-[10px] text-slate-500 font-mono">{Number(u.allocated_tokens || 0).toLocaleString()} tokens</div>
+                                                    </>
+                                                )}
                                             </td>
                                             <td className="px-6 py-4">
-                                                <div className="text-rose-600 dark:text-rose-400">{formatCurrency(u.consumed_tokens, u.reference_price)}</div>
+                                                <div className="text-rose-600 dark:text-rose-400 font-semibold">{formatCurrency(u.consumed_tokens, u.reference_price)}</div>
                                                 <div className="text-[10px] text-slate-500 font-mono">{Number(u.consumed_tokens || 0).toLocaleString()} tokens</div>
                                             </td>
                                             <td className="px-6 py-4">
-                                                <div className="font-semibold text-indigo-600 dark:text-indigo-400">
-                                                    {(() => {
-                                                        const price = u.reference_price || 0.000007;
-                                                        const allocatedUsd = Number(((u.allocated_tokens || 0) * price).toFixed(2));
-                                                        const consumedUsd = Number(((u.consumed_tokens || 0) * price).toFixed(2));
-                                                        return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(allocatedUsd - consumedUsd);
-                                                    })()}
-                                                </div>
-                                                <div className="text-[10px] text-slate-500 font-mono">{Number(u.remaining_tokens || 0).toLocaleString()} tokens</div>
+                                                {reserve?.payg_enabled ? (
+                                                    <span className="text-emerald-600 dark:text-emerald-400 font-bold text-xs">Unlimited</span>
+                                                ) : (
+                                                    <>
+                                                        <div className="font-semibold text-indigo-600 dark:text-indigo-400">
+                                                            {(() => {
+                                                                const price = u.reference_price || 0.000007;
+                                                                const allocatedUsd = Number(((u.allocated_tokens || 0) * price).toFixed(2));
+                                                                const consumedUsd = Number(((u.consumed_tokens || 0) * price).toFixed(2));
+                                                                return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(allocatedUsd - consumedUsd);
+                                                            })()}
+                                                        </div>
+                                                        <div className="text-[10px] text-slate-500 font-mono">{Number(u.remaining_tokens || 0).toLocaleString()} tokens</div>
+                                                    </>
+                                                )}
                                             </td>
                                             <td className="px-6 py-4">
                                                 {u.is_blocked ? (
@@ -584,74 +700,90 @@ export default function OrgTokenOpsPanel({ user }) {
                                                 )}
                                             </td>
                                              <td className="px-6 py-4 text-right whitespace-nowrap relative">
-                                                <div className="flex items-center justify-end gap-1.5">
-                                                    <button
-                                                        onClick={() => { setError(''); setAllocateModal({ open: true, userId: u.user_id, userName: u.name || u.email, amount: '', remarks: '' }); }}
-                                                        className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold inline-flex items-center gap-1 transition shadow-sm"
-                                                    >
-                                                        <PlusCircle className="w-3.5 h-3.5" />
-                                                        Allocate
-                                                    </button>
-                                                    <div className="relative">
+                                                {reserve?.payg_enabled ? (
+                                                    <div className="flex items-center justify-end">
                                                         <button
-                                                            onClick={() => setOpenDropdownUserId(openDropdownUserId === u.user_id ? null : u.user_id)}
-                                                            className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 rounded-lg transition"
+                                                            onClick={() => handleToggleBlock(u.user_id, u.is_blocked)}
+                                                            className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1 transition border shrink-0 cursor-pointer ${
+                                                                u.is_blocked
+                                                                    ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800'
+                                                                    : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200 dark:bg-rose-950/60 dark:text-rose-300 dark:border-rose-800'
+                                                            }`}
                                                         >
-                                                            <MoreVertical className="w-4 h-4" />
+                                                            {u.is_blocked ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Ban className="w-3.5 h-3.5 text-rose-500" />}
+                                                            <span>{u.is_blocked ? 'Unblock User' : 'Block User'}</span>
                                                         </button>
-                                                        {openDropdownUserId === u.user_id && (
-                                                            <>
-                                                                <div 
-                                                                    className="fixed inset-0 z-10" 
-                                                                    onClick={() => setOpenDropdownUserId(null)} 
-                                                                />
-                                                                <div className={`absolute right-0 w-44 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-lg py-1.5 z-20 text-left ${
-                                                                    index >= usersList.length - 2
-                                                                        ? 'bottom-full mb-1'
-                                                                        : 'mt-1'
-                                                                }`}>
-                                                                    <button
-                                                                        onClick={() => {
-                                                                            setError('');
-                                                                            setOpenDropdownUserId(null);
-                                                                            setReallocateModal({ open: true, fromUserId: u.user_id, fromUserName: u.name || u.email, toUserId: '', amount: '' });
-                                                                        }}
-                                                                        className="w-full px-4 py-2 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 flex items-center gap-2 transition"
-                                                                    >
-                                                                        <ArrowRightLeft className="w-3.5 h-3.5 text-slate-500" />
-                                                                        Transfer Quota
-                                                                    </button>
-                                                                    <button
-                                                                        onClick={() => {
-                                                                            setError('');
-                                                                            setOpenDropdownUserId(null);
-                                                                            setRevokeModal({ open: true, userId: u.user_id, userName: u.name || u.email, amount: u.remaining_tokens || '' });
-                                                                        }}
-                                                                        className="w-full px-4 py-2 text-xs font-semibold text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/20 flex items-center gap-2 transition"
-                                                                    >
-                                                                        <MinusCircle className="w-3.5 h-3.5 text-amber-500" />
-                                                                        Revoke Quota
-                                                                    </button>
-                                                                    <div className="border-t border-slate-100 dark:border-slate-700 my-1" />
-                                                                    <button
-                                                                        onClick={() => {
-                                                                            setOpenDropdownUserId(null);
-                                                                            handleToggleBlock(u.user_id, u.is_blocked);
-                                                                        }}
-                                                                        className={`w-full px-4 py-2 text-xs font-semibold flex items-center gap-2 transition ${
-                                                                            u.is_blocked
-                                                                                ? 'text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/20'
-                                                                                : 'text-rose-700 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/20'
-                                                                        }`}
-                                                                    >
-                                                                        {u.is_blocked ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Ban className="w-3.5 h-3.5 text-rose-500" />}
-                                                                        {u.is_blocked ? 'Unblock User' : 'Block User'}
-                                                                    </button>
-                                                                </div>
-                                                            </>
-                                                        )}
                                                     </div>
-                                                </div>
+                                                ) : (
+                                                    <div className="flex items-center justify-end gap-1.5">
+                                                        <button
+                                                            onClick={() => { setError(''); setAllocateModal({ open: true, userId: u.user_id, userName: u.name || u.email, amount: '', remarks: '' }); }}
+                                                            className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold inline-flex items-center gap-1 transition shadow-sm cursor-pointer"
+                                                        >
+                                                            <PlusCircle className="w-3.5 h-3.5" />
+                                                            Allocate
+                                                        </button>
+                                                        <div className="relative">
+                                                            <button
+                                                                onClick={() => setOpenDropdownUserId(openDropdownUserId === u.user_id ? null : u.user_id)}
+                                                                className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 rounded-lg transition cursor-pointer"
+                                                            >
+                                                                <MoreVertical className="w-4 h-4" />
+                                                            </button>
+                                                            {openDropdownUserId === u.user_id && (
+                                                                <>
+                                                                    <div 
+                                                                        className="fixed inset-0 z-10" 
+                                                                        onClick={() => setOpenDropdownUserId(null)} 
+                                                                    />
+                                                                    <div className={`absolute right-0 w-44 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-lg py-1.5 z-20 text-left ${
+                                                                        index >= usersList.length - 2
+                                                                            ? 'bottom-full mb-1'
+                                                                            : 'mt-1'
+                                                                    }`}>
+                                                                        <button
+                                                                            onClick={() => {
+                                                                                setError('');
+                                                                                setOpenDropdownUserId(null);
+                                                                                setReallocateModal({ open: true, fromUserId: u.user_id, fromUserName: u.name || u.email, toUserId: '', amount: '' });
+                                                                            }}
+                                                                            className="w-full px-4 py-2 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 flex items-center gap-2 transition"
+                                                                        >
+                                                                            <ArrowRightLeft className="w-3.5 h-3.5 text-slate-500" />
+                                                                            Transfer Quota
+                                                                        </button>
+                                                                        <button
+                                                                            onClick={() => {
+                                                                                setError('');
+                                                                                setOpenDropdownUserId(null);
+                                                                                setRevokeModal({ open: true, userId: u.user_id, userName: u.name || u.email, amount: u.remaining_tokens || '' });
+                                                                            }}
+                                                                            className="w-full px-4 py-2 text-xs font-semibold text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/20 flex items-center gap-2 transition"
+                                                                        >
+                                                                            <MinusCircle className="w-3.5 h-3.5 text-amber-500" />
+                                                                            Revoke Quota
+                                                                        </button>
+                                                                        <div className="border-t border-slate-100 dark:border-slate-700 my-1" />
+                                                                        <button
+                                                                            onClick={() => {
+                                                                                setOpenDropdownUserId(null);
+                                                                                handleToggleBlock(u.user_id, u.is_blocked);
+                                                                            }}
+                                                                            className={`w-full px-4 py-2 text-xs font-semibold flex items-center gap-2 transition ${
+                                                                                u.is_blocked
+                                                                                    ? 'text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/20'
+                                                                                    : 'text-rose-700 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/20'
+                                                                            }`}
+                                                                        >
+                                                                            {u.is_blocked ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Ban className="w-3.5 h-3.5 text-rose-500" />}
+                                                                            {u.is_blocked ? 'Unblock User' : 'Block User'}
+                                                                        </button>
+                                                                    </div>
+                                                                </>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                )}
                                             </td>
                                         </tr>
                                     ))
@@ -1085,76 +1217,92 @@ export default function OrgTokenOpsPanel({ user }) {
                                     <span className="font-semibold">{error}</span>
                                 </div>
                             )}
-                            <div>
-                                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                                    Request Type
-                                </label>
-                                <div className="grid grid-cols-2 gap-2">
-                                    <button
-                                        type="button"
-                                        onClick={() => setRequestModal({ ...requestModal, requestType: 'TOKEN_INCREASE' })}
-                                        className={`p-3 rounded-xl border text-xs font-semibold text-left transition ${
-                                            requestModal.requestType === 'TOKEN_INCREASE'
-                                                ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 ring-2 ring-indigo-600/20'
-                                                : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700/50'
-                                        }`}
-                                    >
-                                        <div className="font-bold">Token Increase</div>
-                                        <div className="text-[11px] text-slate-400 font-normal mt-0.5">Prepaid token pool increase</div>
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => setRequestModal({ ...requestModal, requestType: 'PAYG_ENABLEMENT' })}
-                                        className={`p-3 rounded-xl border text-xs font-semibold text-left transition ${
-                                            requestModal.requestType === 'PAYG_ENABLEMENT'
-                                                ? 'border-purple-600 bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 ring-2 ring-purple-600/20'
-                                                : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700/50'
-                                        }`}
-                                    >
-                                        <div className="font-bold">PAYG Enablement</div>
-                                        <div className="text-[11px] text-slate-400 font-normal mt-0.5">Pay As You Go (Post-paid)</div>
-                                    </button>
-                                </div>
-                            </div>
-
-                            {requestModal.requestType === 'PAYG_ENABLEMENT' && (
-                                <div className="p-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/50 rounded-xl text-amber-800 dark:text-amber-300 space-y-1.5 animate-in fade-in slide-in-from-top-2 duration-200">
-                                    <div className="text-xs font-bold flex items-center gap-1.5">
-                                        <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0" />
-                                        PAYG (Pay As You Go) Mode Disclaimer
+                            {reserve?.payg_enabled ? (
+                                <div className="space-y-4">
+                                    <div className="p-4 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 rounded-xl animate-in fade-in slide-in-from-top-2 duration-200">
+                                        <div className="font-bold text-sm text-indigo-700 dark:text-indigo-300 flex items-center gap-1.5">
+                                            <Coins className="w-4.5 h-4.5 text-indigo-500" />
+                                            Switch to Prepaid Mode
+                                        </div>
+                                        <p className="text-xs text-slate-600 dark:text-slate-400 mt-1.5 leading-relaxed font-medium">
+                                            Request the platform Super Admin to disable Pay As You Go (PAYG) billing. This will revert your organization back to static prepaid token pool allocations.
+                                        </p>
                                     </div>
-                                    <p className="text-[10px] leading-relaxed font-medium">
-                                        Enabling Pay As You Go (PAYG) mode shifts your organization to post-paid billing. 
-                                        <strong className="block mt-1 text-amber-900 dark:text-amber-200">
-                                            ⚠️ Note: Any tokens currently remaining in your prepaid organization reserve or user wallets will be locked. Platform calculations and usage limits will be based entirely on Pay As You Go consumption rates.
-                                        </strong>
-                                    </p>
                                 </div>
-                            )}
+                            ) : (
+                                <>
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                                            Request Type
+                                        </label>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => setRequestModal({ ...requestModal, requestType: 'TOKEN_INCREASE' })}
+                                                className={`p-3 rounded-xl border text-xs font-semibold text-left transition ${
+                                                    requestModal.requestType === 'TOKEN_INCREASE'
+                                                        ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 ring-2 ring-indigo-600/20'
+                                                        : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700/50'
+                                                }`}
+                                            >
+                                                <div className="font-bold">Token Increase</div>
+                                                <div className="text-[11px] text-slate-400 font-normal mt-0.5">Prepaid token pool increase</div>
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setRequestModal({ ...requestModal, requestType: 'PAYG_ENABLEMENT' })}
+                                                className={`p-3 rounded-xl border text-xs font-semibold text-left transition ${
+                                                    requestModal.requestType === 'PAYG_ENABLEMENT'
+                                                        ? 'border-purple-600 bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 ring-2 ring-purple-600/20'
+                                                        : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700/50'
+                                                }`}
+                                            >
+                                                <div className="font-bold">PAYG Enablement</div>
+                                                <div className="text-[11px] text-slate-400 font-normal mt-0.5">Pay As You Go (Post-paid)</div>
+                                            </button>
+                                        </div>
+                                    </div>
 
-                            {requestModal.requestType === 'TOKEN_INCREASE' && (
-                                <div>
-                                    <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                                        Requested Token Count (Total Input + Output)
-                                    </label>
-                                    <input
-                                        type="number"
-                                        min="1"
-                                        required
-                                        value={requestModal.amount}
-                                        onChange={(e) => setRequestModal({ ...requestModal, amount: e.target.value })}
-                                        placeholder="e.g. 500000"
-                                        className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all"
-                                    />
-                                    {requestModal.amount && (
-                                        <div className="text-[11px] text-indigo-600 dark:text-indigo-400 font-semibold mt-1">
-                                            Value: {formatCurrency(Number(requestModal.amount), reserve?.reference_price || 0.000007)}
+                                    {requestModal.requestType === 'PAYG_ENABLEMENT' && (
+                                        <div className="p-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/50 rounded-xl text-amber-800 dark:text-amber-300 space-y-1.5 animate-in fade-in slide-in-from-top-2 duration-200">
+                                            <div className="text-xs font-bold flex items-center gap-1.5">
+                                                <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0" />
+                                                PAYG (Pay As You Go) Mode Disclaimer
+                                            </div>
+                                            <p className="text-[10px] leading-relaxed font-medium">
+                                                Enabling Pay As You Go (PAYG) mode shifts your organization to post-paid billing. 
+                                                <strong className="block mt-1 text-amber-900 dark:text-amber-200">
+                                                    ⚠️ Note: Any tokens currently remaining in your prepaid organization reserve or user wallets will be locked. Platform calculations and usage limits will be based entirely on Pay As You Go consumption rates.
+                                                </strong>
+                                            </p>
                                         </div>
                                     )}
-                                    <p className="text-[11px] text-slate-400 mt-1">
-                                        Upon Super Admin approval, this amount will be credited to your Org Reserve for you to divide to users.
-                                    </p>
-                                </div>
+
+                                    {requestModal.requestType === 'TOKEN_INCREASE' && (
+                                        <div>
+                                            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                                                Requested Token Count (Total Input + Output)
+                                            </label>
+                                            <input
+                                                type="number"
+                                                min="1"
+                                                required
+                                                value={requestModal.amount}
+                                                onChange={(e) => setRequestModal({ ...requestModal, amount: e.target.value })}
+                                                placeholder="e.g. 500000"
+                                                className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all"
+                                            />
+                                            {requestModal.amount && (
+                                                <div className="text-[11px] text-indigo-600 dark:text-indigo-400 font-semibold mt-1">
+                                                    Value: {formatCurrency(Number(requestModal.amount), reserve?.reference_price || 0.000007)}
+                                                </div>
+                                            )}
+                                            <p className="text-[11px] text-slate-400 mt-1">
+                                                Upon Super Admin approval, this amount will be credited to your Org Reserve for you to divide to users.
+                                            </p>
+                                        </div>
+                                    )}
+                                </>
                             )}
 
                             <div>

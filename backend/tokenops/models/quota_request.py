@@ -20,6 +20,7 @@ class QuotaRequestType(str, enum.Enum):
     TOKEN_INCREASE = "TOKEN_INCREASE"
     PAYG_ENABLEMENT = "PAYG_ENABLEMENT"
     LIMIT_INCREASE = "LIMIT_INCREASE"
+    PAYG_DISABLEMENT = "PAYG_DISABLEMENT"
 
 
 class QuotaRequestStatus(str, enum.Enum):

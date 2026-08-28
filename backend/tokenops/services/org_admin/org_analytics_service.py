@@ -65,12 +65,34 @@ class OrgAnalyticsService:
         ]
 
     def get_org_usage_report(self, organization_name: str) -> UsageReportView:
-        # Since we don't have a daily rollup table yet, we can return empty or mock structure for daily.
-        # Ideally we'd group AIUsageLog by date here, but following the rule to avoid scanning it unnecessarily.
-        # We'll just return the overview mapped into a single entry or empty list.
+        from models import AIUsageLog
+        from tokenops.schemas.orgadmin import DailyUsageView
+        from sqlalchemy import func
+
+        # Query AIUsageLog grouped by date
+        usage_by_day = self.session.query(
+            func.date(AIUsageLog.created_at).label("day"),
+            func.sum((AIUsageLog.prompt_tokens or 0) + (AIUsageLog.completion_tokens or 0)).label("total_tokens"),
+            func.count(AIUsageLog.id).label("total_requests")
+        ).filter(
+            func.lower(AIUsageLog.organization_name) == organization_name.lower()
+        ).group_by(
+            func.date(AIUsageLog.created_at)
+        ).order_by(
+            func.date(AIUsageLog.created_at).desc()
+        ).limit(30).all()
+
+        daily_list = [
+            DailyUsageView(
+                date=row.day,
+                tokens=int(row.total_tokens or 0),
+                requests=int(row.total_requests or 0)
+            ) for row in usage_by_day
+        ]
+
         return UsageReportView(
             organization_name=organization_name,
-            daily_usage=[] # Placeholder for when a DailyUsageSummary table is added
+            daily_usage=daily_list
         )
 
     def get_ledger(self, organization_name: str, page: int = 1, size: int = 50) -> PaginatedLedgerResponse:

@@ -56,6 +56,10 @@ class ReserveWalletView(BaseModel):
     consumed_tokens: int
     remaining_tokens: int
     reference_price: float
+    payg_enabled: bool = False
+    payg_soft_limit_usd: Optional[float] = None
+    payg_hard_limit_usd: Optional[float] = None
+    payg_current_spend_usd: Optional[float] = 0.0
 
 # Governance
 class BlockUserRequest(BaseModel):

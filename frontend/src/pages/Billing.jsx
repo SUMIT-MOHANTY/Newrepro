@@ -223,7 +223,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
             doc.setFont('helvetica', 'bold');
             doc.setFontSize(7.5);
             doc.setTextColor(100, 116, 139);
-            doc.text("INFRA COST ($1/HR)", margin + (kpiWidth * 2) + 9, cursorY + 5);
+            doc.text("INFRA COST ($0.70/HR)", margin + (kpiWidth * 2) + 9, cursorY + 5);
             doc.setFontSize(11);
             doc.setTextColor(168, 85, 247); // Purple-500
             doc.text(`$${totalInfraCost?.toFixed(2)}`, margin + (kpiWidth * 2) + 9, cursorY + 12);
@@ -427,7 +427,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
             // Executive Summary
             rows.push(['EXECUTIVE SUMMARY']);
             rows.push(['Total Token Cost (USD)', orgBillingData.summary?.total_token_cost || 0]);
-            rows.push(['Total Infra Cost (USD, $1/hr)', orgBillingData.summary?.total_infra_cost || 0]);
+            rows.push(['Total Infra Cost (USD, $0.70/hr)', orgBillingData.summary?.total_infra_cost || 0]);
             rows.push(['Total Combined Cost (USD)', orgBillingData.summary?.total_cost || 0]);
             rows.push(['Total Prompt Tokens', orgBillingData.summary?.total_prompt_tokens || 0]);
             rows.push(['Total Completion Tokens', orgBillingData.summary?.total_completion_tokens || 0]);
@@ -458,7 +458,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                 'AI Tokens',
                 'Projects Created',
                 'Token Cost (USD)',
-                'Infra Cost (USD, $1/hr)',
+                'Infra Cost (USD, $0.70/hr)',
                 'Total Cost (USD)',
                 'Last Login'
             ]);
@@ -833,7 +833,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                                         ${(orgSummary.total_cost ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                     </h3>
                                     <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 flex items-center gap-1 font-semibold">
-                                        <CheckCircle2 className="w-3 h-3" /> Token Cost + Infra Cost ($1/hr)
+                                        <CheckCircle2 className="w-3 h-3" /> Token Cost + Infra Cost ($0.70/hr)
                                     </p>
                                     <div className="absolute top-0 left-0 w-1 h-full bg-emerald-500" />
                                 </div>
@@ -855,7 +855,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                                     <div className="absolute top-0 left-0 w-1 h-full bg-blue-500" />
                                 </div>
 
-                                {/* Infra Cost ($1/hr) */}
+                                {/* Infra Cost ($0.70/hr) */}
                                 <div className="bg-app-bg-card border border-app-border rounded-xl p-5 hover:border-app-primary-dark transition-all shadow-sm relative overflow-hidden">
                                     <div className="flex items-center justify-between mb-3">
                                         <span className="text-xs font-semibold text-app-text-muted uppercase tracking-wider">Infra Cost</span>
@@ -1006,7 +1006,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                                                 Token Cost {userSortField === 'token_cost' ? (userSortAsc ? '▲' : '▼') : '⇅'}
                                             </th>
                                             <th className="py-3.5 px-4 font-bold text-right cursor-pointer hover:text-app-primary" onClick={() => handleUserSort('infra_cost')}>
-                                                Infra Cost ($1/hr) {userSortField === 'infra_cost' ? (userSortAsc ? '▲' : '▼') : '⇅'}
+                                                Infra Cost ($0.70/hr) {userSortField === 'infra_cost' ? (userSortAsc ? '▲' : '▼') : '⇅'}
                                             </th>
                                             <th className="py-3.5 px-4 font-bold text-right cursor-pointer hover:text-app-primary" onClick={() => handleUserSort('total_cost')}>
                                                 Total Cost {userSortField === 'total_cost' ? (userSortAsc ? '▲' : '▼') : '⇅'}
@@ -1226,7 +1226,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                                         </div>
                                     </div>
                                     <div className="p-3 rounded-xl border border-app-border bg-purple-50/50 dark:bg-purple-950/20">
-                                        <div className="text-[10px] font-bold text-purple-600 dark:text-purple-400 uppercase tracking-wider">Infra Cost ($1/hr)</div>
+                                        <div className="text-[10px] font-bold text-purple-600 dark:text-purple-400 uppercase tracking-wider">Infra Cost ($0.70/hr)</div>
                                         <div className="text-base font-black text-purple-700 dark:text-purple-300 mt-0.5">
                                             ${(selectedUserDetail.infra_cost ?? 0).toFixed(4)}
                                         </div>

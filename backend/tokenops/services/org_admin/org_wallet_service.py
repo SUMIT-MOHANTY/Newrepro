@@ -177,7 +177,11 @@ class OrgWalletService:
             allocated_tokens=allocated,
             consumed_tokens=consumed,
             remaining_tokens=wallet.remaining_tokens,
-            reference_price=reference_price
+            reference_price=reference_price,
+            payg_enabled=bool(wallet.payg_enabled),
+            payg_soft_limit_usd=float(wallet.payg_soft_limit_usd) if wallet.payg_soft_limit_usd is not None else None,
+            payg_hard_limit_usd=float(wallet.payg_hard_limit_usd) if wallet.payg_hard_limit_usd is not None else None,
+            payg_current_spend_usd=float(wallet.payg_current_spend_usd or 0.0)
         )
 
     def allocate_tokens(self, admin_user_id: int, organization_name: str, request_id: str, user_id: int, token_amount: int, remarks: str = None):
