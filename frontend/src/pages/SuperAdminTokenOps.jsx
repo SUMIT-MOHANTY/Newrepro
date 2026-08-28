@@ -23,13 +23,17 @@ export default function SuperAdminTokenOps() {
 
     // Analytics Tab State
     const [trendRange, setTrendRange] = useState('30d'); // '7d' | '30d' | '90d'
-    const [trendMetric, setTrendMetric] = useState('tokens'); // 'tokens' | 'cost' | 'requests'
+    const [trendMetric, setTrendMetric] = useState('tokens'); // 'tokens' | 'cost' | 'requests' | 'infra_cost'
     const [trendsData, setTrendsData] = useState(null);
     const [hoveredPoint, setHoveredPoint] = useState(null);
     const [modelsData, setModelsData] = useState([]);
     const [topOrgsData, setTopOrgsData] = useState(null);
-    const [topOrgsSort, setTopOrgsSort] = useState('tokens'); // 'tokens' | 'cost'
+    const [topOrgsSort, setTopOrgsSort] = useState('tokens'); // 'tokens' | 'cost' | 'requests'
+    const [topOrgsBillingFilter, setTopOrgsBillingFilter] = useState('all'); // 'all' | 'PAYG' | 'Prepaid' | 'blocked'
     const [alertsData, setAlertsData] = useState(null);
+    const [alertTypeFilter, setAlertTypeFilter] = useState('all'); // 'all' | 'critical' | 'warning' | 'action'
+    const [chartMode, setChartMode] = useState('line'); // 'line' | 'bar'
+    const [orgChartFilter, setOrgChartFilter] = useState('all');
     const [analyticsLoading, setAnalyticsLoading] = useState(false);
     const [analyticsError, setAnalyticsError] = useState('');
 
@@ -693,648 +697,611 @@ export default function SuperAdminTokenOps() {
                 </button>
             </div>
 
+
             {/* TAB 0: Analytics Dashboard */}
             {activeTab === 'analytics' && (
-                <div className="space-y-6">
-                    {/* 1. Time-Series Trends Card */}
+                <div className="space-y-5">
+
+                    {/* ── Section Header ── */}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div>
+                            <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                                <BarChart2 className="w-5 h-5 text-indigo-500" />
+                                Platform Analytics Hub
+                            </h2>
+                            <p className="text-xs text-slate-400 mt-0.5">Real-time insight into token operations, cost exposure, and tenant health across all organizations.</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <button onClick={() => fetchAnalyticsData(trendRange)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-slate-100 dark:bg-slate-700 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 text-slate-600 dark:text-slate-300 hover:text-indigo-600 rounded-xl border border-slate-200 dark:border-slate-600 transition cursor-pointer">
+                                <RefreshCw className={`w-3.5 h-3.5 ${analyticsLoading ? 'animate-spin' : ''}`} />
+                                Refresh
+                            </button>
+                            {/* Range Switcher */}
+                            <div className="flex bg-slate-100 dark:bg-slate-700/60 p-1 rounded-xl text-xs font-semibold">
+                                {['7d', '30d', '90d'].map((r) => (
+                                    <button key={r} onClick={() => setTrendRange(r)}
+                                        className={`px-2.5 py-1 rounded-lg uppercase tracking-wider transition cursor-pointer ${trendRange === r ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:text-slate-300'}`}>
+                                        {r}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+
+                    {analyticsError && (
+                        <div className="p-3 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 rounded-xl text-xs text-rose-700 dark:text-rose-300 flex items-center gap-2">
+                            <AlertCircle className="w-4 h-4 shrink-0" />{analyticsError}
+                        </div>
+                    )}
+
+                    {/* ── KPI Summary Row ── */}
+                    {(() => {
+                        const pts = trendsData?.points || [];
+                        const totalTokens = pts.reduce((s, p) => s + (p.total_tokens || 0), 0);
+                        const totalCost = pts.reduce((s, p) => s + (p.cost_usd || 0), 0);
+                        const totalReqs = pts.reduce((s, p) => s + (p.request_count || 0), 0);
+                        const activeOrgCount = topOrgsData?.by_tokens?.length || 0;
+                        const pendingActions = (alertsData?.action_required?.length || 0) + (alertsData?.critical?.length || 0);
+                        const dailyAvgCost = pts.length > 0 ? totalCost / pts.length : 0;
+                        const kpis = [
+                            { label: 'Platform Spend', value: `$${totalCost.toFixed(2)}`, sub: `$${dailyAvgCost.toFixed(3)}/day avg`, color: 'emerald', icon: DollarSign },
+                            { label: 'Total Tokens', value: totalTokens >= 1e6 ? `${(totalTokens/1e6).toFixed(2)}M` : totalTokens >= 1e3 ? `${(totalTokens/1e3).toFixed(1)}K` : String(totalTokens), sub: `${totalReqs.toLocaleString()} requests`, color: 'indigo', icon: Zap },
+                            { label: 'Active Orgs', value: activeOrgCount, sub: `in selected period`, color: 'violet', icon: Building2 },
+                            { label: 'Pending Actions', value: pendingActions, sub: `${alertsData?.warning?.length || 0} warnings`, color: pendingActions > 0 ? 'rose' : 'slate', icon: AlertTriangle },
+                        ];
+                        const colorMap = {
+                            emerald: 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800',
+                            indigo: 'text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/30 border-indigo-200 dark:border-indigo-800',
+                            violet: 'text-violet-600 dark:text-violet-400 bg-violet-50 dark:bg-violet-950/30 border-violet-200 dark:border-violet-800',
+                            rose: 'text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800',
+                            slate: 'text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700',
+                        };
+                        return (
+                            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                                {kpis.map(k => {
+                                    const cls = colorMap[k.color];
+                                    const Icon = k.icon;
+                                    return (
+                                        <div key={k.label} className={`rounded-2xl border p-4 flex flex-col gap-1 shadow-sm ${cls}`}>
+                                            <div className="flex items-center justify-between">
+                                                <span className="text-[10px] font-bold uppercase tracking-wider opacity-70">{k.label}</span>
+                                                <Icon className="w-4 h-4 opacity-60" />
+                                            </div>
+                                            <div className="text-2xl font-black mt-1">{analyticsLoading ? '—' : k.value}</div>
+                                            <div className="text-[10px] opacity-60 font-semibold">{k.sub}</div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        );
+                    })()}
+
+                    {/* ── Trend Chart ── */}
                     <div className="bg-white dark:bg-slate-800 p-5 sm:p-6 rounded-2xl border border-slate-200/80 dark:border-slate-700 shadow-sm space-y-4">
                         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                             <div>
-                                <h3 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                                    <TrendingUp className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-                                    Platform Consumption Trends
+                                <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                                    <TrendingUp className="w-5 h-5 text-indigo-500" />Platform Consumption Trends
                                 </h3>
-                                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                                    Historical daily aggregate of AI token usage, platform spend, and execution volume.
-                                </p>
+                                <p className="text-xs text-slate-400 mt-0.5">Daily aggregates across all organizations. Use filters to narrow by metric, chart style, or specific org.</p>
                             </div>
-
-                            {/* Range & Metric Controls */}
                             <div className="flex flex-wrap items-center gap-2">
+                                {/* Chart Mode */}
+                                <div className="flex bg-slate-100 dark:bg-slate-700/60 p-1 rounded-xl text-xs font-semibold">
+                                    {[{v:'line', label:'Line'},{v:'bar', label:'Bar'}].map(m => (
+                                        <button key={m.v} onClick={() => setChartMode(m.v)}
+                                            className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${chartMode === m.v ? 'bg-white dark:bg-slate-800 text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:text-slate-300'}`}>
+                                            {m.label}
+                                        </button>
+                                    ))}
+                                </div>
                                 {/* Metric Switcher */}
                                 <div className="flex bg-slate-100 dark:bg-slate-700/60 p-1 rounded-xl text-xs font-semibold">
-                                    <button
-                                        onClick={() => setTrendMetric('tokens')}
-                                        className={`px-3 py-1 rounded-lg transition cursor-pointer ${
-                                            trendMetric === 'tokens'
-                                                ? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-sm'
-                                                : 'text-slate-500 hover:text-slate-800 dark:text-slate-300'
-                                        }`}
-                                    >
-                                        Tokens
-                                    </button>
-                                    <button
-                                        onClick={() => setTrendMetric('cost')}
-                                        className={`px-3 py-1 rounded-lg transition cursor-pointer ${
-                                            trendMetric === 'cost'
-                                                ? 'bg-white dark:bg-slate-800 text-emerald-600 dark:text-emerald-400 shadow-sm'
-                                                : 'text-slate-500 hover:text-slate-800 dark:text-slate-300'
-                                        }`}
-                                    >
-                                        Cost ($)
-                                    </button>
-                                    <button
-                                        onClick={() => setTrendMetric('requests')}
-                                        className={`px-3 py-1 rounded-lg transition cursor-pointer ${
-                                            trendMetric === 'requests'
-                                                ? 'bg-white dark:bg-slate-800 text-amber-600 dark:text-amber-400 shadow-sm'
-                                                : 'text-slate-500 hover:text-slate-800 dark:text-slate-300'
-                                        }`}
-                                    >
-                                        Requests
-                                    </button>
+                                    {[
+                                        {v:'tokens', label:'Tokens', col:'text-indigo-600'},
+                                        {v:'cost', label:'Cost ($)', col:'text-emerald-600'},
+                                        {v:'requests', label:'Requests', col:'text-amber-600'},
+                                        {v:'infra_cost', label:'Infra ($)', col:'text-violet-600'},
+                                    ].map(m => (
+                                        <button key={m.v} onClick={() => setTrendMetric(m.v)}
+                                            className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${trendMetric === m.v ? `bg-white dark:bg-slate-800 ${m.col} shadow-sm` : 'text-slate-500 hover:text-slate-800 dark:text-slate-300'}`}>
+                                            {m.label}
+                                        </button>
+                                    ))}
                                 </div>
+                                {/* Org Filter */}
+                                {topOrgsData?.by_tokens?.length > 0 && (
+                                    <select value={orgChartFilter} onChange={e => setOrgChartFilter(e.target.value)}
+                                        className="text-xs px-2 py-1.5 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer">
+                                        <option value="all">All Orgs</option>
+                                        {topOrgsData.by_tokens.map(o => <option key={o.organization_name} value={o.organization_name}>{o.organization_name}</option>)}
+                                    </select>
+                                )}
+                            </div>
+                        </div>
 
-                                {/* Range Switcher */}
+                        {/* Summary Strip */}
+                        {trendsData?.points && (
+                            <div className="grid grid-cols-3 gap-3 bg-slate-50 dark:bg-slate-900/50 p-3 rounded-xl border border-slate-100 dark:border-slate-750">
+                                {[
+                                    { label: 'Period Total', val: (() => {
+                                        const pts = trendsData.points;
+                                        if (trendMetric === 'tokens') return `${Number(pts.reduce((a,p)=>a+p.total_tokens,0)).toLocaleString()} tok`;
+                                        if (trendMetric === 'cost') return `$${pts.reduce((a,p)=>a+p.cost_usd,0).toFixed(2)}`;
+                                        if (trendMetric === 'infra_cost') return `$${pts.reduce((a,p)=>a+(p.infra_cost_usd||0),0).toFixed(2)}`;
+                                        return `${pts.reduce((a,p)=>a+p.request_count,0).toLocaleString()} reqs`;
+                                    })()},
+                                    { label: 'Daily Avg', val: (() => {
+                                        const pts = trendsData.points; const n = pts.length || 1;
+                                        if (trendMetric === 'tokens') return `${Math.round(pts.reduce((a,p)=>a+p.total_tokens,0)/n).toLocaleString()}/d`;
+                                        if (trendMetric === 'cost') return `$${(pts.reduce((a,p)=>a+p.cost_usd,0)/n).toFixed(3)}/d`;
+                                        if (trendMetric === 'infra_cost') return `$${(pts.reduce((a,p)=>a+(p.infra_cost_usd||0),0)/n).toFixed(3)}/d`;
+                                        return `${Math.round(pts.reduce((a,p)=>a+p.request_count,0)/n).toLocaleString()}/d`;
+                                    })()},
+                                    { label: 'Peak Day', val: (() => {
+                                        const pts = trendsData.points;
+                                        const peak = [...pts].sort((a,b) => {
+                                            const va = trendMetric==='tokens'?a.total_tokens:trendMetric==='cost'?a.cost_usd:trendMetric==='infra_cost'?(a.infra_cost_usd||0):a.request_count;
+                                            const vb = trendMetric==='tokens'?b.total_tokens:trendMetric==='cost'?b.cost_usd:trendMetric==='infra_cost'?(b.infra_cost_usd||0):b.request_count;
+                                            return vb-va;
+                                        })[0];
+                                        if (!peak) return '—';
+                                        const v = trendMetric==='tokens'?`${Number(peak.total_tokens).toLocaleString()} tok`:trendMetric==='cost'?`$${Number(peak.cost_usd).toFixed(2)}`:trendMetric==='infra_cost'?`$${Number(peak.infra_cost_usd||0).toFixed(2)}`:`${peak.request_count} reqs`;
+                                        return `${v} (${peak.date?.slice(5)||peak.date})`;
+                                    })()},
+                                ].map(s => (
+                                    <div key={s.label}>
+                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">{s.label}</span>
+                                        <div className="text-sm font-bold text-slate-800 dark:text-slate-100 mt-0.5 truncate">{s.val}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {/* Chart */}
+                        {analyticsLoading ? (
+                            <div className="h-64 flex flex-col items-center justify-center text-slate-400 gap-2">
+                                <RefreshCw className="w-6 h-6 animate-spin text-indigo-500" />
+                                <span className="text-xs">Aggregating platform metrics...</span>
+                            </div>
+                        ) : trendsData?.points && trendsData.points.length > 0 ? (() => {
+                            const pts = trendsData.points;
+                            const W=800, H=230, pL=55, pR=20, pT=20, pB=35;
+                            const pw=W-pL-pR, ph=H-pT-pB;
+                            const col = trendMetric==='cost'?'#10b981':trendMetric==='requests'?'#f59e0b':trendMetric==='infra_cost'?'#8b5cf6':'#6366f1';
+                            const vals = pts.map(p => trendMetric==='tokens'?p.total_tokens:trendMetric==='cost'?p.cost_usd:trendMetric==='infra_cost'?(p.infra_cost_usd||0):p.request_count);
+                            const maxV = Math.max(...vals, 0.001);
+                            const coords = pts.map((p,i) => {
+                                const v = vals[i];
+                                return { x: pL+(i/Math.max(pts.length-1,1))*pw, y: pT+ph-(v/maxV)*ph, point:p, val:v };
+                            });
+                            const linePath = coords.map((c,i)=>`${i===0?'M':'L'} ${c.x.toFixed(1)} ${c.y.toFixed(1)}`).join(' ');
+                            const areaPath = `${linePath} L ${coords[coords.length-1].x.toFixed(1)} ${(pT+ph).toFixed(1)} L ${coords[0].x.toFixed(1)} ${(pT+ph).toFixed(1)} Z`;
+                            const barW = Math.max(3, (pw/pts.length)*0.65);
+                            const gridLvls = [1,0.75,0.5,0.25,0];
+                            const fmtY = v => trendMetric==='tokens'?(v>=1e6?`${(v/1e6).toFixed(1)}M`:v>=1e3?`${(v/1e3).toFixed(0)}K`:`${Math.round(v)}`):trendMetric==='cost'||trendMetric==='infra_cost'?`$${v.toFixed(2)}`:`${Math.round(v)}`;
+                            return (
+                                <div className="relative">
+                                    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-60 overflow-visible">
+                                        <defs>
+                                            <linearGradient id="ag2" x1="0" y1="0" x2="0" y2="1">
+                                                <stop offset="0%" stopColor={col} stopOpacity="0.28"/>
+                                                <stop offset="100%" stopColor={col} stopOpacity="0"/>
+                                            </linearGradient>
+                                        </defs>
+                                        {gridLvls.map((lvl,idx)=>{
+                                            const y=pT+ph*(1-lvl);
+                                            return (
+                                                <g key={idx}>
+                                                    <line x1={pL} y1={y} x2={W-pR} y2={y} stroke="currentColor" className="text-slate-200 dark:text-slate-700/50" strokeDasharray="3 3"/>
+                                                    <text x={pL-8} y={y+3} textAnchor="end" className="text-[9px] fill-slate-400 dark:fill-slate-500 font-mono">{fmtY(maxV*lvl)}</text>
+                                                </g>
+                                            );
+                                        })}
+                                        {chartMode==='bar' ? (
+                                            coords.map((c,i)=>(
+                                                <g key={i} onMouseEnter={()=>setHoveredPoint(c.point)} onMouseLeave={()=>setHoveredPoint(null)} className="cursor-pointer">
+                                                    <rect x={c.x-barW/2} y={c.y} width={barW} height={(pT+ph)-c.y}
+                                                        fill={hoveredPoint?.date===c.point.date?col:col} opacity={hoveredPoint?.date===c.point.date?1:0.7}
+                                                        rx="2"
+                                                        style={{transition:'opacity 0.15s'}}/>
+                                                </g>
+                                            ))
+                                        ) : (
+                                            <>
+                                                <path d={areaPath} fill="url(#ag2)"/>
+                                                <path d={linePath} fill="none" stroke={col} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+                                                {coords.map((c,i)=>{
+                                                    const isH=hoveredPoint?.date===c.point.date;
+                                                    return (
+                                                        <g key={i} className="cursor-pointer" onMouseEnter={()=>setHoveredPoint(c.point)} onMouseLeave={()=>{}}>
+                                                            {isH&&<line x1={c.x} y1={pT} x2={c.x} y2={pT+ph} stroke={col} strokeWidth="1.5" strokeDasharray="3 3"/>}
+                                                            <circle cx={c.x} cy={c.y} r={isH?5:(pts.length<=14?3:2)} fill={isH?col:col} opacity={isH?1:0.8} stroke="white" strokeWidth={isH?2:0}/>
+                                                            <rect x={c.x-(pw/pts.length)/2} y={pT} width={pw/pts.length} height={ph} fill="transparent"/>
+                                                        </g>
+                                                    );
+                                                })}
+                                            </>
+                                        )}
+                                        {coords.map((c,i)=>{
+                                            const step=Math.max(1,Math.floor(pts.length/8));
+                                            if(i%step===0||i===pts.length-1){
+                                                const d=c.point.date?.split('-');
+                                                const s=d?.length===3?`${d[1]}/${d[2]}`:c.point.date;
+                                                return <text key={i} x={c.x} y={pT+ph+18} textAnchor="middle" className="text-[9px] fill-slate-400 dark:fill-slate-500 font-mono">{s}</text>;
+                                            } return null;
+                                        })}
+                                    </svg>
+                                    {/* Hover Tooltip */}
+                                    {hoveredPoint && (
+                                        <div className="mt-3 p-3 bg-slate-900 text-white rounded-xl shadow-xl border border-slate-700 text-xs flex flex-wrap items-center justify-between gap-4">
+                                            <div className="flex items-center gap-2">
+                                                <Calendar className="w-3.5 h-3.5 text-indigo-400"/>
+                                                <span className="font-bold">{hoveredPoint.date}</span>
+                                            </div>
+                                            <div className="flex items-center gap-4">
+                                                <div><span className="text-[10px] text-slate-400 block">Tokens</span><span className="font-bold text-indigo-300 font-mono">{Number(hoveredPoint.total_tokens).toLocaleString()}</span></div>
+                                                <div><span className="text-[10px] text-slate-400 block">Prompt/Comp</span><span className="text-slate-300 font-mono text-[11px]">{Number(hoveredPoint.prompt_tokens).toLocaleString()} / {Number(hoveredPoint.completion_tokens).toLocaleString()}</span></div>
+                                                <div><span className="text-[10px] text-slate-400 block">Cost</span><span className="font-bold text-emerald-400 font-mono">${Number(hoveredPoint.cost_usd).toFixed(4)}</span></div>
+                                                {hoveredPoint.infra_cost_usd != null && <div><span className="text-[10px] text-slate-400 block">Infra</span><span className="font-bold text-violet-400 font-mono">${Number(hoveredPoint.infra_cost_usd).toFixed(4)}</span></div>}
+                                                <div><span className="text-[10px] text-slate-400 block">Requests</span><span className="font-bold text-amber-400 font-mono">{hoveredPoint.request_count}</span></div>
+                                            </div>
+                                            <button onClick={()=>setHoveredPoint(null)} className="text-slate-400 hover:text-white text-[10px] px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 transition cursor-pointer">✕</button>
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })() : (
+                            <div className="h-48 flex items-center justify-center text-slate-400 text-xs border border-dashed border-slate-200 dark:border-slate-700 rounded-xl">No activity data for this time range.</div>
+                        )}
+                    </div>
+
+                    {/* ── 2-col: Model Distribution + Billing Mode ── */}
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+
+                        {/* Model Distribution (2/3 width) */}
+                        <div className="lg:col-span-2 bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-700 shadow-sm space-y-4">
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                                        <PieChart className="w-4 h-4 text-indigo-500"/>AI Model Usage &amp; Efficiency
+                                    </h3>
+                                    <p className="text-xs text-slate-400 mt-0.5">Token share, spend, and cost-per-1K-token efficiency per model.</p>
+                                </div>
+                                <span className="text-[10px] text-slate-400 font-mono bg-slate-100 dark:bg-slate-700 px-2 py-0.5 rounded-lg">{modelsData.length} models</span>
+                            </div>
+                            {modelsData.length === 0 ? (
+                                <div className="py-10 text-center text-slate-400 text-xs border border-dashed border-slate-200 dark:border-slate-700 rounded-xl">No model usage recorded yet.</div>
+                            ) : (
+                                <div className="space-y-3 max-h-80 overflow-y-auto pr-1 custom-scrollbar">
+                                    {modelsData.map((m,idx) => {
+                                        const palettes=[
+                                            {bar:'bg-indigo-500',badge:'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800'},
+                                            {bar:'bg-emerald-500',badge:'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'},
+                                            {bar:'bg-amber-500',badge:'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border-amber-200 dark:border-amber-800'},
+                                            {bar:'bg-violet-500',badge:'bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300 border-violet-200 dark:border-violet-800'},
+                                            {bar:'bg-rose-500',badge:'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300 border-rose-200 dark:border-rose-800'},
+                                            {bar:'bg-cyan-500',badge:'bg-cyan-50 text-cyan-700 dark:bg-cyan-950/40 dark:text-cyan-300 border-cyan-200 dark:border-cyan-800'},
+                                        ];
+                                        const c=palettes[idx%palettes.length];
+                                        const costPer1k = m.total_tokens>0 ? (m.cost_usd/m.total_tokens)*1000 : 0;
+                                        const isTop = idx===0;
+                                        const isMostExpensive = modelsData.reduce((prev,cur)=>prev.cost_usd>cur.cost_usd?prev:cur)===m;
+                                        return (
+                                            <div key={m.model} className="p-3 bg-slate-50 dark:bg-slate-900/40 rounded-xl border border-slate-100 dark:border-slate-750 space-y-2 hover:border-indigo-200 dark:hover:border-indigo-800 transition">
+                                                <div className="flex justify-between items-start gap-2">
+                                                    <div className="flex items-center gap-2 flex-wrap min-w-0">
+                                                        <span className={`px-2 py-0.5 rounded-lg text-xs font-mono font-semibold border truncate ${c.badge}`}>{m.model}</span>
+                                                        {isTop && <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">Most Used</span>}
+                                                        {isMostExpensive && !isTop && <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300">Highest Spend</span>}
+                                                    </div>
+                                                    <div className="text-right shrink-0">
+                                                        <span className="text-xs font-bold text-slate-800 dark:text-slate-200 font-mono">{m.percentage}%</span>
+                                                        <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono block">${Number(m.cost_usd).toFixed(3)}</span>
+                                                    </div>
+                                                </div>
+                                                <div className="w-full bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full overflow-hidden">
+                                                    <div className={`h-full ${c.bar} transition-all duration-500`} style={{width:`${Math.min(100,Math.max(2,m.percentage))}%`}}/>
+                                                </div>
+                                                <div className="flex justify-between text-[10px] text-slate-500 font-mono">
+                                                    <span>Prompt: {Number(m.prompt_tokens).toLocaleString()}</span>
+                                                    <span>Comp: {Number(m.completion_tokens).toLocaleString()}</span>
+                                                    <span className="font-semibold text-slate-700 dark:text-slate-300">Total: {Number(m.total_tokens).toLocaleString()}</span>
+                                                    <span className="text-violet-600 dark:text-violet-400">${costPer1k.toFixed(4)}/1K tok</span>
+                                                </div>
+                                                <div className="text-[10px] text-slate-400">{m.request_count} requests</div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Billing Mode Distribution (1/3 width) */}
+                        <div className="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-700 shadow-sm space-y-4">
+                            <div>
+                                <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                                    <Layers className="w-4 h-4 text-indigo-500"/>Billing Mode Split
+                                </h3>
+                                <p className="text-xs text-slate-400 mt-0.5">Tenant distribution across billing types.</p>
+                            </div>
+                            {(() => {
+                                const orgs = topOrgsData?.by_tokens || [];
+                                const payg = orgs.filter(o=>o.billing_mode==='PAYG').length;
+                                const prepaid = orgs.filter(o=>o.billing_mode!=='PAYG').length;
+                                const blocked = orgs.filter(o=>o.is_blocked).length;
+                                const total = orgs.length || 1;
+                                const pct = n => Math.round((n/total)*100);
+                                const modes = [
+                                    {label:'PAYG', count:payg, pct:pct(payg), color:'bg-amber-500', text:'text-amber-700 dark:text-amber-300', bg:'bg-amber-50 dark:bg-amber-950/30'},
+                                    {label:'Prepaid', count:prepaid, pct:pct(prepaid), color:'bg-indigo-500', text:'text-indigo-700 dark:text-indigo-300', bg:'bg-indigo-50 dark:bg-indigo-950/30'},
+                                    {label:'Blocked', count:blocked, pct:pct(blocked), color:'bg-rose-500', text:'text-rose-700 dark:text-rose-300', bg:'bg-rose-50 dark:bg-rose-950/30'},
+                                ];
+                                // SVG Donut
+                                const donutR=50, cx=70, cy=70, strokeW=18;
+                                const circum=2*Math.PI*donutR;
+                                let offset=0;
+                                const donutSegs=[
+                                    {pct:payg/total, col:'#f59e0b'},
+                                    {pct:prepaid/total, col:'#6366f1'},
+                                    {pct:blocked/total, col:'#f43f5e'},
+                                ];
+                                return (
+                                    <div className="space-y-4">
+                                        <div className="flex justify-center">
+                                            <svg width="140" height="140" viewBox="0 0 140 140">
+                                                <circle cx={cx} cy={cy} r={donutR} fill="none" stroke="currentColor" className="text-slate-100 dark:text-slate-700" strokeWidth={strokeW}/>
+                                                {donutSegs.map((s,i)=>{
+                                                    const dash=s.pct*circum;
+                                                    const gap=circum-dash;
+                                                    const el=<circle key={i} cx={cx} cy={cy} r={donutR} fill="none" stroke={s.col} strokeWidth={strokeW} strokeDasharray={`${dash} ${gap}`} strokeDashoffset={-offset} transform={`rotate(-90 ${cx} ${cy})`} strokeLinecap="butt"/>;
+                                                    offset+=dash;
+                                                    return el;
+                                                })}
+                                                <text x={cx} y={cy-5} textAnchor="middle" className="text-[10px] fill-slate-400 dark:fill-slate-500" fontSize="10">Total</text>
+                                                <text x={cx} y={cy+12} textAnchor="middle" className="fill-slate-800 dark:fill-white" fontSize="18" fontWeight="bold">{orgs.length}</text>
+                                            </svg>
+                                        </div>
+                                        <div className="space-y-2">
+                                            {modes.map(m=>(
+                                                <div key={m.label} className={`flex items-center justify-between p-2.5 rounded-xl ${m.bg} cursor-pointer hover:opacity-80 transition`}
+                                                    onClick={()=>setTopOrgsBillingFilter(topOrgsBillingFilter===m.label?'all':m.label)}>
+                                                    <div className="flex items-center gap-2">
+                                                        <div className={`w-2.5 h-2.5 rounded-full ${m.color}`}/>
+                                                        <span className={`text-xs font-bold ${m.text}`}>{m.label}</span>
+                                                        {topOrgsBillingFilter===m.label && <span className="text-[9px] text-slate-500">(filtered)</span>}
+                                                    </div>
+                                                    <div className="text-right">
+                                                        <div className={`text-sm font-black ${m.text}`}>{m.count}</div>
+                                                        <div className="text-[10px] text-slate-400">{m.pct}%</div>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                        {topOrgsBillingFilter !== 'all' && (
+                                            <button onClick={()=>setTopOrgsBillingFilter('all')} className="w-full text-[10px] text-slate-500 hover:text-indigo-600 font-semibold py-1 transition cursor-pointer">
+                                                ✕ Clear filter
+                                            </button>
+                                        )}
+                                    </div>
+                                );
+                            })()}
+                        </div>
+                    </div>
+
+                    {/* ── Top Orgs Leaderboard ── */}
+                    <div className="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-700 shadow-sm space-y-4">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                            <div>
+                                <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                                    <Award className="w-4 h-4 text-indigo-500"/>Top Organizations Leaderboard
+                                </h3>
+                                <p className="text-xs text-slate-400 mt-0.5">Highest-consuming tenant organizations. Filter and sort to identify cost leaders or at-risk tenants.</p>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                                {/* Billing Mode Filter */}
                                 <div className="flex bg-slate-100 dark:bg-slate-700/60 p-1 rounded-xl text-xs font-semibold">
-                                    {['7d', '30d', '90d'].map((r) => (
-                                        <button
-                                            key={r}
-                                            onClick={() => setTrendRange(r)}
-                                            className={`px-2.5 py-1 rounded-lg uppercase tracking-wider transition cursor-pointer ${
-                                                trendRange === r
-                                                    ? 'bg-indigo-600 text-white shadow-sm'
-                                                    : 'text-slate-500 hover:text-slate-800 dark:text-slate-300'
-                                            }`}
-                                        >
-                                            {r}
+                                    {['all','PAYG','Prepaid','blocked'].map(f=>(
+                                        <button key={f} onClick={()=>setTopOrgsBillingFilter(f)}
+                                            className={`px-2.5 py-1 rounded-lg capitalize transition cursor-pointer ${topOrgsBillingFilter===f?'bg-white dark:bg-slate-800 text-indigo-600 shadow-sm':'text-slate-500 hover:text-slate-800 dark:text-slate-300'}`}>
+                                            {f==='all'?'All':f}
+                                        </button>
+                                    ))}
+                                </div>
+                                {/* Sort */}
+                                <div className="flex bg-slate-100 dark:bg-slate-700/60 p-1 rounded-xl text-xs font-semibold">
+                                    {[{v:'tokens',label:'Tokens'},{v:'cost',label:'Cost'},{v:'requests',label:'Requests'}].map(s=>(
+                                        <button key={s.v} onClick={()=>setTopOrgsSort(s.v)}
+                                            className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${topOrgsSort===s.v?'bg-white dark:bg-slate-800 text-indigo-600 shadow-sm':'text-slate-500 hover:text-slate-800 dark:text-slate-300'}`}>
+                                            {s.label}
                                         </button>
                                     ))}
                                 </div>
                             </div>
                         </div>
 
-                        {/* Summary Metrics Strip */}
-                        {trendsData?.points && (
-                            <div className="grid grid-cols-3 gap-2 sm:gap-4 bg-slate-50 dark:bg-slate-900/50 p-3 sm:p-4 rounded-xl border border-slate-150 dark:border-slate-750">
-                                <div>
-                                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block truncate">Period Total</span>
-                                    <div className="text-sm sm:text-base font-bold text-slate-800 dark:text-slate-100 mt-0.5 truncate">
-                                        {trendMetric === 'tokens' && `${Number(trendsData.points.reduce((acc, p) => acc + p.total_tokens, 0)).toLocaleString()} tokens`}
-                                        {trendMetric === 'cost' && `$${Number(trendsData.points.reduce((acc, p) => acc + p.cost_usd, 0)).toFixed(2)}`}
-                                        {trendMetric === 'requests' && `${Number(trendsData.points.reduce((acc, p) => acc + p.request_count, 0)).toLocaleString()} calls`}
-                                    </div>
+                        {(() => {
+                            let orgs = topOrgsSort==='cost' ? (topOrgsData?.by_cost||[]) : (topOrgsData?.by_tokens||[]);
+                            if (topOrgsSort==='requests') orgs = [...orgs].sort((a,b)=>(b.request_count||0)-(a.request_count||0));
+                            if (topOrgsBillingFilter==='PAYG') orgs=orgs.filter(o=>o.billing_mode==='PAYG');
+                            else if (topOrgsBillingFilter==='Prepaid') orgs=orgs.filter(o=>o.billing_mode!=='PAYG');
+                            else if (topOrgsBillingFilter==='blocked') orgs=orgs.filter(o=>o.is_blocked);
+
+                            if (!orgs.length) return (
+                                <div className="py-10 text-center text-slate-400 text-xs border border-dashed border-slate-200 dark:border-slate-700 rounded-xl">
+                                    No organizations match the selected filter.
                                 </div>
-                                <div>
-                                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block truncate">Daily Average</span>
-                                    <div className="text-sm sm:text-base font-bold text-slate-800 dark:text-slate-100 mt-0.5 truncate">
-                                        {trendMetric === 'tokens' && `${Math.round(trendsData.points.reduce((acc, p) => acc + p.total_tokens, 0) / (trendsData.points.length || 1)).toLocaleString()} / day`}
-                                        {trendMetric === 'cost' && `$${(trendsData.points.reduce((acc, p) => acc + p.cost_usd, 0) / (trendsData.points.length || 1)).toFixed(2)} / day`}
-                                        {trendMetric === 'requests' && `${Math.round(trendsData.points.reduce((acc, p) => acc + p.request_count, 0) / (trendsData.points.length || 1)).toLocaleString()} / day`}
-                                    </div>
-                                </div>
-                                <div>
-                                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block truncate">Peak Day</span>
-                                    <div className="text-sm sm:text-base font-bold text-indigo-600 dark:text-indigo-400 mt-0.5 truncate">
-                                        {(() => {
-                                            const maxPt = [...trendsData.points].sort((a, b) => {
-                                                const vA = trendMetric === 'tokens' ? a.total_tokens : trendMetric === 'cost' ? a.cost_usd : a.request_count;
-                                                const vB = trendMetric === 'tokens' ? b.total_tokens : trendMetric === 'cost' ? b.cost_usd : b.request_count;
-                                                return vB - vA;
-                                            })[0];
-                                            if (!maxPt) return '—';
-                                            const val = trendMetric === 'tokens' ? `${Number(maxPt.total_tokens).toLocaleString()} tokens` : trendMetric === 'cost' ? `$${Number(maxPt.cost_usd).toFixed(2)}` : `${maxPt.request_count} reqs`;
-                                            return `${val} (${maxPt.date})`;
-                                        })()}
-                                    </div>
-                                </div>
-                            </div>
-                        )}
+                            );
 
-                        {/* Interactive SVG Chart */}
-                        {analyticsLoading ? (
-                            <div className="h-64 flex flex-col items-center justify-center text-slate-400 gap-2">
-                                <RefreshCw className="w-6 h-6 animate-spin text-indigo-500" />
-                                <span className="text-xs">Aggregating time-series metrics...</span>
-                            </div>
-                        ) : trendsData?.points && trendsData.points.length > 0 ? (
-                            <div className="relative pt-2 pb-2">
-                                {(() => {
-                                    const pts = trendsData.points;
-                                    const width = 800;
-                                    const height = 240;
-                                    const paddingLeft = 55;
-                                    const paddingRight = 20;
-                                    const paddingTop = 20;
-                                    const paddingBottom = 35;
-                                    const pw = width - paddingLeft - paddingRight;
-                                    const ph = height - paddingTop - paddingBottom;
-
-                                    const vals = pts.map(p => trendMetric === 'tokens' ? p.total_tokens : trendMetric === 'cost' ? p.cost_usd : p.request_count);
-                                    const maxVal = Math.max(...vals, trendMetric === 'cost' ? 0.01 : 1);
-
-                                    const coords = pts.map((p, i) => {
-                                        const val = trendMetric === 'tokens' ? p.total_tokens : trendMetric === 'cost' ? p.cost_usd : p.request_count;
-                                        const x = paddingLeft + (i / Math.max(pts.length - 1, 1)) * pw;
-                                        const y = paddingTop + ph - (val / maxVal) * ph;
-                                        return { x, y, point: p, val };
-                                    });
-
-                                    const linePath = coords.map((c, i) => `${i === 0 ? 'M' : 'L'} ${c.x.toFixed(1)} ${c.y.toFixed(1)}`).join(' ');
-                                    const areaPath = `${linePath} L ${coords[coords.length - 1].x.toFixed(1)} ${(paddingTop + ph).toFixed(1)} L ${coords[0].x.toFixed(1)} ${(paddingTop + ph).toFixed(1)} Z`;
-
-                                    const gridLevels = [1, 0.66, 0.33, 0];
-
-                                    return (
-                                        <div className="relative">
-                                            <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-64 overflow-visible">
-                                                <defs>
-                                                    <linearGradient id="areaGradient" x1="0" y1="0" x2="0" y2="1">
-                                                        <stop offset="0%" stopColor={trendMetric === 'cost' ? '#10b981' : trendMetric === 'requests' ? '#f59e0b' : '#6366f1'} stopOpacity="0.35" />
-                                                        <stop offset="100%" stopColor={trendMetric === 'cost' ? '#10b981' : trendMetric === 'requests' ? '#f59e0b' : '#6366f1'} stopOpacity="0.0" />
-                                                    </linearGradient>
-                                                </defs>
-
-                                                {/* Horizontal Gridlines & Y labels */}
-                                                {gridLevels.map((lvl, idx) => {
-                                                    const yPos = paddingTop + ph * (1 - lvl);
-                                                    const labelVal = maxVal * lvl;
-                                                    const formattedLabel = trendMetric === 'tokens' 
-                                                        ? (labelVal >= 1000000 ? `${(labelVal / 1000000).toFixed(1)}M` : labelVal >= 1000 ? `${(labelVal / 1000).toFixed(0)}k` : `${Math.round(labelVal)}`)
-                                                        : trendMetric === 'cost'
-                                                        ? `$${labelVal.toFixed(2)}`
-                                                        : `${Math.round(labelVal)}`;
-
-                                                    return (
-                                                        <g key={idx}>
-                                                            <line
-                                                                x1={paddingLeft}
-                                                                y1={yPos}
-                                                                x2={width - paddingRight}
-                                                                y2={yPos}
-                                                                stroke="currentColor"
-                                                                className="text-slate-200 dark:text-slate-700/60"
-                                                                strokeDasharray="3 3"
-                                                            />
-                                                            <text
-                                                                x={paddingLeft - 8}
-                                                                y={yPos + 3}
-                                                                textAnchor="end"
-                                                                className="text-[9px] fill-slate-400 dark:fill-slate-500 font-mono"
-                                                            >
-                                                                {formattedLabel}
-                                                            </text>
-                                                        </g>
-                                                    );
-                                                })}
-
-                                                {/* Area fill */}
-                                                <path d={areaPath} fill="url(#areaGradient)" />
-
-                                                {/* Stroke Line */}
-                                                <path
-                                                    d={linePath}
-                                                    fill="none"
-                                                    stroke={trendMetric === 'cost' ? '#10b981' : trendMetric === 'requests' ? '#f59e0b' : '#6366f1'}
-                                                    strokeWidth="2.5"
-                                                    strokeLinecap="round"
-                                                    strokeLinejoin="round"
-                                                />
-
-                                                {/* Interactive Data Point Dots */}
-                                                {coords.map((c, i) => {
-                                                    const isHovered = hoveredPoint?.date === c.point.date;
-                                                    return (
-                                                        <g key={i} className="cursor-pointer" onMouseEnter={() => setHoveredPoint(c.point)}>
-                                                            {/* Vertical Indicator on hover */}
-                                                            {isHovered && (
-                                                                <line
-                                                                    x1={c.x}
-                                                                    y1={paddingTop}
-                                                                    x2={c.x}
-                                                                    y2={paddingTop + ph}
-                                                                    stroke="#6366f1"
-                                                                    strokeWidth="1.5"
-                                                                    strokeDasharray="2 2"
-                                                                />
-                                                            )}
-                                                            <circle
-                                                                cx={c.x}
-                                                                cy={c.y}
-                                                                r={isHovered ? 5 : (pts.length <= 14 ? 3.5 : 2)}
-                                                                className={isHovered 
-                                                                    ? 'fill-indigo-600 stroke-white stroke-2' 
-                                                                    : (trendMetric === 'cost' ? 'fill-emerald-500' : trendMetric === 'requests' ? 'fill-amber-500' : 'fill-indigo-500')}
-                                                            />
-                                                            {/* Transparent hit area */}
-                                                            <rect
-                                                                x={c.x - (pw / pts.length) / 2}
-                                                                y={paddingTop}
-                                                                width={pw / pts.length}
-                                                                height={ph}
-                                                                fill="transparent"
-                                                            />
-                                                        </g>
-                                                    );
-                                                })}
-
-                                                {/* X Axis Date Labels */}
-                                                {coords.map((c, i) => {
-                                                    const step = Math.max(1, Math.floor(pts.length / 7));
-                                                    if (i % step === 0 || i === pts.length - 1) {
-                                                        const dParts = c.point.date.split('-');
-                                                        const shortDate = dParts.length === 3 ? `${dParts[1]}/${dParts[2]}` : c.point.date;
-                                                        return (
-                                                            <text
-                                                                key={i}
-                                                                x={c.x}
-                                                                y={paddingTop + ph + 18}
-                                                                textAnchor="middle"
-                                                                className="text-[9px] fill-slate-400 dark:fill-slate-500 font-mono"
-                                                            >
-                                                                {shortDate}
-                                                            </text>
-                                                        );
-                                                    }
-                                                    return null;
-                                                })}
-                                            </svg>
-
-                                            {/* Hover Floating Tooltip */}
-                                            {hoveredPoint && (
-                                                <div 
-                                                    className="mt-3 p-3 bg-slate-900 text-white rounded-xl shadow-xl border border-slate-700 text-xs flex flex-wrap items-center justify-between gap-4 animate-in fade-in duration-150"
-                                                >
-                                                    <div className="flex items-center gap-2">
-                                                        <Calendar className="w-4 h-4 text-indigo-400" />
-                                                        <span className="font-bold text-slate-200">{hoveredPoint.date}</span>
-                                                    </div>
-                                                    <div className="flex items-center gap-4">
-                                                        <div>
-                                                            <span className="text-[10px] text-slate-400 block">Total Tokens</span>
-                                                            <span className="font-bold text-indigo-300 font-mono">
-                                                                {Number(hoveredPoint.total_tokens).toLocaleString()}
-                                                            </span>
-                                                        </div>
-                                                        <div>
-                                                            <span className="text-[10px] text-slate-400 block">Prompt / Comp</span>
-                                                            <span className="text-slate-300 font-mono text-[11px]">
-                                                                {Number(hoveredPoint.prompt_tokens).toLocaleString()} / {Number(hoveredPoint.completion_tokens).toLocaleString()}
-                                                            </span>
-                                                        </div>
-                                                        <div>
-                                                            <span className="text-[10px] text-slate-400 block">Cost</span>
-                                                            <span className="font-bold text-emerald-400 font-mono">
-                                                                ${Number(hoveredPoint.cost_usd).toFixed(4)}
-                                                            </span>
-                                                        </div>
-                                                        <div>
-                                                            <span className="text-[10px] text-slate-400 block">Requests</span>
-                                                            <span className="font-bold text-amber-400 font-mono">
-                                                                {hoveredPoint.request_count}
-                                                            </span>
-                                                        </div>
-                                                    </div>
-                                                    <button 
-                                                        onClick={() => setHoveredPoint(null)}
-                                                        className="text-slate-400 hover:text-white text-[10px] px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 transition cursor-pointer"
-                                                    >
-                                                        ✕
-                                                    </button>
-                                                </div>
-                                            )}
-                                        </div>
-                                    );
-                                })()}
-                            </div>
-                        ) : (
-                            <div className="h-48 flex items-center justify-center text-slate-400 text-xs">
-                                No activity recorded for this time range.
-                            </div>
-                        )}
-                    </div>
-
-                    {/* 2. Two Column Grid: Model Distribution + Top Organizations */}
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-                        {/* LEFT: AI Model Usage Distribution */}
-                        <div className="bg-white dark:bg-slate-800 p-5 sm:p-6 rounded-2xl border border-slate-200/80 dark:border-slate-700 shadow-sm space-y-4 flex flex-col justify-between">
-                            <div>
-                                <div className="flex justify-between items-center mb-1">
-                                    <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                                        <PieChart className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-                                        AI Model Usage Distribution
-                                    </h3>
-                                    <span className="text-[10px] text-slate-400 font-mono">
-                                        {modelsData.length} models tracked
-                                    </span>
-                                </div>
-                                <p className="text-xs text-slate-500 dark:text-slate-400">
-                                    Token consumption, cost, and execution share by AI model.
-                                </p>
-                            </div>
-
-                            {modelsData.length === 0 ? (
-                                <div className="py-12 text-center text-slate-400 text-xs">
-                                    No model usage logs recorded yet.
-                                </div>
-                            ) : (
-                                <div className="space-y-3.5 custom-scrollbar max-h-96 overflow-y-auto pr-1">
-                                    {modelsData.map((m, idx) => {
-                                        const colors = [
-                                            { bg: 'bg-indigo-500', badge: 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800' },
-                                            { bg: 'bg-emerald-500', badge: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800' },
-                                            { bg: 'bg-amber-500', badge: 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border-amber-200 dark:border-amber-800' },
-                                            { bg: 'bg-violet-500', badge: 'bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300 border-violet-200 dark:border-violet-800' },
-                                            { bg: 'bg-rose-500', badge: 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300 border-rose-200 dark:border-rose-800' },
-                                            { bg: 'bg-cyan-500', badge: 'bg-cyan-50 text-cyan-700 dark:bg-cyan-950/40 dark:text-cyan-300 border-cyan-200 dark:border-cyan-800' }
-                                        ];
-                                        const color = colors[idx % colors.length];
-
-                                        return (
-                                            <div key={m.model} className="p-3 bg-slate-50 dark:bg-slate-900/40 rounded-xl border border-slate-150 dark:border-slate-750 hover:border-indigo-300 dark:hover:border-indigo-700 transition space-y-2">
-                                                <div className="flex justify-between items-center gap-2">
-                                                    <div className="flex items-center gap-2 min-w-0">
-                                                        <span className={`px-2 py-0.5 rounded-lg text-xs font-mono font-semibold border ${color.badge} truncate`}>
-                                                            {m.model}
-                                                        </span>
-                                                        <span className="text-[10px] text-slate-400 font-mono">
-                                                            {m.request_count} reqs
-                                                        </span>
-                                                    </div>
-                                                    <div className="text-right shrink-0">
-                                                        <span className="text-xs font-bold text-slate-800 dark:text-slate-200 font-mono">
-                                                            {m.percentage}%
-                                                        </span>
-                                                        <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono block">
-                                                            ${Number(m.cost_usd).toFixed(3)}
-                                                        </span>
-                                                    </div>
-                                                </div>
-
-                                                {/* Progress bar */}
-                                                <div className="w-full bg-slate-200 dark:bg-slate-700 h-2 rounded-full overflow-hidden">
-                                                    <div
-                                                        className={`h-full ${color.bg} transition-all duration-500`}
-                                                        style={{ width: `${Math.min(100, Math.max(2, m.percentage))}%` }}
-                                                    />
-                                                </div>
-
-                                                <div className="flex justify-between items-center text-[10px] text-slate-500 font-mono">
-                                                    <span>Prompt: {Number(m.prompt_tokens).toLocaleString()}</span>
-                                                    <span>Comp: {Number(m.completion_tokens).toLocaleString()}</span>
-                                                    <span className="font-semibold text-slate-700 dark:text-slate-300">
-                                                        Total: {Number(m.total_tokens).toLocaleString()}
-                                                    </span>
-                                                </div>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            )}
-                        </div>
-
-                        {/* RIGHT: Top Organizations Leaderboard */}
-                        <div className="bg-white dark:bg-slate-800 p-5 sm:p-6 rounded-2xl border border-slate-200/80 dark:border-slate-700 shadow-sm space-y-4 flex flex-col justify-between">
-                            <div>
-                                <div className="flex justify-between items-center mb-1">
-                                    <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                                        <Award className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-                                        Top Organizations Leaderboard
-                                    </h3>
-                                    {/* Sort Toggle */}
-                                    <div className="flex bg-slate-100 dark:bg-slate-700/60 p-0.5 rounded-lg text-[11px] font-semibold">
-                                        <button
-                                            onClick={() => setTopOrgsSort('tokens')}
-                                            className={`px-2.5 py-0.5 rounded-md transition cursor-pointer ${
-                                                topOrgsSort === 'tokens'
-                                                    ? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-xs'
-                                                    : 'text-slate-500 hover:text-slate-800 dark:text-slate-300'
-                                            }`}
-                                        >
-                                            By Tokens
-                                        </button>
-                                        <button
-                                            onClick={() => setTopOrgsSort('cost')}
-                                            className={`px-2.5 py-0.5 rounded-md transition cursor-pointer ${
-                                                topOrgsSort === 'cost'
-                                                    ? 'bg-white dark:bg-slate-800 text-emerald-600 dark:text-emerald-400 shadow-xs'
-                                                    : 'text-slate-500 hover:text-slate-800 dark:text-slate-300'
-                                            }`}
-                                        >
-                                            By Cost
-                                        </button>
-                                    </div>
-                                </div>
-                                <p className="text-xs text-slate-500 dark:text-slate-400">
-                                    Highest consuming and spending tenant organizations.
-                                </p>
-                            </div>
-
-                            {(!topOrgsData || (topOrgsSort === 'tokens' ? topOrgsData.by_tokens : topOrgsData.by_cost).length === 0) ? (
-                                <div className="py-12 text-center text-slate-400 text-xs">
-                                    No organization consumption records found.
-                                </div>
-                            ) : (
-                                <div className="space-y-2.5 custom-scrollbar max-h-96 overflow-y-auto pr-1">
-                                    {(topOrgsSort === 'tokens' ? topOrgsData.by_tokens : topOrgsData.by_cost).map((org, rank) => {
-                                        return (
-                                            <div
-                                                key={org.organization_name}
-                                                className="p-2.5 bg-slate-50 dark:bg-slate-900/40 rounded-xl border border-slate-150 dark:border-slate-750 flex items-center justify-between gap-3 hover:bg-slate-100 dark:hover:bg-slate-800 transition group"
-                                            >
+                            const maxTok = Math.max(...orgs.map(o=>o.total_tokens||0), 1);
+                            return (
+                                <div className="space-y-2 max-h-96 overflow-y-auto pr-1 custom-scrollbar">
+                                    {orgs.map((org,rank)=>(
+                                        <div key={org.organization_name} className="p-3 bg-slate-50 dark:bg-slate-900/40 rounded-xl border border-slate-100 dark:border-slate-750 hover:border-indigo-200 dark:hover:border-indigo-800 transition group">
+                                            <div className="flex items-center justify-between gap-3">
                                                 {/* Rank + Name */}
                                                 <div className="flex items-center gap-2.5 min-w-0">
-                                                    <span className={`w-6 h-6 rounded-lg text-xs font-bold flex items-center justify-center shrink-0 ${
-                                                        rank === 0
-                                                            ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-300 dark:border-amber-800'
-                                                            : rank === 1
-                                                            ? 'bg-slate-200 text-slate-800 dark:bg-slate-700 dark:text-slate-200'
-                                                            : rank === 2
-                                                            ? 'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
-                                                            : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
-                                                    }`}>
-                                                        #{rank + 1}
-                                                    </span>
+                                                    <span className={`w-7 h-7 rounded-lg text-xs font-bold flex items-center justify-center shrink-0 ${
+                                                        rank===0?'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-300':
+                                                        rank===1?'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200':
+                                                        rank===2?'bg-orange-50 text-orange-700 dark:bg-orange-950/30 dark:text-orange-400':
+                                                        'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+                                                    }`}>#{rank+1}</span>
                                                     <div className="min-w-0">
-                                                        <div className="flex items-center gap-1.5">
-                                                            <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
-                                                                {org.organization_name}
-                                                            </span>
-                                                            <span className={`px-1.5 py-0.2 rounded text-[9px] font-semibold ${
-                                                                org.billing_mode === 'PAYG'
-                                                                    ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300'
-                                                                    : 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300'
-                                                            }`}>
+                                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                                            <span className="text-xs font-bold text-slate-900 dark:text-white truncate">{org.organization_name}</span>
+                                                            <span className={`px-1.5 py-0.2 rounded text-[9px] font-semibold ${org.billing_mode==='PAYG'?'bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300':'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300'}`}>
                                                                 {org.billing_mode}
                                                             </span>
-                                                            {org.is_blocked && (
-                                                                <span className="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300">
-                                                                    BLOCKED
-                                                                </span>
-                                                            )}
+                                                            {org.is_blocked && <span className="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300">BLOCKED</span>}
                                                         </div>
-                                                        <span className="text-[10px] text-slate-400 font-mono block truncate">
-                                                            {Number(org.request_count).toLocaleString()} requests
-                                                        </span>
+                                                        <span className="text-[10px] text-slate-400 font-mono">{Number(org.request_count).toLocaleString()} requests</span>
                                                     </div>
                                                 </div>
-
-                                                {/* Metrics + Inspect Action */}
-                                                <div className="flex items-center gap-3 shrink-0">
-                                                    <div className="text-right">
-                                                        <div className="text-xs font-bold text-slate-900 dark:text-white font-mono">
-                                                            {Number(org.total_tokens).toLocaleString()} <span className="text-[10px] text-slate-400">tok</span>
-                                                        </div>
-                                                        <div className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono font-semibold">
-                                                            ${Number(org.total_cost_usd).toFixed(2)}
-                                                        </div>
+                                                {/* Metrics */}
+                                                <div className="flex items-center gap-4 shrink-0">
+                                                    <div className="text-right hidden sm:block">
+                                                        <div className="text-xs font-bold text-slate-900 dark:text-white font-mono">{Number(org.total_tokens).toLocaleString()} <span className="text-[10px] text-slate-400">tok</span></div>
+                                                        <div className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono">${Number(org.total_cost_usd).toFixed(2)}</div>
                                                     </div>
-                                                    <button
-                                                        onClick={() => handleOpenOrgDrilldown(org.organization_name)}
-                                                        className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 transition cursor-pointer"
-                                                        title="Inspect organization telemetry"
-                                                    >
-                                                        <Eye className="w-4 h-4" />
+                                                    <button onClick={()=>handleOpenOrgDrilldown(org.organization_name)}
+                                                        className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 transition cursor-pointer" title="Inspect org telemetry">
+                                                        <Eye className="w-4 h-4"/>
                                                     </button>
                                                 </div>
                                             </div>
-                                        );
-                                    })}
+                                            {/* Consumption Bar */}
+                                            <div className="mt-2.5 w-full bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full overflow-hidden">
+                                                <div className="h-full bg-indigo-500 transition-all duration-500 rounded-full" style={{width:`${Math.min(100,Math.max(1,(org.total_tokens/maxTok)*100))}%`}}/>
+                                            </div>
+                                        </div>
+                                    ))}
                                 </div>
-                            )}
-                        </div>
+                            );
+                        })()}
                     </div>
 
-                    {/* 3. Operational Health & Alerts Panel */}
-                    <div className="bg-white dark:bg-slate-800 p-5 sm:p-6 rounded-2xl border border-slate-200/80 dark:border-slate-700 shadow-sm space-y-4">
-                        <div className="flex justify-between items-center">
+                    {/* ── Alert & Action Center ── */}
+                    <div className="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-700 shadow-sm space-y-4">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                             <div>
                                 <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                                    <AlertTriangle className="w-5 h-5 text-amber-500" />
-                                    Operational Health & Action Center
+                                    <AlertTriangle className="w-4 h-4 text-amber-500"/>Operational Health &amp; Action Center
                                 </h3>
-                                <p className="text-xs text-slate-500 dark:text-slate-400">
-                                    Live exceptions, limit breaches, low balance alerts, and pending quota approvals requiring Super Admin attention.
-                                </p>
+                                <p className="text-xs text-slate-400 mt-0.5">Live exceptions, limit breaches, low balance warnings, and pending quota approvals.</p>
                             </div>
-                            <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 font-mono">
-                                {alertsData?.total_alerts || 0} alerts active
-                            </span>
+                            <div className="flex items-center gap-2">
+                                <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 font-mono">
+                                    {alertsData?.total_alerts||0} alerts
+                                </span>
+                                {/* Alert Type Filter */}
+                                <div className="flex bg-slate-100 dark:bg-slate-700/60 p-1 rounded-xl text-xs font-semibold">
+                                    {[{v:'all',label:'All'},{v:'critical',label:'Critical'},{v:'warning',label:'Warnings'},{v:'action',label:'Actions'}].map(f=>(
+                                        <button key={f.v} onClick={()=>setAlertTypeFilter(f.v)}
+                                            className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${alertTypeFilter===f.v?'bg-white dark:bg-slate-800 text-indigo-600 shadow-sm':'text-slate-500 hover:text-slate-800 dark:text-slate-300'}`}>
+                                            {f.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
                         </div>
 
                         {(!alertsData || alertsData.total_alerts === 0) ? (
-                            <div className="p-8 text-center bg-slate-50 dark:bg-slate-900/40 rounded-xl border border-slate-150 dark:border-slate-750">
-                                <CheckCircle2 className="w-8 h-8 text-emerald-500 mx-auto mb-2" />
-                                <h4 className="text-sm font-bold text-slate-800 dark:text-slate-200">All Tenant Operations Healthy</h4>
-                                <p className="text-xs text-slate-400 mt-1">No limit breaches, blocked holds, or pending quota requests.</p>
+                            <div className="p-8 text-center bg-emerald-50 dark:bg-emerald-950/20 rounded-xl border border-emerald-200 dark:border-emerald-800">
+                                <CheckCircle2 className="w-8 h-8 text-emerald-500 mx-auto mb-2"/>
+                                <h4 className="text-sm font-bold text-emerald-800 dark:text-emerald-200">All Tenant Operations Healthy</h4>
+                                <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">No limit breaches, blocked holds, or pending quota requests.</p>
                             </div>
                         ) : (
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                {/* CRITICAL ALERTS */}
-                                <div className="space-y-2.5">
-                                    <div className="flex items-center gap-2 text-xs font-bold text-rose-600 dark:text-rose-400 uppercase tracking-wider">
-                                        <Ban className="w-4 h-4" />
-                                        <span>Critical ({alertsData.critical.length})</span>
-                                    </div>
-                                    {alertsData.critical.length === 0 ? (
-                                        <div className="p-3 bg-slate-50 dark:bg-slate-900/30 rounded-xl text-[11px] text-slate-400 border border-slate-150 dark:border-slate-750">
-                                            No critical violations.
+                            <div className="space-y-4">
+                                {/* Critical */}
+                                {(alertTypeFilter==='all'||alertTypeFilter==='critical') && alertsData.critical?.length>0 && (
+                                    <div>
+                                        <div className="flex items-center gap-2 mb-2 text-xs font-bold text-rose-600 dark:text-rose-400 uppercase tracking-wider">
+                                            <Ban className="w-4 h-4"/><span>Critical ({alertsData.critical.length})</span>
                                         </div>
-                                    ) : (
-                                        alertsData.critical.map((item, idx) => (
-                                            <div key={idx} className="p-3 bg-rose-50/60 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800/60 rounded-xl space-y-1.5">
-                                                <div className="flex justify-between items-start">
-                                                    <span className="text-xs font-bold text-rose-900 dark:text-rose-200">
-                                                        {item.organization_name}
-                                                    </span>
-                                                    <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-rose-200 text-rose-800 dark:bg-rose-900 dark:text-rose-200 uppercase">
-                                                        {item.alert_type}
-                                                    </span>
+                                        <div className="space-y-2">
+                                            {alertsData.critical.map((item,idx)=>(
+                                                <div key={idx} className="p-3 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 rounded-xl flex items-start justify-between gap-3">
+                                                    <div className="min-w-0">
+                                                        <div className="flex items-center gap-2 flex-wrap">
+                                                            <span className="text-xs font-bold text-rose-900 dark:text-rose-200">{item.organization_name}</span>
+                                                            <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-rose-200 text-rose-800 dark:bg-rose-900 dark:text-rose-200 uppercase">{item.alert_type}</span>
+                                                        </div>
+                                                        <p className="text-xs text-rose-700 dark:text-rose-300 font-medium mt-1">{item.message}</p>
+                                                    </div>
+                                                    <button onClick={()=>{setSearchQuery(item.organization_name);setActiveTab('wallets');}}
+                                                        className="shrink-0 text-[11px] text-rose-700 dark:text-rose-300 font-semibold hover:underline flex items-center gap-1 cursor-pointer whitespace-nowrap">
+                                                        Manage <ChevronRight className="w-3 h-3"/>
+                                                    </button>
                                                 </div>
-                                                <p className="text-xs text-rose-700 dark:text-rose-300 font-medium">
-                                                    {item.message}
-                                                </p>
-                                                <button
-                                                    onClick={() => {
-                                                        setSearchQuery(item.organization_name);
-                                                        setActiveTab('wallets');
-                                                    }}
-                                                    className="text-[11px] text-rose-700 dark:text-rose-300 font-semibold hover:underline flex items-center gap-1 mt-1 cursor-pointer"
-                                                >
-                                                    Manage in Wallets <ChevronRight className="w-3 h-3" />
-                                                </button>
-                                            </div>
-                                        ))
-                                    )}
-                                </div>
-
-                                {/* WARNING ALERTS */}
-                                <div className="space-y-2.5">
-                                    <div className="flex items-center gap-2 text-xs font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider">
-                                        <AlertTriangle className="w-4 h-4" />
-                                        <span>Warnings ({alertsData.warning.length})</span>
-                                    </div>
-                                    {alertsData.warning.length === 0 ? (
-                                        <div className="p-3 bg-slate-50 dark:bg-slate-900/30 rounded-xl text-[11px] text-slate-400 border border-slate-150 dark:border-slate-750">
-                                            No threshold warnings.
+                                            ))}
                                         </div>
-                                    ) : (
-                                        alertsData.warning.map((item, idx) => (
-                                            <div key={idx} className="p-3 bg-amber-50/60 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 rounded-xl space-y-1.5">
-                                                <div className="flex justify-between items-start">
-                                                    <span className="text-xs font-bold text-amber-900 dark:text-amber-200">
-                                                        {item.organization_name}
-                                                    </span>
-                                                    <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-amber-200 text-amber-800 dark:bg-amber-900 dark:text-amber-200 uppercase">
-                                                        {item.alert_type}
-                                                    </span>
-                                                </div>
-                                                <p className="text-xs text-amber-700 dark:text-amber-300 font-medium">
-                                                    {item.message}
-                                                </p>
-                                                <button
-                                                    onClick={() => {
-                                                        setSearchQuery(item.organization_name);
-                                                        setActiveTab('wallets');
-                                                    }}
-                                                    className="text-[11px] text-amber-700 dark:text-amber-300 font-semibold hover:underline flex items-center gap-1 mt-1 cursor-pointer"
-                                                >
-                                                    Inspect Wallet <ChevronRight className="w-3 h-3" />
-                                                </button>
-                                            </div>
-                                        ))
-                                    )}
-                                </div>
-
-                                {/* ACTION REQUIRED (QUOTA REQUESTS) */}
-                                <div className="space-y-2.5">
-                                    <div className="flex items-center gap-2 text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">
-                                        <Clock className="w-4 h-4" />
-                                        <span>Action Required ({alertsData.action_required.length})</span>
                                     </div>
-                                    {alertsData.action_required.length === 0 ? (
-                                        <div className="p-3 bg-slate-50 dark:bg-slate-900/30 rounded-xl text-[11px] text-slate-400 border border-slate-150 dark:border-slate-750">
-                                            No pending requests.
+                                )}
+                                {/* Warnings */}
+                                {(alertTypeFilter==='all'||alertTypeFilter==='warning') && alertsData.warning?.length>0 && (
+                                    <div>
+                                        <div className="flex items-center gap-2 mb-2 text-xs font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider">
+                                            <AlertTriangle className="w-4 h-4"/><span>Warnings ({alertsData.warning.length})</span>
                                         </div>
-                                    ) : (
-                                        alertsData.action_required.map((item, idx) => (
-                                            <div key={idx} className="p-3 bg-indigo-50/60 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800/60 rounded-xl space-y-1.5">
-                                                <div className="flex justify-between items-start">
-                                                    <span className="text-xs font-bold text-indigo-900 dark:text-indigo-200">
-                                                        {item.organization_name}
-                                                    </span>
-                                                    <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-indigo-200 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200 uppercase">
-                                                        QUOTA REQUEST
-                                                    </span>
+                                        <div className="space-y-2">
+                                            {alertsData.warning.map((item,idx)=>(
+                                                <div key={idx} className="p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl flex items-start justify-between gap-3">
+                                                    <div className="min-w-0">
+                                                        <div className="flex items-center gap-2 flex-wrap">
+                                                            <span className="text-xs font-bold text-amber-900 dark:text-amber-200">{item.organization_name}</span>
+                                                            <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-amber-200 text-amber-800 dark:bg-amber-900 dark:text-amber-200 uppercase">{item.alert_type}</span>
+                                                        </div>
+                                                        <p className="text-xs text-amber-700 dark:text-amber-300 font-medium mt-1">{item.message}</p>
+                                                    </div>
+                                                    <button onClick={()=>{setSearchQuery(item.organization_name);setActiveTab('wallets');}}
+                                                        className="shrink-0 text-[11px] text-amber-700 dark:text-amber-300 font-semibold hover:underline flex items-center gap-1 cursor-pointer whitespace-nowrap">
+                                                        Inspect <ChevronRight className="w-3 h-3"/>
+                                                    </button>
                                                 </div>
-                                                <p className="text-xs text-indigo-700 dark:text-indigo-300 font-medium">
-                                                    {item.message}
-                                                </p>
-                                                <button
-                                                    onClick={() => setActiveTab('payg')}
-                                                    className="text-[11px] text-indigo-700 dark:text-indigo-300 font-semibold hover:underline flex items-center gap-1 mt-1 cursor-pointer"
-                                                >
-                                                    Review & Decision <ChevronRight className="w-3 h-3" />
-                                                </button>
-                                            </div>
-                                        ))
-                                    )}
-                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                {/* Action Required */}
+                                {(alertTypeFilter==='all'||alertTypeFilter==='action') && alertsData.action_required?.length>0 && (
+                                    <div>
+                                        <div className="flex items-center gap-2 mb-2 text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">
+                                            <Clock className="w-4 h-4"/><span>Action Required ({alertsData.action_required.length})</span>
+                                        </div>
+                                        <div className="space-y-2">
+                                            {alertsData.action_required.map((item,idx)=>(
+                                                <div key={idx} className="p-3 bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 rounded-xl flex items-start justify-between gap-3">
+                                                    <div className="min-w-0">
+                                                        <div className="flex items-center gap-2 flex-wrap">
+                                                            <span className="text-xs font-bold text-indigo-900 dark:text-indigo-200">{item.organization_name}</span>
+                                                            <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-indigo-200 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200 uppercase">QUOTA REQUEST</span>
+                                                        </div>
+                                                        <p className="text-xs text-indigo-700 dark:text-indigo-300 font-medium mt-1">{item.message}</p>
+                                                    </div>
+                                                    <button onClick={()=>setActiveTab('payg')}
+                                                        className="shrink-0 text-[11px] text-indigo-700 dark:text-indigo-300 font-semibold hover:underline flex items-center gap-1 cursor-pointer whitespace-nowrap">
+                                                        Review <ChevronRight className="w-3 h-3"/>
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                {(alertTypeFilter!=='all') && (
+                                    alertsData[alertTypeFilter==='warning'?'warning':alertTypeFilter==='critical'?'critical':'action_required']?.length===0 && (
+                                        <div className="p-4 text-center text-slate-400 text-xs border border-dashed border-slate-200 dark:border-slate-700 rounded-xl">
+                                            No {alertTypeFilter} alerts.
+                                        </div>
+                                    )
+                                )}
                             </div>
                         )}
                     </div>
                 </div>
             )}
+
 
             {/* TAB 1: Organization Wallets */}
             {activeTab === 'wallets' && (
