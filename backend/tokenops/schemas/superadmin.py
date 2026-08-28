@@ -132,6 +132,10 @@ class AnalyticsOverview(BaseModel):
     total_tokens_consumed: int
     total_requests: int
     total_historical_cost: float
+    low_balance_organizations: int = 0
+    pending_quota_requests: int = 0
+    payg_limit_breaches: int = 0
+    total_payg_current_spend_usd: float = 0.0
 
 class DailyUsageView(BaseModel):
     date: str
@@ -149,3 +153,56 @@ class OrganizationAnalytics(BaseModel):
     token_burn: int
     remaining_balance: int
     total_historical_cost: float
+
+class TrendPoint(BaseModel):
+    date: str
+    total_tokens: int
+    prompt_tokens: int
+    completion_tokens: int
+    request_count: int
+    cost_usd: float
+
+class UsageTrendsResponse(BaseModel):
+    range: str
+    from_date: str
+    to_date: str
+    points: List[TrendPoint]
+
+class ModelUsageView(BaseModel):
+    model: str
+    total_tokens: int
+    prompt_tokens: int
+    completion_tokens: int
+    request_count: int
+    cost_usd: float
+    percentage: float = 0.0
+
+class TopOrganizationItem(BaseModel):
+    organization_name: str
+    organization_id: Optional[str] = None
+    billing_mode: str
+    total_tokens: int
+    request_count: int
+    total_cost_usd: float
+    payg_spend_usd: float = 0.0
+    remaining_tokens: int = 0
+    is_blocked: bool = False
+
+class TopOrganizationsResponse(BaseModel):
+    by_tokens: List[TopOrganizationItem]
+    by_cost: List[TopOrganizationItem]
+
+class AlertItem(BaseModel):
+    organization_name: str
+    organization_id: Optional[str] = None
+    alert_type: str
+    severity: str
+    message: str
+    metric_value: Optional[str] = None
+    created_at: Optional[str] = None
+
+class OperationalAlertsResponse(BaseModel):
+    critical: List[AlertItem]
+    warning: List[AlertItem]
+    action_required: List[AlertItem]
+    total_alerts: int

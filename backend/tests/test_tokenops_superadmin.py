@@ -432,3 +432,217 @@ def test_f4_quota_approval_rollback_on_failure(services, session, monkeypatch):
     ledger = session.query(TokenTransactionLedger).filter_by(reference_id=f"quota_req_{req.id}").first()
     assert ledger is None
 
+
+# ── Phase 1: Super Admin Analytics Dashboard Tests ───────────────────────────
+
+from models import AIUsageLog
+from datetime import datetime, timedelta
+
+def test_phase1_analytics_trends_7d_30d_90d_and_zero_fill(services, session):
+    _, _, _, analytics_admin = services
+    today = datetime.utcnow().date()
+
+    # Create logs on specific dates
+    log_today = AIUsageLog(
+        organization_name="test_org",
+        model="gpt-4o",
+        prompt_tokens=1000,
+        completion_tokens=500,
+        cost=0.015,
+        created_at=datetime.combine(today, datetime.min.time()) + timedelta(hours=10)
+    )
+    log_2d_ago = AIUsageLog(
+        organization_name="test_org",
+        model="gpt-4o",
+        prompt_tokens=2000,
+        completion_tokens=1000,
+        cost=0.030,
+        created_at=datetime.combine(today - timedelta(days=2), datetime.min.time()) + timedelta(hours=12)
+    )
+    session.add_all([log_today, log_2d_ago])
+    session.commit()
+
+    # 1. Test 7-day range
+    res_7d = analytics_admin.get_trends(range_str="7d")
+    assert res_7d.range == "7d"
+    assert len(res_7d.points) == 7
+    assert res_7d.to_date == today.isoformat()
+    assert res_7d.from_date == (today - timedelta(days=6)).isoformat()
+
+    # Check zero-fill for yesterday
+    yesterday_str = (today - timedelta(days=1)).isoformat()
+    yesterday_pt = next((p for p in res_7d.points if p.date == yesterday_str), None)
+    assert yesterday_pt is not None
+    assert yesterday_pt.total_tokens == 0
+    assert yesterday_pt.request_count == 0
+    assert yesterday_pt.cost_usd == 0.0
+
+    # Check today's point
+    today_str = today.isoformat()
+    today_pt = next((p for p in res_7d.points if p.date == today_str), None)
+    assert today_pt is not None
+    assert today_pt.total_tokens == 1500
+    assert today_pt.prompt_tokens == 1000
+    assert today_pt.completion_tokens == 500
+    assert today_pt.request_count == 1
+    assert today_pt.cost_usd == 0.015
+
+    # 2. Test 30-day range
+    res_30d = analytics_admin.get_trends(range_str="30d")
+    assert res_30d.range == "30d"
+    assert len(res_30d.points) == 30
+
+    # 3. Test 90-day range
+    res_90d = analytics_admin.get_trends(range_str="90d")
+    assert res_90d.range == "90d"
+    assert len(res_90d.points) == 90
+
+
+def test_phase1_model_usage_aggregation_and_percentages(services, session):
+    _, _, _, analytics_admin = services
+
+    log1 = AIUsageLog(
+        organization_name="test_org",
+        model="gpt-4o",
+        prompt_tokens=4000,
+        completion_tokens=2000,
+        cost=0.06,
+        created_at=datetime.utcnow()
+    )
+    log2 = AIUsageLog(
+        organization_name="test_org",
+        model="claude-3-5-sonnet",
+        prompt_tokens=2500,
+        completion_tokens=1500,
+        cost=0.04,
+        created_at=datetime.utcnow()
+    )
+    session.add_all([log1, log2])
+    session.commit()
+
+    models = analytics_admin.get_model_usage()
+    assert len(models) == 2
+
+    # Assert sorted by total tokens descending: gpt-4o (6000), claude-3-5-sonnet (4000)
+    assert models[0].model == "gpt-4o"
+    assert models[0].total_tokens == 6000
+    assert models[0].percentage == 60.0
+
+    assert models[1].model == "claude-3-5-sonnet"
+    assert models[1].total_tokens == 4000
+    assert models[1].percentage == 40.0
+
+
+def test_phase1_top_organizations_ranking(services, session):
+    _, _, _, analytics_admin = services
+
+    # Create Org 1: High tokens, low cost
+    s1 = OrganizationUsageSummary(
+        organization_name="high_tokens_org",
+        total_prompt_tokens=50000,
+        total_completion_tokens=50000,
+        total_tokens=100000,
+        total_cost=Decimal("5.00"),
+        request_count=20
+    )
+    w1 = OrganizationWallet(organization_name="high_tokens_org", remaining_tokens=50000, payg_enabled=False)
+
+    # Create Org 2: Moderate tokens, high cost
+    s2 = OrganizationUsageSummary(
+        organization_name="high_cost_org",
+        total_prompt_tokens=20000,
+        total_completion_tokens=20000,
+        total_tokens=40000,
+        total_cost=Decimal("25.00"),
+        request_count=50
+    )
+    w2 = OrganizationWallet(organization_name="high_cost_org", remaining_tokens=0, payg_enabled=True, payg_current_spend_usd=Decimal("25.00"))
+
+    session.add_all([s1, s2, w1, w2])
+    session.commit()
+
+    top_res = analytics_admin.get_top_organizations(limit=2)
+    
+    # By Tokens
+    assert top_res.by_tokens[0].organization_name == "high_tokens_org"
+    assert top_res.by_tokens[0].total_tokens == 100000
+
+    # By Cost
+    assert top_res.by_cost[0].organization_name == "high_cost_org"
+    assert top_res.by_cost[0].total_cost_usd == 25.00
+    assert top_res.by_cost[0].billing_mode == "PAYG"
+
+
+def test_phase1_operational_alerts(services, session):
+    _, _, _, analytics_admin = services
+
+    # 1. Blocked Org (Critical)
+    w_blocked = OrganizationWallet(organization_name="blocked_org", is_blocked=True)
+
+    # 2. Hard limit breach (Critical)
+    w_hard = OrganizationWallet(
+        organization_name="hard_breach_org",
+        payg_enabled=True,
+        payg_current_spend_usd=Decimal("150.00"),
+        payg_hard_limit_usd=Decimal("100.00")
+    )
+
+    # 3. Soft limit warning (Warning)
+    w_soft = OrganizationWallet(
+        organization_name="soft_warning_org",
+        payg_enabled=True,
+        payg_current_spend_usd=Decimal("85.00"),
+        payg_soft_limit_usd=Decimal("100.00")
+    )
+
+    # 4. Low prepaid balance (Warning)
+    w_low = OrganizationWallet(
+        organization_name="low_balance_org",
+        payg_enabled=False,
+        remaining_tokens=50000
+    )
+
+    # 5. Pending quota request (Action Required)
+    req = TokenQuotaRequest(
+        organization_name="quota_org",
+        request_type=QuotaRequestType.TOKEN_INCREASE.value,
+        requested_tokens=50000,
+        requested_by=2,
+        status=QuotaRequestStatus.REQUESTED.value
+    )
+
+    session.add_all([w_blocked, w_hard, w_soft, w_low, req])
+    session.commit()
+
+    alerts = analytics_admin.get_operational_alerts()
+    assert alerts.total_alerts >= 5
+
+    critical_orgs = [a.organization_name for a in alerts.critical]
+    assert "blocked_org" in critical_orgs
+    assert "hard_breach_org" in critical_orgs
+
+    warning_orgs = [a.organization_name for a in alerts.warning]
+    assert "soft_warning_org" in warning_orgs
+    assert "low_balance_org" in warning_orgs
+
+    action_orgs = [a.organization_name for a in alerts.action_required]
+    assert "quota_org" in action_orgs
+
+
+def test_phase1_analytics_rbac_endpoints():
+    from tokenops.api.superadmin.dependencies import verify_super_admin
+    import asyncio
+
+    # Super Admin passes
+    super_admin_user = User(id=1, is_super_admin=True)
+    res = asyncio.run(verify_super_admin(super_admin_user))
+    assert res.id == 1
+
+    # Non-super admin is rejected with HTTP 403
+    normal_user = User(id=2, is_super_admin=False)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(verify_super_admin(normal_user))
+    assert exc.value.status_code == 403
+    assert exc.value.detail == "INSUFFICIENT_PRIVILEGES"
+
+

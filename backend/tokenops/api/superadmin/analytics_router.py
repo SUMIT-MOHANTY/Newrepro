@@ -27,6 +27,52 @@ def get_overview(
     except Exception as e:
         return BaseAPIResponse(success=False, error={"code": "UNKNOWN_ERROR", "message": str(e)})
 
+@router.get("/trends", response_model=BaseAPIResponse)
+def get_usage_trends(
+    range: Optional[str] = Query("30d"),
+    current_user: User = Depends(verify_super_admin),
+    analytics_service: AdminAnalyticsService = Depends(get_admin_analytics_service)
+):
+    try:
+        data = analytics_service.get_trends(range_str=range)
+        return BaseAPIResponse(success=True, data=data)
+    except Exception as e:
+        return BaseAPIResponse(success=False, error={"code": "UNKNOWN_ERROR", "message": str(e)})
+
+@router.get("/models", response_model=BaseAPIResponse)
+def get_model_usage(
+    current_user: User = Depends(verify_super_admin),
+    analytics_service: AdminAnalyticsService = Depends(get_admin_analytics_service)
+):
+    try:
+        data = analytics_service.get_model_usage()
+        return BaseAPIResponse(success=True, data=data)
+    except Exception as e:
+        return BaseAPIResponse(success=False, error={"code": "UNKNOWN_ERROR", "message": str(e)})
+
+@router.get("/top-organizations", response_model=BaseAPIResponse)
+def get_top_organizations(
+    limit: Optional[int] = Query(10, ge=1, le=100),
+    current_user: User = Depends(verify_super_admin),
+    analytics_service: AdminAnalyticsService = Depends(get_admin_analytics_service)
+):
+    try:
+        data = analytics_service.get_top_organizations(limit=limit)
+        return BaseAPIResponse(success=True, data=data)
+    except Exception as e:
+        return BaseAPIResponse(success=False, error={"code": "UNKNOWN_ERROR", "message": str(e)})
+
+@router.get("/alerts", response_model=BaseAPIResponse)
+def get_operational_alerts(
+    current_user: User = Depends(verify_super_admin),
+    analytics_service: AdminAnalyticsService = Depends(get_admin_analytics_service)
+):
+    try:
+        data = analytics_service.get_operational_alerts()
+        return BaseAPIResponse(success=True, data=data)
+    except Exception as e:
+        return BaseAPIResponse(success=False, error={"code": "UNKNOWN_ERROR", "message": str(e)})
+
 @router.get("/organization/{organization_name}", response_model=BaseAPIResponse)
 def get_organization_analytics(
     organization_name: str,

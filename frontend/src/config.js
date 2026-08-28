@@ -183,6 +183,11 @@ export const API_ENDPOINTS = {
     TOKENOPS_ADMIN_QUOTA_REJECT: (id) => `${API_BASE_URL}/api/tokenops/admin/payg/quota-requests/${id}/reject`,
     TOKENOPS_ADMIN_LIMITS: `${API_BASE_URL}/api/tokenops/admin/payg/limits`,
     TOKENOPS_ADMIN_ANALYTICS: `${API_BASE_URL}/api/tokenops/admin/analytics/overview`,
+    TOKENOPS_ADMIN_ANALYTICS_TRENDS: (range = '30d') => `${API_BASE_URL}/api/tokenops/admin/analytics/trends?range=${range}`,
+    TOKENOPS_ADMIN_ANALYTICS_MODELS: `${API_BASE_URL}/api/tokenops/admin/analytics/models`,
+    TOKENOPS_ADMIN_ANALYTICS_TOP_ORGS: (limit = 10) => `${API_BASE_URL}/api/tokenops/admin/analytics/top-organizations?limit=${limit}`,
+    TOKENOPS_ADMIN_ANALYTICS_ALERTS: `${API_BASE_URL}/api/tokenops/admin/analytics/alerts`,
+    TOKENOPS_ADMIN_ANALYTICS_ORG: (orgName) => `${API_BASE_URL}/api/tokenops/admin/analytics/organization/${encodeURIComponent(orgName)}`,
     TOKENOPS_ADMIN_GRACE_PERIOD: `${API_BASE_URL}/api/tokenops/admin/wallet/grace-period`,
     TOKENOPS_ADMIN_GRACE_PERIOD_BULK: `${API_BASE_URL}/api/tokenops/admin/wallet/grace-period/bulk`,
 
