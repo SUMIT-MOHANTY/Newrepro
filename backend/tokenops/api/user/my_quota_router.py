@@ -67,9 +67,11 @@ def get_my_quota(
         for log in recent_logs
     ]
 
+    from tokenops.repositories.pricing import PricingRepository
     from tokenops.services.pricing_service import PricingService
     from config import settings
-    pricing_service = PricingService(db)
+    pricing_repo = PricingRepository(db)
+    pricing_service = PricingService(pricing_repo)
     reference_price = float(pricing_service.get_price(settings.ai_model))
 
     return BaseAPIResponse(

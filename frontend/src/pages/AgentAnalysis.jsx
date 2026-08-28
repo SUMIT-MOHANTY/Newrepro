@@ -402,13 +402,32 @@ const formatAnalysisError = (error) => {
         // Not a valid JSON string or parse error, fallback to raw message
     }
 
+    // Strip any leading "Error:" or "Exception:" or similar prefixes
+    errorMessage = errorMessage.replace(/^(Error|Exception|Fail|Failure|Failed):\s*/i, '');
+
     // Check for specific error patterns and provide custom messages
+    if (errorMessage.includes('TOKEN_EXHAUSTED')) {
+        return 'Your token quota has been exhausted. Please contact your organization administrator to allocate more tokens.';
+    }
+
+    if (errorMessage.includes('PAYG_HARD_LIMIT_REACHED')) {
+        return "Your organization's PAYG spending limit has been reached. Please contact your administrator.";
+    }
+
+    if (errorMessage.includes('PAYG access suspended') || errorMessage.includes('overdue') || errorMessage.includes('grace period')) {
+        return 'Payment required. Your organization has overdue invoices exceeding its grace period.';
+    }
+
     if (errorMessage.includes('ORGANIZATION_BLOCKED')) {
         return 'Your organization has been blocked. Please contact the administrator or review your billing status.';
     }
 
+    if (errorMessage.includes('USER_BLOCKED')) {
+        return 'Your user account has been blocked. Please contact your organization administrator.';
+    }
+
     if (errorMessage.includes('PAYMENT_REQUIRED') || errorMessage.includes('402')) {
-        return 'Payment required. Your organization has overdue invoices exceeding its grace period.';
+        return 'Payment required or token quota exhausted. Please check your token balance.';
     }
 
     if (errorMessage.includes('Analysis job not found') || errorMessage.includes('job not found')) {
@@ -2242,7 +2261,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
             const errMsg = {
                 id: `err_${Date.now()}`,
                 role: 'assistant',
-                content: friendlyErr.startsWith('Error:') ? friendlyErr : `Update failed: ${friendlyErr}`,
+                content: friendlyErr,
                 isError: true,
                 timestamp: new Date().toISOString(),
             };
@@ -2286,7 +2305,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                 const errMsg = {
                     id: `err_${Date.now()}`,
                     role: 'assistant',
-                    content: friendlyErr.startsWith('Error:') ? friendlyErr : `Failed to generate techniques: ${friendlyErr}`,
+                    content: friendlyErr,
                     isError: true,
                     timestamp: new Date().toISOString(),
                 };
@@ -2379,7 +2398,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
             const errMsg = {
                 id: `err_${Date.now()}`,
                 role: 'assistant',
-                content: friendlyErr.startsWith('Error:') ? friendlyErr : `Error: ${friendlyErr}`,
+                content: friendlyErr,
                 isError: true,
                 timestamp: new Date().toISOString(),
             };
@@ -2434,7 +2453,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
             const errMsg = {
                 id: `err_${Date.now()}`,
                 role: 'assistant',
-                content: friendlyErr.startsWith('Error:') ? friendlyErr : `Technique application failed: ${friendlyErr}`,
+                content: friendlyErr,
                 isError: true,
                 timestamp: new Date().toISOString(),
             };
@@ -2494,7 +2513,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
             const errMsg = {
                 id: `qa_err_${Date.now()}`,
                 role: 'assistant',
-                content: friendlyErr.startsWith('Error:') ? friendlyErr : `Failed to apply answers: ${friendlyErr}`,
+                content: friendlyErr,
                 isError: true,
                 timestamp: new Date().toISOString(),
             };

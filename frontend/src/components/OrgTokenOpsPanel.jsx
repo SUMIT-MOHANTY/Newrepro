@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
     Coins, Users, ShieldAlert, ArrowRightLeft, PlusCircle, MinusCircle, 
-    RefreshCw, AlertCircle, CheckCircle2, DollarSign, Activity, FileText, Ban, Check
+    RefreshCw, AlertCircle, CheckCircle2, DollarSign, Activity, FileText, Ban, Check, MoreVertical
 } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 
@@ -15,6 +15,7 @@ export default function OrgTokenOpsPanel({ user }) {
     const [actionLoading, setActionLoading] = useState(false);
     const [error, setError] = useState('');
     const [successMessage, setSuccessMessage] = useState('');
+    const [openDropdownUserId, setOpenDropdownUserId] = useState(null);
     const [activeSubTab, setActiveSubTab] = useState('users'); // 'users' | 'requests' | 'ledger' | 'reports'
 
     // Modal States
@@ -170,8 +171,9 @@ export default function OrgTokenOpsPanel({ user }) {
             if (!res.ok || !data.success) {
                 throw new Error(data.error?.message || 'Failed to allocate tokens.');
             }
-            setSuccessMessage(`Successfully allocated ${Number(allocateModal.amount).toLocaleString()} tokens to User #${allocateModal.userId}`);
-            setAllocateModal({ open: false, userId: null, amount: '', remarks: '' });
+            const targetName = allocateModal.userName || usersList.find(u => String(u.user_id) === String(allocateModal.userId))?.name || `User #${allocateModal.userId}`;
+            setSuccessMessage(`Successfully allocated ${Number(allocateModal.amount).toLocaleString()} tokens to ${targetName}`);
+            setAllocateModal({ open: false, userId: null, userName: '', amount: '', remarks: '' });
             fetchData();
         } catch (err) {
             setError(err.message);
@@ -188,7 +190,7 @@ export default function OrgTokenOpsPanel({ user }) {
         setSuccessMessage('');
         try {
             const res = await fetch(API_ENDPOINTS.TOKENOPS_ORG_REALLOCATE, {
-                method: 'POST',
+                method: 'PUT',
                 headers: getHeaders(),
                 body: JSON.stringify({
                     source_user_id: parseInt(reallocateModal.fromUserId, 10),
@@ -200,8 +202,11 @@ export default function OrgTokenOpsPanel({ user }) {
             if (!res.ok || !data.success) {
                 throw new Error(data.error?.message || 'Failed to transfer tokens.');
             }
-            setSuccessMessage(`Successfully transferred ${Number(reallocateModal.amount).toLocaleString()} tokens from User #${reallocateModal.fromUserId} to User #${reallocateModal.toUserId}`);
-            setReallocateModal({ open: false, fromUserId: null, toUserId: '', amount: '' });
+            const sourceName = reallocateModal.fromUserName || usersList.find(u => String(u.user_id) === String(reallocateModal.fromUserId))?.name || `User #${reallocateModal.fromUserId}`;
+            const destUser = usersList.find(u => String(u.user_id) === String(reallocateModal.toUserId));
+            const destName = destUser ? (destUser.name || destUser.email) : `User #${reallocateModal.toUserId}`;
+            setSuccessMessage(`Successfully transferred ${Number(reallocateModal.amount).toLocaleString()} tokens from ${sourceName} to ${destName}`);
+            setReallocateModal({ open: false, fromUserId: null, fromUserName: '', toUserId: '', amount: '' });
             fetchData();
         } catch (err) {
             setError(err.message);
@@ -229,8 +234,9 @@ export default function OrgTokenOpsPanel({ user }) {
             if (!res.ok || !data.success) {
                 throw new Error(data.error?.message || 'Failed to revoke tokens.');
             }
-            setSuccessMessage(`Successfully revoked ${Number(revokeModal.amount).toLocaleString()} tokens back to Org Reserve.`);
-            setRevokeModal({ open: false, userId: null, amount: '' });
+            const revokeTargetName = revokeModal.userName || usersList.find(u => String(u.user_id) === String(revokeModal.userId))?.name || `User #${revokeModal.userId}`;
+            setSuccessMessage(`Successfully revoked ${Number(revokeModal.amount).toLocaleString()} tokens from ${revokeTargetName} back to Org Reserve.`);
+            setRevokeModal({ open: false, userId: null, userName: '', amount: '' });
             fetchData();
         } catch (err) {
             setError(err.message);
@@ -256,7 +262,10 @@ export default function OrgTokenOpsPanel({ user }) {
             if (!res.ok || !data.success) {
                 throw new Error(data.error?.message || 'Failed to toggle block status.');
             }
-            setSuccessMessage(`User #${userId} status updated successfully.`);
+            const targetUser = usersList.find(u => String(u.user_id) === String(userId));
+            const userName = targetUser ? (targetUser.name || targetUser.email) : `User #${userId}`;
+            const actionStr = currentBlocked ? 'unblocked' : 'blocked';
+            setSuccessMessage(`Successfully ${actionStr} ${userName}.`);
             fetchData();
         } catch (err) {
             setError(err.message);
@@ -430,10 +439,13 @@ export default function OrgTokenOpsPanel({ user }) {
                             <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200">Team Member Quotas</h3>
                             <p className="text-xs text-slate-500 mt-0.5">Divide and manage token quotas allocated to individual users in your organization.</p>
                         </div>
-                        <div className="text-xs text-slate-500">
+                        <div className="text-xs text-slate-500 dark:text-slate-400">
                             Available in Org Reserve:{' '}
                             <span className="font-bold text-indigo-600 dark:text-indigo-400 font-mono">
-                                {Number(reserve?.reserved_tokens || 0).toLocaleString()} tokens
+                                {formatCurrency(reserve?.reserved_tokens || 0, reserve?.reference_price || 0.000007)}
+                            </span>
+                            <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono ml-1">
+                                ({Number(reserve?.reserved_tokens || 0).toLocaleString()} tokens)
                             </span>
                         </div>
                     </div>
@@ -458,7 +470,7 @@ export default function OrgTokenOpsPanel({ user }) {
                                         </td>
                                     </tr>
                                 ) : (
-                                    usersList.map((u) => (
+                                    usersList.map((u, index) => (
                                         <tr key={u.user_id} className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition">
                                             <td className="px-6 py-4">
                                                 <div className="flex items-center gap-3">
@@ -503,39 +515,73 @@ export default function OrgTokenOpsPanel({ user }) {
                                                     </span>
                                                 )}
                                             </td>
-                                            <td className="px-6 py-4 text-right space-x-2">
-                                                <button
-                                                    onClick={() => setAllocateModal({ open: true, userId: u.user_id, userName: u.name || u.email, amount: '', remarks: '' })}
-                                                    className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:hover:bg-indigo-900 dark:text-indigo-300 rounded-lg text-xs font-semibold inline-flex items-center gap-1 transition"
-                                                >
-                                                    <PlusCircle className="w-3.5 h-3.5" />
-                                                    Allocate
-                                                </button>
-                                                <button
-                                                    onClick={() => setReallocateModal({ open: true, fromUserId: u.user_id, fromUserName: u.name || u.email, toUserId: '', amount: '' })}
-                                                    className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-slate-700 dark:hover:bg-slate-600 dark:text-slate-300 rounded-lg text-xs font-semibold inline-flex items-center gap-1 transition"
-                                                >
-                                                    <ArrowRightLeft className="w-3.5 h-3.5" />
-                                                    Transfer
-                                                </button>
-                                                <button
-                                                    onClick={() => setRevokeModal({ open: true, userId: u.user_id, userName: u.name || u.email, amount: '' })}
-                                                    className="px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-700 dark:bg-amber-950 dark:hover:bg-amber-900 dark:text-amber-300 rounded-lg text-xs font-semibold inline-flex items-center gap-1 transition"
-                                                >
-                                                    <MinusCircle className="w-3.5 h-3.5" />
-                                                    Revoke
-                                                </button>
-                                                <button
-                                                    onClick={() => handleToggleBlock(u.user_id, u.is_blocked)}
-                                                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1 transition ${
-                                                        u.is_blocked
-                                                            ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
-                                                            : 'bg-rose-50 hover:bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300'
-                                                    }`}
-                                                >
-                                                    {u.is_blocked ? <Check className="w-3.5 h-3.5" /> : <Ban className="w-3.5 h-3.5" />}
-                                                    {u.is_blocked ? 'Unblock' : 'Block'}
-                                                </button>
+                                             <td className="px-6 py-4 text-right whitespace-nowrap relative">
+                                                <div className="flex items-center justify-end gap-1.5">
+                                                    <button
+                                                        onClick={() => setAllocateModal({ open: true, userId: u.user_id, userName: u.name || u.email, amount: '', remarks: '' })}
+                                                        className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold inline-flex items-center gap-1 transition shadow-sm"
+                                                    >
+                                                        <PlusCircle className="w-3.5 h-3.5" />
+                                                        Allocate
+                                                    </button>
+                                                    <div className="relative">
+                                                        <button
+                                                            onClick={() => setOpenDropdownUserId(openDropdownUserId === u.user_id ? null : u.user_id)}
+                                                            className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 rounded-lg transition"
+                                                        >
+                                                            <MoreVertical className="w-4 h-4" />
+                                                        </button>
+                                                        {openDropdownUserId === u.user_id && (
+                                                            <>
+                                                                <div 
+                                                                    className="fixed inset-0 z-10" 
+                                                                    onClick={() => setOpenDropdownUserId(null)} 
+                                                                />
+                                                                <div className={`absolute right-0 w-44 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-lg py-1.5 z-20 text-left ${
+                                                                    index >= usersList.length - 2 && usersList.length > 2
+                                                                        ? 'bottom-full mb-1'
+                                                                        : 'mt-1'
+                                                                }`}>
+                                                                    <button
+                                                                        onClick={() => {
+                                                                            setOpenDropdownUserId(null);
+                                                                            setReallocateModal({ open: true, fromUserId: u.user_id, fromUserName: u.name || u.email, toUserId: '', amount: '' });
+                                                                        }}
+                                                                        className="w-full px-4 py-2 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 flex items-center gap-2 transition"
+                                                                    >
+                                                                        <ArrowRightLeft className="w-3.5 h-3.5 text-slate-500" />
+                                                                        Transfer Quota
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={() => {
+                                                                            setOpenDropdownUserId(null);
+                                                                            setRevokeModal({ open: true, userId: u.user_id, userName: u.name || u.email, amount: u.remaining_tokens || '' });
+                                                                        }}
+                                                                        className="w-full px-4 py-2 text-xs font-semibold text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/20 flex items-center gap-2 transition"
+                                                                    >
+                                                                        <MinusCircle className="w-3.5 h-3.5 text-amber-500" />
+                                                                        Revoke Quota
+                                                                    </button>
+                                                                    <div className="border-t border-slate-100 dark:border-slate-700 my-1" />
+                                                                    <button
+                                                                        onClick={() => {
+                                                                            setOpenDropdownUserId(null);
+                                                                            handleToggleBlock(u.user_id, u.is_blocked);
+                                                                        }}
+                                                                        className={`w-full px-4 py-2 text-xs font-semibold flex items-center gap-2 transition ${
+                                                                            u.is_blocked
+                                                                                ? 'text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/20'
+                                                                                : 'text-rose-700 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/20'
+                                                                        }`}
+                                                                    >
+                                                                        {u.is_blocked ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Ban className="w-3.5 h-3.5 text-rose-500" />}
+                                                                        {u.is_blocked ? 'Unblock User' : 'Block User'}
+                                                                    </button>
+                                                                </div>
+                                                            </>
+                                                        )}
+                                                    </div>
+                                                </div>
                                             </td>
                                         </tr>
                                     ))
@@ -735,13 +781,16 @@ export default function OrgTokenOpsPanel({ user }) {
 
             {/* MODAL 1: Allocate Modal */}
             {allocateModal.open && (
-                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                    <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-md w-full p-6 border border-slate-200 dark:border-slate-700 shadow-2xl">
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4">
+                    <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-md w-full p-6 border border-slate-200 dark:border-slate-700 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
                         <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">
                             Allocate Tokens from Reserve
                         </h3>
                         <p className="text-sm text-slate-500 mb-4">
-                            Assign token quota to User #{allocateModal.userId}. (Available in Reserve: {Number(reserve?.reserved_tokens || 0).toLocaleString()})
+                            Assign token quota to <span className="font-semibold text-slate-800 dark:text-slate-200">{allocateModal.userName || `User #${allocateModal.userId}`}</span>.
+                            <span className="block text-xs mt-1 text-slate-400">
+                                Available in Reserve: <span className="font-semibold">{formatCurrency(reserve?.reserved_tokens || 0, reserve?.reference_price || 0.000007)}</span> ({Number(reserve?.reserved_tokens || 0).toLocaleString()} tokens)
+                            </span>
                         </p>
                         <form onSubmit={handleAllocate} className="space-y-4">
                             <div>
@@ -756,8 +805,13 @@ export default function OrgTokenOpsPanel({ user }) {
                                     value={allocateModal.amount}
                                     onChange={(e) => setAllocateModal({ ...allocateModal, amount: e.target.value })}
                                     placeholder="e.g. 50000"
-                                    className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white"
+                                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all font-mono"
                                 />
+                                {allocateModal.amount && (
+                                    <div className="text-[11px] text-indigo-600 dark:text-indigo-400 font-semibold mt-1">
+                                        Value: {formatCurrency(Number(allocateModal.amount), reserve?.reference_price || 0.000007)}
+                                    </div>
+                                )}
                             </div>
                             <div>
                                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
@@ -768,21 +822,21 @@ export default function OrgTokenOpsPanel({ user }) {
                                     value={allocateModal.remarks}
                                     onChange={(e) => setAllocateModal({ ...allocateModal, remarks: e.target.value })}
                                     placeholder="Monthly sprint quota"
-                                    className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white"
+                                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all"
                                 />
                             </div>
                             <div className="flex justify-end gap-3 mt-6">
                                 <button
                                     type="button"
-                                    onClick={() => setAllocateModal({ open: false, userId: null, amount: '', remarks: '' })}
-                                    className="px-4 py-2 text-sm text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl"
+                                    onClick={() => setAllocateModal({ open: false, userId: null, userName: '', amount: '', remarks: '' })}
+                                    className="px-4 py-2 text-sm font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl transition"
                                 >
                                     Cancel
                                 </button>
                                 <button
                                     type="submit"
                                     disabled={actionLoading}
-                                    className="px-4 py-2 text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl"
+                                    className="px-4 py-2 text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-md transition"
                                 >
                                     {actionLoading ? 'Allocating...' : 'Confirm Allocation'}
                                 </button>
@@ -794,27 +848,34 @@ export default function OrgTokenOpsPanel({ user }) {
 
             {/* MODAL 2: Reallocate / Transfer Modal */}
             {reallocateModal.open && (
-                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                    <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-md w-full p-6 border border-slate-200 dark:border-slate-700 shadow-2xl">
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4">
+                    <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-md w-full p-6 border border-slate-200 dark:border-slate-700 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
                         <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">
                             Transfer Token Quota
                         </h3>
                         <p className="text-sm text-slate-500 mb-4">
-                            Transfer tokens from User #{reallocateModal.fromUserId} to another user.
+                            Transfer tokens from <span className="font-semibold text-slate-800 dark:text-slate-200">{reallocateModal.fromUserName || `User #${reallocateModal.fromUserId}`}</span> to another team member.
                         </p>
                         <form onSubmit={handleReallocate} className="space-y-4">
                             <div>
                                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                                    Target User ID
+                                    Target Organization Member
                                 </label>
-                                <input
-                                    type="number"
+                                <select
                                     required
                                     value={reallocateModal.toUserId}
                                     onChange={(e) => setReallocateModal({ ...reallocateModal, toUserId: e.target.value })}
-                                    placeholder="e.g. 2"
-                                    className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white"
-                                />
+                                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all"
+                                >
+                                    <option value="" disabled>Select target member...</option>
+                                    {usersList
+                                        .filter(user => user.user_id !== reallocateModal.fromUserId)
+                                        .map(user => (
+                                            <option key={user.user_id} value={user.user_id}>
+                                                {user.name || user.email || `User #${user.user_id}`} ({user.email})
+                                            </option>
+                                        ))}
+                                </select>
                             </div>
                             <div>
                                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
@@ -827,21 +888,26 @@ export default function OrgTokenOpsPanel({ user }) {
                                     value={reallocateModal.amount}
                                     onChange={(e) => setReallocateModal({ ...reallocateModal, amount: e.target.value })}
                                     placeholder="e.g. 10000"
-                                    className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white"
+                                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all font-mono"
                                 />
+                                {reallocateModal.amount && (
+                                    <div className="text-[11px] text-indigo-600 dark:text-indigo-400 font-semibold mt-1">
+                                        Value: {formatCurrency(Number(reallocateModal.amount), reserve?.reference_price || 0.000007)}
+                                    </div>
+                                )}
                             </div>
                             <div className="flex justify-end gap-3 mt-6">
                                 <button
                                     type="button"
-                                    onClick={() => setReallocateModal({ open: false, fromUserId: null, toUserId: '', amount: '' })}
-                                    className="px-4 py-2 text-sm text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl"
+                                    onClick={() => setReallocateModal({ open: false, fromUserId: null, fromUserName: '', toUserId: '', amount: '' })}
+                                    className="px-4 py-2 text-sm font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl transition"
                                 >
                                     Cancel
                                 </button>
                                 <button
                                     type="submit"
                                     disabled={actionLoading}
-                                    className="px-4 py-2 text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl"
+                                    className="px-4 py-2 text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-md transition"
                                 >
                                     {actionLoading ? 'Transferring...' : 'Confirm Transfer'}
                                 </button>
@@ -853,13 +919,13 @@ export default function OrgTokenOpsPanel({ user }) {
 
             {/* MODAL 3: Revoke Modal */}
             {revokeModal.open && (
-                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                    <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-md w-full p-6 border border-slate-200 dark:border-slate-700 shadow-2xl">
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4">
+                    <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-md w-full p-6 border border-slate-200 dark:border-slate-700 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
                         <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">
                             Revoke Tokens to Org Reserve
                         </h3>
                         <p className="text-sm text-slate-500 mb-4">
-                            Reclaim unused token quota from {revokeModal.userName ? <span className="font-semibold text-slate-700 dark:text-slate-300">{revokeModal.userName}</span> : `User #${revokeModal.userId}`} back to the organization reserve.
+                            Reclaim unused token quota from <span className="font-semibold text-slate-800 dark:text-slate-200">{revokeModal.userName || `User #${revokeModal.userId}`}</span> back to the organization reserve.
                         </p>
                         <form onSubmit={handleRevoke} className="space-y-4">
                             <div>
@@ -873,21 +939,26 @@ export default function OrgTokenOpsPanel({ user }) {
                                     value={revokeModal.amount}
                                     onChange={(e) => setRevokeModal({ ...revokeModal, amount: e.target.value })}
                                     placeholder="e.g. 15000"
-                                    className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono"
+                                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-amber-500 focus:outline-none transition-all font-mono"
                                 />
+                                {revokeModal.amount && (
+                                    <div className="text-[11px] text-amber-600 dark:text-amber-400 font-semibold mt-1">
+                                        Value: {formatCurrency(Number(revokeModal.amount), reserve?.reference_price || 0.000007)}
+                                    </div>
+                                )}
                             </div>
                             <div className="flex justify-end gap-3 mt-6">
                                 <button
                                     type="button"
                                     onClick={() => setRevokeModal({ open: false, userId: null, userName: '', amount: '' })}
-                                    className="px-4 py-2 text-sm text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl"
+                                    className="px-4 py-2 text-sm font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl transition"
                                 >
                                     Cancel
                                 </button>
                                 <button
                                     type="submit"
                                     disabled={actionLoading}
-                                    className="px-4 py-2 text-sm font-semibold bg-amber-600 hover:bg-amber-700 text-white rounded-xl"
+                                    className="px-4 py-2 text-sm font-semibold bg-amber-600 hover:bg-amber-700 text-white rounded-xl shadow-md transition"
                                 >
                                     {actionLoading ? 'Revoking...' : 'Confirm Revocation'}
                                 </button>
@@ -899,8 +970,8 @@ export default function OrgTokenOpsPanel({ user }) {
 
             {/* MODAL 4: Submit Quota Request Modal */}
             {requestModal.open && (
-                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                    <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-md w-full p-6 border border-slate-200 dark:border-slate-700 shadow-2xl">
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4">
+                    <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-md w-full p-6 border border-slate-200 dark:border-slate-700 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
                         <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-1 flex items-center gap-2">
                             <Coins className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
                             Request Token Quota from Super Admin
@@ -953,8 +1024,13 @@ export default function OrgTokenOpsPanel({ user }) {
                                         value={requestModal.amount}
                                         onChange={(e) => setRequestModal({ ...requestModal, amount: e.target.value })}
                                         placeholder="e.g. 500000"
-                                        className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono"
+                                        className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all"
                                     />
+                                    {requestModal.amount && (
+                                        <div className="text-[11px] text-indigo-600 dark:text-indigo-400 font-semibold mt-1">
+                                            Value: {formatCurrency(Number(requestModal.amount), reserve?.reference_price || 0.000007)}
+                                        </div>
+                                    )}
                                     <p className="text-[11px] text-slate-400 mt-1">
                                         Upon Super Admin approval, this amount will be credited to your Org Reserve for you to divide to users.
                                     </p>
@@ -970,8 +1046,8 @@ export default function OrgTokenOpsPanel({ user }) {
                                     required
                                     value={requestModal.remarks}
                                     onChange={(e) => setRequestModal({ ...requestModal, remarks: e.target.value })}
-                                    placeholder="e.g. Onboarding 5 new analysts for Q4 BRD reviews..."
-                                    className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white text-xs"
+                                    placeholder="e.g. Onboarding 5 new analysts for BRD reviews..."
+                                    className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all"
                                 />
                             </div>
 
@@ -979,14 +1055,14 @@ export default function OrgTokenOpsPanel({ user }) {
                                 <button
                                     type="button"
                                     onClick={() => setRequestModal({ open: false, requestType: 'TOKEN_INCREASE', amount: '', remarks: '' })}
-                                    className="px-4 py-2 text-sm text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl"
+                                    className="px-4 py-2 text-sm font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl transition"
                                 >
                                     Cancel
                                 </button>
                                 <button
                                     type="submit"
                                     disabled={actionLoading}
-                                    className="px-4 py-2 text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-sm"
+                                    className="px-4 py-2 text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-md transition"
                                 >
                                     {actionLoading ? 'Submitting...' : 'Submit Request'}
                                 </button>
