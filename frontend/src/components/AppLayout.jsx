@@ -4,7 +4,7 @@ import { API_ENDPOINTS, API_BASE_URL } from '../config';
 import { clearAuthData } from '../utils/auth';
 import { customError } from '../utils/modalHelpers';
 import { useModal } from '../contexts/ModalContext';
-import { Menu, Settings, Moon, Sun, Lock, Mail, ShieldAlert, CheckCircle, BookOpen, Coins } from 'lucide-react';
+import { Menu, Settings, Moon, Sun, Lock, Mail, ShieldAlert, CheckCircle, BookOpen, Coins, AlertCircle } from 'lucide-react';
 import Sidebar from './Sidebar';
 import RoadmapHeader from './RoadmapHeader';
 import AgentsPage from './AgentsPage';
@@ -338,10 +338,8 @@ export default function AppLayout({ children }) {
 
     // Fetch user token quota on mount and route changes
     useEffect(() => {
-        if (user) {
-            fetchUserQuota();
-        }
-    }, [user, location.pathname, fetchUserQuota]);
+        fetchUserQuota();
+    }, [location.pathname, fetchUserQuota]);
 
     // Evaluate RBAC access synchronously to prevent render flashes
     const hasAccessError = useMemo(() => {
@@ -1375,25 +1373,41 @@ export default function AppLayout({ children }) {
                                 )}
 
                                 {/* User Token Quota Header Indicator (For Regular Users & Org Admins, not Super Admin) */}
-                                {!user?.is_super_admin && userQuota && (
-                                    <button
-                                        type="button"
-                                        onClick={() => setIsQuotaModalOpen(true)}
-                                        className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-500/15 hover:bg-indigo-500/25 text-white rounded-md border border-indigo-400/30 text-xs font-semibold transition cursor-pointer shadow-sm"
-                                        title="Click to view detailed token quota & cost breakdown"
-                                    >
-                                        <Coins className="w-3.5 h-3.5 text-amber-400" />
-                                        {userQuota.is_payg ? (
-                                            <span className="font-mono text-purple-300">⚡ PAYG Active</span>
-                                        ) : (
-                                            <span className="font-mono flex items-center gap-1">
-                                                <span>{new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format((userQuota.remaining_tokens || 0) * (userQuota.reference_price || 0.000007))}</span>
-                                                <span className="text-white/40">/</span>
-                                                <span>{new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format((userQuota.allocated_tokens || 0) * (userQuota.reference_price || 0.000007))}</span>
-                                            </span>
-                                        )}
-                                    </button>
-                                )}
+                                {!user?.is_super_admin && userQuota && (() => {
+                                    const isQuotaExhausted = !userQuota.is_payg && (userQuota.remaining_tokens || 0) <= 0;
+                                    return (
+                                        <button
+                                            type="button"
+                                            onClick={() => setIsQuotaModalOpen(true)}
+                                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md border text-xs font-semibold transition cursor-pointer shadow-md ${
+                                                isQuotaExhausted
+                                                    ? 'bg-rose-500/15 border-rose-500 text-rose-100 shadow-[0_0_12px_rgba(244,63,94,0.35)] hover:bg-rose-500/25'
+                                                    : 'bg-indigo-500/15 hover:bg-indigo-500/25 text-white border-indigo-400/30'
+                                            }`}
+                                            title={isQuotaExhausted ? "Your token quota is exhausted! Click to view details" : "Click to view detailed token quota & cost breakdown"}
+                                        >
+                                            {isQuotaExhausted ? (
+                                                <AlertCircle className="w-3.5 h-3.5 text-rose-400 animate-bounce" />
+                                            ) : (
+                                                <Coins className="w-3.5 h-3.5 text-amber-400" />
+                                            )}
+                                            {userQuota.is_payg ? (
+                                                <span className="font-mono text-purple-300">⚡ PAYG Active</span>
+                                            ) : (
+                                                <span className="font-mono flex items-center gap-1">
+                                                    <span>{new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format((userQuota.remaining_tokens || 0) * (userQuota.reference_price || 0.000007))}</span>
+                                                    <span className={isQuotaExhausted ? "text-rose-400/60 font-bold" : "text-white/40"}>/</span>
+                                                    <span>{new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format((userQuota.allocated_tokens || 0) * (userQuota.reference_price || 0.000007))}</span>
+                                                </span>
+                                            )}
+                                            {isQuotaExhausted && (
+                                                <span className="ml-1.5 px-1 py-0.5 rounded bg-rose-500 text-white text-[9px] font-extrabold tracking-wider uppercase shadow-sm shadow-rose-950">
+                                                    Exhausted
+                                                </span>
+                                            )}
+                                        </button>
+                                    );
+                                })()}
 
                                 {/* User Docs Button */}
                                 <button
