@@ -696,7 +696,7 @@ export default function SuperAdminTokenOps() {
                                                             <div className="flex items-center justify-between text-[10px] text-slate-500">
                                                                 <span>Limits (S/H):</span>
                                                                 <span className="font-mono">
-                                                                    {org.payg_soft_limit_usd ? `$${Number(org.payg_soft_limit_usd).toFixed(0)}` : '∞'} / {org.payg_hard_limit_usd ? `$${Number(org.payg_hard_limit_usd).toFixed(0)}` : '∞'}
+                                                                    {org.payg_soft_limit_usd ? `$${Number(org.payg_soft_limit_usd).toFixed(2)}` : '∞'} / {org.payg_hard_limit_usd ? `$${Number(org.payg_hard_limit_usd).toFixed(2)}` : '∞'}
                                                                 </span>
                                                             </div>
                                                             {org.payg_billing_email && (
