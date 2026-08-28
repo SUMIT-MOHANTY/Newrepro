@@ -133,6 +133,8 @@ class WalletService:
         """
         if amount <= 0:
             raise ValueError("Amount must be positive")
+        if from_user_id == to_user_id:
+            raise ValueError("Source and destination users must be different")
 
         with self._tx():
             if not self.idempotency.create_processing_record(request_id):

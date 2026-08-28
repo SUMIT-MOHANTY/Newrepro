@@ -84,6 +84,32 @@ with engine.connect() as conn:
             if "usage_status" not in ai_columns:
                 print("Migrating database: Adding usage_status column to ai_usage_logs")
                 conn.execute(text("ALTER TABLE ai_usage_logs ADD COLUMN usage_status VARCHAR NOT NULL DEFAULT 'COMPLETED'"))
+
+        # Ensure organization_wallet has payg_grace_period_months and other required columns
+        ow_cursor = conn.execute(text("PRAGMA table_info(organization_wallet)"))
+        ow_columns = [row[1] for row in ow_cursor.fetchall()]
+        if ow_columns:
+            if "payg_grace_period_months" not in ow_columns:
+                print("Migrating database: Adding payg_grace_period_months column to organization_wallet")
+                conn.execute(text("ALTER TABLE organization_wallet ADD COLUMN payg_grace_period_months INTEGER NOT NULL DEFAULT 3"))
+            if "payg_reserved_spend_usd" not in ow_columns:
+                print("Migrating database: Adding payg_reserved_spend_usd column to organization_wallet")
+                conn.execute(text("ALTER TABLE organization_wallet ADD COLUMN payg_reserved_spend_usd NUMERIC(20, 8) NOT NULL DEFAULT 0.0"))
+            if "payg_billing_email" not in ow_columns:
+                print("Migrating database: Adding payg_billing_email column to organization_wallet")
+                conn.execute(text("ALTER TABLE organization_wallet ADD COLUMN payg_billing_email VARCHAR"))
+            if "payg_soft_limit_usd" not in ow_columns:
+                print("Migrating database: Adding payg_soft_limit_usd column to organization_wallet")
+                conn.execute(text("ALTER TABLE organization_wallet ADD COLUMN payg_soft_limit_usd NUMERIC(10, 2)"))
+            if "payg_hard_limit_usd" not in ow_columns:
+                print("Migrating database: Adding payg_hard_limit_usd column to organization_wallet")
+                conn.execute(text("ALTER TABLE organization_wallet ADD COLUMN payg_hard_limit_usd NUMERIC(10, 2)"))
+            if "payg_current_spend_usd" not in ow_columns:
+                print("Migrating database: Adding payg_current_spend_usd column to organization_wallet")
+                conn.execute(text("ALTER TABLE organization_wallet ADD COLUMN payg_current_spend_usd NUMERIC(20, 8) NOT NULL DEFAULT 0.0"))
+            if "organization_id" not in ow_columns:
+                print("Migrating database: Adding organization_id column to organization_wallet")
+                conn.execute(text("ALTER TABLE organization_wallet ADD COLUMN organization_id VARCHAR(36)"))
     except Exception as e:
         print(f"Database migration check skipped: {e}")
         

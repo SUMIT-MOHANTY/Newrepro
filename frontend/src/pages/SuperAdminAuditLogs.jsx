@@ -2,11 +2,33 @@ import React, { useState, useEffect } from 'react';
 import { Activity, RefreshCw, AlertCircle, Search, Building2, User, Clock, ChevronLeft, ChevronRight } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 
+const TOKENOPS_ACTIONS = new Set([
+  'PURCHASE_TOKENS',
+  'ALLOCATE_TOKENS',
+  'REALLOCATE_TOKENS',
+  'REVOKE_TOKENS',
+  'REQUEST_QUOTA',
+  'APPROVE_QUOTA_REQUEST',
+  'REJECT_QUOTA_REQUEST',
+  'ENABLE_PAYG',
+  'DISABLE_PAYG',
+  'UPDATE_PAYG_LIMITS',
+  'UPDATE_MODEL_PRICING',
+  'CREATE_MODEL_PRICING',
+  'BLOCK_ORG',
+  'UNBLOCK_ORG',
+  'BLOCK_USER',
+  'UNBLOCK_USER',
+  'SET_GRACE_PERIOD',
+  'BULK_SET_GRACE_PERIOD'
+]);
+
 export default function SuperAdminAuditLogs() {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('ALL'); // 'ALL' | 'TOKENOPS'
 
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 12;
@@ -34,12 +56,22 @@ export default function SuperAdminAuditLogs() {
     fetchLogs();
   }, []);
 
-  const filteredLogs = logs.filter(l => 
-    (l.email || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (l.organization_name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (l.action || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (l.path || '').toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const isTokenOpsLog = (log) => {
+    const act = (log.action || '').toUpperCase();
+    const pth = (log.path || '').toLowerCase();
+    return TOKENOPS_ACTIONS.has(act) || pth.includes('/tokenops') || act.includes('TOKEN') || act.includes('PAYG') || act.includes('QUOTA') || act.includes('PRICING');
+  };
+
+  const filteredLogs = logs.filter(l => {
+    if (categoryFilter === 'TOKENOPS' && !isTokenOpsLog(l)) return false;
+    const matchesSearch = (
+      (l.email || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (l.organization_name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (l.action || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (l.path || '').toLowerCase().includes(searchQuery.toLowerCase())
+    );
+    return matchesSearch;
+  });
 
   const totalPages = Math.ceil(filteredLogs.length / itemsPerPage) || 1;
   const paginatedLogs = filteredLogs.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
@@ -101,15 +133,41 @@ export default function SuperAdminAuditLogs() {
                 Real-time security and operations log across all platform organizations.
               </p>
             </div>
-            <div className="relative w-full sm:w-64">
-              <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
-              <input
-                type="text"
-                placeholder="Search by user, org, action..."
-                value={searchQuery}
-                onChange={e => { setSearchQuery(e.target.value); setCurrentPage(1); }}
-                className="w-full pl-8 pr-3 py-1.5 bg-slate-800/60 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-400 focus:outline-none focus:border-purple-500"
-              />
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center rounded-lg bg-slate-800/80 p-0.5 border border-slate-700">
+                <button
+                  onClick={() => { setCategoryFilter('ALL'); setCurrentPage(1); }}
+                  className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${
+                    categoryFilter === 'ALL'
+                      ? 'bg-purple-600 text-white shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  All Activity
+                </button>
+                <button
+                  onClick={() => { setCategoryFilter('TOKENOPS'); setCurrentPage(1); }}
+                  className={`px-3 py-1 text-xs font-semibold rounded-md transition-all flex items-center gap-1.5 ${
+                    categoryFilter === 'TOKENOPS'
+                      ? 'bg-purple-600 text-white shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <span>🪙</span>
+                  Token Operations
+                </button>
+              </div>
+
+              <div className="relative w-full sm:w-64">
+                <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Search by user, org, action..."
+                  value={searchQuery}
+                  onChange={e => { setSearchQuery(e.target.value); setCurrentPage(1); }}
+                  className="w-full pl-8 pr-3 py-1.5 bg-slate-800/60 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-400 focus:outline-none focus:border-purple-500"
+                />
+              </div>
             </div>
           </div>
 

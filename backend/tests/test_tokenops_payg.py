@@ -217,7 +217,7 @@ def test_payg_usage_separation(env):
     assert wallet.reserved_tokens == 10000
     assert wallet.remaining_tokens == 10000
     assert u_wallet.remaining_tokens == 2000
-    assert u_wallet.consumed_tokens == 0
+    assert u_wallet.consumed_tokens == 1500  # Tracks user consumption in PAYG mode
     
     # Invariant: PAYG spend is tracked
     expected_cost = (1000 + 500) * 0.00003  # $0.045
