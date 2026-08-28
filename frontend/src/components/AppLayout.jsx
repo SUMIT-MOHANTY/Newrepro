@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { API_ENDPOINTS, API_BASE_URL } from '../config';
-import { clearAuthData } from '../utils/auth';
+import { clearAuthData, clearTenantScopedState } from '../utils/auth';
 import { customError } from '../utils/modalHelpers';
 import { useModal } from '../contexts/ModalContext';
 import { Menu, Settings, Moon, Sun, Lock, Mail, ShieldAlert, CheckCircle, BookOpen, Coins, AlertCircle } from 'lucide-react';
@@ -119,13 +119,21 @@ export default function AppLayout({ children }) {
                 if (data.success && data.data) {
                     setUserQuota(data.data);
                 }
+            } else if (res.status === 403) {
+                const errData = await res.json().catch(() => ({}));
+                if (errData.detail === 'ORGANIZATION_SELECTION_REQUIRED' || (typeof errData.detail === 'string' && errData.detail.includes('ORGANIZATION_SELECTION_REQUIRED'))) {
+                    setUserQuota(null);
+                    clearTenantScopedState();
+                    navigate('/login');
+                    return;
+                }
             }
         } catch (err) {
             console.warn('Failed to fetch user token quota:', err);
         } finally {
             setIsQuotaLoading(false);
         }
-    }, []);
+    }, [navigate]);
 
     // Global AI configuration (shared across pages)
     const [aiConfig, setAiConfig] = useState(() => {
@@ -541,10 +549,14 @@ export default function AppLayout({ children }) {
             byGovToken ||
             byGovId ||
             byGovName ||
-            projects[0];
+            projects[0] ||
+            null;
 
         if (fallback?.key && fallback.key !== selectedProjectKey) {
             queueProjectSelection(fallback.key);
+        } else if (!fallback && selectedProjectKey) {
+            queueProjectSelection('');
+            localStorage.removeItem(PROJECT_STORAGE_KEY);
         }
     }, [projects, selectedProjectKey, location.pathname, isNewProjectMode]);
 

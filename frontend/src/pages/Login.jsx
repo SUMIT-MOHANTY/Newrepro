@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { Mail, Lock, ArrowRight, Loader2, ShieldCheck, Eye, EyeOff, Sparkles, Sun, Moon } from 'lucide-react';
 import { API_BASE_URL, API_ENDPOINTS } from '../config';
 import { sanitizeErrorMessage } from '../utils/errorHandling';
+import { clearTenantScopedState } from '../utils/auth';
 import logo from '../assets/logo.png';
 import bourntecLogo from '../assets/bourntec_logo.png';
 import OrganizationSelect from './OrganizationSelect';
@@ -157,6 +158,7 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
                 return;
             }
 
+            clearTenantScopedState();
             localStorage.setItem('token', data.access_token);
             await handlePostLoginRedirect(data.access_token);
         } catch {
@@ -172,6 +174,7 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
                 organizations={orgs}
                 tempToken={tempToken}
                 onSelectComplete={async (finalToken) => {
+                    clearTenantScopedState();
                     localStorage.setItem('token', finalToken);
                     setRequiresSelection(false);
                     await handlePostLoginRedirect(finalToken);

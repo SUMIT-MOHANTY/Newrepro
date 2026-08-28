@@ -73,6 +73,14 @@ export const fetchRoadmapStep = async (projectKey) => {
     if (taskToken) headers['x-task-token'] = taskToken;
     const res = await fetch(API_ENDPOINTS.GOVERNANCE_ROADMAP_STEP(projectKey), { headers });
     if (res.status === 404) return null;
+    if (res.status === 403) {
+        const errPayload = await res.json().catch(() => ({}));
+        if (errPayload?.detail === 'CROSS_TENANT_PROJECT_ACCESS_DENIED' || (typeof errPayload?.detail === 'string' && errPayload.detail.includes('CROSS_TENANT_PROJECT_ACCESS_DENIED'))) {
+            localStorage.removeItem('status_dashboard_selected_project_key');
+            removeCachedTaskToken(projectKey);
+            throw new Error('Project belongs to another organization. Please select a valid project.');
+        }
+    }
     if (!res.ok) throw new Error('Failed to fetch roadmap step');
     return res.json();
 };
@@ -91,6 +99,14 @@ export const deleteProjectByIdentifier = async (identifier) => {
     }
 
     const payload = await res.json().catch(() => ({}));
+    if (res.status === 403) {
+        if (payload?.detail === 'CROSS_TENANT_PROJECT_ACCESS_DENIED' || (typeof payload?.detail === 'string' && payload.detail.includes('CROSS_TENANT_PROJECT_ACCESS_DENIED'))) {
+            localStorage.removeItem('status_dashboard_selected_project_key');
+            removeCachedTaskToken(identifier);
+            throw new Error('Project belongs to another organization. Please select a valid project.');
+        }
+    }
+
     if (!res.ok) {
         throw new Error(payload?.detail || 'Failed to delete project');
     }

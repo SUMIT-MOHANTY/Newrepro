@@ -33,8 +33,7 @@ export default function OrgTokenOpsPanel({ user }) {
 
     const getHeaders = () => ({
         'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'X-Organization': orgName
+        'Content-Type': 'application/json'
     });
 
     const fetchData = async () => {
@@ -703,6 +702,8 @@ export default function OrgTokenOpsPanel({ user }) {
                                     <th className="px-6 py-4 font-semibold">Type</th>
                                     <th className="px-6 py-4 font-semibold">User</th>
                                     <th className="px-6 py-4 font-semibold">Token Delta</th>
+                                    <th className="px-6 py-4 font-semibold">Balance After</th>
+                                    <th className="px-6 py-4 font-semibold">PAYG Cost (USD)</th>
                                     <th className="px-6 py-4 font-semibold">Remarks / Ref</th>
                                     <th className="px-6 py-4 font-semibold">Timestamp</th>
                                 </tr>
@@ -710,7 +711,7 @@ export default function OrgTokenOpsPanel({ user }) {
                             <tbody className="divide-y divide-slate-100 dark:divide-slate-700 text-slate-800 dark:text-slate-200">
                                 {ledger.length === 0 ? (
                                     <tr>
-                                        <td colSpan="6" className="px-6 py-8 text-center text-slate-400">
+                                        <td colSpan="8" className="px-6 py-8 text-center text-slate-400">
                                             No transaction entries recorded yet.
                                         </td>
                                     </tr>
@@ -744,6 +745,16 @@ export default function OrgTokenOpsPanel({ user }) {
                                                     {tx.token_delta >= 0 ? '+' : ''}
                                                     {Number(tx.token_delta).toLocaleString()} tokens
                                                 </div>
+                                            </td>
+                                            <td className="px-6 py-4 font-mono text-xs text-slate-700 dark:text-slate-300 font-semibold">
+                                                {tx.balance_after !== null && tx.balance_after !== undefined
+                                                    ? `${Number(tx.balance_after).toLocaleString()} tokens`
+                                                    : '—'}
+                                            </td>
+                                            <td className="px-6 py-4 font-mono text-xs text-emerald-600 dark:text-emerald-400 font-semibold">
+                                                {tx.payg_cost_usd !== null && tx.payg_cost_usd !== undefined
+                                                    ? `$${Number(tx.payg_cost_usd).toFixed(4)}`
+                                                    : '—'}
                                             </td>
                                             <td className="px-6 py-4 text-xs text-slate-500 truncate max-w-xs">
                                                 {tx.remarks || tx.reference_id || '—'}

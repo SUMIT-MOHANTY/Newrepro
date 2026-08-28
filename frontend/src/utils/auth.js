@@ -4,16 +4,29 @@ const PUBLIC_AUTH_PATHS = new Set(['/login', '/signup', '/', '/sso/callback']);
 
 let isAuthRedirectInProgress = false;
 
-export const clearAuthData = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('is_super_admin');
+export const clearTenantScopedState = () => {
+    localStorage.removeItem('status_dashboard_selected_project_key');
+    localStorage.removeItem('status_dashboard_task_token_cache');
+    localStorage.removeItem('active_org');
+    localStorage.removeItem('active_analysis_job_id');
+    localStorage.removeItem('active_analysis_project_key');
     localStorage.removeItem('governancePassed');
     localStorage.removeItem('governanceResult');
     localStorage.removeItem('governanceContext');
+    localStorage.removeItem('repoContext');
+    localStorage.removeItem('analysisResult');
     sessionStorage.removeItem('governanceResult');
     sessionStorage.removeItem('governanceContext');
     sessionStorage.removeItem('brd_project_states');
+    sessionStorage.removeItem('dsuite_return_path');
+    sessionStorage.removeItem('dsuite_return_project');
     clearDraftProjects();
+};
+
+export const clearAuthData = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('is_super_admin');
+    clearTenantScopedState();
 };
 
 export const logoutAndRedirect = () => {

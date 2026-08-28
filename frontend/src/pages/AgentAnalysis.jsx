@@ -1379,6 +1379,10 @@ export default function AgentAnalysis({
 
             if (!response.ok) {
                 const errData = await response.json().catch(() => ({}));
+                if (response.status === 403 && (errData.detail === 'CROSS_TENANT_PROJECT_ACCESS_DENIED' || (typeof errData.detail === 'string' && errData.detail.includes('CROSS_TENANT_PROJECT_ACCESS_DENIED')))) {
+                    localStorage.removeItem('status_dashboard_selected_project_key');
+                    throw new Error('Project belongs to another organization. Please select a valid project.');
+                }
                 throw new Error(errData.detail || 'Analysis stream failed');
             }
 

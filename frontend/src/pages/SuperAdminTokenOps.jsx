@@ -572,6 +572,7 @@ export default function SuperAdminTokenOps() {
                                         <th className="px-4 py-3 min-w-[120px]">Reserve Value</th>
                                         <th className="px-4 py-3 min-w-[120px]">Remaining Value</th>
                                         <th className="px-4 py-3 min-w-[120px]">Billing Mode</th>
+                                        <th className="px-4 py-3 min-w-[170px]">PAYG Spend & Limits</th>
                                         <th className="px-4 py-3 min-w-[120px]">Grace Period</th>
                                         <th className="px-4 py-3 min-w-[90px]">Status</th>
                                         <th className="px-4 py-3 min-w-[180px] text-right">Actions</th>
@@ -580,7 +581,7 @@ export default function SuperAdminTokenOps() {
                                 <tbody className="divide-y divide-slate-100 dark:divide-slate-700/60 text-slate-800 dark:text-slate-200">
                                     {filteredOrgs.length === 0 ? (
                                         <tr>
-                                            <td colSpan="9" className="px-4 py-8 text-center text-slate-400">
+                                            <td colSpan="10" className="px-4 py-8 text-center text-slate-400">
                                                 No organization wallets found.
                                             </td>
                                         </tr>
@@ -616,6 +617,34 @@ export default function SuperAdminTokenOps() {
                                                         <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-800">
                                                             Prepaid
                                                         </span>
+                                                    )}
+                                                </td>
+                                                <td className="px-4 py-3 min-w-[170px]">
+                                                    {org.payg_enabled ? (
+                                                        <div className="space-y-1">
+                                                            <div className="flex items-center justify-between text-[11px]">
+                                                                <span className="text-slate-500">Spend:</span>
+                                                                <span className="font-bold text-amber-600 dark:text-amber-400 font-mono">
+                                                                    ${Number(org.payg_current_spend_usd || 0).toFixed(2)}
+                                                                    {Number(org.payg_reserved_spend_usd || 0) > 0 && (
+                                                                        <span className="text-[10px] text-slate-400 ml-1">(+${Number(org.payg_reserved_spend_usd).toFixed(2)} res)</span>
+                                                                    )}
+                                                                </span>
+                                                            </div>
+                                                            <div className="flex items-center justify-between text-[10px] text-slate-500">
+                                                                <span>Limits (S/H):</span>
+                                                                <span className="font-mono">
+                                                                    {org.payg_soft_limit_usd ? `$${Number(org.payg_soft_limit_usd).toFixed(0)}` : '∞'} / {org.payg_hard_limit_usd ? `$${Number(org.payg_hard_limit_usd).toFixed(0)}` : '∞'}
+                                                                </span>
+                                                            </div>
+                                                            {org.payg_billing_email && (
+                                                                <div className="text-[10px] text-slate-400 truncate max-w-[160px]" title={org.payg_billing_email}>
+                                                                    ✉️ {org.payg_billing_email}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    ) : (
+                                                        <span className="text-slate-400 dark:text-slate-500 text-xs">N/A (Prepaid)</span>
                                                     )}
                                                 </td>
                                                 <td className="px-4 py-3">
