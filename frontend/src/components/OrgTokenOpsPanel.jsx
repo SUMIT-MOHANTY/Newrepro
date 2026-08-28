@@ -553,7 +553,7 @@ export default function OrgTokenOpsPanel({ user }) {
                                                                     onClick={() => setOpenDropdownUserId(null)} 
                                                                 />
                                                                 <div className={`absolute right-0 w-44 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-lg py-1.5 z-20 text-left ${
-                                                                    index >= usersList.length - 2 && usersList.length > 2
+                                                                    index >= usersList.length - 2
                                                                         ? 'bottom-full mb-1'
                                                                         : 'mt-1'
                                                                 }`}>

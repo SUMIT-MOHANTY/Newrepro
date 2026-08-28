@@ -1116,6 +1116,11 @@ export default function AgentAnalysis({
         analysisOptions = {}
     ) => {
         try {
+            setError('');
+            const docId = (initialContext || result)?.id;
+            if (docId) {
+                sessionStorage.removeItem(`analysis_error_${docId}`);
+            }
             // Import polling utilities
             const { startAndPollAnalysis } = await import('../utils/analysisPolling');
 
@@ -1245,6 +1250,9 @@ export default function AgentAnalysis({
         setProcessing(true);
         setLoading(false);
         setError('');
+        if (initialResult?.id) {
+            sessionStorage.removeItem(`analysis_error_${initialResult.id}`);
+        }
         setProgress(70);
         setProgressMessage('Resuming background Agent Analysis...');
         
@@ -1364,6 +1372,11 @@ export default function AgentAnalysis({
     ) => {
         const effectiveRepoContext = analysisOptions.repoContext || repoContext || null;
         try {
+            setError('');
+            const docId = (initialContext || result)?.id;
+            if (docId) {
+                sessionStorage.removeItem(`analysis_error_${docId}`);
+            }
             const response = await fetch(API_ENDPOINTS.AI_ANALYZE, {
                 method: 'POST',
                 headers: {
@@ -1784,6 +1797,10 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                     revisionNumber: selectedProject.documents?.length || 1,
                 };
                 
+                setError('');
+                if (latestDocument?.id) {
+                    sessionStorage.removeItem(`analysis_error_${latestDocument.id}`);
+                }
                 resumeAnalysisPollingRef.current(storedJobId, initialResult);
                 return;
             }
@@ -4267,7 +4284,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                     </div>
                                 )}
 
-                                {error && (
+                                {error && !processing && !analysisInProgress && (
                                     <div className="mt-4 rounded-lg border border-red-200 bg-app-status-errorBg px-4 py-3">
                                         <p className="text-sm font-medium text-app-status-error">{error}</p>
                                     </div>
