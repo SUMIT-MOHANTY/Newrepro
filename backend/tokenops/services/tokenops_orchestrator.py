@@ -410,6 +410,38 @@ class TokenOpsOrchestrator:
 
                 org_wallet.payg_current_spend_usd = float(org_wallet.payg_current_spend_usd or 0.0) + cost
 
+                # Settle consumed tokens on UserTokenWallet under PAYG mode as well
+                user_wallet = self.session.query(UserTokenWallet).filter(
+                    UserTokenWallet.user_id == user_id,
+                    UserTokenWallet.organization_id == org_id
+                ).first()
+                if not user_wallet:
+                    user_wallet = self.session.query(UserTokenWallet).filter(
+                        UserTokenWallet.user_id == user_id,
+                        func.lower(UserTokenWallet.organization_name) == canonical_name.lower()
+                    ).first()
+                    if user_wallet and not user_wallet.organization_id:
+                        user_wallet.organization_id = org_id
+
+                if not user_wallet:
+                    user_wallet = UserTokenWallet(
+                        user_id=user_id,
+                        organization_id=org_id,
+                        organization_name=org_wallet.organization_name,
+                        allocated_tokens=0,
+                        remaining_tokens=0,
+                        consumed_tokens=0,
+                        is_blocked=False
+                    )
+                    self.session.add(user_wallet)
+                    self.session.flush()
+
+                self.session.query(UserTokenWallet).filter(
+                    UserTokenWallet.id == user_wallet.id
+                ).update({
+                    UserTokenWallet.consumed_tokens: UserTokenWallet.consumed_tokens + total_tokens
+                })
+
                 # Meaningful accumulated PAYG token debt semantics for balance_after
                 prev_payg = self.session.query(func.sum(TokenTransactionLedger.token_delta)).filter(
                     func.lower(TokenTransactionLedger.organization_name) == canonical_name.lower(),
