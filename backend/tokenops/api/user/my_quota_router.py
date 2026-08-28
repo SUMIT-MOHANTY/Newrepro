@@ -85,7 +85,7 @@ def get_my_quota(
             "total_tokens": (log.prompt_tokens or 0) + (log.completion_tokens or 0),
             "cost": float(log.cost or 0.0),
             "usage_status": log.usage_status or "COMPLETED",
-            "created_at": log.created_at.isoformat() if log.created_at else None,
+            "created_at": (log.created_at.isoformat() + "Z") if log.created_at else None,
         }
         for log in recent_logs
     ]

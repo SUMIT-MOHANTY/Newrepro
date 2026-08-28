@@ -1,6 +1,16 @@
 import React from 'react';
 import { Coins, DollarSign, Activity, X, Sparkles, Zap, Clock } from 'lucide-react';
 
+const localTimezone = (() => {
+    try {
+        return new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' })
+            .formatToParts(new Date())
+            .find(part => part.type === 'timeZoneName')?.value || '';
+    } catch (e) {
+        return '';
+    }
+})();
+
 export default function UserTokenDetailModal({ isOpen, onClose, data, onRefresh, loading }) {
     if (!isOpen || !data) return null;
 
@@ -70,7 +80,7 @@ export default function UserTokenDetailModal({ isOpen, onClose, data, onRefresh,
                                 {consumed.toLocaleString()}
                             </div>
                             <div className="text-[11px] text-slate-400 mt-1">
-                                {usagePercent}% quota utilized
+                                {isPayg ? 'Pay As You Go active' : `${usagePercent}% quota utilized`}
                             </div>
                         </div>
 
@@ -129,7 +139,7 @@ export default function UserTokenDetailModal({ isOpen, onClose, data, onRefresh,
                                 <table className="w-full text-left text-xs">
                                     <thead className="bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-800 font-semibold">
                                         <tr>
-                                            <th className="px-4 py-3">Timestamp</th>
+                                            <th className="px-4 py-3">Timestamp {localTimezone ? `(${localTimezone})` : ''}</th>
                                             <th className="px-4 py-3">Model</th>
                                             <th className="px-4 py-3 text-right">Prompt</th>
                                             <th className="px-4 py-3 text-right">Completion</th>
