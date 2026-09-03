@@ -507,10 +507,16 @@ export default function SuperAdminDashboard() {
             >
               <Coins className="w-4 h-4 text-cyan-300" />
               <span>Vibecoding Analytics & Costs</span>
-              {vibeData?.summary?.total_cost > 0 && (
-                <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-mono font-bold">
-                  ${vibeData.summary.total_cost}
+              {vibeData?.status === 'not_available' ? (
+                <span className="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400 border border-slate-700 font-mono font-bold">
+                  Not Available
                 </span>
+              ) : (
+                vibeData?.summary?.total_cost > 0 && (
+                  <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-mono font-bold">
+                    ${vibeData.summary.total_cost}
+                  </span>
+                )
               )}
             </button>
           </div>
@@ -828,6 +834,20 @@ export default function SuperAdminDashboard() {
 
         {activeMainTab === 'vibecoding' && (
           <div className="space-y-6">
+            {vibeData?.status === 'not_available' && (
+              <div className="p-4 rounded-xl bg-slate-900/80 border border-amber-500/30 text-amber-300 text-xs flex items-center justify-between gap-3 backdrop-blur">
+                <div className="flex items-center gap-2.5">
+                  <Coins className="w-5 h-5 text-amber-400 flex-shrink-0" />
+                  <div>
+                    <span className="font-bold text-white">Vibecoding API Not Available:</span> The Vibecoding telemetry endpoint (/vibecoding/api/telemetry/usage-costs) is unreachable. No telemetry data is available.
+                  </div>
+                </div>
+                <span className="px-2.5 py-1 rounded-md bg-amber-500/20 text-amber-300 text-[11px] font-mono font-semibold border border-amber-500/30 whitespace-nowrap">
+                  Not Available
+                </span>
+              </div>
+            )}
+
             {/* Vibecoding Executive Metric Cards */}
             {vibeData?.summary && (
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">

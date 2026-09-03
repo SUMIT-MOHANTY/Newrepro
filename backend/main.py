@@ -2506,58 +2506,48 @@ def _resolve_vibecoding_artifacts_dirs() -> List[str]:
 
 
 def _get_vibecoding_usage_logs(start_dt=None, end_dt=None):
-    import sqlite3
-    db_path = _resolve_vibecoding_db_path()
-    logs = []
-    if not db_path or not os.path.exists(db_path):
-        return logs
-        
+    """
+    Fetch Vibecoding usage logs strictly from the Vibecoding HTTP API.
+    If the API is not available, returns an empty list (direct SQLite fallback removed).
+    """
+    import requests
+    vibecoding_url = os.getenv("VIBECODING_BACKEND_URL", "http://localhost:8001")
+    if not vibecoding_url:
+        return []
+    if not vibecoding_url.endswith("/"):
+        vibecoding_url += "/"
+    telemetry_url = f"{vibecoding_url}vibecoding/api/telemetry/usage-costs"
+    q_params = []
+    if start_dt:
+        q_params.append(f"start_date={start_dt.isoformat() if hasattr(start_dt, 'isoformat') else str(start_dt)}")
+    if end_dt:
+        q_params.append(f"end_date={end_dt.isoformat() if hasattr(end_dt, 'isoformat') else str(end_dt)}")
+    if q_params:
+        telemetry_url += "?" + "&".join(q_params)
+
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_logs'")
-        if not cursor.fetchone():
-            conn.close()
+        resp = requests.get(telemetry_url, timeout=3)
+        if resp.ok:
+            data = resp.json()
+            raw_logs = data.get("logs", [])
+            logs = []
+            for r in raw_logs:
+                p_tokens = r.get("prompt_tokens") or 0
+                c_tokens = r.get("completion_tokens") or 0
+                cost = r.get("cost") or ((p_tokens + c_tokens) * 0.00007)
+                logs.append({
+                    "username": r.get("username"),
+                    "project_token": r.get("project_id") or "vibecoding_workspace",
+                    "prompt_tokens": p_tokens,
+                    "completion_tokens": c_tokens,
+                    "cost": round(cost, 6),
+                    "model": "BournAI (VibeCoding)"
+                })
             return logs
-            
-        query = "SELECT username, project_id, prompt_tokens, completion_tokens, timestamp FROM user_logs"
-        cursor.execute(query)
-        rows = cursor.fetchall()
-        
-        for r in rows:
-            ts_str = r["timestamp"]
-            dt = None
-            if ts_str:
-                try:
-                    dt = datetime.fromisoformat(ts_str)
-                    dt = dt.replace(tzinfo=None)
-                except Exception:
-                    pass
-            
-            if start_dt and dt and dt < start_dt:
-                continue
-            if end_dt and dt and dt > end_dt:
-                continue
-                
-            p_tokens = r["prompt_tokens"] or 0
-            c_tokens = r["completion_tokens"] or 0
-            cost = (p_tokens + c_tokens) * 0.00007
-            
-            logs.append({
-                "username": r["username"],
-                "project_token": r["project_id"] or "vibecoding_workspace",
-                "prompt_tokens": p_tokens,
-                "completion_tokens": c_tokens,
-                "cost": round(cost, 6),
-                "model": "BournAI (VibeCoding)"
-            })
-        conn.close()
-    except Exception as e:
-        logging.getLogger(__name__).warning(f"Could not read VibeCoding logs: {e}")
-        
-    return logs
+    except Exception as err:
+        logging.getLogger(__name__).warning(f"Could not fetch Vibecoding usage logs via HTTP ({telemetry_url}): {err}")
+
+    return []
 
 
 def _fetch_vibecoding_data_directly(start_dt=None, end_dt=None):
@@ -3081,8 +3071,25 @@ def get_superadmin_vibecoding_costs(
         except Exception as err:
             logging.getLogger(__name__).warning(f"Could not fetch Vibecoding telemetry via HTTP ({telemetry_url}): {err}")
 
+    # If the API endpoint is not available, return no data (direct SQLite fallback removed)
     if not vibe_data or not isinstance(vibe_data, dict):
-        vibe_data = _fetch_vibecoding_data_directly(start_dt, end_dt)
+        return {
+            "summary": {
+                "total_organizations": 0,
+                "total_projects": 0,
+                "total_users": 0,
+                "total_prompts": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "total_cost": 0.0
+            },
+            "organization_breakdown": [],
+            "project_breakdown": [],
+            "user_breakdown": [],
+            "status": "not_available",
+            "message": "Vibecoding telemetry API is not available"
+        }
 
     raw_logs = vibe_data.get("logs", [])
     raw_users = vibe_data.get("users", [])
