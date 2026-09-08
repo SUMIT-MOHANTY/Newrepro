@@ -173,6 +173,12 @@ models.Base.metadata.create_all(bind=engine)
 # catch the error and ignore if the column already exists.
 def _run_startup_migrations():
     """Apply database schema migrations that cannot be done via create_all."""
+    try:
+        from run_all_migrations import run_migrations
+        run_migrations(verbose=True)
+    except Exception as e:
+        logging.getLogger(__name__).error(f"[Startup Migrations] Error executing migration runner: {e}")
+
     from sqlalchemy import inspect, text as sql_text
     inspector = inspect(engine)
     table_names = inspector.get_table_names()
