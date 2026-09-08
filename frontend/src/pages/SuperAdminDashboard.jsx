@@ -94,6 +94,11 @@ export default function SuperAdminDashboard() {
   };
 
   useEffect(() => {
+    const isSuper = localStorage.getItem('is_super_admin') === 'true';
+    if (!isSuper) {
+      window.location.replace('/status-dashboard');
+      return;
+    }
     fetchData();
   }, [startDate, endDate]);
 
@@ -502,10 +507,16 @@ export default function SuperAdminDashboard() {
             >
               <Coins className="w-4 h-4 text-cyan-300" />
               <span>Vibecoding Analytics & Costs</span>
-              {vibeData?.summary?.total_cost > 0 && (
-                <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-mono font-bold">
-                  ${vibeData.summary.total_cost}
+              {vibeData?.status === 'not_available' ? (
+                <span className="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400 border border-slate-700 font-mono font-bold">
+                  Not Available
                 </span>
+              ) : (
+                vibeData?.summary?.total_cost > 0 && (
+                  <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-mono font-bold">
+                    ${vibeData.summary.total_cost}
+                  </span>
+                )
               )}
             </button>
           </div>
@@ -592,11 +603,33 @@ export default function SuperAdminDashboard() {
 
             <div className="p-3.5 rounded-xl bg-slate-900/60 border border-purple-500/20 backdrop-blur">
               <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
-                <span className="font-semibold uppercase tracking-wider text-[10px]">Platform Billing</span>
+                <span className="font-semibold uppercase tracking-wider text-[10px]">Dsuite Billing</span>
+                <DollarSign className="w-4 h-4 text-purple-400" />
+              </div>
+              <div className="text-xl font-bold text-purple-300">
+                ${(stats.dsuite_billing !== undefined ? stats.dsuite_billing : (stats.platform_billing || 0)).toFixed(2)}
+              </div>
+              <div className="text-[10px] text-purple-400 mt-0.5">Dsuite AI Governance cost</div>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-900/60 border border-cyan-500/20 backdrop-blur">
+              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                <span className="font-semibold uppercase tracking-wider text-[10px]">Vibecoding Billing</span>
+                <Coins className="w-4 h-4 text-cyan-400" />
+              </div>
+              <div className="text-xl font-bold text-cyan-300">
+                ${(stats.vibecoding_billing !== undefined ? stats.vibecoding_billing : (vibeData?.summary?.total_cost || 0)).toFixed(2)}
+              </div>
+              <div className="text-[10px] text-cyan-400 mt-0.5">Vibecoding AI inference cost</div>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-900/60 border border-emerald-500/20 backdrop-blur">
+              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                <span className="font-semibold uppercase tracking-wider text-[10px]">Total Combined Billing</span>
                 <DollarSign className="w-4 h-4 text-emerald-400" />
               </div>
-              <div className="text-xl font-bold text-white">${stats.platform_billing}</div>
-              <div className="text-[10px] text-emerald-400 mt-0.5">Calculated AI inference cost</div>
+              <div className="text-xl font-bold text-emerald-400">${stats.platform_billing}</div>
+              <div className="text-[10px] text-emerald-400 mt-0.5">Dsuite + Vibecoding total</div>
             </div>
 
             <div className="p-3.5 rounded-xl bg-slate-900/60 border border-purple-500/20 backdrop-blur">
@@ -801,6 +834,20 @@ export default function SuperAdminDashboard() {
 
         {activeMainTab === 'vibecoding' && (
           <div className="space-y-6">
+            {vibeData?.status === 'not_available' && (
+              <div className="p-4 rounded-xl bg-slate-900/80 border border-amber-500/30 text-amber-300 text-xs flex items-center justify-between gap-3 backdrop-blur">
+                <div className="flex items-center gap-2.5">
+                  <Coins className="w-5 h-5 text-amber-400 flex-shrink-0" />
+                  <div>
+                    <span className="font-bold text-white">Vibecoding API Not Available:</span> The Vibecoding telemetry endpoint (/vibecoding/api/telemetry/usage-costs) is unreachable. No telemetry data is available.
+                  </div>
+                </div>
+                <span className="px-2.5 py-1 rounded-md bg-amber-500/20 text-amber-300 text-[11px] font-mono font-semibold border border-amber-500/30 whitespace-nowrap">
+                  Not Available
+                </span>
+              </div>
+            )}
+
             {/* Vibecoding Executive Metric Cards */}
             {vibeData?.summary && (
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
@@ -1297,26 +1344,43 @@ export default function SuperAdminDashboard() {
                 <thead className="bg-slate-800/80 text-slate-300 uppercase text-[10px] font-semibold">
                   <tr>
                     <th className="py-2.5 px-3">Project Name</th>
+                    <th className="py-2.5 px-3">Project Token / ID</th>
                     <th className="py-2.5 px-3 text-right">AI Tokens</th>
                     <th className="py-2.5 px-3 text-right">Usage Cost</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800 text-slate-200">
                   {selectedOrgProjModal.projects && selectedOrgProjModal.projects.length > 0 ? (
-                    selectedOrgProjModal.projects.map((proj) => (
-                      <tr key={proj.project_token} className="hover:bg-slate-800/40">
-                        <td className="py-2.5 px-3 font-semibold text-white">{proj.project_name || 'Direct API / Custom Workspace'}</td>
-                        <td className="py-2.5 px-3 text-right font-mono text-blue-300 font-semibold">
-                          {(proj.total_tokens || 0).toLocaleString()}
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-mono text-emerald-400 font-bold">
-                          ${(proj.total_cost || 0).toFixed(4)}
-                        </td>
-                      </tr>
-                    ))
+                    selectedOrgProjModal.projects.map((proj) => {
+                      const rawName = proj.project_name || 'Direct API / Custom Workspace';
+                      const isJwt = rawName.startsWith('eyJ') || (proj.project_token && proj.project_token.startsWith('eyJ'));
+                      const formattedName = isJwt && rawName.startsWith('eyJ') 
+                        ? `Project (${rawName.substring(0, 12)}...${rawName.substring(rawName.length - 6)})` 
+                        : rawName;
+                      const formattedToken = proj.project_token 
+                        ? (proj.project_token.startsWith('eyJ') 
+                          ? `${proj.project_token.substring(0, 12)}...${proj.project_token.substring(proj.project_token.length - 6)}` 
+                          : proj.project_token)
+                        : '—';
+
+                      return (
+                        <tr key={proj.project_token} className="hover:bg-slate-800/40">
+                          <td className="py-2.5 px-3 font-semibold text-white">{formattedName}</td>
+                          <td className="py-2.5 px-3 font-mono text-slate-400 text-[11px]" title={proj.project_token}>
+                            {formattedToken}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono text-blue-300 font-semibold">
+                            {(proj.total_tokens || 0).toLocaleString()}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono text-emerald-400 font-bold">
+                            ${(proj.total_cost || 0).toFixed(4)}
+                          </td>
+                        </tr>
+                      );
+                    })
                   ) : (
                     <tr>
-                      <td colSpan={3} className="py-6 text-center text-slate-400 italic">
+                      <td colSpan={4} className="py-6 text-center text-slate-400 italic">
                         No active project tokens recorded (Direct API or idle)
                       </td>
                     </tr>
@@ -1463,11 +1527,15 @@ export default function SuperAdminDashboard() {
                 User Projects ({vibeSelectedUser.project_count})
               </h4>
               <div className="flex flex-wrap gap-2">
-                {(vibeSelectedUser.projects || []).map(p => (
-                  <span key={p} className="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-xs font-mono text-purple-200">
-                    {p}
-                  </span>
-                ))}
+                {(vibeSelectedUser.projects || []).map(p => {
+                  const isJwt = p && p.startsWith('eyJ');
+                  const displayStr = isJwt ? `Project (${p.substring(0, 10)}...${p.substring(p.length - 5)})` : p;
+                  return (
+                    <span key={p} className="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-xs font-mono text-purple-200" title={p}>
+                      {displayStr}
+                    </span>
+                  );
+                })}
               </div>
             </div>
 

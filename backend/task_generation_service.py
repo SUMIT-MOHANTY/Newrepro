@@ -1220,15 +1220,44 @@ def _generate_bootstrap_checklist(repo_structure: str, project_name: str) -> Lis
                 "completed": False
             })
     
-    # --- Tech-stack-aware dependency installation step ---
+    # --- Universal Tech-Stack & Framework-Agnostic Contract Checks ---
     _all_file_basenames = [f.split('/')[-1].lower() for f in files]
     _has_package_json = 'package.json' in _all_file_basenames
     _has_requirements = 'requirements.txt' in _all_file_basenames
     _has_pyproject = 'pyproject.toml' in _all_file_basenames
+    _has_csproj = any(f.endswith('.csproj') for f in _all_file_basenames) or any(f.endswith('.sln') for f in _all_file_basenames)
+    _has_pom = 'pom.xml' in _all_file_basenames or 'build.gradle' in _all_file_basenames
+    _has_angular = 'angular.json' in _all_file_basenames
+    _has_go_mod = 'go.mod' in _all_file_basenames
 
     if _has_package_json:
+        if not any(f == 'index.html' for f in _all_file_basenames) and not any('index.html' in f for f in files):
+            checklist.append({
+                "text": "Create root index.html with mount element (<div id='root'></div>) and main entrypoint script tag",
+                "completed": False
+            })
         checklist.append({
             "text": "Install Node.js dependencies: npm install (verify node_modules/ is created and package-lock.json updated)",
+            "completed": False
+        })
+    elif _has_csproj:
+        checklist.append({
+            "text": "Verify .NET Solution & C# Project structure: dotnet restore && dotnet build",
+            "completed": False
+        })
+    elif _has_pom:
+        checklist.append({
+            "text": "Verify Java Maven/Gradle Project structure: mvn compile -q || ./gradlew compileJava",
+            "completed": False
+        })
+    elif _has_angular:
+        checklist.append({
+            "text": "Verify Angular CLI workspace & root modules: npm install && ng build --dry-run",
+            "completed": False
+        })
+    elif _has_go_mod:
+        checklist.append({
+            "text": "Verify Go module & dependencies: go mod tidy && go build -v ./...",
             "completed": False
         })
     elif _has_requirements:

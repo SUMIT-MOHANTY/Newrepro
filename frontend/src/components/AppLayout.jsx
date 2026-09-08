@@ -302,6 +302,10 @@ export default function AppLayout({ children }) {
                     localStorage.setItem('is_super_admin', 'true');
                 } else {
                     localStorage.removeItem('is_super_admin');
+                    if (location.pathname.startsWith('/superadmin')) {
+                        navigate('/status-dashboard', { replace: true });
+                        return;
+                    }
                 }
 
                 // Check if user is returning from VibeCoding
