@@ -6,7 +6,8 @@ from models import User
 
 router = APIRouter(tags=["Org Admin Reserve"])
 
-@router.get("/", response_model=BaseAPIResponse)
+@router.get("", response_model=BaseAPIResponse)
+@router.get("/", response_model=BaseAPIResponse, include_in_schema=False)
 def get_reserve(
     current_user: User = Depends(verify_org_admin),
     wallet_service: OrgWalletService = Depends(get_org_wallet_service)

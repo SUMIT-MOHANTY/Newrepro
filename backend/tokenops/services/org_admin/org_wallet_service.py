@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_, cast, String
 from tokenops.services.wallet_service import WalletService
 from tokenops.services.org_admin.org_audit_service import OrgAuditService
 from tokenops.repositories.organization_wallet import OrganizationWalletRepository
@@ -141,35 +141,47 @@ class OrgWalletService:
 
         # Ensure all users have a UserTokenWallet and UserOrganization membership
         flushed = False
-        for uid in all_user_ids:
-            if uid not in wallets_by_user:
-                new_w = UserTokenWallet(
-                    user_id=uid,
-                    organization_name=canonical_name,
-                    organization_id=org_id or "00000000-0000-0000-0000-000000000000",
-                    allocated_tokens=0,
-                    consumed_tokens=0,
-                    remaining_tokens=0,
-                    is_blocked=False
-                )
-                self.session.add(new_w)
-                wallets_by_user[uid] = new_w
-                flushed = True
+        try:
+            for uid in all_user_ids:
+                if uid not in wallets_by_user:
+                    new_w = UserTokenWallet(
+                        user_id=uid,
+                        organization_name=canonical_name,
+                        organization_id=org_id or "00000000-0000-0000-0000-000000000000",
+                        allocated_tokens=0,
+                        consumed_tokens=0,
+                        remaining_tokens=0,
+                        is_blocked=False
+                    )
+                    self.session.add(new_w)
+                    wallets_by_user[uid] = new_w
+                    flushed = True
 
-            if uid not in member_dict and uid in all_user_map:
-                new_m = UserOrganization(
-                    user_id=uid,
-                    organization_name=canonical_name,
-                    organization_id=org_id or "00000000-0000-0000-0000-000000000000",
-                    role=all_user_map[uid]["role"].lower(),
-                    is_active=all_user_map[uid]["is_active"]
-                )
-                self.session.add(new_m)
-                member_dict[uid] = new_m
-                flushed = True
+                if uid not in member_dict and uid in all_user_map:
+                    new_m = UserOrganization(
+                        user_id=uid,
+                        organization_name=canonical_name,
+                        organization_id=org_id or "00000000-0000-0000-0000-000000000000",
+                        role=all_user_map[uid]["role"].lower(),
+                        is_active=all_user_map[uid]["is_active"]
+                    )
+                    self.session.add(new_m)
+                    member_dict[uid] = new_m
+                    flushed = True
 
-        if flushed:
-            self.session.flush()
+            if flushed:
+                self.session.flush()
+        except Exception:
+            self.session.rollback()
+            try:
+                wallets_query = self.session.query(UserTokenWallet).filter(
+                    (func.lower(UserTokenWallet.organization_name) == canonical_name.lower()) |
+                    (func.lower(UserTokenWallet.organization_name) == organization_name.lower())
+                )
+                existing_wallets = wallets_query.all()
+                wallets_by_user = {w.user_id: w for w in existing_wallets}
+            except Exception:
+                pass
 
         reference_price = float(self.pricing_service.get_price(settings.ai_model))
 
@@ -273,8 +285,14 @@ class OrgWalletService:
             (func.lower(TokenQuotaRequest.organization_name) == canonical_name.lower()) |
             (func.lower(TokenQuotaRequest.organization_name) == organization_name.lower()) |
             (TokenQuotaRequest.organization_id == org_id),
-            TokenQuotaRequest.status.in_([QuotaRequestStatus.APPROVED, QuotaRequestStatus.APPROVED.value]),
-            TokenQuotaRequest.request_type.in_([QuotaRequestType.TOKEN_INCREASE, QuotaRequestType.TOKEN_INCREASE.value])
+            or_(
+                TokenQuotaRequest.status == QuotaRequestStatus.APPROVED,
+                cast(TokenQuotaRequest.status, String) == "APPROVED"
+            ),
+            or_(
+                TokenQuotaRequest.request_type == QuotaRequestType.TOKEN_INCREASE,
+                cast(TokenQuotaRequest.request_type, String) == "TOKEN_INCREASE"
+            )
         ).scalar() or 0
 
         from tokenops.models.ledger import TokenTransactionLedger, TransactionType
@@ -282,7 +300,10 @@ class OrgWalletService:
             (func.lower(TokenTransactionLedger.organization_name) == canonical_name.lower()) |
             (func.lower(TokenTransactionLedger.organization_name) == organization_name.lower()) |
             (TokenTransactionLedger.organization_id == org_id),
-            TokenTransactionLedger.transaction_type.in_([TransactionType.PURCHASE.value, "PURCHASE"])
+            or_(
+                TokenTransactionLedger.transaction_type == TransactionType.PURCHASE.value,
+                cast(TokenTransactionLedger.transaction_type, String) == "PURCHASE"
+            )
         ).scalar() or 0
 
         total_approved = max(approved_tokens_query, ledger_tokens_query)
@@ -327,8 +348,11 @@ class OrgWalletService:
             modified = True
 
         if modified:
-            self.session.add(wallet)
-            self.session.flush()
+            try:
+                self.session.add(wallet)
+                self.session.flush()
+            except Exception:
+                self.session.rollback()
 
         reference_price = float(self.pricing_service.get_price(settings.ai_model))
 

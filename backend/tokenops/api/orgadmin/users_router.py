@@ -6,7 +6,8 @@ from models import User
 
 router = APIRouter(tags=["Org Admin Users"])
 
-@router.get("/", response_model=BaseAPIResponse)
+@router.get("", response_model=BaseAPIResponse)
+@router.get("/", response_model=BaseAPIResponse, include_in_schema=False)
 def get_users(
     page: int = Query(1, ge=1),
     size: int = Query(50, ge=1, le=100),

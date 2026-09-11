@@ -34,17 +34,14 @@ class OrganizationWalletRepository:
             ).first()
 
         if wallet:
-            # Auto-heal: set organization_id and canonical name if missing or mismatching
-            modified = False
+            # Auto-heal: set organization_id if missing
             if org_id and (not wallet.organization_id or wallet.organization_id != org_id):
                 wallet.organization_id = org_id
-                modified = True
-            if canonical_name and wallet.organization_name != canonical_name:
-                wallet.organization_name = canonical_name
-                modified = True
-            if modified:
-                self.session.add(wallet)
-                self.session.flush()
+                try:
+                    self.session.add(wallet)
+                    self.session.flush()
+                except Exception:
+                    self.session.rollback()
             return wallet
 
         # --- LAZY CREATION/AUTO-HEAL ---

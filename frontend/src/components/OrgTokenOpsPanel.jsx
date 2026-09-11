@@ -62,7 +62,14 @@ export default function OrgTokenOpsPanel({ user }) {
                 const resReserve = await fetch(API_ENDPOINTS.TOKENOPS_ORG_RESERVE, { headers });
                 if (resReserve.ok) {
                     const data = await resReserve.json();
-                    if (data.success) setReserve(data.data);
+                    if (data.success && data.data) {
+                        setReserve(data.data);
+                    } else if (data.error) {
+                        console.error('Reserve API returned error:', data.error);
+                        setError(prev => prev || data.error?.message || 'Failed to load organization reserve.');
+                    }
+                } else {
+                    console.error('Reserve API HTTP status:', resReserve.status);
                 }
             } catch (e) {
                 console.warn('Failed to load reserve:', e);
@@ -75,7 +82,12 @@ export default function OrgTokenOpsPanel({ user }) {
                     const data = await resUsers.json();
                     if (data.success && data.data?.items) {
                         setUsersList(data.data.items);
+                    } else if (data.error) {
+                        console.error('Users API returned error:', data.error);
+                        setError(prev => prev || data.error?.message || 'Failed to load organization users.');
                     }
+                } else {
+                    console.error('Users API HTTP status:', resUsers.status);
                 }
             } catch (e) {
                 console.warn('Failed to load users:', e);
