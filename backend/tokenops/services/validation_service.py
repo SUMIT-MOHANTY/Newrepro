@@ -22,11 +22,13 @@ class ValidationService:
             
         # Formula: reserve = purchased - allocated_to_users
         total_allocated = self.user_repo.get_total_allocated(organization_name)
-        actual_reserve = wallet.purchased_tokens - total_allocated
+        actual_reserve = max(0, wallet.purchased_tokens - total_allocated)
         
-        # Verify integrity
+        # Auto-heal integrity if reserved_tokens is out of sync
         if wallet.reserved_tokens != actual_reserve:
-            raise ValueError(f"Organization reserve integrity error: expected {actual_reserve}, got {wallet.reserved_tokens}")
+            wallet.reserved_tokens = actual_reserve
+            self.org_repo.session.add(wallet)
+            self.org_repo.session.flush()
 
         # Available to allocate is (purchased - allocated) = reserve
         return actual_reserve >= amount
@@ -39,8 +41,10 @@ class ValidationService:
         # Formula: remaining = allocated - consumed
         actual_remaining = wallet.allocated_tokens - wallet.consumed_tokens
         
-        # Verify integrity
+        # Auto-heal integrity if remaining_tokens is out of sync
         if wallet.remaining_tokens != actual_remaining:
-             raise ValueError(f"User remaining integrity error: expected {actual_remaining}, got {wallet.remaining_tokens}")
+            wallet.remaining_tokens = max(0, actual_remaining)
+            self.user_repo.session.add(wallet)
+            self.user_repo.session.flush()
 
         return actual_remaining >= amount

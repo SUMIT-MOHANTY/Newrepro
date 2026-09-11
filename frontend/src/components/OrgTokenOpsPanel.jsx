@@ -31,10 +31,25 @@ export default function OrgTokenOpsPanel({ user }) {
         return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format((amount || 0) * pricePerToken);
     };
 
-    const getHeaders = () => ({
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-    });
+    const getHeaders = () => {
+        const headers = {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+        };
+        if (orgName) {
+            headers['X-Organization'] = orgName;
+        }
+        return headers;
+    };
+
+    const getAvailableReserve = () => {
+        if (!reserve) return 0;
+        if (reserve.reserved_tokens !== undefined && reserve.reserved_tokens !== null && reserve.reserved_tokens > 0) {
+            return reserve.reserved_tokens;
+        }
+        const calc = (reserve.purchased_tokens || 0) - (reserve.allocated_tokens || 0);
+        return Math.max(0, calc);
+    };
 
     const fetchData = async () => {
         setLoading(true);
@@ -159,7 +174,7 @@ export default function OrgTokenOpsPanel({ user }) {
         setError('');
         setSuccessMessage('');
         const reqAmount = parseInt(allocateModal.amount, 10);
-        const availReserved = reserve?.reserved_tokens || 0;
+        const availReserved = getAvailableReserve();
         if (reqAmount > availReserved) {
             setError(`Cannot allocate ${reqAmount.toLocaleString()} tokens. Only ${availReserved.toLocaleString()} tokens are available in your organization's reserve.`);
             setActionLoading(false);
@@ -606,10 +621,10 @@ export default function OrgTokenOpsPanel({ user }) {
                             <div className="text-xs text-slate-500 dark:text-slate-400">
                                 Available in Org Reserve:{' '}
                                 <span className="font-bold text-indigo-600 dark:text-indigo-400 font-mono">
-                                    {formatCurrency(reserve?.reserved_tokens || 0, reserve?.reference_price || 0.000007)}
+                                    {formatCurrency(getAvailableReserve(), reserve?.reference_price || 0.000007)}
                                 </span>
                                 <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono ml-1">
-                                    ({Number(reserve?.reserved_tokens || 0).toLocaleString()} tokens)
+                                    ({Number(getAvailableReserve()).toLocaleString()} tokens)
                                 </span>
                             </div>
                         )}

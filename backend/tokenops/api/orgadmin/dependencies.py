@@ -21,10 +21,17 @@ from typing import Optional
 
 async def get_active_organization(
     x_organization: Optional[str] = Header(None),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ) -> str:
     # If the app relies on a header, use it. Otherwise fallback to current_user.organization_name
     org = x_organization or getattr(current_user, "organization_name", None)
+    if not org:
+        # Fallback to UserOrganizationRole
+        uor = db.query(UserOrganizationRole).filter(UserOrganizationRole.user_id == current_user.id).first()
+        if uor and uor.organization_name:
+            org = uor.organization_name
+
     if not org:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
