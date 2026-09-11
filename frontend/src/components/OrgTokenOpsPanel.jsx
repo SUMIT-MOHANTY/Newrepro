@@ -846,9 +846,11 @@ export default function OrgTokenOpsPanel({ user }) {
                                         </td>
                                     </tr>
                                 ) : (
-                                    quotaRequests.map((r) => (
-                                        <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition">
-                                            <td className="px-6 py-4 font-mono text-xs text-slate-500">#{r.id}</td>
+                                    quotaRequests.map((r, index) => {
+                                        const reqNum = r.request_number || (quotaRequests.length - index);
+                                        return (
+                                            <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition">
+                                                <td className="px-6 py-4 font-mono text-xs font-semibold text-slate-700 dark:text-slate-300">#{reqNum}</td>
                                             <td className="px-6 py-4">
                                                 <span className={`px-2.5 py-1 text-[11px] font-bold rounded-full uppercase ${
                                                     r.request_type === 'TOKEN_INCREASE'
@@ -884,7 +886,8 @@ export default function OrgTokenOpsPanel({ user }) {
                                                 {r.created_at ? new Date(r.created_at).toLocaleDateString() : '—'}
                                             </td>
                                         </tr>
-                                    ))
+                                    );
+                                })
                                 )}
                             </tbody>
                         </table>

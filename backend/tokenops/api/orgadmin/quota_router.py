@@ -99,9 +99,11 @@ def get_my_org_quota_requests(
         (TokenQuotaRequest.organization_id == org_id) | (TokenQuotaRequest.organization_name == org.name)
     ).order_by(TokenQuotaRequest.created_at.desc()).all()
 
+    total = len(requests)
     data = [
         {
             "id": r.id,
+            "request_number": total - idx,
             "organization_name": r.organization_name,
             "request_type": r.request_type.value if hasattr(r.request_type, "value") else str(r.request_type),
             "requested_tokens": r.requested_tokens,
@@ -112,6 +114,6 @@ def get_my_org_quota_requests(
             "created_at": r.created_at.isoformat() if r.created_at else None,
             "approved_at": r.approved_at.isoformat() if r.approved_at else None,
         }
-        for r in requests
+        for idx, r in enumerate(requests)
     ]
     return BaseAPIResponse(success=True, data=data)
