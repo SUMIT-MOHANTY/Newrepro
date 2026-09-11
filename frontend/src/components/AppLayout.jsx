@@ -1419,14 +1419,17 @@ export default function AppLayout({ children }) {
                                                 <span className="font-mono text-purple-300">⚡ PAYG Active</span>
                                             ) : (
                                                 <span className="font-mono flex items-center gap-1">
-                                                     <span>{(() => {
-                                                         const price = userQuota.reference_price || 0.000007;
-                                                         const allocatedUsd = Number(((userQuota.allocated_tokens || 0) * price).toFixed(2));
-                                                         const consumedUsd = Number(((userQuota.consumed_tokens || 0) * price).toFixed(2));
-                                                         return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(allocatedUsd - consumedUsd);
-                                                     })()}</span>
+                                                    <span>{(() => {
+                                                        const price = userQuota.reference_price || 0.000007;
+                                                        const consumedUsd = Number(((userQuota.consumed_tokens || 0) * price).toFixed(2));
+                                                        return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(consumedUsd);
+                                                    })()}</span>
                                                     <span className={isQuotaExhausted ? "text-rose-400/60 font-bold" : "text-white/40"}>/</span>
-                                                    <span>{new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format((userQuota.allocated_tokens || 0) * (userQuota.reference_price || 0.000007))}</span>
+                                                    <span>{(() => {
+                                                        const price = userQuota.reference_price || 0.000007;
+                                                        const allocatedUsd = Number(((userQuota.allocated_tokens || 0) * price).toFixed(2));
+                                                        return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(allocatedUsd);
+                                                    })()}</span>
                                                 </span>
                                             )}
                                             {isQuotaExhausted && (
