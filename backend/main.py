@@ -548,7 +548,12 @@ async def log_user_activities(request: Request, call_next):
             pass
 
     # Extract project token
-    project_token = request.headers.get("x-task-token") or request.headers.get("X-Task-Token")
+    project_token = (
+        request.headers.get("x-project-token")
+        or request.headers.get("X-Project-Token")
+        or request.headers.get("x-task-token")
+        or request.headers.get("X-Task-Token")
+    )
     if not project_token:
         project_token = request.query_params.get("project_token")
     if not project_token:
@@ -570,6 +575,19 @@ async def log_user_activities(request: Request, call_next):
             candidate = m.group(1)
             if candidate not in ("list", "create", "all", "recent", "stats", "export"):
                 project_token = candidate
+
+    # If project_token is still not found and user is authenticated, fall back to user's last_project_token
+    if not project_token and user_id:
+        try:
+            db_session = SessionLocal()
+            try:
+                u = db_session.query(models.User).filter(models.User.id == user_id).first()
+                if u and u.last_project_token:
+                    project_token = u.last_project_token
+            finally:
+                db_session.close()
+        except Exception:
+            pass
 
     # Resolve project name if project_token is present
     project_name = None
@@ -967,6 +985,12 @@ async def analyze_document_with_ai(
                     logger.info(f"[{project_token}] Successfully injected repository structure into document content")
             except Exception as e:
                 logger.warning(f"Failed to scan repo structure for document analysis: {e}")
+
+    # Bind context variables explicitly for TokenOps tracking across streaming and background paths
+    current_user_id_var.set(current_user.id)
+    if project_token:
+        current_project_token_var.set(project_token)
+    current_user_org_var.set(getattr(current_user, "organization_name", None))
 
     # If streaming is requested, use the old behavior (no job system)
     if analyze_req.stream:
@@ -3148,10 +3172,30 @@ def get_superadmin_organizations(
         project_tags = {gr.project_token: [t.name for t in gr.tags] for gr in org_govs}
         project_names = {gr.project_token: gr.project_name for gr in org_govs}
 
-        project_tokens = list({l["project_token"] for l in logs_list if l["project_token"]})
+        # Also load any ShareProject created by this organization's members
+        org_shares = db.query(models.ShareProject).filter(
+            models.ShareProject.owner_id.in_(user_ids)
+        ).all() if user_ids else []
+        for sp in org_shares:
+            if sp.project_token and sp.project_token not in project_names:
+                project_names[sp.project_token] = sp.project_name or f"Share: {sp.project_token[:8]}"
+
+        def _normalize_project_token(tok):
+            if not tok:
+                return "direct_api"
+            s = str(tok).strip().lower()
+            if s in ("direct_api", name.lower(), canonical_org_name.lower()):
+                return "direct_api"
+            if org_id and s == str(org_id).lower():
+                return "direct_api"
+            return tok
+
+        project_tokens = list({_normalize_project_token(l["project_token"]) for l in logs_list})
         for p_tok in project_tokens:
-            if p_tok not in project_names:
-                project_names[p_tok] = "Direct API / Custom Workspace" if p_tok == "direct_api" else f"Project ({p_tok})"
+            if p_tok == "direct_api":
+                project_names[p_tok] = "Direct API / Custom Workspace"
+            elif p_tok not in project_names:
+                project_names[p_tok] = f"Project ({p_tok})"
 
         org_projects = {}
         # Pre-populate with all known projects from DB to list them even if 0 cost
@@ -3165,8 +3209,19 @@ def get_superadmin_organizations(
                 "tags": project_tags.get(p_tok, [])
             }
 
+        for sp in org_shares:
+            p_tok = sp.project_token
+            if p_tok and p_tok not in org_projects:
+                org_projects[p_tok] = {
+                    "project_token": p_tok,
+                    "project_name": sp.project_name or f"Share: {p_tok[:8]}",
+                    "total_tokens": 0,
+                    "total_cost": 0.0,
+                    "tags": []
+                }
+
         for log in logs_list:
-            p_tok = log["project_token"] or "direct_api"
+            p_tok = _normalize_project_token(log["project_token"])
             p_name = project_names.get(p_tok, "Direct API / Custom Workspace" if p_tok == "direct_api" else f"Project ({p_tok})")
             if p_tok not in org_projects:
                 org_projects[p_tok] = {
@@ -3190,7 +3245,7 @@ def get_superadmin_organizations(
 
             u_projects = {}
             for log in u_logs:
-                p_tok = log["project_token"] or "direct_api"
+                p_tok = _normalize_project_token(log["project_token"])
                 p_name = project_names.get(p_tok, "Direct API / Custom Workspace" if p_tok == "direct_api" else f"Project ({p_tok})")
                 if p_tok not in u_projects:
                     u_projects[p_tok] = {
@@ -15965,7 +16020,6 @@ async def bootstrap_agent_project(
 
         gov_response = db.query(models.GovernanceResponse).filter(
             models.GovernanceResponse.project_token == request.project_token,
-            models.GovernanceResponse.owner_id == current_user.id,
         ).first()
 
         project_name = (
@@ -15980,25 +16034,43 @@ async def bootstrap_agent_project(
         # the generated external task credentials (client_id/client_secret) so
         # the frontend can fetch a task token and project info immediately.
         if not gov_response:
-            gov_response = models.GovernanceResponse(
-                owner_id=current_user.id,
-                project_token=request.project_token,
-                project_name=project_name,
-                answers={},
-                classification="N/A",
-                recommendation="Created during task project bootstrap.",
-            )
-            db.add(gov_response)
-            db.commit()
-            db.refresh(gov_response)
+            try:
+                gov_response = models.GovernanceResponse(
+                    owner_id=current_user.id,
+                    organization_name=getattr(current_user, "organization_name", None),
+                    project_token=request.project_token,
+                    project_name=project_name,
+                    answers={},
+                    classification="N/A",
+                    recommendation="Created during task project bootstrap.",
+                )
+                db.add(gov_response)
+                db.commit()
+                db.refresh(gov_response)
+            except Exception:
+                db.rollback()
+                gov_response = db.query(models.GovernanceResponse).filter(
+                    models.GovernanceResponse.project_token == request.project_token,
+                ).first()
+        else:
+            if request.project_name and (not gov_response.project_name or gov_response.project_name in ("Untitled Project", request.project_token)):
+                gov_response.project_name = project_name
+                try:
+                    db.commit()
+                except Exception:
+                    db.rollback()
 
         # Reuse the same analysis harvesting as auto-generate (governance + documents)
         import json as json_mod
 
         analysis_payload: Dict[str, Any] = {}
         analysis_report = str(gov_response.recommendation or "").strip() if gov_response else ""
+        owner_ids = [current_user.id]
+        if gov_response and gov_response.owner_id and gov_response.owner_id not in owner_ids:
+            owner_ids.append(gov_response.owner_id)
+
         user_documents = db.query(models.Document).filter(
-            models.Document.owner_id == current_user.id
+            models.Document.owner_id.in_(owner_ids)
         ).order_by(models.Document.upload_date.desc()).all()
 
         for doc in user_documents:

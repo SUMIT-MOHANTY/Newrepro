@@ -692,6 +692,43 @@ class AIUsageLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
+from sqlalchemy import event
+
+@event.listens_for(AIUsageLog, "before_insert")
+def validate_ai_usage_log_project_token(mapper, connection, target):
+    """
+    Enforces that NO new AIUsageLog record is ever saved at the organization level
+    or without a valid project token.
+    """
+    is_invalid = False
+    if not target.project_token or not str(target.project_token).strip():
+        is_invalid = True
+    elif target.organization_name and str(target.project_token).strip().lower() == str(target.organization_name).strip().lower():
+        is_invalid = True
+    elif target.organization_id and str(target.project_token).strip().lower() == str(target.organization_id).strip().lower():
+        is_invalid = True
+
+    if is_invalid:
+        from database import SessionLocal
+        from tokenops.services.project_token_resolver import resolve_or_ensure_project_token
+        s = SessionLocal()
+        try:
+            tok, nm = resolve_or_ensure_project_token(
+                session=s,
+                user_id=target.user_id,
+                organization_name=target.organization_name,
+                candidate_project_token=target.project_token,
+                candidate_project_name=target.project_name
+            )
+            target.project_token = tok
+            target.project_name = nm
+            s.commit()
+        except Exception:
+            s.rollback()
+        finally:
+            s.close()
+
+
 class UserActivityLog(Base):
     """Store detailed user activity logs for security/audit tracking"""
     __tablename__ = "user_activity_logs"

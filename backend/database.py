@@ -35,6 +35,10 @@ if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
         cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.close()
 
+    @event.listens_for(engine, "begin")
+    def do_begin(conn):
+        conn.exec_driver_sql("BEGIN IMMEDIATE")
+
 # Enable WAL mode for better concurrent access and run migrations
 with engine.connect() as conn:
     conn.execute(text("PRAGMA journal_mode=WAL"))

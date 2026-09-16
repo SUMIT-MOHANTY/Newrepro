@@ -9,6 +9,7 @@ from tokenops.models.token_wallet import OrganizationWallet, UserTokenWallet
 from tokenops.schemas.superadmin import OrganizationWalletView, PaginatedOrganizationResponse
 
 from tokenops.models.organization import Organization
+from tokenops.utils.retry import retry_on_lock
 from config import settings
 
 class AdminWalletService:
@@ -142,6 +143,7 @@ class AdminWalletService:
             return self.session.begin_nested()
         return self.session.begin()
 
+    @retry_on_lock(max_retries=5)
     def purchase_tokens(self, admin_user_id: int, organization_name: str, token_amount: int, remarks: str = None) -> OrganizationWalletView:
         """
         Purchase prepaid tokens for an organization.

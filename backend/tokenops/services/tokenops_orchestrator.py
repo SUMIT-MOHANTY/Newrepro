@@ -344,25 +344,23 @@ class TokenOpsOrchestrator:
         if not organization_name:
             return
 
-        # Resolve project_name if project_token is provided but project_name is missing
-        resolved_project_name = project_name
-        resolved_project_token = project_token
-        if resolved_project_token and not resolved_project_name:
-            try:
-                from models import GovernanceResponse, ShareProject
-                gov = self.session.query(GovernanceResponse).filter(
-                    GovernanceResponse.project_token == resolved_project_token
-                ).first()
-                if gov and gov.project_name:
-                    resolved_project_name = gov.project_name
-                else:
-                    sp = self.session.query(ShareProject).filter(
-                        ShareProject.project_token == resolved_project_token
-                    ).first()
-                    if sp and sp.project_name:
-                        resolved_project_name = sp.project_name
-            except Exception:
-                pass
+        # Resolve canonical tenant name
+        try:
+            org_id, org = self.tenant_resolver.resolve(organization_name)
+            canonical_name = org.name
+        except Exception:
+            org_id = None
+            canonical_name = organization_name
+
+        # Ensure a valid, non-org-level project token and project name are resolved
+        from tokenops.services.project_token_resolver import resolve_or_ensure_project_token
+        resolved_project_token, resolved_project_name = resolve_or_ensure_project_token(
+            session=self.session,
+            user_id=user_id,
+            organization_name=canonical_name,
+            candidate_project_token=project_token,
+            candidate_project_name=project_name
+        )
 
         # ── Unknown tokens branch ─────────────────────────────────────────────
         if prompt_tokens is None or completion_tokens is None:
@@ -370,16 +368,9 @@ class TokenOpsOrchestrator:
                 if not self.idempotency.create_processing_record(request_id):
                     return
 
-                try:
-                    org_id, org = self.tenant_resolver.resolve(organization_name)
-                    canonical_name = org.name
-                except Exception:
-                    org_id = None
-                    canonical_name = organization_name
-
                 log_entry = AIUsageLog(
                     user_id=user_id,
-                    project_token=resolved_project_token or canonical_name,
+                    project_token=resolved_project_token,
                     project_name=resolved_project_name,
                     organization_name=canonical_name,
                     organization_id=org_id,
@@ -513,7 +504,7 @@ class TokenOpsOrchestrator:
                     )
                     log_entry = AIUsageLog(
                         user_id=user_id,
-                        project_token=resolved_project_token or canonical_name,
+                        project_token=resolved_project_token,
                         project_name=resolved_project_name,
                         organization_name=canonical_name,
                         organization_id=org_id,
@@ -573,7 +564,7 @@ class TokenOpsOrchestrator:
 
             log_entry = AIUsageLog(
                 user_id=user_id,
-                project_token=resolved_project_token or canonical_name,
+                project_token=resolved_project_token,
                 project_name=resolved_project_name,
                 organization_name=canonical_name,
                 organization_id=org_id,

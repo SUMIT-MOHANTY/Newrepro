@@ -21,6 +21,23 @@ class LedgerService:
         except Exception:
             pass
 
+        project_tok = tx.project_token
+        project_nm = tx.project_name
+        # Guarantee that AI debit transactions are never recorded without a concrete project token
+        if tx.transaction_type in ("AI_CONSUMPTION", "PAYG_USAGE"):
+            if not project_tok or (org_name and project_tok.strip().lower() == org_name.strip().lower()):
+                try:
+                    from tokenops.services.project_token_resolver import resolve_or_ensure_project_token
+                    project_tok, project_nm = resolve_or_ensure_project_token(
+                        session=self.repo.session,
+                        user_id=tx.user_id,
+                        organization_name=org_name,
+                        candidate_project_token=tx.project_token,
+                        candidate_project_name=tx.project_name
+                    )
+                except Exception:
+                    pass
+
         entry = TokenTransactionLedger(
             organization_name=org_name,
             organization_id=org_id,
@@ -30,8 +47,8 @@ class LedgerService:
             balance_after=balance_after,
             reference_id=tx.reference_id,
             purpose=tx.purpose,
-            project_token=tx.project_token,
-            project_name=tx.project_name,
+            project_token=project_tok,
+            project_name=project_nm,
             remarks=tx.remarks
         )
         self.repo.append(entry)

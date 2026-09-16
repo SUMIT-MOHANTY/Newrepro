@@ -303,6 +303,19 @@ def check_ai_allowance(
     target_tenant = None
     db = SessionLocal()
     try:
+        from tokenops.services.project_token_resolver import resolve_or_ensure_project_token
+        p_token, p_name = resolve_or_ensure_project_token(
+            session=db,
+            user_id=u_id,
+            organization_name=user_org,
+            candidate_project_token=p_token,
+            candidate_project_name=current_project_name_var.get()
+        )
+        if p_token:
+            current_project_token_var.set(p_token)
+            if p_name:
+                current_project_name_var.set(p_name)
+
         resolver = TenantResolverService(db)
 
         if p_token:
@@ -401,9 +414,37 @@ def log_ai_usage(
         # Note: We NO LONGER estimate tokens if missing. The TokenOpsOrchestrator will 
         # log it as UNKNOWN and trigger manual reconciliation.
 
-        if target_tenant:
-            db = SessionLocal()
-            try:
+        db = SessionLocal()
+        try:
+            from tokenops.services.project_token_resolver import resolve_or_ensure_project_token
+            from tokenops.services.tenant_resolver_service import TenantResolverService
+
+            # Strictly resolve project token and project name
+            p_token, p_name = resolve_or_ensure_project_token(
+                session=db,
+                user_id=u_id,
+                organization_name=user_org,
+                candidate_project_token=p_token,
+                candidate_project_name=p_name,
+            )
+
+            # Resolve tenant organization name properly
+            resolver = TenantResolverService(db)
+            target_tenant = user_org
+            if p_token:
+                try:
+                    _, proj_org = resolver.resolve(p_token)
+                    target_tenant = proj_org.name
+                except Exception:
+                    pass
+            if not target_tenant and user_org:
+                try:
+                    _, active_org = resolver.resolve(user_org)
+                    target_tenant = active_org.name
+                except Exception:
+                    pass
+
+            if target_tenant:
                 orchestrator = TokenOpsOrchestrator.create(db)
                 orchestrator.post_execute(
                     user_id=u_id,
@@ -417,8 +458,8 @@ def log_ai_usage(
                     project_name=p_name,
                 )
                 logger.info(f"Logged AI Usage to TokenOps: {prompt_tokens} prompt, {completion_tokens} completion for tenant {target_tenant} (purpose: {ai_purpose_val}, project: {p_name}).")
-            finally:
-                db.close()
+        finally:
+            db.close()
     except Exception as e:
         logger.error(f"Failed to log AI usage via TokenOps: {e}", exc_info=True)
 
@@ -536,12 +577,15 @@ async def call_llm(
                 try:
                     from database import SessionLocal
                     from tokenops.services.tokenops_orchestrator import TokenOpsOrchestrator
-                    p_token = project_token or current_project_token_var.get() or current_user_org_var.get()
-                    if p_token:
+                    from tokenops.services.tenant_resolver_service import TenantResolverService
+                    tok_or_org = project_token or current_project_token_var.get() or current_user_org_var.get()
+                    if tok_or_org:
                         db = SessionLocal()
                         try:
+                            resolver = TenantResolverService(db)
+                            _, org = resolver.resolve(tok_or_org)
                             orchestrator = TokenOpsOrchestrator.create(db)
-                            orchestrator.release_reservation(organization_name=p_token, reserved_cost=reserved_cost)
+                            orchestrator.release_reservation(organization_name=org.name, reserved_cost=reserved_cost)
                         finally:
                             db.close()
                 except Exception:
