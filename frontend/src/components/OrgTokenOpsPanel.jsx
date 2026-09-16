@@ -68,7 +68,7 @@ export default function OrgTokenOpsPanel({ user }) {
         } else if (p.includes('Ingestion') || p.includes('OCR')) {
             badgeStyle = "bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-800/60";
             icon = "📄";
-        } else if (p.includes('Chat') || p.includes('Copilot')) {
+        } else if (p.includes('Chat') || p.includes('Copilot') || p.includes('Assistant')) {
             badgeStyle = "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/60";
             icon = "💬";
         } else if (p.includes('Decomposition') || p.includes('Checklist') || p.includes('Planning')) {

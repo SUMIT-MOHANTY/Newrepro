@@ -278,6 +278,7 @@ def check_api_key(api_key: Optional[str] = None) -> bool:
 
 def check_ai_allowance(
     user_id: Optional[int] = None,
+    organization_name: Optional[str] = None,
     project_token: Optional[str] = None,
     model_name: Optional[str] = None,
     messages: Optional[list] = None,
@@ -298,7 +299,7 @@ def check_ai_allowance(
 
     u_id = user_id or current_user_id_var.get()
     p_token = project_token or current_project_token_var.get()
-    user_org = current_user_org_var.get()
+    user_org = organization_name or current_user_org_var.get()
 
     target_tenant = None
     db = SessionLocal()
@@ -358,6 +359,7 @@ def log_ai_usage(
     response_text: str,
     model_name: str,
     user_id: Optional[int] = None,
+    organization_name: Optional[str] = None,
     project_token: Optional[str] = None,
     prompt_tokens: Optional[int] = None,
     completion_tokens: Optional[int] = None,
@@ -370,7 +372,7 @@ def log_ai_usage(
     Asynchronously logs AI token usage and calculations to the database using TokenOps.
     
     Extracts actual token counts from the API response payload if available (e.g. usage.input_tokens / output_tokens / prompt_tokens / completion_tokens).
-    If token count is not provided by the API, passes None to TokenOps which sets status to UNKNOWN.
+    If token count is not provided by the API, computes from input messages and generated response text.
     """
     try:
         from database import SessionLocal
@@ -380,9 +382,9 @@ def log_ai_usage(
         u_id = user_id or current_user_id_var.get()
         p_token = project_token or current_project_token_var.get()
         p_name = project_name or current_project_name_var.get()
-        user_org = current_user_org_var.get()
-        target_tenant = p_token or user_org
-        ai_purpose_val = purpose or current_purpose_var.get()
+        user_org = organization_name or current_user_org_var.get()
+        target_tenant = user_org or p_token
+        ai_purpose_val = purpose or current_purpose_var.get() or "AI Consumption"
 
         # 1. Extract actual token counts from API response payload if present
         if response_data and isinstance(response_data, dict):
@@ -398,8 +400,12 @@ def log_ai_usage(
                     if isinstance(c_tok, int) and c_tok >= 0:
                         completion_tokens = c_tok
 
-        # Note: We NO LONGER estimate tokens if missing. The TokenOpsOrchestrator will 
-        # log it as UNKNOWN and trigger manual reconciliation.
+        # For streaming or endpoints without explicit usage payloads, compute from characters
+        if prompt_tokens is None and messages and isinstance(messages, list):
+            total_input_chars = sum(len(str(m.get("content", ""))) for m in messages if isinstance(m, dict))
+            prompt_tokens = max(1, total_input_chars // 4)
+        if completion_tokens is None and response_text:
+            completion_tokens = max(1, len(str(response_text)) // 4)
 
         if target_tenant:
             db = SessionLocal()
@@ -416,7 +422,7 @@ def log_ai_usage(
                     project_token=p_token,
                     project_name=p_name,
                 )
-                logger.info(f"Logged AI Usage to TokenOps: {prompt_tokens} prompt, {completion_tokens} completion for tenant {target_tenant} (purpose: {ai_purpose_val}, project: {p_name}).")
+                logger.info(f"Logged AI Usage to TokenOps: {prompt_tokens} prompt, {completion_tokens} completion for tenant {target_tenant} (user: {u_id}, purpose: {ai_purpose_val}, project: {p_name}).")
             finally:
                 db.close()
     except Exception as e:
@@ -616,6 +622,9 @@ async def call_llm_streaming(
     purpose: Optional[str] = None,
     project_token: Optional[str] = None,
     project_name: Optional[str] = None,
+    user_id: Optional[int] = None,
+    organization_name: Optional[str] = None,
+    reserved_cost: Optional[float] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Unified streaming LLM call.
@@ -631,7 +640,20 @@ async def call_llm_streaming(
     """
     url = resolve_url(api_url)
     model_name = resolve_model(model)
-    reserved_cost = check_ai_allowance(model_name=model_name, messages=messages)
+    u_id = user_id or current_user_id_var.get()
+    u_org = organization_name or current_user_org_var.get()
+    p_token = project_token or current_project_token_var.get()
+    p_name = project_name or current_project_name_var.get()
+    purp = purpose or current_purpose_var.get() or "AI Consumption"
+
+    if reserved_cost is None:
+        reserved_cost = check_ai_allowance(
+            user_id=u_id,
+            organization_name=u_org,
+            project_token=p_token,
+            model_name=model_name,
+            messages=messages
+        )
     use_brn = is_brn_llama_enabled() or (url == settings.brn_llama_url)
 
     client = httpx.AsyncClient(timeout=timeout)
@@ -813,13 +835,15 @@ async def call_llm_streaming(
         try:
             full_response_text = "".join(response_content_buffer)
             log_ai_usage(
-                messages,
-                full_response_text,
-                model_name,
+                messages=messages,
+                response_text=full_response_text,
+                model_name=model_name,
+                user_id=u_id,
+                organization_name=u_org,
+                project_token=p_token,
+                project_name=p_name,
                 reserved_cost=reserved_cost,
-                purpose=purpose,
-                project_token=project_token,
-                project_name=project_name,
+                purpose=purp,
             )
         except Exception as log_err:
             logger.error(f"Failed to log AI usage in call_llm_streaming finally block: {log_err}")

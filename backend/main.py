@@ -1128,11 +1128,16 @@ async def assistant_chat(
     """Context-aware AI assistant chat endpoint."""
     try:
         context = getattr(payload, 'context', None)
+        llm_gateway.current_user_id_var.set(current_user.id)
+        llm_gateway.current_user_org_var.set(getattr(current_user, "organization_name", None))
+        llm_gateway.current_purpose_var.set("Copilot Chat")
         assistant_reply = await ai_service.chat_with_llm(
             message=payload.message,
             context=context
         )
         return {"response": assistant_reply}
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1146,11 +1151,22 @@ async def assistant_chat_stream(
     from fastapi.responses import StreamingResponse
     import json
 
+    user_id = current_user.id
+    org_name = getattr(current_user, "organization_name", None)
+    llm_gateway.current_user_id_var.set(user_id)
+    llm_gateway.current_user_org_var.set(org_name)
+    llm_gateway.current_purpose_var.set("Copilot Chat")
+
     async def generate():
         try:
             context = getattr(payload, 'context', None)
             messages = ai_service.build_chat_messages(payload.message, context)
-            async for chunk in llm_gateway.call_llm_streaming(messages=messages):
+            async for chunk in llm_gateway.call_llm_streaming(
+                messages=messages,
+                user_id=user_id,
+                organization_name=org_name,
+                purpose="Copilot Chat",
+            ):
                 if chunk.startswith("data: "):
                     data_str = chunk[6:].strip()
                     if data_str == "[DONE]":
@@ -1168,6 +1184,8 @@ async def assistant_chat_stream(
                             yield f"data: {json.dumps({'content': content})}\n\n"
                     except json.JSONDecodeError:
                         continue
+        except HTTPException as he:
+            yield f"data: {json.dumps({'error': he.detail})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
@@ -1193,6 +1211,7 @@ async def brd_chat(
     llm_gateway.current_user_id_var.set(current_user.id)
     llm_gateway.current_project_token_var.set(payload.project_token)
     llm_gateway.current_user_org_var.set(getattr(current_user, "organization_name", None))
+    llm_gateway.current_purpose_var.set("BRD Refinement Chat")
 
     import json
     from config import settings
@@ -1265,6 +1284,7 @@ async def brd_chat(
         analysis_report = str(gov.recommendation).strip()
 
     project_name = (gov.project_name if gov else None) or payload.project_token
+    llm_gateway.current_project_name_var.set(project_name)
 
     system_prompt = f"""You are a senior BRD Refinement Assistant and requirements engineer for project "{project_name}".
 You are helping the user analyze, clarify, and plan improvements to their Business Requirement Document (BRD) and its generated AI Action Plan/Analysis report.
@@ -1301,7 +1321,10 @@ CONTEXT INFO:
             api_url=settings.ai_api_url,
             api_key=settings.ai_api_key,
             model=settings.ai_model,
-            timeout=120.0
+            timeout=120.0,
+            purpose="BRD Refinement Chat",
+            project_token=payload.project_token,
+            project_name=project_name,
         )
         return {"response": reply}
     except HTTPException as he:
