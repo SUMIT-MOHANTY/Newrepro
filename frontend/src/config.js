@@ -207,8 +207,11 @@ export const API_ENDPOINTS = {
     TOKENOPS_ORG_REPORTS_DAILY: `${API_BASE_URL}/api/org/tokenops/reports/usage`,
     TOKENOPS_ORG_REPORTS_LEDGER: `${API_BASE_URL}/api/org/tokenops/reports/ledger`,
 
-    // TokenOps User Transparency
+    // TokenOps User Transparency & Quota Requests
     TOKENOPS_USER_MY_QUOTA: `${API_BASE_URL}/api/tokenops/user/my-quota`,
+    TOKENOPS_USER_REQUEST_QUOTA: `${API_BASE_URL}/api/tokenops/user/quota-request`,
+    TOKENOPS_ORG_MEMBER_REQUESTS: `${API_BASE_URL}/api/org/tokenops/user-requests`,
+    TOKENOPS_ORG_REVIEW_MEMBER_REQUEST: (reqId) => `${API_BASE_URL}/api/org/tokenops/user-requests/${reqId}/review`,
 };
 
 export default {

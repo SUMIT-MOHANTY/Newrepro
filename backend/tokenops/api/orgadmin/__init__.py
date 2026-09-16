@@ -6,6 +6,7 @@ from .block_router import router as block_router
 from .analytics_router import router as analytics_router
 from .reports_router import router as reports_router
 from .quota_router import router as quota_router
+from .user_requests_router import router as user_requests_router
 
 tokenops_org_router = APIRouter(prefix="/api/org/tokenops")
 
@@ -16,5 +17,6 @@ tokenops_org_router.include_router(block_router, prefix="/block")
 tokenops_org_router.include_router(analytics_router, prefix="/analytics")
 tokenops_org_router.include_router(reports_router, prefix="/reports")
 tokenops_org_router.include_router(quota_router, prefix="/quota")
+tokenops_org_router.include_router(user_requests_router, prefix="/user-requests")
 
 __all__ = ["tokenops_org_router"]

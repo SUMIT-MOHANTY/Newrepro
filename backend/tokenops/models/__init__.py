@@ -46,6 +46,10 @@ from tokenops.models.quota_request import (
     QuotaRequestType,
     QuotaRequestStatus,
 )
+from tokenops.models.user_quota_request import (
+    UserTokenQuotaRequest,
+    UserQuotaRequestStatus,
+)
 from tokenops.models.ledger import (
     TokenTransactionLedger,
     TransactionType,
@@ -75,6 +79,8 @@ __all__ = [
     "TokenQuotaRequest",
     "QuotaRequestType",
     "QuotaRequestStatus",
+    "UserTokenQuotaRequest",
+    "UserQuotaRequestStatus",
     # Ledger
     "TokenTransactionLedger",
     "TransactionType",
