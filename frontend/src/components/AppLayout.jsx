@@ -20,8 +20,8 @@ import RoleDropdown from './RoleDropdown';
 import { getDraftProject, removeDraftProject } from '../utils/draftProjects';
 
 const DASHBOARD_ROLES = [
-    { value: 'cxo', label: 'Executive Summary Dashboard', description: 'High-level executive snapshot' },
-    { value: 'project', label: 'Project Dashboard', description: 'PM, team lead, delivery' },
+    { value: 'cxo', label: 'Executive Summary Dashboard', shortLabel: 'Executive Summary', description: 'High-level executive snapshot' },
+    { value: 'project', label: 'Project Dashboard', shortLabel: 'Project Dashboard', description: 'PM, team lead, delivery' },
 ];
 const ROLE_STORAGE_KEY = 'status_dashboard_selected_role';
 const PROJECT_STORAGE_KEY = 'status_dashboard_selected_project_key';
@@ -1326,8 +1326,9 @@ export default function AppLayout({ children }) {
                             </button>
                         )}
                         <div className="flex-1 min-w-0 flex items-center justify-between">
-                            <div className="min-w-0 truncate">
-                                <h1 className="text-lg md:text-2xl lg:text-3xl font-bold tracking-wide truncate">
+                            {/* Page Title & Subtitle */}
+                            <div className="flex-shrink-0 min-w-0 mr-2 sm:mr-4">
+                                <h1 className="text-base sm:text-lg md:text-xl lg:text-2xl font-bold tracking-tight text-white whitespace-nowrap">
                                     {currentView === 'statusDashboard' ? 'Project Status Dashboard' :
                                         currentView === 'organizationAdmin' ? 'Organization Admin' :
                                             currentView === 'governance' ? 'Project Setup & Governance' :
@@ -1342,9 +1343,9 @@ export default function AppLayout({ children }) {
                                                                                 currentView === 'plugins' ? 'Plugins' :
                                                                                     'Requirements Analyzer'}
                                 </h1>
-                                <h2 className="text-[10px] md:text-sm italic text-white/60 mt-0.5 md:mt-1 truncate">
-                                    {currentView === 'statusDashboard' ? '' :
-                                        currentView === 'organizationAdmin' ? 'Identity & SSO Configuration' :
+                                {currentView !== 'statusDashboard' && (
+                                    <h2 className="text-[10px] md:text-xs italic text-white/60 mt-0.5 truncate max-w-[200px] sm:max-w-[280px] md:max-w-[420px]">
+                                        {currentView === 'organizationAdmin' ? 'Identity & SSO Configuration' :
                                             currentView === 'governance' ? 'Project initiation and late-stage governance review' :
                                                 currentView === 'prerequisites' ? 'AI-Identified Requirements & Credentials' :
                                                     currentView === 'taskCreation' ? 'Sprint, Milestone, and Task Generation' :
@@ -1356,14 +1357,15 @@ export default function AppLayout({ children }) {
                                                                             currentView === 'agents' ? 'Manage and monitor AI agents' :
                                                                                 currentView === 'plugins' ? 'Extend DSuite with integrated plugins' :
                                                                                     'Project Insight & AI Assessment'}
-                                </h2>
+                                    </h2>
+                                )}
                             </div>
 
                             {/* Right-side Controls Group */}
-                            <div className="flex items-center gap-4 ml-4 shrink-0">
+                            <div className="flex items-center gap-2 sm:gap-2.5 md:gap-3 ml-auto shrink-0">
                                 {(currentView === 'statusDashboard' || currentView === 'prerequisites' || currentView === 'governance' || currentView === 'taskCreation' || currentView === 'resourceOnboarding' || currentView === 'agentAnalysis' || currentView === 'main' || currentView === 'shareDoc') && location.pathname !== '/agents' && location.pathname !== '/plugins' && (
-                                    <div className="flex flex-row-reverse gap-3 items-center bg-white/10 p-1.5 rounded-lg border border-white/20">
-                                        <div className="w-48 sm:w-56">
+                                    <div className="flex flex-row-reverse gap-1.5 sm:gap-2 items-center bg-white/10 p-1 sm:p-1.5 rounded-lg border border-white/20">
+                                        <div className="w-36 sm:w-44 md:w-48 xl:w-52">
                                             <ProjectDropdown
                                                 projects={layoutProps.unifiedProjects}
                                                 selectedKey={selectedProjectKey}
@@ -1383,7 +1385,7 @@ export default function AppLayout({ children }) {
                                         {currentView === 'statusDashboard' && (
                                             <>
                                                 <div className="w-px h-5 bg-white/20"></div>
-                                                <div className="w-48">
+                                                <div className="w-36 sm:w-44 md:w-48 xl:w-52">
                                                     <RoleDropdown
                                                         roles={DASHBOARD_ROLES}
                                                         selectedRole={selectedRole}
@@ -1445,11 +1447,12 @@ export default function AppLayout({ children }) {
                                 <button
                                     type="button"
                                     onClick={() => navigate('/docs')}
-                                    className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded-md text-white/80 hover:text-white transition-colors border border-white/20 text-sm font-medium cursor-pointer"
+                                    className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 bg-white/10 hover:bg-white/20 rounded-md text-white/80 hover:text-white transition-colors border border-white/20 text-xs sm:text-sm font-medium cursor-pointer shrink-0"
                                     aria-label="User Documentation"
+                                    title="User Documentation"
                                 >
-                                    <BookOpen className="w-4 h-4" />
-                                    <span>User Docs</span>
+                                    <BookOpen className="w-4 h-4 shrink-0" />
+                                    <span className="hidden xl:inline">User Docs</span>
                                 </button>
 
                                 {/* Theme Toggle Button */}
