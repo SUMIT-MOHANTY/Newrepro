@@ -6,6 +6,13 @@ from sqlalchemy import func
 
 logger = logging.getLogger(__name__)
 
+def _is_jwt(val: Optional[str]) -> bool:
+    if not val or not isinstance(val, str):
+        return False
+    parts = val.strip().split(".")
+    return len(parts) == 3 and parts[0].startswith("ey")
+
+
 def resolve_or_ensure_project_token(
     session: Session,
     user_id: Optional[int] = None,
@@ -21,7 +28,7 @@ def resolve_or_ensure_project_token(
     equal to the organization name or ID.
     
     Resolution order:
-      1. Validate candidate_project_token (ensure it is NOT the org name, org UUID, or empty).
+      1. Validate candidate_project_token (ensure it is NOT the org name, org UUID, JWT, or empty).
          If valid, resolve project_name from DB if missing.
       2. If candidate is invalid or missing:
          a. If user_id provided: check user.last_project_token.
@@ -35,9 +42,11 @@ def resolve_or_ensure_project_token(
 
     canonical_org_name = (organization_name or "").strip()
     
-    # Helper to check if a string matches any organization name or wallet ID
+    # Helper to check if a string matches any organization name, wallet ID, or is a JWT
     def _is_org_identifier(val: Optional[str]) -> bool:
         if not val or not val.strip():
+            return True
+        if _is_jwt(val):
             return True
         v = val.strip().lower()
         if canonical_org_name and v == canonical_org_name.lower():
@@ -54,7 +63,7 @@ def resolve_or_ensure_project_token(
     resolved_name = candidate_project_name
 
     # Step 1: Check candidate token
-    if candidate_project_token and not _is_org_identifier(candidate_project_token):
+    if candidate_project_token and not _is_jwt(candidate_project_token) and not _is_org_identifier(candidate_project_token):
         clean_cand = candidate_project_token.strip()
         # Look up existing project name if missing
         gov = session.query(GovernanceResponse).filter(

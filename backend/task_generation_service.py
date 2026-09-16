@@ -506,6 +506,7 @@ async def _chunk_and_summarize_brd(
     api_key: Optional[str] = None,
     model: Optional[str] = None,
     status_callback: Optional[Any] = None,
+    project_token: Optional[str] = None,
 ) -> str:
     """Chunk large BRD documents into logical blocks (~8000 chars) and summarize key features."""
     if not raw_text or len(raw_text) <= 15000:
@@ -536,7 +537,14 @@ async def _chunk_and_summarize_brd(
         ]
         try:
             summary = await llm_gateway.call_llm_and_extract(
-                messages=messages, api_url=api_url, api_key=api_key, model=model, timeout=120.0, retries=3
+                messages=messages,
+                api_url=api_url,
+                api_key=api_key,
+                model=model,
+                timeout=120.0,
+                retries=3,
+                purpose="BRD Summarization",
+                project_token=project_token,
             )
             summaries.append(f"--- BRD SECTION {idx + 1} SUMMARY ---\n{summary}")
         except Exception as e:
@@ -572,6 +580,7 @@ async def _ai_plan_sprints(
     api_url: Optional[str] = None,
     api_key: Optional[str] = None,
     model: Optional[str] = None,
+    project_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Ask AI to dynamically analyze BRD scope and decide optimal sprint count (2-6) and names."""
     logger.info("Executing AI Dynamic Sprint Planning...")
@@ -637,7 +646,14 @@ Return a valid JSON object:
         try:
             logger.info(f"AI Dynamic Sprint Planning attempt {attempt}/{max_attempts}...")
             raw_res = await llm_gateway.call_llm_and_extract(
-                messages=messages, api_url=api_url, api_key=api_key, model=model, timeout=120.0, retries=2
+                messages=messages,
+                api_url=api_url,
+                api_key=api_key,
+                model=model,
+                timeout=120.0,
+                retries=2,
+                purpose="AI Dynamic Sprint Planning",
+                project_token=project_token,
             )
             data = _extract_json_object_from_response(raw_res)
             if isinstance(data, dict) and isinstance(data.get("sprints"), list) and len(data["sprints"]) > 0:
@@ -1871,6 +1887,8 @@ async def _generate_sprint_phase(
             api_key=api_key,
             model=model,
             timeout=180.0,
+            purpose=f"Generate Tasks - Sprint {sprint_number}",
+            project_token=project_token,
         )
 
         tasks = _parse_task_json(response_content)
@@ -1980,6 +1998,8 @@ Each task MUST include: task_id, taskName, description, task_type, target_file, 
             api_url=api_url,
             api_key=api_key,
             model=model_name,
+            purpose="Brownfield Task Generation",
+            project_token=project_token,
         )
 
         content = ""
@@ -2238,6 +2258,7 @@ Weighted Score:    {gov_ctx.get('weighted_score', 'Not available')}
             api_url=api_url,
             api_key=api_key,
             model=model,
+            project_token=project_token,
         )
 
     # ── 4c. Master Technical Plan Generation (Tech Lead Phase) ───────────────
@@ -2262,6 +2283,7 @@ Weighted Score:    {gov_ctx.get('weighted_score', 'Not available')}
         api_url=api_url,
         api_key=api_key,
         model=model,
+        project_token=project_token,
     )
     ai_sprints = ai_sprint_plan.get("sprints", [])
     total_sprints_count = len(ai_sprints)
@@ -2361,7 +2383,14 @@ Set the "milestone" field of every generated task to "{sp.get('milestone', '')}"
 
         try:
             response_sprint = await llm_gateway.call_llm_and_extract(
-                messages=messages_sprint, api_url=api_url, api_key=api_key, model=model, timeout=180.0, retries=3
+                messages=messages_sprint,
+                api_url=api_url,
+                api_key=api_key,
+                model=model,
+                timeout=180.0,
+                retries=3,
+                purpose=f"Generate Tasks - Sprint {sprint_num}",
+                project_token=project_token,
             )
             tasks_sprint = _parse_task_json(response_sprint)
             if tasks_sprint:
@@ -2693,6 +2722,8 @@ Set the "milestone" field of every generated task to "{sp.get('milestone', '')}"
                         api_key=api_key,
                         model=model,
                         timeout=120.0,
+                        purpose="Fill Task Gaps",
+                        project_token=project_token,
                     )
                     fill_tasks = _parse_task_json(fill_response)
                     if fill_tasks:
