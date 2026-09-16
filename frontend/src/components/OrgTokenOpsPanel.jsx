@@ -30,6 +30,37 @@ export default function OrgTokenOpsPanel({ user }) {
     const token = localStorage.getItem('token');
     const orgName = user?.organization_name || localStorage.getItem('active_org') || '';
 
+    const localTimezone = (() => {
+        try {
+            return new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' })
+                .formatToParts(new Date())
+                .find(part => part.type === 'timeZoneName')?.value || '';
+        } catch (e) {
+            return '';
+        }
+    })();
+
+    const formatTimestamp = (ts) => {
+        if (!ts) return '—';
+        let s = String(ts).trim();
+        // If naive timestamp without timezone, append Z so browser parses as UTC
+        if (!s.endsWith('Z') && !/[+-]\d{2}:?\d{2}$/.test(s)) {
+            s = s.includes('T') ? `${s}Z` : `${s.replace(' ', 'T')}Z`;
+        }
+        const d = new Date(s);
+        return isNaN(d.getTime()) ? ts : d.toLocaleString();
+    };
+
+    const formatDateOnly = (ts) => {
+        if (!ts) return '—';
+        let s = String(ts).trim();
+        if (!s.endsWith('Z') && !/[+-]\d{2}:?\d{2}$/.test(s)) {
+            s = s.includes('T') ? `${s}Z` : `${s.replace(' ', 'T')}Z`;
+        }
+        const d = new Date(s);
+        return isNaN(d.getTime()) ? ts : d.toLocaleDateString();
+    };
+
     const formatCurrency = (amount, pricePerToken = 0.000007) => {
         return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format((amount || 0) * pricePerToken);
     };
@@ -1026,7 +1057,7 @@ export default function OrgTokenOpsPanel({ user }) {
                                                     )}
                                                 </td>
                                                 <td className="px-6 py-4 text-xs text-slate-400 font-mono">
-                                                    {r.created_at ? new Date(r.created_at).toLocaleDateString() : '—'}
+                                                    {formatDateOnly(r.created_at)}
                                                 </td>
                                                 <td className="px-6 py-4">
                                                     <span className={`px-2.5 py-1 text-xs font-semibold rounded-full ${
@@ -1073,7 +1104,7 @@ export default function OrgTokenOpsPanel({ user }) {
                                                         </div>
                                                     ) : (
                                                         <span className="text-xs text-slate-400">
-                                                            {r.reviewed_at ? `Reviewed ${new Date(r.reviewed_at).toLocaleDateString()}` : '—'}
+                                                            {r.reviewed_at ? `Reviewed ${formatDateOnly(r.reviewed_at)}` : '—'}
                                                         </span>
                                                     )}
                                                 </td>
@@ -1160,7 +1191,7 @@ export default function OrgTokenOpsPanel({ user }) {
                                                 </span>
                                             </td>
                                             <td className="px-6 py-4 text-xs text-slate-400">
-                                                {r.created_at ? new Date(r.created_at).toLocaleDateString() : '—'}
+                                                {formatDateOnly(r.created_at)}
                                             </td>
                                         </tr>
                                     );
@@ -1187,7 +1218,7 @@ export default function OrgTokenOpsPanel({ user }) {
                                     <th className="px-6 py-4 font-semibold">Balance After</th>
                                     <th className="px-6 py-4 font-semibold">PAYG Cost (USD)</th>
                                     <th className="px-6 py-4 font-semibold">Remarks / Ref</th>
-                                    <th className="px-6 py-4 font-semibold">Timestamp</th>
+                                    <th className="px-6 py-4 font-semibold">Timestamp {localTimezone ? `(${localTimezone})` : ''}</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100 dark:divide-slate-700 text-slate-800 dark:text-slate-200">
@@ -1255,8 +1286,8 @@ export default function OrgTokenOpsPanel({ user }) {
                                             <td className="px-6 py-4 text-xs text-slate-500 truncate max-w-xs">
                                                 {tx.remarks || tx.reference_id || '—'}
                                             </td>
-                                            <td className="px-6 py-4 text-xs text-slate-400">
-                                                {new Date(tx.created_at).toLocaleString()}
+                                            <td className="px-6 py-4 text-xs text-slate-400 font-mono">
+                                                {formatTimestamp(tx.created_at)}
                                             </td>
                                         </tr>
                                     ))

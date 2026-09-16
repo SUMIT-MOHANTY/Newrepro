@@ -212,7 +212,7 @@ class OrgAnalyticsService:
                     balance_after=e.balance_after,
                     cost_usd=cost_usd,
                     payg_cost_usd=payg_cost,
-                    created_at=e.created_at.isoformat(),
+                    created_at=(e.created_at.isoformat() + "Z") if e.created_at else None,
                     reference_id=e.reference_id,
                     remarks=e.remarks
                 )
