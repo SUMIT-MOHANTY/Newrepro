@@ -1313,22 +1313,39 @@ export default function AppLayout({ children }) {
 
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden relative w-full bg-app-bg-page h-full transition-all duration-300 ease-in-out">
                 {/* Global Top Navbar */}
-                <header className="bg-[#1c355e] text-white px-4 md:px-6 py-3 flex items-center justify-between shadow-md z-[250] shrink-0">
-                    <div className="flex items-center gap-3 md:gap-4 w-full">
+                <header className="bg-[#1c355e] text-white px-3 sm:px-4 md:px-5 py-2 sm:py-2.5 flex items-center justify-between shadow-md z-[250] shrink-0 min-w-0">
+                    <div className="flex items-center gap-2 sm:gap-3 w-full min-w-0">
                         {!isSidebarOpen && (
                             <button
                                 type="button"
                                 onClick={() => setIsSidebarOpen(true)}
-                                className="p-1.5 md:p-2 bg-white/10 hover:bg-white/20 rounded-md shadow-sm text-white/80 hover:text-white transition-colors border border-white/20 cursor-pointer flex-shrink-0"
+                                className="p-1.5 bg-white/10 hover:bg-white/20 rounded-md shadow-sm text-white/80 hover:text-white transition-colors border border-white/20 cursor-pointer flex-shrink-0"
                                 aria-label="Open menu"
                             >
                                 <Menu className="w-4 h-4 md:w-5 md:h-5" />
                             </button>
                         )}
-                        <div className="flex-1 min-w-0 flex items-center justify-between">
+                        <div className="flex-1 min-w-0 flex items-center justify-between gap-2">
                             {/* Page Title & Subtitle */}
-                            <div className="flex-shrink-0 min-w-0 mr-2 sm:mr-4">
-                                <h1 className="text-base sm:text-lg md:text-xl lg:text-2xl font-bold tracking-tight text-white whitespace-nowrap">
+                            <div className="min-w-0 mr-1 sm:mr-3 shrink">
+                                <h1
+                                    title={
+                                        currentView === 'statusDashboard' ? 'Project Status Dashboard' :
+                                            currentView === 'organizationAdmin' ? 'Organization Admin' :
+                                                currentView === 'governance' ? 'Project Setup & Governance' :
+                                                    currentView === 'prerequisites' ? 'Prerequisite Classification' :
+                                                        currentView === 'taskCreation' ? 'Task Creation Planner' :
+                                                            currentView === 'resourceOnboarding' ? 'Resource Onboarding' :
+                                                                currentView === 'agentAnalysis' ? 'Agent Analysis' :
+                                                                    currentView === 'shareDoc' ? 'Secure Document Share' :
+                                                                        currentView === 'billing' ? 'Billing & Activity' :
+                                                                            currentView === 'governanceManagement' ? 'Governance Management' :
+                                                                                currentView === 'agents' ? 'Agents' :
+                                                                                    currentView === 'plugins' ? 'Plugins' :
+                                                                                        'Requirements Analyzer'
+                                    }
+                                    className="text-sm sm:text-base md:text-lg lg:text-xl font-bold tracking-tight text-white truncate"
+                                >
                                     {currentView === 'statusDashboard' ? 'Project Status Dashboard' :
                                         currentView === 'organizationAdmin' ? 'Organization Admin' :
                                             currentView === 'governance' ? 'Project Setup & Governance' :
@@ -1344,7 +1361,7 @@ export default function AppLayout({ children }) {
                                                                                     'Requirements Analyzer'}
                                 </h1>
                                 {currentView !== 'statusDashboard' && (
-                                    <h2 className="text-[10px] md:text-xs italic text-white/60 mt-0.5 truncate max-w-[200px] sm:max-w-[280px] md:max-w-[420px]">
+                                    <h2 className="text-[10px] md:text-xs italic text-white/60 mt-0.5 truncate max-w-[160px] sm:max-w-[220px] md:max-w-[320px]">
                                         {currentView === 'organizationAdmin' ? 'Identity & SSO Configuration' :
                                             currentView === 'governance' ? 'Project initiation and late-stage governance review' :
                                                 currentView === 'prerequisites' ? 'AI-Identified Requirements & Credentials' :
@@ -1362,10 +1379,10 @@ export default function AppLayout({ children }) {
                             </div>
 
                             {/* Right-side Controls Group */}
-                            <div className="flex items-center gap-2 sm:gap-2.5 md:gap-3 ml-auto shrink-0">
+                            <div className="flex items-center gap-1.5 sm:gap-2 md:gap-2.5 ml-auto shrink-0">
                                 {(currentView === 'statusDashboard' || currentView === 'prerequisites' || currentView === 'governance' || currentView === 'taskCreation' || currentView === 'resourceOnboarding' || currentView === 'agentAnalysis' || currentView === 'main' || currentView === 'shareDoc') && location.pathname !== '/agents' && location.pathname !== '/plugins' && (
-                                    <div className="flex flex-row-reverse gap-1.5 sm:gap-2 items-center bg-white/10 p-1 sm:p-1.5 rounded-lg border border-white/20">
-                                        <div className="w-36 sm:w-44 md:w-48 xl:w-52">
+                                    <div className="flex flex-row-reverse gap-1 sm:gap-1.5 items-center bg-white/10 p-1 rounded-lg border border-white/20">
+                                        <div className="w-28 sm:w-32 md:w-36 lg:w-40 xl:w-44">
                                             <ProjectDropdown
                                                 projects={layoutProps.unifiedProjects}
                                                 selectedKey={selectedProjectKey}
@@ -1384,8 +1401,8 @@ export default function AppLayout({ children }) {
                                         </div>
                                         {currentView === 'statusDashboard' && (
                                             <>
-                                                <div className="w-px h-5 bg-white/20"></div>
-                                                <div className="w-36 sm:w-44 md:w-48 xl:w-52">
+                                                <div className="w-px h-4 sm:h-5 bg-white/20"></div>
+                                                <div className="w-28 sm:w-32 md:w-36 lg:w-40 xl:w-44">
                                                     <RoleDropdown
                                                         roles={DASHBOARD_ROLES}
                                                         selectedRole={selectedRole}
@@ -1405,7 +1422,7 @@ export default function AppLayout({ children }) {
                                         <button
                                             type="button"
                                             onClick={() => setIsQuotaModalOpen(true)}
-                                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md border text-xs font-semibold transition cursor-pointer shadow-md ${
+                                            className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 py-1 rounded-md border text-[11px] sm:text-xs font-semibold transition cursor-pointer shadow-sm shrink-0 ${
                                                 isQuotaExhausted
                                                     ? 'bg-rose-500/15 border-rose-500 text-rose-100 shadow-[0_0_12px_rgba(244,63,94,0.35)] hover:bg-rose-500/25'
                                                     : 'bg-indigo-500/15 hover:bg-indigo-500/25 text-white border-indigo-400/30'
@@ -1413,14 +1430,14 @@ export default function AppLayout({ children }) {
                                             title={isQuotaExhausted ? "Your token quota is exhausted! Click to view details" : "Click to view detailed token quota & cost breakdown"}
                                         >
                                             {isQuotaExhausted ? (
-                                                <AlertCircle className="w-3.5 h-3.5 text-rose-400 animate-bounce" />
+                                                <AlertCircle className="w-3.5 h-3.5 text-rose-400 animate-bounce shrink-0" />
                                             ) : (
-                                                <Coins className="w-3.5 h-3.5 text-amber-400" />
+                                                <Coins className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                                             )}
                                             {userQuota.is_payg ? (
-                                                <span className="font-mono text-purple-300">⚡ PAYG Active</span>
+                                                <span className="font-mono text-purple-300">⚡ PAYG</span>
                                             ) : (
-                                                <span className="font-mono flex items-center gap-1">
+                                                <span className="font-mono flex items-center gap-0.5 sm:gap-1">
                                                     <span>{(() => {
                                                         const price = userQuota.reference_price || 0.000007;
                                                         const consumedUsd = Number(((userQuota.consumed_tokens || 0) * price).toFixed(2));
@@ -1435,7 +1452,7 @@ export default function AppLayout({ children }) {
                                                 </span>
                                             )}
                                             {isQuotaExhausted && (
-                                                <span className="ml-1.5 px-1 py-0.5 rounded bg-rose-500 text-white text-[9px] font-extrabold tracking-wider uppercase shadow-sm shadow-rose-950">
+                                                <span className="ml-1 px-1 py-0.2 rounded bg-rose-500 text-white text-[8px] sm:text-[9px] font-extrabold tracking-wider uppercase shadow-sm shadow-rose-950">
                                                     Exhausted
                                                 </span>
                                             )}
@@ -1447,22 +1464,23 @@ export default function AppLayout({ children }) {
                                 <button
                                     type="button"
                                     onClick={() => navigate('/docs')}
-                                    className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 bg-white/10 hover:bg-white/20 rounded-md text-white/80 hover:text-white transition-colors border border-white/20 text-xs sm:text-sm font-medium cursor-pointer shrink-0"
+                                    className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 py-1 bg-white/10 hover:bg-white/20 rounded-md text-white/80 hover:text-white transition-colors border border-white/20 text-xs font-medium cursor-pointer shrink-0"
                                     aria-label="User Documentation"
                                     title="User Documentation"
                                 >
-                                    <BookOpen className="w-4 h-4 shrink-0" />
-                                    <span className="hidden xl:inline">User Docs</span>
+                                    <BookOpen className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                                    <span className="hidden md:inline">Docs</span>
                                 </button>
 
                                 {/* Theme Toggle Button */}
                                 <button
                                     type="button"
                                     onClick={() => setIsDarkMode(!isDarkMode)}
-                                    className="p-1.5 md:p-2 rounded-md text-white/60 hover:text-white hover:bg-white/10 transition-colors border border-transparent hover:border-white/20 flex-shrink-0 cursor-pointer"
+                                    className="p-1 sm:p-1.5 rounded-md text-white/60 hover:text-white hover:bg-white/10 transition-colors border border-transparent hover:border-white/20 flex-shrink-0 cursor-pointer"
                                     aria-label="Toggle Dark Mode"
+                                    title={isDarkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
                                 >
-                                    {isDarkMode ? <Sun className="w-4 h-4 md:w-5 md:h-5" /> : <Moon className="w-4 h-4 md:w-5 md:h-5" />}
+                                    {isDarkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
                                 </button>
                             </div>
                         </div>
