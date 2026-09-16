@@ -31,6 +31,59 @@ export default function OrgTokenOpsPanel({ user }) {
         return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format((amount || 0) * pricePerToken);
     };
 
+    const renderPurposeBadge = (purpose, type) => {
+        const p = purpose || (
+            type === 'ALLOCATION' ? 'Admin Quota Allocation' : 
+            type === 'PURCHASE' ? 'Token Pack Purchase' : 
+            type === 'REALLOCATION' ? 'User Wallet Reallocation' : 
+            type === 'REVOCATION' ? 'Quota Revocation' : 
+            type === 'MANUAL_ADJUSTMENT' ? 'Manual Balance Adjustment' : 
+            'AI Consumption'
+        );
+        
+        let badgeStyle = "bg-slate-100 dark:bg-slate-700/60 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-600";
+        let icon = "⚡";
+
+        if (p.includes('Screening')) {
+            badgeStyle = "bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800/60";
+            icon = "📋";
+        } else if (p.includes('Analysis') || p.includes('Architecture')) {
+            badgeStyle = "bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800/60";
+            icon = "🔍";
+        } else if (p.includes('Gap')) {
+            badgeStyle = "bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800/60";
+            icon = "⚖️";
+        } else if (p.includes('Test')) {
+            badgeStyle = "bg-cyan-50 dark:bg-cyan-950/40 text-cyan-700 dark:text-cyan-300 border-cyan-200 dark:border-cyan-800/60";
+            icon = "🧪";
+        } else if (p.includes('Agent') || p.includes('Coding') || p.includes('Playground')) {
+            badgeStyle = "bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/60";
+            icon = "🤖";
+        } else if (p.includes('PR') || p.includes('Commit')) {
+            badgeStyle = "bg-teal-50 dark:bg-teal-950/40 text-teal-700 dark:text-teal-300 border-teal-200 dark:border-teal-800/60";
+            icon = "🔀";
+        } else if (p.includes('Ingestion') || p.includes('OCR')) {
+            badgeStyle = "bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-800/60";
+            icon = "📄";
+        } else if (p.includes('Chat') || p.includes('Copilot')) {
+            badgeStyle = "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/60";
+            icon = "💬";
+        } else if (p.includes('Decomposition') || p.includes('Checklist') || p.includes('Planning')) {
+            badgeStyle = "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800/60";
+            icon = "🗺️";
+        } else if (p.includes('Allocation') || p.includes('Purchase')) {
+            badgeStyle = "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/60";
+            icon = "💳";
+        }
+
+        return (
+            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold border ${badgeStyle}`}>
+                <span className="text-xs">{icon}</span>
+                <span className="font-medium whitespace-nowrap">{p}</span>
+            </span>
+        );
+    };
+
     const getHeaders = () => {
         const headers = {
             'Authorization': `Bearer ${token}`,
@@ -917,6 +970,7 @@ export default function OrgTokenOpsPanel({ user }) {
                                     <th className="px-6 py-4 font-semibold">Tx ID</th>
                                     <th className="px-6 py-4 font-semibold">Type</th>
                                     <th className="px-6 py-4 font-semibold">User</th>
+                                    <th className="px-6 py-4 font-semibold">Circumstance / Purpose</th>
                                     <th className="px-6 py-4 font-semibold">Token Delta</th>
                                     <th className="px-6 py-4 font-semibold">Balance After</th>
                                     <th className="px-6 py-4 font-semibold">PAYG Cost (USD)</th>
@@ -927,7 +981,7 @@ export default function OrgTokenOpsPanel({ user }) {
                             <tbody className="divide-y divide-slate-100 dark:divide-slate-700 text-slate-800 dark:text-slate-200">
                                 {ledger.length === 0 ? (
                                     <tr>
-                                        <td colSpan="8" className="px-6 py-8 text-center text-slate-400">
+                                        <td colSpan="9" className="px-6 py-8 text-center text-slate-400">
                                             No transaction entries recorded yet.
                                         </td>
                                     </tr>
@@ -951,6 +1005,20 @@ export default function OrgTokenOpsPanel({ user }) {
                                                 ) : (
                                                     tx.user_id ? `User #${tx.user_id}` : 'Organization'
                                                 )}
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <div className="flex flex-col items-start gap-1">
+                                                    {renderPurposeBadge(tx.purpose, tx.transaction_type)}
+                                                    {tx.project_name && (
+                                                        <div 
+                                                            className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium bg-slate-100 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700/80 max-w-[220px] truncate" 
+                                                            title={`Project: ${tx.project_name}`}
+                                                        >
+                                                            <span className="text-[11px] text-indigo-500 dark:text-indigo-400">📁</span>
+                                                            <span className="truncate">{tx.project_name}</span>
+                                                        </div>
+                                                    )}
+                                                </div>
                                             </td>
                                             <td className={`px-6 py-4 font-bold ${tx.token_delta >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
                                                 <div className="font-semibold text-sm">

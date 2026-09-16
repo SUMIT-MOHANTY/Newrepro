@@ -155,6 +155,12 @@ class TokenTransactionLedger(Base):
         String, nullable=True, index=True,
         comment="ID of the triggering entity, e.g. ai_usage_logs.id or user_token_wallet.id",
     )
+    purpose           = Column(String, nullable=True, index=True,
+                               comment="Circumstance or feature that triggered this transaction (e.g. Requirement Screening, BRD Analysis, Admin Quota Allocation)")
+    project_token     = Column(String, nullable=True, index=True,
+                               comment="Project token if this transaction occurred within a specific project context")
+    project_name      = Column(String, nullable=True, index=True,
+                               comment="Human-readable project name associated with project_token")
     remarks           = Column(Text, nullable=True,
                                comment="Human-readable note; mandatory for MANUAL_ADJUSTMENT")
     created_by        = Column(

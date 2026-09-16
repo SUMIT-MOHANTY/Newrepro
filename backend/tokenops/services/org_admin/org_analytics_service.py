@@ -115,6 +115,31 @@ class OrgAnalyticsService:
                     "email": u.email
                 }
 
+        # Batch resolve project names if missing from ledger entries
+        proj_tokens = list(set([e.project_token for e in entries if getattr(e, "project_token", None) and not getattr(e, "project_name", None)]))
+        project_map = {}
+        if proj_tokens:
+            try:
+                from models import GovernanceResponse, ShareProject
+                govs = self.session.query(GovernanceResponse.project_token, GovernanceResponse.project_name).filter(
+                    GovernanceResponse.project_token.in_(proj_tokens)
+                ).all()
+                for pt, pn in govs:
+                    if pn:
+                        project_map[pt] = pn
+                
+                # Also check ShareProjects for any remaining unresolved
+                remaining_tokens = [t for t in proj_tokens if t not in project_map]
+                if remaining_tokens:
+                    sps = self.session.query(ShareProject.project_token, ShareProject.project_name).filter(
+                        ShareProject.project_token.in_(remaining_tokens)
+                    ).all()
+                    for pt, pn in sps:
+                        if pn:
+                            project_map[pt] = pn
+            except Exception:
+                pass
+
         import re
 
         def _extract_payg_cost(remarks: str | None) -> float | None:
@@ -128,21 +153,70 @@ class OrgAnalyticsService:
                     return None
             return None
 
-        items = [
-            FinancialLedgerView(
-                transaction_id=e.id,
-                user_id=e.user_id,
-                user_name=user_map.get(e.user_id, {}).get("name") if e.user_id else None,
-                user_email=user_map.get(e.user_id, {}).get("email") if e.user_id else None,
-                transaction_type=e.transaction_type,
-                token_delta=e.token_delta,
-                balance_after=e.balance_after,
-                payg_cost_usd=_extract_payg_cost(e.remarks),
-                created_at=e.created_at.isoformat(),
-                reference_id=e.reference_id,
-                remarks=e.remarks
-            ) for e in entries
-        ]
+        # Fetch org reference price for calculating USD cost equivalent
+        wallet = self.session.query(OrganizationWallet).filter_by(organization_name=organization_name).first()
+        reference_price = float(getattr(wallet, "reference_price", 0.000007) or 0.000007)
+
+        def _resolve_purpose(e: TokenTransactionLedger) -> str:
+            if getattr(e, "purpose", None):
+                return e.purpose
+            # Graceful fallback derivation for historical ledger rows
+            ttype = e.transaction_type or ""
+            if ttype == "ALLOCATION":
+                return "Admin Quota Allocation"
+            elif ttype == "PURCHASE":
+                return "Token Pack Purchase"
+            elif ttype == "REALLOCATION":
+                return "User Wallet Reallocation"
+            elif ttype == "REVOCATION":
+                return "Quota Revocation"
+            elif ttype == "MANUAL_ADJUSTMENT":
+                return "Manual Balance Adjustment"
+            elif ttype in ("AI_CONSUMPTION", "PAYG_USAGE"):
+                rem = e.remarks or ""
+                if "Screening" in rem:
+                    return "Requirement Screening"
+                elif "Gap" in rem:
+                    return "Codebase Gap Analysis"
+                elif "Test" in rem:
+                    return "Test Case Generation"
+                elif "Analyze" in rem or "Analysis" in rem:
+                    return "BRD Analysis & Architecture"
+                elif "PR" in rem:
+                    return "PR Description Generation"
+                elif "Agent" in rem:
+                    return "Autonomous Coding Agent"
+                return "AI Consumption"
+            return ttype.replace("_", " ").title()
+
+        items = []
+        for e in entries:
+            payg_cost = _extract_payg_cost(e.remarks)
+            abs_delta = abs(e.token_delta)
+            cost_usd = payg_cost if payg_cost is not None else round(abs_delta * reference_price, 6)
+            
+            p_tok = getattr(e, "project_token", None)
+            p_name = getattr(e, "project_name", None) or (project_map.get(p_tok) if p_tok else None)
+
+            items.append(
+                FinancialLedgerView(
+                    transaction_id=e.id,
+                    user_id=e.user_id,
+                    user_name=user_map.get(e.user_id, {}).get("name") if e.user_id else None,
+                    user_email=user_map.get(e.user_id, {}).get("email") if e.user_id else None,
+                    transaction_type=e.transaction_type,
+                    purpose=_resolve_purpose(e),
+                    project_token=p_tok,
+                    project_name=p_name,
+                    token_delta=e.token_delta,
+                    balance_after=e.balance_after,
+                    cost_usd=cost_usd,
+                    payg_cost_usd=payg_cost,
+                    created_at=e.created_at.isoformat(),
+                    reference_id=e.reference_id,
+                    remarks=e.remarks
+                )
+            )
         
         return PaginatedLedgerResponse(
             items=items,

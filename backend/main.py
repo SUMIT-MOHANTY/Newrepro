@@ -431,7 +431,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from llm_gateway import current_user_id_var, current_project_token_var, current_user_org_var
+from llm_gateway import (
+    current_user_id_var,
+    current_project_token_var,
+    current_project_name_var,
+    current_user_org_var,
+    current_purpose_var,
+)
 from database import SessionLocal
 import models
 from jose import jwt
@@ -440,6 +446,8 @@ import concurrent.futures
 
 # In-memory email to user_id cache to avoid DB hits on every request
 _user_id_cache: Dict[str, int] = {}
+# In-memory project_token to project_name cache
+_project_name_cache: Dict[str, str] = {}
 
 # Whitelist of major application actions to log (all minor/polling APIs are ignored)
 MAJOR_ACTION_PATTERNS = [
@@ -555,18 +563,78 @@ async def log_user_activities(request: Request, call_next):
                     project_token = token_list[0]
             except Exception:
                 pass
+    if not project_token:
+        # Check path for project token (e.g., /projects/{token}/... or /project/{token}/...)
+        m = re.search(r"/projects?/([^/?#]+)", path)
+        if m:
+            candidate = m.group(1)
+            if candidate not in ("list", "create", "all", "recent", "stats", "export"):
+                project_token = candidate
+
+    # Resolve project name if project_token is present
+    project_name = None
+    if project_token:
+        if project_token in _project_name_cache:
+            project_name = _project_name_cache[project_token]
+        else:
+            try:
+                db_session = SessionLocal()
+                try:
+                    gov = db_session.query(models.GovernanceResponse).filter(
+                        models.GovernanceResponse.project_token == project_token
+                    ).first()
+                    if gov and gov.project_name:
+                        project_name = gov.project_name
+                    else:
+                        sp = db_session.query(models.ShareProject).filter(
+                            models.ShareProject.project_token == project_token
+                        ).first()
+                        if sp and sp.project_name:
+                            project_name = sp.project_name
+                    if project_name:
+                        _project_name_cache[project_token] = project_name
+                finally:
+                    db_session.close()
+            except Exception:
+                pass
+
+    # Infer purpose from path for downstream LLM tracking if not explicitly set
+    inferred_purpose = None
+    lower_path = path.lower()
+    if any(k in lower_path for k in ["/screening", "/screen"]):
+        inferred_purpose = "Requirement Screening"
+    elif any(k in lower_path for k in ["/analyze", "/analysis"]):
+        inferred_purpose = "BRD Analysis & Architecture"
+    elif any(k in lower_path for k in ["/gap-analysis", "/gap"]):
+        inferred_purpose = "Codebase Gap Analysis"
+    elif any(k in lower_path for k in ["/testcase", "/test-case", "/test_case"]):
+        inferred_purpose = "Test Case Generation"
+    elif any(k in lower_path for k in ["/chat", "/copilot"]):
+        inferred_purpose = "Copilot Chat"
+    elif any(k in lower_path for k in ["/agent", "/playground", "/react", "/master-task"]):
+        inferred_purpose = "Autonomous Coding Agent"
+    elif any(k in lower_path for k in ["/pr-description", "/pr_description", "/pull-request"]):
+        inferred_purpose = "PR Description Generation"
+    elif any(k in lower_path for k in ["/commit-message", "/commit_message"]):
+        inferred_purpose = "Commit Message Generation"
+    elif any(k in lower_path for k in ["/upload", "/extract", "/ingest"]):
+        inferred_purpose = "Document Ingestion & OCR"
 
     # Set context variables for LLM log tracking
     token_user = current_user_id_var.set(user_id)
     token_proj = current_project_token_var.set(project_token)
+    token_pname = current_project_name_var.set(project_name)
     token_org = current_user_org_var.set(user_org)
+    token_purpose = current_purpose_var.set(inferred_purpose)
 
     try:
         response = await call_next(request)
     finally:
         current_user_id_var.reset(token_user)
         current_project_token_var.reset(token_proj)
+        current_project_name_var.reset(token_pname)
         current_user_org_var.reset(token_org)
+        current_purpose_var.reset(token_purpose)
 
     # 2. Log ONLY major application steps asynchronously in background
     if _is_major_action(path):

@@ -634,6 +634,7 @@ async def analyze_document(
                     api_key=api_key,
                     model=model,
                     timeout=600.0,  # 10 minutes for comprehensive Agent Action Plan
+                    purpose="BRD Analysis & Architecture",
                 ):
                     yield chunk
             return stream_response()
@@ -645,6 +646,7 @@ async def analyze_document(
                 api_key=api_key,
                 model=model,
                 timeout=600.0,  # 10 minutes for comprehensive Agent Action Plan
+                purpose="BRD Analysis & Architecture",
             )
             print(f"Document Analysis AI response/n/n=================FROM ai_service.py line 528=============={data}")
             
@@ -673,6 +675,7 @@ async def analyze_document(
                         api_key=api_key,
                         model=model,
                         timeout=360.0,  # 6 minutes for repair attempt
+                        purpose="BRD Analysis & Architecture",
                     )
                     repaired_content = llm_gateway.extract_content_from_response(repair_data)
                     if _has_architecture_block(repaired_content):
@@ -1510,6 +1513,7 @@ async def generate_checklists_for_tasks(
             api_key=api_key,
             model=model,
             timeout=300.0,
+            purpose="Task Checklist Generation",
         )
         print(f"Checklist Generation AI response\n\n=================FROM ai_service.py [generate_checklists_for_tasks]==============\n{content}")
         log_llm_interaction_ai_service(messages, content)
@@ -1628,6 +1632,7 @@ async def generate_task_batch(
             api_key=api_key,
             model=model,
             timeout=300.0,
+            purpose="Master Plan Decomposition",
         )
         print(f"Task Batch AI response\n\n=================FROM ai_service.py [generate_task_batch]==============\n{content}")
         log_llm_interaction_ai_service(messages, content)
@@ -1721,6 +1726,7 @@ async def generate_all_tasks(
             api_key=api_key,
             model=model,
             timeout=300.0,
+            purpose="Master Plan Decomposition",
         )
         print(f"Full Task Generation AI response\n\n=================FROM ai_service.py [generate_all_tasks]==============\n{content}")
         log_llm_interaction_ai_service(messages, content)
@@ -1896,6 +1902,7 @@ async def generate_sprint_milestone_plan(
             api_key=api_key,
             model=model,
             timeout=120.0,
+            purpose="Sprint & Milestone Planning",
         )
         content = content.replace("```json", "").replace("```", "").strip()
         start = content.find("{")
@@ -1951,6 +1958,7 @@ async def generate_tasks_for_project(
             api_key=api_key,
             model=model,
             timeout=300.0,
+            purpose="Master Plan Decomposition",
         )
         tasks = _parse_llm_task_response(content)
 
@@ -2056,6 +2064,7 @@ async def chat_with_llm(
             api_key=api_key,
             model=model,
             timeout=60.0,
+            purpose="Copilot Chat",
         )
         print(f"Chat AI response\n\n=================FROM ai_service.py [chat_with_llm]==============\n{content}")
         log_llm_interaction_ai_service(messages, content)
