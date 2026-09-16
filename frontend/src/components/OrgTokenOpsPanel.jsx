@@ -11,18 +11,21 @@ export default function OrgTokenOpsPanel({ user }) {
     const [ledger, setLedger] = useState([]);
     const [dailyUsage, setDailyUsage] = useState([]);
     const [quotaRequests, setQuotaRequests] = useState([]);
+    const [memberRequests, setMemberRequests] = useState([]);
+    const [memberRequestStatusFilter, setMemberRequestStatusFilter] = useState('ALL');
     const [loading, setLoading] = useState(true);
     const [actionLoading, setActionLoading] = useState(false);
     const [error, setError] = useState('');
     const [successMessage, setSuccessMessage] = useState('');
     const [openDropdownUserId, setOpenDropdownUserId] = useState(null);
-    const [activeSubTab, setActiveSubTab] = useState('users'); // 'users' | 'requests' | 'ledger' | 'reports'
+    const [activeSubTab, setActiveSubTab] = useState('users'); // 'users' | 'member_requests' | 'requests' | 'ledger' | 'reports'
 
     // Modal States
     const [allocateModal, setAllocateModal] = useState({ open: false, userId: null, userName: '', amount: '', remarks: '' });
     const [reallocateModal, setReallocateModal] = useState({ open: false, fromUserId: null, fromUserName: '', toUserId: '', amount: '' });
     const [revokeModal, setRevokeModal] = useState({ open: false, userId: null, userName: '', amount: '' });
     const [requestModal, setRequestModal] = useState({ open: false, requestType: 'TOKEN_INCREASE', amount: '', remarks: '' });
+    const [reviewMemberModal, setReviewMemberModal] = useState({ open: false, request: null, action: 'APPROVE', approvedTokens: '', adminNotes: '' });
 
     const token = localStorage.getItem('token');
     const orgName = user?.organization_name || localStorage.getItem('active_org') || '';
@@ -184,6 +187,19 @@ export default function OrgTokenOpsPanel({ user }) {
             } catch (e) {
                 console.warn('Failed to load daily usage:', e);
             }
+
+            // 6. Fetch Member Top-Up Requests
+            try {
+                const resMember = await fetch(API_ENDPOINTS.TOKENOPS_ORG_MEMBER_REQUESTS, { headers });
+                if (resMember.ok) {
+                    const data = await resMember.json();
+                    if (data.success && data.data) {
+                        setMemberRequests(data.data);
+                    }
+                }
+            } catch (e) {
+                console.warn('Failed to load member requests:', e);
+            }
         } catch (err) {
             setError(err.message || 'Failed to load organization token operational data.');
         } finally {
@@ -194,6 +210,40 @@ export default function OrgTokenOpsPanel({ user }) {
     useEffect(() => {
         fetchData();
     }, [orgName]);
+
+    // Handle Reviewing Member Top-Up Request
+    const handleReviewMemberRequest = async (requestId, action, approvedTokens = null, adminNotes = '') => {
+        setActionLoading(true);
+        setError('');
+        setSuccessMessage('');
+        try {
+            const res = await fetch(API_ENDPOINTS.TOKENOPS_ORG_REVIEW_MEMBER_REQUEST(requestId), {
+                method: 'POST',
+                headers: getHeaders(),
+                body: JSON.stringify({
+                    action,
+                    approved_tokens: approvedTokens ? parseInt(approvedTokens, 10) : undefined,
+                    admin_notes: adminNotes || undefined,
+                }),
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                setSuccessMessage(
+                    action === 'APPROVE'
+                        ? `Member request approved! Tokens successfully allocated from organization reserve.`
+                        : `Member request rejected.`
+                );
+                setReviewMemberModal({ open: false, request: null, action: 'APPROVE', approvedTokens: '', adminNotes: '' });
+                await fetchData();
+            } else {
+                throw new Error(data.detail || data.error?.message || 'Failed to review member request.');
+            }
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setActionLoading(false);
+        }
+    };
 
     // Handle Submit Quota Request to Super Admin
     const handleQuotaRequest = async (e) => {
@@ -636,6 +686,22 @@ export default function OrgTokenOpsPanel({ user }) {
                     User Quota Allocations ({usersList.length})
                 </button>
                 <button
+                    onClick={() => setActiveSubTab('member_requests')}
+                    className={`px-5 py-3 text-sm font-semibold flex items-center gap-2 border-b-2 transition ${
+                        activeSubTab === 'member_requests'
+                            ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400 dark:border-indigo-400'
+                            : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300'
+                    }`}
+                >
+                    <Users className="w-4 h-4" />
+                    Member Top-Up Requests ({memberRequests.length})
+                    {memberRequests.filter(r => r.status === 'PENDING').length > 0 && (
+                        <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-rose-500 text-white animate-pulse">
+                            {memberRequests.filter(r => r.status === 'PENDING').length} new
+                        </span>
+                    )}
+                </button>
+                <button
                     onClick={() => setActiveSubTab('requests')}
                     className={`px-5 py-3 text-sm font-semibold flex items-center gap-2 border-b-2 transition ${
                         activeSubTab === 'requests'
@@ -644,7 +710,7 @@ export default function OrgTokenOpsPanel({ user }) {
                     }`}
                 >
                     <Coins className="w-4 h-4" />
-                    Quota Requests ({quotaRequests.length})
+                    Org Quota Requests ({quotaRequests.length})
                 </button>
                 <button
                     onClick={() => setActiveSubTab('ledger')}
@@ -867,6 +933,152 @@ export default function OrgTokenOpsPanel({ user }) {
                                             </td>
                                         </tr>
                                     ))
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
+
+            {/* TAB: Member Token Top-Up Requests */}
+            {activeSubTab === 'member_requests' && (
+                <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm">
+                    <div className="p-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div>
+                            <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200">
+                                Member Token Top-Up Requests
+                            </h3>
+                            <p className="text-xs text-slate-500 mt-0.5">
+                                Review and approve additional token requests from organization members whose quotas are exhausted.
+                            </p>
+                        </div>
+                        <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-700/60 p-1 rounded-xl text-xs font-semibold">
+                            {['ALL', 'PENDING', 'APPROVED', 'REJECTED'].map((st) => (
+                                <button
+                                    key={st}
+                                    onClick={() => setMemberRequestStatusFilter(st)}
+                                    className={`px-3 py-1 rounded-lg transition cursor-pointer ${
+                                        memberRequestStatusFilter === st
+                                            ? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-xs'
+                                            : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                                    }`}
+                                >
+                                    {st === 'ALL' ? 'All' : st.charAt(0) + st.slice(1).toLowerCase()}
+                                    {st === 'PENDING' && memberRequests.filter(r => r.status === 'PENDING').length > 0 && (
+                                        <span className="ml-1 px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px]">
+                                            {memberRequests.filter(r => r.status === 'PENDING').length}
+                                        </span>
+                                    )}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left text-sm">
+                            <thead className="bg-slate-50 dark:bg-slate-700/50 text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700">
+                                <tr>
+                                    <th className="px-6 py-4 font-semibold">Member</th>
+                                    <th className="px-6 py-4 font-semibold">Current Balance</th>
+                                    <th className="px-6 py-4 font-semibold">Requested Tokens</th>
+                                    <th className="px-6 py-4 font-semibold">Reason / Context</th>
+                                    <th className="px-6 py-4 font-semibold">Submitted</th>
+                                    <th className="px-6 py-4 font-semibold">Status</th>
+                                    <th className="px-6 py-4 font-semibold text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 dark:divide-slate-700 text-slate-800 dark:text-slate-200">
+                                {memberRequests.filter(r => memberRequestStatusFilter === 'ALL' || r.status === memberRequestStatusFilter).length === 0 ? (
+                                    <tr>
+                                        <td colSpan="7" className="px-6 py-8 text-center text-slate-400">
+                                            No {memberRequestStatusFilter !== 'ALL' ? memberRequestStatusFilter.toLowerCase() : ''} member top-up requests found.
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    memberRequests
+                                        .filter(r => memberRequestStatusFilter === 'ALL' || r.status === memberRequestStatusFilter)
+                                        .map((r) => (
+                                            <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition">
+                                                <td className="px-6 py-4">
+                                                    <div className="font-semibold text-slate-800 dark:text-slate-200">{r.user_name}</div>
+                                                    {r.user_email && <div className="text-[11px] text-slate-500 font-mono mt-0.5">{r.user_email}</div>}
+                                                </td>
+                                                <td className="px-6 py-4 font-mono text-xs">
+                                                    <span className={r.current_remaining_tokens <= 0 ? 'text-rose-600 dark:text-rose-400 font-bold' : 'text-slate-700 dark:text-slate-300'}>
+                                                        {Number(r.current_remaining_tokens || 0).toLocaleString()} tokens
+                                                    </span>
+                                                </td>
+                                                <td className="px-6 py-4">
+                                                    <div className="font-bold text-indigo-600 dark:text-indigo-400 font-mono">
+                                                        +{Number(r.requested_tokens || 0).toLocaleString()}
+                                                    </div>
+                                                    <div className="text-[10px] text-slate-400 mt-0.5">
+                                                        {formatCurrency(Number(r.requested_tokens || 0), reserve?.reference_price || 0.000007)}
+                                                    </div>
+                                                </td>
+                                                <td className="px-6 py-4 text-xs text-slate-600 dark:text-slate-300 max-w-xs">
+                                                    <p className="line-clamp-2" title={r.reason || ''}>
+                                                        {r.reason || <span className="text-slate-400 italic">No notes provided</span>}
+                                                    </p>
+                                                    {r.admin_notes && (
+                                                        <div className="mt-1 text-[11px] text-slate-500 italic bg-slate-100 dark:bg-slate-700/40 p-1.5 rounded">
+                                                            Admin note: {r.admin_notes}
+                                                        </div>
+                                                    )}
+                                                </td>
+                                                <td className="px-6 py-4 text-xs text-slate-400 font-mono">
+                                                    {r.created_at ? new Date(r.created_at).toLocaleDateString() : '—'}
+                                                </td>
+                                                <td className="px-6 py-4">
+                                                    <span className={`px-2.5 py-1 text-xs font-semibold rounded-full ${
+                                                        r.status === 'APPROVED'
+                                                            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
+                                                            : r.status === 'REJECTED'
+                                                            ? 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300'
+                                                            : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+                                                    }`}>
+                                                        {r.status}
+                                                    </span>
+                                                </td>
+                                                <td className="px-6 py-4 text-right">
+                                                    {r.status === 'PENDING' ? (
+                                                        <div className="flex items-center justify-end gap-2">
+                                                            <button
+                                                                onClick={() => setReviewMemberModal({
+                                                                    open: true,
+                                                                    request: r,
+                                                                    action: 'APPROVE',
+                                                                    approvedTokens: String(r.requested_tokens),
+                                                                    adminNotes: '',
+                                                                })}
+                                                                disabled={actionLoading}
+                                                                className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold shadow-xs transition flex items-center gap-1 cursor-pointer"
+                                                            >
+                                                                <Check className="w-3.5 h-3.5" />
+                                                                Approve
+                                                            </button>
+                                                            <button
+                                                                onClick={() => setReviewMemberModal({
+                                                                    open: true,
+                                                                    request: r,
+                                                                    action: 'REJECT',
+                                                                    approvedTokens: '',
+                                                                    adminNotes: '',
+                                                                })}
+                                                                disabled={actionLoading}
+                                                                className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 dark:text-rose-300 rounded-lg text-xs font-semibold transition cursor-pointer"
+                                                            >
+                                                                <Ban className="w-3.5 h-3.5" />
+                                                                Reject
+                                                            </button>
+                                                        </div>
+                                                    ) : (
+                                                        <span className="text-xs text-slate-400">
+                                                            {r.reviewed_at ? `Reviewed ${new Date(r.reviewed_at).toLocaleDateString()}` : '—'}
+                                                        </span>
+                                                    )}
+                                                </td>
+                                            </tr>
+                                        ))
                                 )}
                             </tbody>
                         </table>
@@ -1431,6 +1643,149 @@ export default function OrgTokenOpsPanel({ user }) {
                                     className="px-4 py-2 text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl shadow-md transition"
                                 >
                                     {actionLoading ? 'Submitting...' : 'Submit Request'}
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* MODAL 5: Review Member Top-Up Request Modal */}
+            {reviewMemberModal.open && reviewMemberModal.request && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4">
+                    <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-md w-full p-6 border border-slate-200 dark:border-slate-700 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+                        <div className="flex items-center gap-2 mb-2">
+                            {reviewMemberModal.action === 'APPROVE' ? (
+                                <div className="p-2 rounded-xl bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400">
+                                    <CheckCircle2 className="w-5 h-5" />
+                                </div>
+                            ) : (
+                                <div className="p-2 rounded-xl bg-rose-100 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400">
+                                    <AlertCircle className="w-5 h-5" />
+                                </div>
+                            )}
+                            <div>
+                                <h3 className="text-lg font-bold text-slate-900 dark:text-white">
+                                    {reviewMemberModal.action === 'APPROVE' ? 'Approve Member Top-Up' : 'Reject Member Request'}
+                                </h3>
+                                <p className="text-xs text-slate-500">
+                                    Request from <span className="font-semibold text-slate-800 dark:text-slate-200">{reviewMemberModal.request.user_name}</span>
+                                </p>
+                            </div>
+                        </div>
+
+                        {error && (
+                            <div className="p-3 my-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 rounded-xl flex items-center gap-2 text-rose-700 dark:text-rose-300 text-xs">
+                                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                                <span className="font-semibold">{error}</span>
+                            </div>
+                        )}
+
+                        <div className="my-4 p-3 bg-slate-50 dark:bg-slate-900/60 border border-slate-100 dark:border-slate-800 rounded-xl space-y-2 text-xs">
+                            <div className="flex justify-between">
+                                <span className="text-slate-500">Requested Amount:</span>
+                                <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400">
+                                    +{Number(reviewMemberModal.request.requested_tokens).toLocaleString()} tokens
+                                </span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span className="text-slate-500">Current User Balance:</span>
+                                <span className="font-mono font-semibold text-rose-500">
+                                    {Number(reviewMemberModal.request.current_remaining_tokens || 0).toLocaleString()} tokens
+                                </span>
+                            </div>
+                            {reviewMemberModal.action === 'APPROVE' && (
+                                <div className="flex justify-between pt-1 border-t border-slate-200 dark:border-slate-700">
+                                    <span className="text-slate-500">Available in Org Reserve:</span>
+                                    <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                                        {Number(reserve?.reserved_tokens || 0).toLocaleString()} tokens
+                                    </span>
+                                </div>
+                            )}
+                            {reviewMemberModal.request.reason && (
+                                <div className="pt-2 border-t border-slate-200 dark:border-slate-700">
+                                    <span className="text-slate-500 block mb-0.5">Member's Reason:</span>
+                                    <p className="text-slate-700 dark:text-slate-300 italic">{reviewMemberModal.request.reason}</p>
+                                </div>
+                            )}
+                        </div>
+
+                        <form
+                            onSubmit={(e) => {
+                                e.preventDefault();
+                                handleReviewMemberRequest(
+                                    reviewMemberModal.request.id,
+                                    reviewMemberModal.action,
+                                    reviewMemberModal.action === 'APPROVE' ? reviewMemberModal.approvedTokens : undefined,
+                                    reviewMemberModal.adminNotes
+                                );
+                            }}
+                            className="space-y-4"
+                        >
+                            {reviewMemberModal.action === 'APPROVE' && (
+                                <div>
+                                    <div className="flex items-center justify-between mb-1">
+                                        <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                                            Approved Token Amount
+                                        </label>
+                                        <span className="text-[11px] text-indigo-600 dark:text-indigo-400 font-semibold font-mono">
+                                            {formatCurrency(Number(reviewMemberModal.approvedTokens || 0), reserve?.reference_price || 0.000007)}
+                                        </span>
+                                    </div>
+                                    <input
+                                        type="number"
+                                        min="1"
+                                        max={reserve?.reserved_tokens || 99999999}
+                                        required
+                                        value={reviewMemberModal.approvedTokens}
+                                        onChange={(e) => setReviewMemberModal({ ...reviewMemberModal, approvedTokens: e.target.value })}
+                                        placeholder="e.g. 25000"
+                                        className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none transition-all font-mono"
+                                    />
+                                    {Number(reviewMemberModal.approvedTokens) > (reserve?.reserved_tokens || 0) && (
+                                        <p className="text-[11px] text-rose-500 font-semibold mt-1">
+                                            Warning: Exceeds currently available org reserve ({Number(reserve?.reserved_tokens || 0).toLocaleString()} tokens).
+                                        </p>
+                                    )}
+                                </div>
+                            )}
+
+                            <div>
+                                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                                    Admin Note / Remarks {reviewMemberModal.action === 'REJECT' && <span className="text-rose-500">*</span>}
+                                </label>
+                                <textarea
+                                    rows="2"
+                                    required={reviewMemberModal.action === 'REJECT'}
+                                    value={reviewMemberModal.adminNotes}
+                                    onChange={(e) => setReviewMemberModal({ ...reviewMemberModal, adminNotes: e.target.value })}
+                                    placeholder={
+                                        reviewMemberModal.action === 'APPROVE'
+                                            ? 'e.g. Approved for sprint project analysis...'
+                                            : 'e.g. Please coordinate with team lead or reduce test file size...'
+                                    }
+                                    className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all"
+                                />
+                            </div>
+
+                            <div className="flex justify-end gap-3 mt-6">
+                                <button
+                                    type="button"
+                                    onClick={() => { setError(''); setReviewMemberModal({ open: false, request: null, action: 'APPROVE', approvedTokens: '', adminNotes: '' }); }}
+                                    className="px-4 py-2 text-sm font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl transition"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={actionLoading || (reviewMemberModal.action === 'APPROVE' && Number(reviewMemberModal.approvedTokens) > (reserve?.reserved_tokens || 0))}
+                                    className={`px-4 py-2 text-sm font-semibold text-white rounded-xl shadow-md transition ${
+                                        reviewMemberModal.action === 'APPROVE'
+                                            ? 'bg-emerald-600 hover:bg-emerald-700'
+                                            : 'bg-rose-600 hover:bg-rose-700'
+                                    }`}
+                                >
+                                    {actionLoading ? 'Processing...' : reviewMemberModal.action === 'APPROVE' ? 'Approve & Allocate' : 'Reject Request'}
                                 </button>
                             </div>
                         </form>

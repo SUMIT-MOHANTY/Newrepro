@@ -92,10 +92,14 @@ def get_my_quota(
 
     from tokenops.repositories.pricing import PricingRepository
     from tokenops.services.pricing_service import PricingService
+    from tokenops.services.user.user_quota_service import UserQuotaService
     from config import settings
     pricing_repo = PricingRepository(db)
     pricing_service = PricingService(pricing_repo)
     reference_price = float(pricing_service.get_price(settings.ai_model))
+
+    user_quota_service = UserQuotaService(db)
+    latest_request = user_quota_service.get_user_latest_request(current_user.id, org_identifier)
 
     return BaseAPIResponse(
         success=True,
@@ -112,5 +116,55 @@ def get_my_quota(
             "total_cost_usd": round(total_cost, 4),
             "recent_usage": logs_data,
             "reference_price": reference_price,
+            "latest_request": latest_request,
+        }
+    )
+
+
+from pydantic import BaseModel, Field
+from typing import Optional
+
+
+class CreateUserQuotaRequestBody(BaseModel):
+    requested_tokens: int = Field(..., gt=0, description="Quantity of tokens requested")
+    reason: Optional[str] = Field(None, max_length=1000, description="Justification / project context")
+
+
+@router.post("/quota-request", response_model=BaseAPIResponse)
+def submit_quota_request(
+    body: CreateUserQuotaRequestBody,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Submit a token top-up request to the Organization Admin.
+    Enforces the exhaustion guard (can only submit when remaining_tokens <= 0).
+    """
+    from tokenops.services.user.user_quota_service import UserQuotaService
+
+    org_identifier = getattr(current_user, "organization_name", None)
+    if not org_identifier or not org_identifier.strip() or org_identifier == "Default Organization":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="ORGANIZATION_SELECTION_REQUIRED"
+        )
+
+    service = UserQuotaService(db)
+    req = service.create_request(
+        user_id=current_user.id,
+        org_identifier=org_identifier,
+        requested_tokens=body.requested_tokens,
+        reason=body.reason
+    )
+
+    return BaseAPIResponse(
+        success=True,
+        data={
+            "id": req.id,
+            "requested_tokens": req.requested_tokens,
+            "status": req.status,
+            "reason": req.reason,
+            "created_at": req.created_at.isoformat() if req.created_at else None,
+            "message": "Token top-up request submitted successfully. Waiting for Organization Admin review."
         }
     )
