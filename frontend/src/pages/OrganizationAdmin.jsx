@@ -332,18 +332,19 @@ export default function OrganizationAdmin({ user }) {
     return (
         <main className="flex-1 h-full overflow-y-auto bg-app-bg-page p-3 sm:p-4 md:p-6 w-full">
             <div className="max-w-5xl mx-auto space-y-4">
-                <section className="bg-gradient-to-r from-[#1f3763] to-[#2f548f] text-app-bg-card rounded-2xl border border-app-primary-dark/30 p-6 shadow-lg">
-                    <div className="flex items-start justify-between gap-4 flex-wrap">
+                <section className="bg-gradient-to-r from-blue-900 via-indigo-950 to-slate-900 text-white rounded-2xl border border-blue-500/25 p-6 shadow-xl relative overflow-hidden">
+                    <div className="absolute top-0 right-0 -mr-16 -mt-16 w-64 h-64 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
+                    <div className="flex items-start justify-between gap-4 flex-wrap relative z-10">
                         <div>
-                            <p className="text-[11px] uppercase tracking-[0.18em] text-app-primary-ring font-bold mb-2">Organization Identity</p>
-                            <h2 className="text-2xl font-extrabold tracking-tight mb-1">SSO & Tenant Configuration</h2>
-                            <p className="text-sm text-app-primary-light">
+                            <p className="text-[11px] uppercase tracking-[0.18em] text-blue-300 font-bold mb-2">Organization Identity</p>
+                            <h2 className="text-2xl font-extrabold tracking-tight mb-1 text-white">SSO & Tenant Configuration</h2>
+                            <p className="text-sm text-blue-100/80">
                                 Configure your identity provider once and keep auth settings centralized for your organization.
                             </p>
                         </div>
                         <div className="flex items-center gap-3 flex-wrap">
                             {onboardedAt && (
-                                <div className="px-4 py-2 rounded-xl bg-app-bg-card/10 border border-app-bg-card/20 text-left">
+                                <div className="px-4 py-2 rounded-xl bg-white/10 border border-white/20 text-left backdrop-blur-sm">
                                     <p className="text-[10px] uppercase tracking-wider text-emerald-300 font-bold mb-1 flex items-center gap-1">
                                         <Calendar className="w-3 h-3 text-emerald-400" /> Onboarded Date
                                     </p>
@@ -352,22 +353,22 @@ export default function OrganizationAdmin({ user }) {
                                     </p>
                                 </div>
                             )}
-                            <div className="px-4 py-2 rounded-xl bg-app-bg-card/10 border border-app-bg-card/20">
-                                <p className="text-[10px] uppercase tracking-wider text-app-primary-light font-bold mb-1">Organization</p>
-                                <p className="text-sm font-bold">{user?.organization_name || 'Unassigned Organization'}</p>
+                            <div className="px-4 py-2 rounded-xl bg-white/10 border border-white/20 text-left backdrop-blur-sm">
+                                <p className="text-[10px] uppercase tracking-wider text-blue-200 font-bold mb-1">Organization</p>
+                                <p className="text-sm font-bold text-white">{user?.organization_name || 'Unassigned Organization'}</p>
                             </div>
                         </div>
                     </div>
                 </section>
 
-                <section className="bg-app-bg-card rounded-2xl border border-app-border-light shadow-sm overflow-hidden">
-                    <div className="px-5 py-3 border-b border-app-border-light bg-app-bg-page/60 flex items-center justify-between gap-3 flex-wrap">
+                <section className="bg-white dark:bg-slate-900/90 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+                    <div className="px-5 py-3 border-b border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 flex items-center justify-between gap-3 flex-wrap">
                         <div className="flex items-center gap-2">
                             <ShieldCheck className="w-4 h-4 text-app-primary" />
-                            <h3 className="text-sm font-bold text-app-text-main uppercase tracking-widest">Organization Admin</h3>
+                            <h3 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-widest">Organization Admin</h3>
                         </div>
                         {activeTab === 'sso' && updatedAt && (
-                            <p className="text-xs text-app-text-light">
+                            <p className="text-xs text-slate-500 dark:text-slate-400">
                                 Last updated: {formatUTCToLocal(updatedAt)}
                             </p>
                         )}
@@ -375,9 +376,9 @@ export default function OrganizationAdmin({ user }) {
                             <button
                                 type="button"
                                 onClick={() => setActiveTab('sso')}
-                                className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${activeTab === 'sso'
-                                    ? 'bg-app-primary text-white border-app-primary'
-                                    : 'bg-app-bg-card text-app-text-muted border-app-border hover:text-app-text-main'
+                                className={`px-3.5 py-1.5 rounded-lg text-xs font-bold border transition-all cursor-pointer ${activeTab === 'sso'
+                                    ? 'bg-blue-600 text-white border-blue-600 shadow-sm shadow-blue-500/20'
+                                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700'
                                     }`}
                             >
                                 SSO Settings
@@ -385,9 +386,9 @@ export default function OrganizationAdmin({ user }) {
                             <button
                                 type="button"
                                 onClick={() => setActiveTab('access')}
-                                className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${activeTab === 'access'
-                                    ? 'bg-app-primary text-white border-app-primary'
-                                    : 'bg-app-bg-card text-app-text-muted border-app-border hover:text-app-text-main'
+                                className={`px-3.5 py-1.5 rounded-lg text-xs font-bold border transition-all cursor-pointer ${activeTab === 'access'
+                                    ? 'bg-blue-600 text-white border-blue-600 shadow-sm shadow-blue-500/20'
+                                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700'
                                     }`}
                             >
                                 Roles & Invites
@@ -395,9 +396,9 @@ export default function OrganizationAdmin({ user }) {
                             <button
                                 type="button"
                                 onClick={() => setActiveTab('users')}
-                                className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${activeTab === 'users'
-                                    ? 'bg-app-primary text-white border-app-primary'
-                                    : 'bg-app-bg-card text-app-text-muted border-app-border hover:text-app-text-main'
+                                className={`px-3.5 py-1.5 rounded-lg text-xs font-bold border transition-all cursor-pointer ${activeTab === 'users'
+                                    ? 'bg-blue-600 text-white border-blue-600 shadow-sm shadow-blue-500/20'
+                                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700'
                                     }`}
                             >
                                 Users
@@ -405,9 +406,9 @@ export default function OrganizationAdmin({ user }) {
                             <button
                                 type="button"
                                 onClick={() => setActiveTab('tokens')}
-                                className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors flex items-center gap-1.5 ${activeTab === 'tokens'
-                                    ? 'bg-app-primary text-white border-app-primary'
-                                    : 'bg-app-bg-card text-app-text-muted border-app-border hover:text-app-text-main'
+                                className={`px-3.5 py-1.5 rounded-lg text-xs font-bold border transition-all flex items-center gap-1.5 cursor-pointer ${activeTab === 'tokens'
+                                    ? 'bg-blue-600 text-white border-blue-600 shadow-sm shadow-blue-500/20'
+                                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700'
                                     }`}
                             >
                                 <Coins className="w-3.5 h-3.5" />
@@ -419,65 +420,65 @@ export default function OrganizationAdmin({ user }) {
                     {activeTab === 'sso' ? (
                         <form onSubmit={handleSave} className="p-5 space-y-5">
                             {error && (
-                                <div className="rounded-lg border border-red-200 bg-app-status-errorBg px-3 py-2 text-sm text-app-status-error flex items-center gap-2">
-                                    <AlertCircle className="w-4 h-4" />
+                                <div className="rounded-lg border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 px-3 py-2 text-sm text-red-600 dark:text-red-400 flex items-center gap-2">
+                                    <AlertCircle className="w-4 h-4 shrink-0" />
                                     <span>{error}</span>
                                 </div>
                             )}
                             {success && (
-                                <div className="rounded-lg border border-green-200 bg-app-status-successBg px-3 py-2 text-sm text-app-status-success flex items-center gap-2">
-                                    <CheckCircle2 className="w-4 h-4" />
+                                <div className="rounded-lg border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50 dark:bg-emerald-950/30 px-3 py-2 text-sm text-emerald-600 dark:text-emerald-400 flex items-center gap-2">
+                                    <CheckCircle2 className="w-4 h-4 shrink-0" />
                                     <span>{success}</span>
                                 </div>
                             )}
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <label className="block">
-                                    <span className="text-[11px] font-bold text-app-text-muted uppercase tracking-widest">SSO Provider</span>
+                                    <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-widest">SSO Provider</span>
                                     <select
                                         value={form.sso_provider || ''}
                                         onChange={(e) => handleChange('sso_provider', e.target.value)}
-                                        className="mt-1 w-full px-3 py-2.5 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-app-primary-light focus:border-indigo-400 text-sm"
+                                        className="mt-1 w-full px-3.5 py-2.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-950/60 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 text-sm transition-colors"
                                     >
                                         {PROVIDERS.map((option) => (
-                                            <option key={option.value} value={option.value}>{option.label}</option>
+                                             <option key={option.value} value={option.value} className="bg-white dark:bg-slate-900 text-slate-900 dark:text-white">{option.label}</option>
                                         ))}
                                     </select>
                                 </label>
                                 <label className="block">
-                                    <span className="text-[11px] font-bold text-app-text-muted uppercase tracking-widest">Tenant ID</span>
+                                    <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-widest">Tenant ID</span>
                                     <input
                                         type="text"
                                         value={form.tenant_id || ''}
                                         onChange={(e) => handleChange('tenant_id', e.target.value)}
                                         placeholder="e.g. 8f3b...."
-                                        className="mt-1 w-full px-3 py-2.5 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-app-primary-light focus:border-indigo-400 text-sm"
+                                        className="mt-1 w-full px-3.5 py-2.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-950/60 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 text-sm transition-colors"
                                     />
                                 </label>
                                 <label className="block">
-                                    <span className="text-[11px] font-bold text-app-text-muted uppercase tracking-widest">Client ID</span>
+                                    <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-widest">Client ID</span>
                                     <input
                                         type="text"
                                         value={form.client_id || ''}
                                         onChange={(e) => handleChange('client_id', e.target.value)}
                                         placeholder="Application client id"
-                                        className="mt-1 w-full px-3 py-2.5 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-app-primary-light focus:border-indigo-400 text-sm"
+                                        className="mt-1 w-full px-3.5 py-2.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-950/60 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 text-sm transition-colors"
                                     />
                                 </label>
                                 <label className="block">
-                                    <span className="text-[11px] font-bold text-app-text-muted uppercase tracking-widest">Client Secret</span>
+                                    <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-widest">Client Secret</span>
                                     <div className="mt-1 relative">
                                         <input
                                             type={showSecret ? 'text' : 'password'}
                                             value={form.client_secret || ''}
                                             onChange={(e) => handleChange('client_secret', e.target.value)}
                                             placeholder="Application secret"
-                                            className="w-full px-3 py-2.5 pr-11 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-app-primary-light focus:border-indigo-400 text-sm"
+                                            className="w-full px-3.5 py-2.5 pr-11 border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-950/60 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 text-sm transition-colors"
                                         />
                                         <button
                                             type="button"
                                             onClick={() => setShowSecret((prev) => !prev)}
-                                            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-app-text-light hover:text-app-text-label"
+                                            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-200"
                                             aria-label={showSecret ? 'Hide client secret' : 'Show client secret'}
                                         >
                                             {showSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -486,33 +487,33 @@ export default function OrganizationAdmin({ user }) {
                                 </label>
                             </div>
 
-                            <div className="flex items-center justify-between gap-4 rounded-xl border border-app-border-light bg-app-bg-page/50 px-4 py-3">
+                            <div className="flex items-center justify-between gap-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/30 px-4 py-3">
                                 <div className="flex items-center gap-2">
-                                    <Building2 className="w-4 h-4 text-app-text-muted" />
-                                    <span className="text-sm font-semibold text-app-text-label">Enable SSO for this organization</span>
+                                    <Building2 className="w-4 h-4 text-slate-500 dark:text-slate-400" />
+                                    <span className="text-sm font-semibold text-slate-800 dark:text-slate-200">Enable SSO for this organization</span>
                                 </div>
                                 <button
                                     type="button"
                                     onClick={handleToggleSsoEnabled}
                                     disabled={isSaving}
-                                    className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-bold transition-colors ${form.sso_enabled
-                                        ? 'bg-app-status-successBg text-app-status-success border border-emerald-200'
-                                        : 'bg-app-bg-card text-app-text-muted border border-app-border'
-                                        } ${isSaving ? 'opacity-60 cursor-not-allowed' : ''}`}
+                                    className={`inline-flex items-center rounded-full px-3.5 py-1 text-xs font-bold transition-colors ${form.sso_enabled
+                                        ? 'bg-emerald-500 text-white border border-emerald-600 shadow-sm shadow-emerald-500/20'
+                                        : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-300 dark:border-slate-700'
+                                        } ${isSaving ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
                                 >
                                     {form.sso_enabled ? 'Enabled' : 'Disabled'}
                                 </button>
                             </div>
 
                             <div className="flex items-center justify-between gap-3 flex-wrap pt-2">
-                                <div className="inline-flex items-center gap-2 text-xs text-app-text-light">
+                                <div className="inline-flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
                                     <KeyRound className="w-3.5 h-3.5" />
                                     <span>{hasAnySsoValue ? 'SSO fields detected' : 'No SSO values configured yet'}</span>
                                 </div>
                                 <button
                                     type="submit"
                                     disabled={isSaving}
-                                    className="inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold text-app-bg-card bg-gradient-to-r from-app-primary to-app-primary hover:from-app-primary-hover hover:to-app-primary-hover disabled:opacity-60 disabled:cursor-not-allowed"
+                                    className="inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold text-white bg-blue-600 hover:bg-blue-500 shadow-md shadow-blue-500/20 disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer transition-all active:scale-[0.98]"
                                 >
                                     {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                                     {isSaving ? 'Saving...' : 'Save Organization Settings'}
@@ -535,11 +536,11 @@ export default function OrganizationAdmin({ user }) {
                             )}
 
                             <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-                                <section className="rounded-2xl border border-app-border-light bg-app-bg-card overflow-hidden">
-                                    <div className="px-4 py-3 border-b border-app-border-light bg-app-bg-page/50 flex items-center justify-between">
+                                <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/90 overflow-hidden">
+                                    <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 flex items-center justify-between">
                                         <div className="flex items-center gap-2">
                                             <ShieldCheck className="w-4 h-4 text-app-primary" />
-                                            <h4 className="text-sm font-extrabold text-app-text-main tracking-wide">Roles & Page Access</h4>
+                                            <h4 className="text-sm font-extrabold text-slate-900 dark:text-white tracking-wide">Roles & Page Access</h4>
                                         </div>
                                         <button
                                             type="button"
@@ -549,7 +550,7 @@ export default function OrganizationAdmin({ user }) {
                                                 setSuccess('');
                                                 setError('');
                                             }}
-                                            className="inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-bold bg-app-bg-page border border-app-border hover:bg-app-bg-muted text-app-text-main"
+                                            className="inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-bold bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 transition-colors"
                                         >
                                             <Plus className="w-4 h-4" />
                                             New Role
@@ -558,21 +559,21 @@ export default function OrganizationAdmin({ user }) {
 
                                     <div className="p-4 space-y-4">
                                         {rolesLoading ? (
-                                            <div className="flex items-center gap-2 text-sm text-app-text-muted">
+                                            <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
                                                 <Loader2 className="w-4 h-4 animate-spin text-app-primary" />
                                                 Loading roles...
                                             </div>
                                         ) : (
                                             <label className="block">
-                                                <span className="text-[11px] font-bold text-app-text-muted uppercase tracking-widest">Select Role</span>
+                                                <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-widest">Select Role</span>
                                                 <select
                                                     value={selectedRoleId ?? ''}
                                                     onChange={(e) => setSelectedRoleId(e.target.value ? Number(e.target.value) : null)}
-                                                    className="mt-1 w-full px-3 py-2.5 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-app-primary-light focus:border-indigo-400 text-sm"
+                                                    className="mt-1 w-full px-3.5 py-2.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-950/60 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 text-sm transition-colors"
                                                 >
-                                                    <option value="">Creating new role</option>
+                                                    <option value="" className="bg-white dark:bg-slate-900">Creating new role</option>
                                                     {roles.map((r) => (
-                                                        <option key={r.id} value={r.id}>
+                                                        <option key={r.id} value={r.id} className="bg-white dark:bg-slate-900">
                                                             {r.name}{r.is_system ? ' system' : ''}
                                                         </option>
                                                     ))}
@@ -582,34 +583,34 @@ export default function OrganizationAdmin({ user }) {
 
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                             <label className="block">
-                                                <span className="text-[11px] font-bold text-app-text-muted uppercase tracking-widest">Role Name</span>
+                                                <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-widest">Role Name</span>
                                                 <input
                                                     type="text"
                                                     value={roleDraft.name}
                                                     onChange={(e) => setRoleDraft((p) => ({ ...p, name: e.target.value }))}
                                                     placeholder="e.g. Viewer"
-                                                    className="mt-1 w-full px-3 py-2.5 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-app-primary-light focus:border-indigo-400 text-sm"
+                                                    className="mt-1 w-full px-3.5 py-2.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-950/60 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 text-sm transition-colors"
                                                 />
                                             </label>
                                             <label className="block">
-                                                <span className="text-[11px] font-bold text-app-text-muted uppercase tracking-widest">Description</span>
+                                                <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-widest">Description</span>
                                                 <input
                                                     type="text"
                                                     value={roleDraft.description}
                                                     onChange={(e) => setRoleDraft((p) => ({ ...p, description: e.target.value }))}
                                                     placeholder="Optional"
-                                                    className="mt-1 w-full px-3 py-2.5 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-app-primary-light focus:border-indigo-400 text-sm"
+                                                    className="mt-1 w-full px-3.5 py-2.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-950/60 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 text-sm transition-colors"
                                                 />
                                             </label>
                                         </div>
 
-                                        <div className="rounded-xl border border-app-border-light bg-app-bg-page/40 p-4">
-                                            <p className="text-[11px] font-bold text-app-text-muted uppercase tracking-widest mb-3">Page Access</p>
+                                        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/30 p-4">
+                                            <p className="text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-widest mb-3">Page Access</p>
                                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                                                 {(pages || []).map((p) => {
                                                     const checked = (roleDraft.allowed_paths || []).includes(p.path);
                                                     return (
-                                                        <label key={p.path} className="flex items-center gap-2 text-sm text-app-text-main">
+                                                        <label key={p.path} className="flex items-center gap-2 text-sm text-slate-800 dark:text-slate-200">
                                                             <input
                                                                 type="checkbox"
                                                                 checked={checked}
@@ -619,7 +620,7 @@ export default function OrganizationAdmin({ user }) {
                                                                     else next.delete(p.path);
                                                                     setRoleDraft((prev) => ({ ...prev, allowed_paths: Array.from(next) }));
                                                                 }}
-                                                                className="accent-app-primary"
+                                                                className="accent-blue-600 rounded"
                                                             />
                                                             <span className="truncate" title={p.path}>{p.label}</span>
                                                         </label>
@@ -664,7 +665,7 @@ export default function OrganizationAdmin({ user }) {
                                                         setRoleSaving(false);
                                                     }
                                                 }}
-                                                className="inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold text-app-bg-card bg-gradient-to-r from-app-primary to-app-primary hover:from-app-primary-hover hover:to-app-primary-hover disabled:opacity-60 disabled:cursor-not-allowed"
+                                                className="inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold text-white bg-blue-600 hover:bg-blue-500 shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
                                             >
                                                 {roleSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                                                 {roleSaving ? 'Saving...' : 'Save Role'}
@@ -697,7 +698,7 @@ export default function OrganizationAdmin({ user }) {
                                                         setRoleDeleting(false);
                                                     }
                                                 }}
-                                                className="inline-flex items-center gap-2 rounded-lg px-3 py-2.5 text-sm font-bold border border-red-200 text-app-status-error hover:bg-app-status-errorBg disabled:opacity-60 disabled:cursor-not-allowed"
+                                                className="inline-flex items-center gap-2 rounded-lg px-3.5 py-2.5 text-sm font-bold border border-red-300 dark:border-red-900/50 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
                                             >
                                                 {roleDeleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
                                                 Delete
@@ -706,35 +707,35 @@ export default function OrganizationAdmin({ user }) {
                                     </div>
                                 </section>
 
-                                <section className="rounded-2xl border border-app-border-light bg-app-bg-card overflow-hidden">
-                                    <div className="px-4 py-3 border-b border-app-border-light bg-app-bg-page/50 flex items-center gap-2">
+                                <section className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/90 overflow-hidden">
+                                    <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 flex items-center gap-2">
                                         <Users className="w-4 h-4 text-app-primary" />
-                                        <h4 className="text-sm font-extrabold text-app-text-main tracking-wide">Invite Users</h4>
+                                        <h4 className="text-sm font-extrabold text-slate-900 dark:text-white tracking-wide">Invite Users</h4>
                                     </div>
 
                                     <div className="p-4 space-y-4">
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                             <label className="block">
-                                                <span className="text-[11px] font-bold text-app-text-muted uppercase tracking-widest">Role</span>
+                                                <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-widest">Role</span>
                                                 <select
                                                     value={inviteRoleId ?? ''}
                                                     onChange={(e) => setInviteRoleId(e.target.value ? Number(e.target.value) : null)}
-                                                    className="mt-1 w-full px-3 py-2.5 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-app-primary-light focus:border-indigo-400 text-sm"
+                                                    className="mt-1 w-full px-3.5 py-2.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-950/60 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 text-sm transition-colors"
                                                 >
-                                                    <option value="" disabled>Select a role</option>
+                                                    <option value="" disabled className="bg-white dark:bg-slate-900">Select a role</option>
                                                     {roles.map((r) => (
-                                                        <option key={r.id} value={r.id}>{r.name}</option>
+                                                        <option key={r.id} value={r.id} className="bg-white dark:bg-slate-900">{r.name}</option>
                                                     ))}
                                                 </select>
                                             </label>
                                             <label className="block">
-                                                <span className="text-[11px] font-bold text-app-text-muted uppercase tracking-widest">Invite Email (optional)</span>
+                                                <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-widest">Invite Email (optional)</span>
                                                 <input
                                                     type="email"
                                                     value={inviteEmail}
                                                     onChange={(e) => setInviteEmail(e.target.value)}
                                                     placeholder="name@company.com"
-                                                    className="mt-1 w-full px-3 py-2.5 border border-app-border rounded-lg bg-app-bg-page text-app-text-main focus:outline-none focus:ring-2 focus:ring-app-primary-light focus:border-indigo-400 text-sm"
+                                                    className="mt-1 w-full px-3.5 py-2.5 border border-slate-300 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-950/60 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 text-sm transition-colors"
                                                 />
                                             </label>
                                         </div>
@@ -753,7 +754,7 @@ export default function OrganizationAdmin({ user }) {
                                                     const res = await fetch(API_ENDPOINTS.ORG_INVITES, {
                                                         method: 'POST',
                                                         headers: {
-                                                            'Content-Type': 'application/json',
+                                                             'Content-Type': 'application/json',
                                                             Authorization: `Bearer ${token}`,
                                                         },
                                                         body: JSON.stringify({
@@ -766,7 +767,7 @@ export default function OrganizationAdmin({ user }) {
                                                     if (!res.ok) throw new Error(data.detail || 'Failed to create invite');
                                                     setInviteLink(data.invite_url || '');
                                                     setSuccess('Invite link created.');
-                                                    setInvitesPage(1); // Go to first page on new invite
+                                                    setInvitesPage(1);
                                                     await loadInvites();
                                                 } catch (e) {
                                                     setError(e.message || 'Failed to create invite');
@@ -774,21 +775,21 @@ export default function OrganizationAdmin({ user }) {
                                                     setInviteCreating(false);
                                                 }
                                             }}
-                                            className="inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold text-app-bg-card bg-gradient-to-r from-app-primary to-app-primary hover:from-app-primary-hover hover:to-app-primary-hover disabled:opacity-60 disabled:cursor-not-allowed"
+                                            className="inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-bold text-white bg-blue-600 hover:bg-blue-500 shadow-md shadow-blue-500/20 disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer transition-all active:scale-[0.98]"
                                         >
                                             {inviteCreating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
                                             {inviteCreating ? 'Creating...' : 'Create Invite Link'}
                                         </button>
 
                                         {inviteLink && (
-                                            <div className="rounded-xl border border-app-border-light bg-app-bg-page/40 p-4">
-                                                <p className="text-[11px] font-bold text-app-text-muted uppercase tracking-widest mb-2">Invite Link</p>
+                                            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/30 p-4">
+                                                <p className="text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-widest mb-2">Invite Link</p>
                                                 <div className="flex items-center gap-2">
                                                     <input
                                                         type="text"
                                                         readOnly
                                                         value={inviteLink}
-                                                        className="flex-1 px-3 py-2 border border-app-border rounded-lg bg-app-bg-card text-app-text-main text-sm"
+                                                        className="flex-1 px-3 py-2 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm"
                                                     />
                                                     <button
                                                         type="button"
@@ -800,7 +801,7 @@ export default function OrganizationAdmin({ user }) {
                                                                 setError('Unable to copy link. Please copy manually.');
                                                             }
                                                         }}
-                                                        className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-bold border border-app-border bg-app-bg-card hover:bg-app-bg-muted text-app-text-main"
+                                                        className="inline-flex items-center gap-2 rounded-lg px-3.5 py-2 text-sm font-bold border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 transition-colors"
                                                     >
                                                         <Copy className="w-4 h-4" />
                                                         Copy
@@ -809,39 +810,39 @@ export default function OrganizationAdmin({ user }) {
                                             </div>
                                         )}
 
-                                        <div className="rounded-xl border border-app-border-light bg-app-bg-page/40 p-4">
+                                        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/30 p-4">
                                             <div className="flex items-center justify-between gap-2 mb-3">
-                                                <p className="text-[11px] font-bold text-app-text-muted uppercase tracking-widest">Recent Invites</p>
+                                                <p className="text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-widest">Recent Invites</p>
                                                 <button
                                                     type="button"
                                                     onClick={loadInvites}
-                                                    className="text-xs font-bold text-app-primary hover:text-app-primary-hover"
+                                                    className="text-xs font-bold text-app-primary hover:text-blue-400 cursor-pointer"
                                                 >
                                                     Refresh
                                                 </button>
                                             </div>
                                             {invitesLoading ? (
-                                                <div className="flex items-center gap-2 text-sm text-app-text-muted">
+                                                <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
                                                     <Loader2 className="w-4 h-4 animate-spin text-app-primary" />
                                                     Loading invites...
                                                 </div>
                                             ) : invites.length === 0 ? (
-                                                <p className="text-sm text-app-text-muted">No invites created yet.</p>
+                                                <p className="text-sm text-slate-500 dark:text-slate-400">No invites created yet.</p>
                                             ) : (
                                                 <div className="space-y-2">
                                                     {invites.slice((invitesPage - 1) * INVITES_PER_PAGE, invitesPage * INVITES_PER_PAGE).map((inv) => (
-                                                        <div key={inv.id} className="flex items-center justify-between gap-3 rounded-lg border border-app-border bg-app-bg-card px-3 py-2">
+                                                        <div key={inv.id} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/80 px-3.5 py-2.5">
                                                             <div className="min-w-0">
-                                                                <p className="text-sm font-bold text-app-text-main truncate">
+                                                                <p className="text-sm font-bold text-slate-900 dark:text-white truncate">
                                                                     {inv.email || 'Open invite'} · {inv.role_name}
                                                                 </p>
-                                                                <p className="text-xs text-app-text-muted truncate">
+                                                                <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
                                                                     Expires: {formatUTCToLocal(inv.expires_at)}
                                                                 </p>
                                                             </div>
-                                                            <span className={`text-[11px] font-extrabold px-2 py-1 rounded-full border ${inv.accepted_at
-                                                                ? 'bg-app-status-successBg text-app-status-success border-emerald-200'
-                                                                : 'bg-app-bg-page text-app-text-muted border-app-border'
+                                                            <span className={`text-[11px] font-extrabold px-2.5 py-1 rounded-full border ${inv.accepted_at
+                                                                ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                                                                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700'
                                                                 }`}>
                                                                 {inv.accepted_at ? 'Accepted' : 'Pending'}
                                                             </span>
@@ -850,15 +851,15 @@ export default function OrganizationAdmin({ user }) {
 
                                                     {invites.length > INVITES_PER_PAGE && (
                                                         <div className="flex items-center justify-between gap-2 pt-2 px-1">
-                                                            <p className="text-[10px] font-bold text-app-text-muted uppercase">
+                                                            <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase">
                                                                 Page {invitesPage} of {Math.ceil(invites.length / INVITES_PER_PAGE)}
                                                             </p>
-                                                            <div className="flex items-center gap-1">
+                                                            <div className="flex items-center gap-1.5">
                                                                 <button
                                                                     type="button"
                                                                     disabled={invitesPage === 1}
                                                                     onClick={() => setInvitesPage(p => Math.max(1, p - 1))}
-                                                                    className="px-2 py-1 text-[10px] font-bold bg-app-bg-page border border-app-border rounded hover:bg-app-bg-muted disabled:opacity-40"
+                                                                    className="px-2.5 py-1 text-xs font-bold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 text-slate-800 dark:text-slate-200 transition-colors"
                                                                 >
                                                                     Prev
                                                                 </button>
@@ -866,7 +867,7 @@ export default function OrganizationAdmin({ user }) {
                                                                     type="button"
                                                                     disabled={invitesPage >= Math.ceil(invites.length / INVITES_PER_PAGE)}
                                                                     onClick={() => setInvitesPage(p => p + 1)}
-                                                                    className="px-2 py-1 text-[10px] font-bold bg-app-bg-page border border-app-border rounded hover:bg-app-bg-muted disabled:opacity-40"
+                                                                    className="px-2.5 py-1 text-xs font-bold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 text-slate-800 dark:text-slate-200 transition-colors"
                                                                 >
                                                                     Next
                                                                 </button>
@@ -885,60 +886,60 @@ export default function OrganizationAdmin({ user }) {
                             <div className="flex items-center justify-between mb-4">
                                 <div className="flex items-center gap-2">
                                     <Users className="w-4 h-4 text-app-primary" />
-                                    <h4 className="text-sm font-extrabold text-app-text-main tracking-wide uppercase">Organization Users</h4>
+                                    <h4 className="text-sm font-extrabold text-slate-900 dark:text-white tracking-wide uppercase">Organization Users</h4>
                                 </div>
                                 <button
                                     type="button"
                                     onClick={loadUsers}
-                                    className="text-xs font-bold text-app-primary hover:text-app-primary-hover"
+                                    className="text-xs font-bold text-app-primary hover:text-blue-400 cursor-pointer"
                                 >
                                     Refresh List
                                 </button>
                             </div>
 
                             {usersLoading ? (
-                                <div className="bg-app-bg-page/40 rounded-xl border border-app-border p-8 flex flex-col items-center justify-center gap-3">
+                                <div className="bg-slate-50 dark:bg-slate-900/60 rounded-xl border border-slate-200 dark:border-slate-800 p-8 flex flex-col items-center justify-center gap-3">
                                     <Loader2 className="w-6 h-6 animate-spin text-app-primary" />
-                                    <p className="text-sm text-app-text-muted font-medium">Loading organization users...</p>
+                                    <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">Loading organization users...</p>
                                 </div>
                             ) : usersList.length === 0 ? (
-                                <div className="bg-app-bg-page/40 rounded-xl border border-app-border p-8 text-center">
-                                    <p className="text-sm text-app-text-muted font-medium">No users found in your organization.</p>
+                                <div className="bg-slate-50 dark:bg-slate-900/60 rounded-xl border border-slate-200 dark:border-slate-800 p-8 text-center">
+                                    <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">No users found in your organization.</p>
                                 </div>
                             ) : (
                                 <div className="space-y-3">
-                                    <div className="overflow-hidden rounded-xl border border-app-border bg-app-bg-card">
+                                    <div className="overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/90">
                                         <table className="w-full text-left text-sm border-collapse">
                                             <thead>
-                                                <tr className="bg-app-bg-page/60 border-b border-app-border text-[11px] font-bold text-app-text-muted uppercase tracking-widest">
+                                                <tr className="bg-slate-50/80 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest">
                                                     <th className="px-4 py-3">User</th>
                                                     <th className="px-4 py-3">Role</th>
                                                     <th className="px-4 py-3">Last Login</th>
                                                     <th className="px-4 py-3 text-right">Status</th>
                                                 </tr>
                                             </thead>
-                                            <tbody className="divide-y divide-app-border">
+                                            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                                                 {usersList.slice((usersPage - 1) * USERS_PER_PAGE, usersPage * USERS_PER_PAGE).map((u) => (
-                                                    <tr key={u.id} className="hover:bg-app-bg-page/30 transition-colors">
+                                                    <tr key={u.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors">
                                                         <td className="px-4 py-4">
                                                             <div className="flex flex-col">
-                                                                <span className="font-bold text-app-text-main">
+                                                                <span className="font-bold text-slate-900 dark:text-white">
                                                                     {u.first_name || u.last_name ? `${u.first_name || ''} ${u.last_name || ''}`.trim() : 'Unnamed User'}
                                                                 </span>
-                                                                <span className="text-xs text-app-text-muted">{u.email}</span>
+                                                                <span className="text-xs text-slate-500 dark:text-slate-400">{u.email}</span>
                                                             </div>
                                                         </td>
                                                         <td className="px-4 py-4">
                                                             <div className="flex items-center gap-2">
-                                                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${u.is_org_admin
-                                                                    ? 'bg-app-primary/10 text-app-primary border border-app-primary/20'
-                                                                    : 'bg-app-bg-page text-app-text-label border border-app-border'
+                                                                <span className={`px-2.5 py-0.5 rounded text-[10px] font-bold ${u.is_org_admin
+                                                                    ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30'
+                                                                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
                                                                     }`}>
                                                                     {u.role_name || 'No Role'}
                                                                 </span>
                                                             </div>
                                                         </td>
-                                                        <td className="px-4 py-4 text-app-text-muted text-xs">
+                                                        <td className="px-4 py-4 text-slate-500 dark:text-slate-400 text-xs">
                                                             {u.last_login ? formatUTCToLocal(u.last_login) : 'Never'}
                                                         </td>
                                                         <td className="px-4 py-4 text-right">
@@ -955,7 +956,7 @@ export default function OrganizationAdmin({ user }) {
 
                                     {usersList.length > USERS_PER_PAGE && (
                                         <div className="flex items-center justify-between gap-4 px-1 pt-2">
-                                            <p className="text-xs font-bold text-app-text-muted uppercase">
+                                            <p className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase">
                                                 Showing {(usersPage - 1) * USERS_PER_PAGE + 1}-{Math.min(usersPage * USERS_PER_PAGE, usersList.length)} of {usersList.length} users
                                             </p>
                                             <div className="flex items-center gap-2">
@@ -963,7 +964,7 @@ export default function OrganizationAdmin({ user }) {
                                                     type="button"
                                                     disabled={usersPage === 1}
                                                     onClick={() => setUsersPage(p => Math.max(1, p - 1))}
-                                                    className="inline-flex items-center px-3 py-1.5 rounded-lg border border-app-border bg-app-bg-card text-xs font-bold text-app-text-main hover:bg-app-bg-muted disabled:opacity-40 transition-colors"
+                                                    className="inline-flex items-center px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-bold text-slate-800 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 transition-colors"
                                                 >
                                                     Previous
                                                 </button>
@@ -971,7 +972,7 @@ export default function OrganizationAdmin({ user }) {
                                                     type="button"
                                                     disabled={usersPage >= Math.ceil(usersList.length / USERS_PER_PAGE)}
                                                     onClick={() => setUsersPage(p => p + 1)}
-                                                    className="inline-flex items-center px-3 py-1.5 rounded-lg border border-app-border bg-app-bg-card text-xs font-bold text-app-text-main hover:bg-app-bg-muted disabled:opacity-40 transition-colors"
+                                                    className="inline-flex items-center px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-bold text-slate-800 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 transition-colors"
                                                 >
                                                     Next
                                                 </button>

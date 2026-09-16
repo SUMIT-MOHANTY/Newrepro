@@ -374,29 +374,29 @@ function DetailPanel({ plugin, liveData, onConnect, connecting }) {
             {plugin.logo ? (
               <img src={plugin.logo} alt={plugin.name} className="w-full h-full object-contain" />
             ) : (
-              <plugin.icon className="w-10 h-10 text-app-bg-card" />
+              <plugin.icon className="w-10 h-10 text-white" />
             )}
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1">
-              <span className="text-[10px] font-bold uppercase tracking-widest px-2.5 py-1 rounded-lg bg-app-bg-card/20 backdrop-blur-sm text-app-bg-card border border-app-bg-card/25">
+              <span className="text-[10px] font-bold uppercase tracking-widest px-2.5 py-1 rounded-lg bg-white/20 backdrop-blur-sm text-white border border-white/25">
                 {plugin.category}
               </span>
               {plugin.comingSoon && (
-                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-lg bg-amber-400/30 text-app-status-warningBg border border-amber-300/30 flex items-center gap-1">
+                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-lg bg-amber-400/30 text-amber-200 border border-amber-300/30 flex items-center gap-1">
                   <Clock className="w-2.5 h-2.5" />
                   Coming Soon
                 </span>
               )}
               {!plugin.comingSoon && connected && (
-                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-lg bg-emerald-400/30 text-app-status-successBg border border-emerald-300/30 flex items-center gap-1">
+                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-lg bg-emerald-400/30 text-emerald-200 border border-emerald-300/30 flex items-center gap-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-300 animate-pulse" />
                   Active
                 </span>
               )}
             </div>
-            <h2 className="text-2xl font-extrabold text-app-bg-card tracking-tight">{plugin.name}</h2>
-            <p className="text-app-bg-card/80 text-xs mt-0.5 leading-relaxed">{plugin.tagline}</p>
+            <h2 className="text-2xl font-extrabold text-white tracking-tight">{plugin.name}</h2>
+            <p className="text-white/80 text-xs mt-0.5 leading-relaxed">{plugin.tagline}</p>
           </div>
         </div>
       </div>
@@ -545,7 +545,7 @@ function DetailPanel({ plugin, liveData, onConnect, connecting }) {
               }
             }}
             disabled={isConnecting}
-            className={`w-full flex items-center justify-center gap-2.5 py-3.5 px-5 rounded-xl font-bold text-sm text-app-bg-card transition-all duration-200 shadow-md ${isConnecting
+            className={`w-full flex items-center justify-center gap-2.5 py-3.5 px-5 rounded-xl font-bold text-sm text-white transition-all duration-200 shadow-md ${isConnecting
                 ? 'bg-app-border text-app-text-muted cursor-not-allowed'
                 : `bg-gradient-to-r ${p.grad} hover:shadow-lg ${p.glow} hover:-translate-y-0.5 active:translate-y-0`
               }`}
@@ -753,7 +753,7 @@ export default function Plugins() {
         <div className="mb-6">
           <div className="flex items-center gap-3 mb-1.5">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-app-primary to-app-primary flex items-center justify-center shadow-md shadow-app-primary-ring">
-              <Plug className="w-5 h-5 text-app-bg-card" />
+              <Plug className="w-5 h-5 text-white" />
             </div>
             <div>
               <h1 className="text-2xl font-extrabold text-app-text-main tracking-tight leading-none">

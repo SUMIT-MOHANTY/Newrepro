@@ -127,13 +127,13 @@ export default function Sidebar({
                                 alt="App Logo"
                                 className="h-5 w-auto object-contain shrink-0"
                             />
-                            <div className="h-5 w-0.5 bg-app-bg-card mx-3 shrink-0 rounded-full"></div>
+                            <div className="h-5 w-0.5 bg-white/20 mx-3 shrink-0 rounded-full"></div>
                             <span className="text-sm font-bold text-white tracking-tight whitespace-nowrap truncate">DSuite</span>
                         </div>
                         <button
                             type="button"
                             onClick={() => setIsSidebarOpen(false)}
-                            className="p-2 rounded-md text-app-border hover:text-app-bg-card hover:bg-app-text-label transition-colors"
+                            className="p-2 rounded-md text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
                             aria-label="Close menu"
                         >
                             <X className="w-4 h-4" />
@@ -174,18 +174,20 @@ export default function Sidebar({
                                         <div key={project.key || project.project_token} className="flex items-center gap-1 w-full min-w-0">
                                             <button
                                                 onClick={() => handleSelectProject(project)}
-                                                className={`flex-1 min-w-0 flex items-center px-2 py-2 text-sm font-medium rounded-md group transition-all text-left border ${selectedProjectKey === project.key ? 'bg-app-primary-dark/40 text-app-primary-light border-app-primary-dark' : 'border-transparent text-app-text-light hover:bg-app-text-label hover:text-app-bg-card'}
-                                                `}
+                                                className={`flex-1 min-w-0 flex items-center px-2.5 py-2 text-sm font-medium rounded-lg group transition-all text-left border ${selectedProjectKey === project.key 
+                                                    ? 'bg-blue-600/25 text-blue-200 border-blue-500/50 shadow-sm' 
+                                                    : 'border-transparent text-slate-300 hover:bg-white/10 hover:text-white'
+                                                }`}
                                                 title={project.name}
                                             >
                                                 {project.type === 'share' ? (
-                                                    <Share2 className={`w-4 h-4 mr-3 flex-shrink-0 transition-colors ${selectedProjectKey === project.key ? 'text-purple-400' : 'text-app-text-label group-hover:text-purple-400'}`} />
+                                                    <Share2 className={`w-4 h-4 mr-3 flex-shrink-0 transition-colors ${selectedProjectKey === project.key ? 'text-purple-400' : 'text-slate-400 group-hover:text-purple-400'}`} />
                                                 ) : (
-                                                    <History className={`w-4 h-4 mr-3 flex-shrink-0 transition-colors ${selectedProjectKey === project.key ? 'text-blue-400' : 'text-app-text-label group-hover:text-blue-400'}`} />
+                                                    <History className={`w-4 h-4 mr-3 flex-shrink-0 transition-colors ${selectedProjectKey === project.key ? 'text-blue-400' : 'text-slate-400 group-hover:text-blue-400'}`} />
                                                 )}
                                                 <div className="min-w-0 flex-1">
-                                                    <p className="truncate">{project.name}</p>
-                                                    <p className="text-[11px] text-app-text-muted truncate">
+                                                    <p className="truncate font-semibold">{project.name}</p>
+                                                    <p className={`text-[11px] truncate ${selectedProjectKey === project.key ? 'text-blue-300/80' : 'text-slate-400'}`}>
                                                         {project.type === 'standard' && project.status === 'analysis_complete'
                                                             ? `Locked - ${getProjectSidebarSubtitle(project)}`
                                                             : getProjectSidebarSubtitle(project)}
@@ -197,7 +199,7 @@ export default function Sidebar({
                                                     type="button"
                                                     onClick={() => handleDeleteProject(project)}
                                                     disabled={deletingProjectKey === project.key}
-                                                    className={`flex-shrink-0 p-2 rounded-md border transition-colors ${deletingProjectKey === project.key ? 'text-app-text-muted border-app-text-label cursor-not-allowed' : 'text-red-400 border-transparent hover:text-red-300 hover:bg-app-status-error/10'}`}
+                                                    className={`flex-shrink-0 p-2 rounded-md border transition-colors ${deletingProjectKey === project.key ? 'text-slate-500 border-slate-700 cursor-not-allowed' : 'text-red-400 border-transparent hover:text-red-300 hover:bg-red-500/15'}`}
                                                     title={deletingProjectKey === project.key ? 'Deleting project...' : `Delete ${project.name || 'project'}`}
                                                     aria-label={`Delete ${project.name || 'project'}`}
                                                 >
@@ -212,11 +214,11 @@ export default function Sidebar({
                     </div>
                 </div>
 
-                <div className="border-t border-app-sidebar-bg bg-app-sidebar-bg shrink-0">
+                <div className="border-t border-white/10 bg-app-sidebar-bg shrink-0">
                     <button
                         type="button"
                         onClick={() => setNavExpanded((v) => !v)}
-                        className="flex items-center justify-between w-full px-4 py-3 text-xs font-semibold text-app-text-muted uppercase tracking-wider hover:text-white transition-colors"
+                        className="flex items-center justify-between w-full px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider hover:text-white transition-colors cursor-pointer"
                     >
                         <span>Navigation</span>
                         <svg
@@ -231,40 +233,25 @@ export default function Sidebar({
                             {canAccess('/status-dashboard') && (
                                 <button
                                     onClick={() => setCurrentView('statusDashboard')}
-                                    className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'statusDashboard'
-                                        ? 'bg-app-primary-dark/40 text-app-primary-light border border-app-primary-dark'
-                                        : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
+                                    className={`flex items-center w-full px-3.5 py-2 text-sm font-medium rounded-lg transition-all mb-2 cursor-pointer ${currentView === 'statusDashboard'
+                                        ? 'bg-blue-600/25 text-blue-200 border border-blue-500/50 shadow-sm'
+                                        : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
                                 >
-                                    <Activity className="w-4 h-4 mr-3" />
+                                    <Activity className="w-4 h-4 mr-3 text-blue-400" />
                                     Status Dashboard
                                 </button>
                             )}
-
-                            {/* Billing page - Hidden until implementation is complete */}
-                            {/* {canAccess('/billing') && (
-                                <button onClick={() => {
-                                    navigate('/billing');
-                                }}
-                                    className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname.startsWith('/billing')
-                                        ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
-                                        : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`
-                                        }`}
-                                >
-                                    <CreditCard className='w-4 h-4 mr-3' />
-                                    Check Billing Details
-                                </button>
-                            )} */}
 
                             {user?.is_org_admin && canAccess('/organization-admin') && (
                                 <button
                                     onClick={() => {
                                         setCurrentView('organizationAdmin');
                                     }}
-                                    className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${currentView === 'organizationAdmin'
-                                        ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
-                                        : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
+                                    className={`flex items-center w-full px-3.5 py-2 text-sm font-medium rounded-lg transition-all mb-2 cursor-pointer ${currentView === 'organizationAdmin'
+                                        ? 'bg-blue-600/25 text-blue-200 border border-blue-500/50 shadow-sm'
+                                        : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
                                 >
-                                    <ShieldCheck className="w-4 h-4 mr-3" />
+                                    <ShieldCheck className="w-4 h-4 mr-3 text-emerald-400" />
                                     Organization Admin
                                 </button>
                             )}
@@ -329,11 +316,11 @@ export default function Sidebar({
                                     onClick={() => {
                                         navigate('/billing');
                                     }}
-                                    className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname === '/billing'
-                                        ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
-                                        : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
+                                    className={`flex items-center w-full px-3.5 py-2 text-sm font-medium rounded-lg transition-all mb-2 cursor-pointer ${location.pathname === '/billing'
+                                        ? 'bg-blue-600/25 text-blue-200 border border-blue-500/50 shadow-sm'
+                                        : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
                                 >
-                                    <CreditCard className="w-4 h-4 mr-3" />
+                                    <CreditCard className="w-4 h-4 mr-3 text-amber-400" />
                                     Billing & Activity
                                 </button>
                             )}
@@ -342,11 +329,11 @@ export default function Sidebar({
                                     onClick={() => {
                                         navigate('/governance-management');
                                     }}
-                                    className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname === '/governance-management'
-                                        ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
-                                        : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
+                                    className={`flex items-center w-full px-3.5 py-2 text-sm font-medium rounded-lg transition-all mb-2 cursor-pointer ${location.pathname === '/governance-management'
+                                        ? 'bg-blue-600/25 text-blue-200 border border-blue-500/50 shadow-sm'
+                                        : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
                                 >
-                                    <FileCheck className="w-4 h-4 mr-3" />
+                                    <FileCheck className="w-4 h-4 mr-3 text-indigo-400" />
                                     Governance
                                 </button>
                             )}
@@ -355,11 +342,11 @@ export default function Sidebar({
                                     onClick={() => {
                                         navigate('/agents');
                                     }}
-                                    className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname.startsWith('/agents')
-                                        ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
-                                        : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
+                                    className={`flex items-center w-full px-3.5 py-2 text-sm font-medium rounded-lg transition-all mb-2 cursor-pointer ${location.pathname.startsWith('/agents')
+                                        ? 'bg-blue-600/25 text-blue-200 border border-blue-500/50 shadow-sm'
+                                        : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
                                 >
-                                    <Users className="w-4 h-4 mr-3" />
+                                    <Users className="w-4 h-4 mr-3 text-sky-400" />
                                     Agents
                                 </button>
                             )}
@@ -368,11 +355,11 @@ export default function Sidebar({
                                     onClick={() => {
                                         navigate('/plugins');
                                     }}
-                                    className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-2 ${location.pathname.startsWith('/plugins')
-                                        ? 'bg-app-primary-dark/40 text-blue-100 border border-app-primary-dark'
-                                        : `${isDarkMode ? 'text-app-text-label' : 'text-app-border'} hover:bg-app-text-label hover:text-white`}`}
+                                    className={`flex items-center w-full px-3.5 py-2 text-sm font-medium rounded-lg transition-all mb-2 cursor-pointer ${location.pathname.startsWith('/plugins')
+                                        ? 'bg-blue-600/25 text-blue-200 border border-blue-500/50 shadow-sm'
+                                        : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
                                 >
-                                    <Globe className="w-4 h-4 mr-3" />
+                                    <Globe className="w-4 h-4 mr-3 text-purple-400" />
                                     Plugins
                                 </button>
                             )}
@@ -382,7 +369,7 @@ export default function Sidebar({
 
                 {user && (
                     <div className="p-3 border-t border-white/10 bg-app-sidebar-bg shrink-0">
-                        <div className={`flex items-center w-full px-3 py-2 text-sm font-medium rounded-lg bg-white/5 border border-white/10 ${isDarkMode ? 'text-app-text-label' : 'text-app-border'}`}>
+                        <div className="flex items-center w-full px-3 py-2 text-sm font-medium rounded-lg bg-white/5 border border-white/10 text-slate-200">
                             <div className="flex items-center min-w-0 flex-1 mr-2">
                                 <User className="w-4 h-4 mr-2 text-purple-400 flex-shrink-0" />
                                 <span className="truncate text-xs font-semibold text-slate-200" title={user.email}>{user.email}</span>
