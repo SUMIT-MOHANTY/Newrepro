@@ -62,6 +62,41 @@ export default function SuperAdminTokenOps() {
         return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format((amount || 0) * pricePerToken);
     };
 
+    const formatDateOrdinal = (dateStr) => {
+        if (!dateStr) return '';
+        let day, monthIndex;
+        const parts = String(dateStr).split('-');
+        if (parts.length === 3) {
+            monthIndex = parseInt(parts[1], 10) - 1;
+            day = parseInt(parts[2], 10);
+        } else if (parts.length === 2) {
+            monthIndex = parseInt(parts[0], 10) - 1;
+            day = parseInt(parts[1], 10);
+        } else {
+            const d = new Date(dateStr);
+            if (isNaN(d.getTime())) return dateStr;
+            day = d.getDate();
+            monthIndex = d.getMonth();
+        }
+
+        if (isNaN(day) || isNaN(monthIndex) || monthIndex < 0 || monthIndex > 11) {
+            return dateStr;
+        }
+
+        const months = [
+            'January', 'February', 'March', 'April', 'May', 'June',
+            'July', 'August', 'September', 'October', 'November', 'December'
+        ];
+
+        const getOrdinal = (n) => {
+            const s = ["th", "st", "nd", "rd"];
+            const v = n % 100;
+            return n + (s[(v - 20) % 10] || s[v] || s[0]);
+        };
+
+        return `${getOrdinal(day)} ${months[monthIndex]}`;
+    };
+
     const getHeaders = () => {
         const token = localStorage.getItem('token');
         return {
@@ -826,17 +861,23 @@ export default function SuperAdminTokenOps() {
                                 {[
                                     { label: 'Period Total', val: (() => {
                                         const pts = trendsData.points;
-                                        if (trendMetric === 'tokens') return `${Number(pts.reduce((a,p)=>a+p.total_tokens,0)).toLocaleString()} tok`;
+                                        if (trendMetric === 'tokens') {
+                                            const total = Number(pts.reduce((a,p)=>a+p.total_tokens,0));
+                                            return `${total.toLocaleString()} ${total === 1 ? 'token' : 'tokens'}`;
+                                        }
                                         if (trendMetric === 'cost') return `$${pts.reduce((a,p)=>a+p.cost_usd,0).toFixed(2)}`;
                                         if (trendMetric === 'infra_cost') return `$${pts.reduce((a,p)=>a+(p.infra_cost_usd||0),0).toFixed(2)}`;
                                         return `${pts.reduce((a,p)=>a+p.request_count,0).toLocaleString()} reqs`;
                                     })()},
                                     { label: 'Daily Avg', val: (() => {
                                         const pts = trendsData.points; const n = pts.length || 1;
-                                        if (trendMetric === 'tokens') return `${Math.round(pts.reduce((a,p)=>a+p.total_tokens,0)/n).toLocaleString()}/d`;
-                                        if (trendMetric === 'cost') return `$${(pts.reduce((a,p)=>a+p.cost_usd,0)/n).toFixed(3)}/d`;
-                                        if (trendMetric === 'infra_cost') return `$${(pts.reduce((a,p)=>a+(p.infra_cost_usd||0),0)/n).toFixed(3)}/d`;
-                                        return `${Math.round(pts.reduce((a,p)=>a+p.request_count,0)/n).toLocaleString()}/d`;
+                                        if (trendMetric === 'tokens') {
+                                            const avg = Math.round(pts.reduce((a,p)=>a+p.total_tokens,0)/n);
+                                            return `${avg.toLocaleString()} ${avg === 1 ? 'token' : 'tokens'}/day`;
+                                        }
+                                        if (trendMetric === 'cost') return `$${(pts.reduce((a,p)=>a+p.cost_usd,0)/n).toFixed(3)}/day`;
+                                        if (trendMetric === 'infra_cost') return `$${(pts.reduce((a,p)=>a+(p.infra_cost_usd||0),0)/n).toFixed(3)}/day`;
+                                        return `${Math.round(pts.reduce((a,p)=>a+p.request_count,0)/n).toLocaleString()} reqs/day`;
                                     })()},
                                     { label: 'Peak Day', val: (() => {
                                         const pts = trendsData.points;
@@ -846,13 +887,20 @@ export default function SuperAdminTokenOps() {
                                             return vb-va;
                                         })[0];
                                         if (!peak) return '—';
-                                        const v = trendMetric==='tokens'?`${Number(peak.total_tokens).toLocaleString()} tok`:trendMetric==='cost'?`$${Number(peak.cost_usd).toFixed(2)}`:trendMetric==='infra_cost'?`$${Number(peak.infra_cost_usd||0).toFixed(2)}`:`${peak.request_count} reqs`;
-                                        return `${v} (${peak.date?.slice(5)||peak.date})`;
+                                        const v = trendMetric==='tokens'
+                                            ? `${Number(peak.total_tokens).toLocaleString()} ${Number(peak.total_tokens) === 1 ? 'token' : 'tokens'}`
+                                            : trendMetric==='cost'
+                                            ? `$${Number(peak.cost_usd).toFixed(2)}`
+                                            : trendMetric==='infra_cost'
+                                            ? `$${Number(peak.infra_cost_usd||0).toFixed(2)}`
+                                            : `${peak.request_count} reqs`;
+                                        const formattedDate = formatDateOrdinal(peak.date);
+                                        return formattedDate ? `${v} (${formattedDate})` : v;
                                     })()},
                                 ].map(s => (
                                     <div key={s.label}>
                                         <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">{s.label}</span>
-                                        <div className="text-sm font-bold text-slate-800 dark:text-slate-100 mt-0.5 truncate">{s.val}</div>
+                                        <div className="text-sm font-bold text-slate-800 dark:text-slate-100 mt-0.5 truncate" title={s.val}>{s.val}</div>
                                     </div>
                                 ))}
                             </div>
