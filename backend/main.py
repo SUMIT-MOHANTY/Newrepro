@@ -1155,6 +1155,27 @@ async def assistant_chat(
         llm_gateway.current_user_id_var.set(current_user.id)
         llm_gateway.current_user_org_var.set(getattr(current_user, "organization_name", None))
         llm_gateway.current_purpose_var.set("Copilot Chat")
+
+        # Extract candidate project token / name from context if present
+        candidate_project_token = None
+        candidate_project_name = None
+        if isinstance(context, dict):
+            candidate_project_token = context.get("project_token") or context.get("projectToken")
+            candidate_project_name = context.get("project_name") or context.get("projectName")
+            if not candidate_project_token and "currentPath" in context:
+                try:
+                    import urllib.parse
+                    parsed_url = urllib.parse.urlparse(str(context["currentPath"]))
+                    q = urllib.parse.parse_qs(parsed_url.query)
+                    if "project_token" in q:
+                        candidate_project_token = q["project_token"][0]
+                except Exception:
+                    pass
+        if candidate_project_token:
+            llm_gateway.current_project_token_var.set(candidate_project_token)
+        if candidate_project_name:
+            llm_gateway.current_project_name_var.set(candidate_project_name)
+
         assistant_reply = await ai_service.chat_with_llm(
             message=payload.message,
             context=context
@@ -1181,15 +1202,36 @@ async def assistant_chat_stream(
     llm_gateway.current_user_org_var.set(org_name)
     llm_gateway.current_purpose_var.set("Copilot Chat")
 
+    context = getattr(payload, 'context', None)
+    candidate_project_token = None
+    candidate_project_name = None
+    if isinstance(context, dict):
+        candidate_project_token = context.get("project_token") or context.get("projectToken")
+        candidate_project_name = context.get("project_name") or context.get("projectName")
+        if not candidate_project_token and "currentPath" in context:
+            try:
+                import urllib.parse
+                parsed_url = urllib.parse.urlparse(str(context["currentPath"]))
+                q = urllib.parse.parse_qs(parsed_url.query)
+                if "project_token" in q:
+                    candidate_project_token = q["project_token"][0]
+            except Exception:
+                pass
+    if candidate_project_token:
+        llm_gateway.current_project_token_var.set(candidate_project_token)
+    if candidate_project_name:
+        llm_gateway.current_project_name_var.set(candidate_project_name)
+
     async def generate():
         try:
-            context = getattr(payload, 'context', None)
             messages = ai_service.build_chat_messages(payload.message, context)
             async for chunk in llm_gateway.call_llm_streaming(
                 messages=messages,
                 user_id=user_id,
                 organization_name=org_name,
                 purpose="Copilot Chat",
+                project_token=candidate_project_token,
+                project_name=candidate_project_name,
             ):
                 if chunk.startswith("data: "):
                     data_str = chunk[6:].strip()
