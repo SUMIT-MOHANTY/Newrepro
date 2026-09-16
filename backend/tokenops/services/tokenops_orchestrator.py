@@ -318,6 +318,9 @@ class TokenOpsOrchestrator:
         completion_tokens: Optional[int],
         request_id: Optional[str] = None,
         reserved_cost: Optional[float] = None,
+        purpose: Optional[str] = None,
+        project_token: Optional[str] = None,
+        project_name: Optional[str] = None,
     ) -> None:
         """
         Post-Execution Hook.
@@ -341,6 +344,26 @@ class TokenOpsOrchestrator:
         if not organization_name:
             return
 
+        # Resolve project_name if project_token is provided but project_name is missing
+        resolved_project_name = project_name
+        resolved_project_token = project_token
+        if resolved_project_token and not resolved_project_name:
+            try:
+                from models import GovernanceResponse, ShareProject
+                gov = self.session.query(GovernanceResponse).filter(
+                    GovernanceResponse.project_token == resolved_project_token
+                ).first()
+                if gov and gov.project_name:
+                    resolved_project_name = gov.project_name
+                else:
+                    sp = self.session.query(ShareProject).filter(
+                        ShareProject.project_token == resolved_project_token
+                    ).first()
+                    if sp and sp.project_name:
+                        resolved_project_name = sp.project_name
+            except Exception:
+                pass
+
         # ── Unknown tokens branch ─────────────────────────────────────────────
         if prompt_tokens is None or completion_tokens is None:
             with self._tx():
@@ -356,14 +379,16 @@ class TokenOpsOrchestrator:
 
                 log_entry = AIUsageLog(
                     user_id=user_id,
-                    project_token=canonical_name,
+                    project_token=resolved_project_token or canonical_name,
+                    project_name=resolved_project_name,
                     organization_name=canonical_name,
                     organization_id=org_id,
                     model=model_name,
                     prompt_tokens=0,
                     completion_tokens=0,
                     cost=0.0,
-                    usage_status="UNKNOWN"
+                    usage_status="UNKNOWN",
+                    purpose=purpose or "AI Consumption"
                 )
                 self.session.add(log_entry)
                 self.idempotency.mark_completed(request_id)
@@ -400,6 +425,7 @@ class TokenOpsOrchestrator:
             total_tokens = prompt_tokens + completion_tokens
             price = self.pricing.get_price(model_name)
             cost = float(price * total_tokens)
+            circumstance_name = purpose or "AI Consumption"
 
             if org_wallet.payg_enabled:
                 # ── PAYG PATH ─────────────────────────────────────────────────
@@ -455,6 +481,9 @@ class TokenOpsOrchestrator:
                     token_delta=-total_tokens,
                     reference_id=request_id,
                     user_id=user_id,
+                    purpose=circumstance_name,
+                    project_token=resolved_project_token,
+                    project_name=resolved_project_name,
                     remarks=f"Model: {model_name} (PAYG, Cost: ${cost:.6f})"
                 )
                 self.ledger.write_entry(tx, balance_after=accumulated_payg_balance)
@@ -484,14 +513,16 @@ class TokenOpsOrchestrator:
                     )
                     log_entry = AIUsageLog(
                         user_id=user_id,
-                        project_token=canonical_name,
+                        project_token=resolved_project_token or canonical_name,
+                        project_name=resolved_project_name,
                         organization_name=canonical_name,
                         organization_id=org_id,
                         model=model_name,
                         prompt_tokens=prompt_tokens,
                         completion_tokens=completion_tokens,
                         cost=cost,
-                        usage_status="UNKNOWN"
+                        usage_status="UNKNOWN",
+                        purpose=circumstance_name
                     )
                     self.session.add(log_entry)
                     self.idempotency.mark_completed(request_id)
@@ -517,6 +548,9 @@ class TokenOpsOrchestrator:
                     token_delta=-total_tokens,
                     reference_id=request_id,
                     user_id=user_id,
+                    purpose=circumstance_name,
+                    project_token=resolved_project_token,
+                    project_name=resolved_project_name,
                     remarks=f"Model: {model_name}"
                 )
                 self.ledger.write_entry(tx, balance_after=balance_before - total_tokens)
@@ -539,14 +573,16 @@ class TokenOpsOrchestrator:
 
             log_entry = AIUsageLog(
                 user_id=user_id,
-                project_token=canonical_name,
+                project_token=resolved_project_token or canonical_name,
+                project_name=resolved_project_name,
                 organization_name=canonical_name,
                 organization_id=org_id,
                 model=model_name,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 cost=cost,
-                usage_status="COMPLETED"
+                usage_status="COMPLETED",
+                purpose=circumstance_name
             )
             self.session.add(log_entry)
 

@@ -22,4 +22,7 @@ class TokenTransaction:
     token_delta: int
     reference_id: str | None = None
     user_id: int | None = None
+    purpose: str | None = None
+    project_token: str | None = None
+    project_name: str | None = None
     remarks: str | None = None

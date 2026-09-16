@@ -77,7 +77,7 @@ async def process_document_with_ai(file_path: str) -> dict:
         ]
 
         try:
-            ai_markdown = await llm_gateway.call_llm_and_extract(messages, timeout=60.0)
+            ai_markdown = await llm_gateway.call_llm_and_extract(messages, timeout=60.0, purpose="Document Ingestion & OCR")
             if not ai_markdown or not ai_markdown.strip():
                 ai_markdown = f"# Image Document: {file_basename}\n\n(No textual content recognized in image)"
         except Exception as ai_err:
@@ -99,40 +99,36 @@ async def process_document_with_ai(file_path: str) -> dict:
     elif ext == ".pdf":
         page_images = []
         raw_pdf_text = ""
+        num_pages = 1
+
         try:
-            import pypdfium2 as pdfium
-            pdf = pdfium.PdfDocument(file_path)
-            num_pages = len(pdf)
-
-            for i, page in enumerate(pdf):
-                # Render page image for Vision AI
-                image = page.render(scale=2.0).to_pil()
-                page_img_name = f"{uuid.uuid4().hex}_p{i+1}.png"
-                page_img_path = os.path.join(images_dir, page_img_name)
-                image.save(page_img_path, format="PNG")
-                page_images.append(page_img_path)
-                extracted_images.append(page_img_path)
-
-                # Extract text stream page by page
-                textpage = page.get_textpage()
-                p_text = textpage.get_text_range()
-                if p_text and p_text.strip():
-                    raw_pdf_text += f"\n--- Page {i+1} ---\n{p_text.strip()}\n"
-            pdf.close()
+            import fitz  # PyMuPDF
+            doc = fitz.open(file_path)
+            num_pages = len(doc)
+            
+            for page_idx in range(min(num_pages, 10)):  # Process up to 10 pages for multimodal vision
+                page = doc[page_idx]
+                raw_pdf_text += page.get_text() + "\n\n"
+                
+                # Render page to high-res image
+                pix = page.get_pixmap(dpi=150)
+                img_name = f"{uuid.uuid4().hex}_p{page_idx+1}.png"
+                img_path = os.path.join(images_dir, img_name)
+                pix.save(img_path)
+                page_images.append(img_path)
+                extracted_images.append(img_path)
+            doc.close()
         except Exception as pdf_err:
-            print(f"Warning: PDF rendering via pypdfium2 failed: {pdf_err}")
+            print(f"Warning: PyMuPDF extraction failed: {pdf_err}")
 
-        content_blocks = []
-        user_prompt_text = (
-            f"Document: {file_basename} ({num_pages} pages)\n\n"
-            "Extracted PDF Text Stream:\n"
-            f"{raw_pdf_text[:12000] if raw_pdf_text else 'No raw text stream found. Relying on visual page renders.'}\n\n"
-            "Task: Convert this PDF document into structured Markdown. Interpret tables, architecture diagrams, and page layouts accurately."
-        )
-        content_blocks.append({"type": "text", "text": user_prompt_text})
+        content_blocks = [
+            {
+                "type": "text",
+                "text": f"Document: {file_basename}\nTotal Pages: {num_pages}\n\nExtracted Raw Text:\n{raw_pdf_text[:10000]}\n\nAttached Page Images for Visual Analysis:"
+            }
+        ]
 
-        # Attach up to 8 page images for Vision LLM
-        for img_path in page_images[:8]:
+        for img_path in page_images[:5]:  # Send up to 5 visual pages
             try:
                 with open(img_path, "rb") as img_f:
                     b64 = base64.b64encode(img_f.read()).decode("utf-8")
@@ -155,7 +151,7 @@ async def process_document_with_ai(file_path: str) -> dict:
         ]
 
         try:
-            ai_markdown = await llm_gateway.call_llm_and_extract(messages, timeout=90.0)
+            ai_markdown = await llm_gateway.call_llm_and_extract(messages, timeout=90.0, purpose="Document Ingestion & OCR")
         except Exception as ai_err:
             print(f"Warning: AI PDF extraction failed: {ai_err}")
             ai_markdown = raw_pdf_text or f"# Document: {file_basename}\n\n(Extracted PDF pages attached as images)"
@@ -249,7 +245,7 @@ async def process_document_with_ai(file_path: str) -> dict:
         ]
 
         try:
-            ai_markdown = await llm_gateway.call_llm_and_extract(messages, timeout=60.0)
+            ai_markdown = await llm_gateway.call_llm_and_extract(messages, timeout=60.0, purpose="Document Ingestion & OCR")
         except Exception as ai_err:
             print(f"Warning: AI DOCX structuring failed: {ai_err}")
             ai_markdown = raw_docx_text or f"# Document: {file_basename}\n\n(Extracted DOCX content)"
@@ -282,7 +278,7 @@ async def process_document_with_ai(file_path: str) -> dict:
         ]
 
         try:
-            ai_markdown = await llm_gateway.call_llm_and_extract(messages, timeout=30.0)
+            ai_markdown = await llm_gateway.call_llm_and_extract(messages, timeout=30.0, purpose="Document Ingestion & OCR")
         except Exception:
             ai_markdown = content
 

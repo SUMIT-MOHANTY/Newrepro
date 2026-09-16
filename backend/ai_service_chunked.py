@@ -629,7 +629,8 @@ async def analyze_document_chunked(
             model=model,
             timeout=180.0,
             retries=3,
-            retry_delay=5.0
+            retry_delay=5.0,
+            purpose="BRD Analysis & Architecture",
         )
         
         stage1_data = _extract_json_from_response(stage1_result)
@@ -663,7 +664,8 @@ async def analyze_document_chunked(
             model=model,
             timeout=180.0,
             retries=3,
-            retry_delay=5.0
+            retry_delay=5.0,
+            purpose="BRD Analysis & Architecture",
         )
         
         stage2_data = _extract_json_from_response(stage2_result)
@@ -708,7 +710,8 @@ async def analyze_document_chunked(
             model=model,
             timeout=180.0,
             retries=3,
-            retry_delay=5.0
+            retry_delay=5.0,
+            purpose="BRD Analysis & Architecture",
         )
         
         stage3_data = _extract_json_from_response(stage3_result)
@@ -753,7 +756,8 @@ async def analyze_document_chunked(
             model=model,
             timeout=180.0,
             retries=3,
-            retry_delay=5.0
+            retry_delay=5.0,
+            purpose="BRD Analysis & Architecture",
         )
         
         stage4_data = _extract_json_from_response(stage4_result)
@@ -793,7 +797,8 @@ async def analyze_document_chunked(
             model=model,
             timeout=240.0,
             retries=3,
-            retry_delay=5.0
+            retry_delay=5.0,
+            purpose="BRD Analysis & Architecture",
         )
         
         logger.info("Stage 5 complete: Final report generated")
@@ -1134,7 +1139,8 @@ async def update_analysis_targeted(
             api_url=api_url,
             api_key=api_key,
             model=model,
-            timeout=120.0
+            timeout=120.0,
+            purpose="BRD Incremental Update",
         )
 
         diff_data = _extract_json_from_response(diff_result)
@@ -1200,7 +1206,8 @@ async def update_analysis_targeted(
                 api_url=api_url,
                 api_key=api_key,
                 model=model,
-                timeout=180.0
+                timeout=180.0,
+                purpose="BRD Incremental Update",
             )
 
             # The patched report is the raw text (not JSON)

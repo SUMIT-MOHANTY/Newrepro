@@ -101,8 +101,12 @@ class FinancialLedgerView(BaseModel):
     user_name: Optional[str] = None
     user_email: Optional[str] = None
     transaction_type: str
+    purpose: Optional[str] = None
+    project_token: Optional[str] = None
+    project_name: Optional[str] = None
     token_delta: int
     balance_after: Optional[int] = None
+    cost_usd: Optional[float] = None
     payg_cost_usd: Optional[float] = None
     created_at: str
     reference_id: Optional[str]

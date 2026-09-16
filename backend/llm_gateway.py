@@ -16,16 +16,43 @@ import json
 import re
 import logging
 import contextvars
+from contextlib import contextmanager
 from typing import Optional, Dict, Any, AsyncGenerator
 
 from config import settings
 
 logger = logging.getLogger(__name__)
 
-# Thread-safe and async-safe context variables to track user, project token, and active organization
+# Thread-safe and async-safe context variables to track user, project token, active organization, purpose, and project name
 current_user_id_var = contextvars.ContextVar("current_user_id", default=None)
 current_project_token_var = contextvars.ContextVar("current_project_token", default=None)
+current_project_name_var = contextvars.ContextVar("current_project_name", default=None)
 current_user_org_var = contextvars.ContextVar("current_user_org", default=None)
+current_purpose_var = contextvars.ContextVar("current_purpose", default=None)
+
+
+@contextmanager
+def ai_purpose(purpose_name: str):
+    """Context manager to set the AI purpose / circumstance for downstream LLM calls."""
+    token = current_purpose_var.set(purpose_name)
+    try:
+        yield
+    finally:
+        current_purpose_var.reset(token)
+
+
+@contextmanager
+def ai_project_context(project_token: Optional[str] = None, project_name: Optional[str] = None):
+    """Context manager to set the project token and project name for downstream LLM calls."""
+    t_tok = current_project_token_var.set(project_token) if project_token is not None else None
+    t_name = current_project_name_var.set(project_name) if project_name is not None else None
+    try:
+        yield
+    finally:
+        if t_tok is not None:
+            current_project_token_var.reset(t_tok)
+        if t_name is not None:
+            current_project_name_var.reset(t_name)
 
 
 # ── Response Extraction ────────────────────────────────────────────────────
@@ -336,6 +363,8 @@ def log_ai_usage(
     completion_tokens: Optional[int] = None,
     response_data: Optional[dict] = None,
     reserved_cost: Optional[float] = None,
+    purpose: Optional[str] = None,
+    project_name: Optional[str] = None,
 ):
     """
     Asynchronously logs AI token usage and calculations to the database using TokenOps.
@@ -350,8 +379,10 @@ def log_ai_usage(
         # Get values from ContextVars if not explicitly provided
         u_id = user_id or current_user_id_var.get()
         p_token = project_token or current_project_token_var.get()
+        p_name = project_name or current_project_name_var.get()
         user_org = current_user_org_var.get()
         target_tenant = p_token or user_org
+        ai_purpose_val = purpose or current_purpose_var.get()
 
         # 1. Extract actual token counts from API response payload if present
         if response_data and isinstance(response_data, dict):
@@ -380,9 +411,12 @@ def log_ai_usage(
                     model_name=model_name,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
-                    reserved_cost=reserved_cost
+                    reserved_cost=reserved_cost,
+                    purpose=ai_purpose_val,
+                    project_token=p_token,
+                    project_name=p_name,
                 )
-                logger.info(f"Logged AI Usage to TokenOps: {prompt_tokens} prompt, {completion_tokens} completion for tenant {target_tenant}.")
+                logger.info(f"Logged AI Usage to TokenOps: {prompt_tokens} prompt, {completion_tokens} completion for tenant {target_tenant} (purpose: {ai_purpose_val}, project: {p_name}).")
             finally:
                 db.close()
     except Exception as e:
@@ -399,6 +433,9 @@ async def call_llm(
     timeout: float = 120.0,
     retries: int = 3,
     retry_delay: float = 5.0,
+    purpose: Optional[str] = None,
+    project_token: Optional[str] = None,
+    project_name: Optional[str] = None,
     **extra,
 ) -> dict:
     """
@@ -461,7 +498,16 @@ async def call_llm(
                 # Log usage with reservation settlement
                 try:
                     response_text = extract_content_from_response(data)
-                    log_ai_usage(messages, response_text, model_name, response_data=data, reserved_cost=reserved_cost)
+                    log_ai_usage(
+                        messages,
+                        response_text,
+                        model_name,
+                        response_data=data,
+                        reserved_cost=reserved_cost,
+                        purpose=purpose,
+                        project_token=project_token,
+                        project_name=project_name,
+                    )
                 except Exception as log_err:
                     logger.error(f"Failed to log AI usage inside call_llm: {log_err}")
                 
@@ -490,7 +536,7 @@ async def call_llm(
                 try:
                     from database import SessionLocal
                     from tokenops.services.tokenops_orchestrator import TokenOpsOrchestrator
-                    p_token = current_project_token_var.get() or current_user_org_var.get()
+                    p_token = project_token or current_project_token_var.get() or current_user_org_var.get()
                     if p_token:
                         db = SessionLocal()
                         try:
@@ -504,8 +550,6 @@ async def call_llm(
 
     return data
 
-    return data
-
 
 async def call_llm_and_extract(
     messages: list,
@@ -515,6 +559,9 @@ async def call_llm_and_extract(
     timeout: float = 120.0,
     retries: int = 3,
     retry_delay: float = 5.0,
+    purpose: Optional[str] = None,
+    project_token: Optional[str] = None,
+    project_name: Optional[str] = None,
     **extra,
 ) -> str:
     """
@@ -529,6 +576,9 @@ async def call_llm_and_extract(
         timeout=timeout,
         retries=retries,
         retry_delay=retry_delay,
+        purpose=purpose,
+        project_token=project_token,
+        project_name=project_name,
         **extra,
     )
     content = extract_content_from_response(data)
@@ -563,6 +613,9 @@ async def call_llm_streaming(
     api_key: Optional[str] = None,
     model: Optional[str] = None,
     timeout: float = 120.0,
+    purpose: Optional[str] = None,
+    project_token: Optional[str] = None,
+    project_name: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Unified streaming LLM call.
@@ -759,7 +812,15 @@ async def call_llm_streaming(
         # Log AI Cost usage
         try:
             full_response_text = "".join(response_content_buffer)
-            log_ai_usage(messages, full_response_text, model_name, reserved_cost=reserved_cost)
+            log_ai_usage(
+                messages,
+                full_response_text,
+                model_name,
+                reserved_cost=reserved_cost,
+                purpose=purpose,
+                project_token=project_token,
+                project_name=project_name,
+            )
         except Exception as log_err:
             logger.error(f"Failed to log AI usage in call_llm_streaming finally block: {log_err}")
 

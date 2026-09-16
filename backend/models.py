@@ -687,6 +687,8 @@ class AIUsageLog(Base):
     completion_tokens = Column(Integer, default=0)
     cost = Column(Float, default=0.0)
     usage_status = Column(String, nullable=False, default="COMPLETED")  # COMPLETED or UNKNOWN
+    purpose = Column(String, nullable=True, index=True)  # Circumstance or feature (e.g. Requirement Screening, BRD Analysis)
+    project_name = Column(String, nullable=True, index=True)  # Human-readable project name
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 

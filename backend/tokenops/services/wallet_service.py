@@ -61,6 +61,7 @@ class WalletService:
                 transaction_type=TransactionType.PURCHASE.value,
                 token_delta=amount,
                 reference_id=request_id,
+                purpose="Token Pack Purchase",
                 remarks=remarks
             )
             self.ledger.write_entry(tx, balance_after=balance_before + amount)
@@ -112,7 +113,8 @@ class WalletService:
                 user_id=user_id,
                 transaction_type=TransactionType.ALLOCATION.value,
                 token_delta=amount,
-                reference_id=request_id
+                reference_id=request_id,
+                purpose="Admin Quota Allocation"
             )
             self.ledger.write_entry(tx, balance_after=user_balance_before + amount)
 
@@ -167,7 +169,8 @@ class WalletService:
                 user_id=from_user_id,
                 transaction_type=TransactionType.REALLOCATION.value,
                 token_delta=-amount,
-                reference_id=f"{request_id}_out" if request_id else str(uuid.uuid4())
+                reference_id=f"{request_id}_out" if request_id else str(uuid.uuid4()),
+                purpose="User Wallet Reallocation"
             )
             self.ledger.write_entry(tx_out, balance_after=from_balance_before - amount)
 
@@ -177,7 +180,8 @@ class WalletService:
                 user_id=to_user_id,
                 transaction_type=TransactionType.REALLOCATION.value,
                 token_delta=amount,
-                reference_id=f"{request_id}_in" if request_id else str(uuid.uuid4())
+                reference_id=f"{request_id}_in" if request_id else str(uuid.uuid4()),
+                purpose="User Wallet Reallocation"
             )
             self.ledger.write_entry(tx_in, balance_after=to_balance_before + amount)
 
@@ -226,7 +230,8 @@ class WalletService:
                 user_id=user_id,
                 transaction_type=TransactionType.REVOCATION.value,
                 token_delta=-amount,
-                reference_id=request_id
+                reference_id=request_id,
+                purpose="Quota Revocation"
             )
             self.ledger.write_entry(tx, balance_after=user_balance_before - amount)
 

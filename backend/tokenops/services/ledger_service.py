@@ -29,6 +29,9 @@ class LedgerService:
             token_delta=tx.token_delta,
             balance_after=balance_after,
             reference_id=tx.reference_id,
+            purpose=tx.purpose,
+            project_token=tx.project_token,
+            project_name=tx.project_name,
             remarks=tx.remarks
         )
         self.repo.append(entry)
