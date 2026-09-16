@@ -88,26 +88,14 @@ export default function SuperAdminAuditLogs() {
   }
 
   return (
-    <div className="h-full overflow-y-auto bg-gradient-to-br from-slate-950 via-slate-900 to-purple-950/30 p-4 sm:p-6 text-slate-100">
+    <div className="h-full overflow-y-auto bg-slate-50 dark:bg-slate-950 p-4 sm:p-6 text-slate-900 dark:text-slate-100 transition-colors">
       <div className="max-w-7xl mx-auto space-y-6">
         
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-purple-500/20 pb-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
-                Security & Compliance
-              </span>
-              <span className="text-xs text-slate-400">• Cross-Tenant Activity Logs</span>
-            </div>
-            <h1 className="text-xl sm:text-2xl font-extrabold text-white mt-1 flex items-center gap-2">
-              <Activity className="w-6 h-6 text-purple-400" />
-              Global Platform Audit Trail
-            </h1>
-          </div>
+        {/* Actions Toolbar */}
+        <div className="flex justify-end items-center border-b border-slate-200 dark:border-purple-500/20 pb-3">
           <button
             onClick={fetchLogs}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-purple-900/40 hover:bg-purple-800/50 border border-purple-500/30 text-purple-200 text-xs font-semibold transition-all"
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white dark:bg-purple-900/40 hover:bg-slate-100 dark:hover:bg-purple-800/50 border border-slate-200 dark:border-purple-500/30 text-purple-700 dark:text-purple-200 text-xs font-semibold transition-all shadow-sm cursor-pointer"
           >
             <RefreshCw className="w-3.5 h-3.5" />
             Refresh Logs
@@ -122,25 +110,25 @@ export default function SuperAdminAuditLogs() {
         )}
 
         {/* Audit Log Table */}
-        <div className="p-5 rounded-2xl bg-slate-900/80 border border-purple-500/20 space-y-4">
+        <div className="p-5 rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-purple-500/20 shadow-sm space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
-              <h2 className="text-base font-bold text-white flex items-center gap-2">
+              <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
                 <Activity className="w-4 h-4 text-purple-400" />
                 Cross-Organization User Activity
               </h2>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
                 Real-time security and operations log across all platform organizations.
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              <div className="flex items-center rounded-lg bg-slate-800/80 p-0.5 border border-slate-700">
+              <div className="flex items-center rounded-lg bg-slate-100 dark:bg-slate-800/80 p-0.5 border border-slate-200 dark:border-slate-700">
                 <button
                   onClick={() => { setCategoryFilter('ALL'); setCurrentPage(1); }}
                   className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${
                     categoryFilter === 'ALL'
                       ? 'bg-purple-600 text-white shadow-sm'
-                      : 'text-slate-400 hover:text-slate-200'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                   }`}
                 >
                   All Activity
@@ -150,7 +138,7 @@ export default function SuperAdminAuditLogs() {
                   className={`px-3 py-1 text-xs font-semibold rounded-md transition-all flex items-center gap-1.5 ${
                     categoryFilter === 'TOKENOPS'
                       ? 'bg-purple-600 text-white shadow-sm'
-                      : 'text-slate-400 hover:text-slate-200'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                   }`}
                 >
                   <span>🪙</span>
@@ -165,7 +153,7 @@ export default function SuperAdminAuditLogs() {
                   placeholder="Search by user, org, action..."
                   value={searchQuery}
                   onChange={e => { setSearchQuery(e.target.value); setCurrentPage(1); }}
-                  className="w-full pl-8 pr-3 py-1.5 bg-slate-800/60 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-400 focus:outline-none focus:border-purple-500"
+                  className="w-full pl-8 pr-3 py-1.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-purple-500"
                 />
               </div>
             </div>
@@ -173,7 +161,7 @@ export default function SuperAdminAuditLogs() {
 
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="bg-slate-800/40 text-slate-400 font-semibold uppercase text-[10px] tracking-wider border-b border-slate-800">
+              <thead className="bg-slate-50 dark:bg-slate-800/40 text-slate-500 dark:text-slate-400 font-semibold uppercase text-[10px] tracking-wider border-b border-slate-200 dark:border-slate-800">
                 <tr>
                   <th className="py-2.5 px-3">Timestamp</th>
                   <th className="py-2.5 px-3">User</th>
@@ -184,37 +172,37 @@ export default function SuperAdminAuditLogs() {
                   <th className="py-2.5 px-3">IP Address</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/60 text-slate-200">
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-800/60 text-slate-700 dark:text-slate-200">
                 {paginatedLogs.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="py-6 text-center text-slate-400 italic">
+                    <td colSpan={7} className="py-6 text-center text-slate-400 dark:text-slate-500 italic">
                       No audit log entries found.
                     </td>
                   </tr>
                 ) : (
                   paginatedLogs.map((log) => (
-                    <tr key={log.id} className="hover:bg-slate-800/30 transition-colors">
-                      <td className="py-2.5 px-3 font-mono text-[11px] text-slate-400">
+                    <tr key={log.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/30 transition-colors">
+                      <td className="py-2.5 px-3 font-mono text-[11px] text-slate-500 dark:text-slate-400">
                         {log.created_at ? new Date(log.created_at).toLocaleString() : '—'}
                       </td>
-                      <td className="py-2.5 px-3 font-semibold text-white">
+                      <td className="py-2.5 px-3 font-semibold text-slate-900 dark:text-white">
                         {log.email}
                       </td>
-                      <td className="py-2.5 px-3 text-purple-300 font-medium">
+                      <td className="py-2.5 px-3 text-purple-700 dark:text-purple-300 font-medium">
                         {log.organization_name}
                       </td>
-                      <td className="py-2.5 px-3 text-slate-300 font-medium">
+                      <td className="py-2.5 px-3 text-slate-600 dark:text-slate-300 font-medium">
                         {log.action}
                       </td>
                       <td className="py-2.5 px-3">
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-purple-300 border border-slate-700">
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-50 dark:bg-slate-800 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-slate-700">
                           {log.method || 'GET'}
                         </span>
                       </td>
-                      <td className="py-2.5 px-3 font-mono text-[11px] text-slate-400">
+                      <td className="py-2.5 px-3 font-mono text-[11px] text-slate-500 dark:text-slate-400">
                         {log.path || '—'}
                       </td>
-                      <td className="py-2.5 px-3 font-mono text-[11px] text-slate-400">
+                      <td className="py-2.5 px-3 font-mono text-[11px] text-slate-500 dark:text-slate-400">
                         {log.ip_address || '—'}
                       </td>
                     </tr>
@@ -225,7 +213,7 @@ export default function SuperAdminAuditLogs() {
           </div>
 
           {/* Pagination Controls */}
-          <div className="flex items-center justify-between pt-2 border-t border-slate-800 text-xs text-slate-400">
+          <div className="flex items-center justify-between pt-2 border-t border-slate-200 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400">
             <span>
               Page {currentPage} of {totalPages} ({filteredLogs.length} entries)
             </span>
@@ -233,14 +221,14 @@ export default function SuperAdminAuditLogs() {
               <button
                 onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
                 disabled={currentPage === 1}
-                className="p-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-slate-300"
+                className="p-1 rounded bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-30 text-slate-600 dark:text-slate-300 cursor-pointer"
               >
                 <ChevronLeft className="w-4 h-4" />
               </button>
               <button
                 onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
                 disabled={currentPage === totalPages}
-                className="p-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-slate-300"
+                className="p-1 rounded bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-30 text-slate-600 dark:text-slate-300 cursor-pointer"
               >
                 <ChevronRight className="w-4 h-4" />
               </button>

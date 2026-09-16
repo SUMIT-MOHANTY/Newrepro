@@ -224,27 +224,15 @@ export default function SuperAdminGlobalBilling() {
   }
 
   return (
-    <div className="h-full overflow-y-auto bg-gradient-to-br from-slate-950 via-slate-900 to-purple-950/30 p-4 sm:p-6 text-slate-100">
+    <div className="h-full overflow-y-auto bg-slate-50 dark:bg-slate-950 p-4 sm:p-6 text-slate-900 dark:text-slate-100 transition-colors">
       <div className="max-w-7xl mx-auto space-y-6">
         
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-purple-500/20 pb-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
-                Platform Control Center
-              </span>
-              <span className="text-xs text-slate-400">• Multi-Tenant Platform Billing</span>
-            </div>
-            <h1 className="text-xl sm:text-2xl font-extrabold text-white mt-1 flex items-center gap-2">
-              <CreditCard className="w-6 h-6 text-purple-400" />
-              Global Platform Billing Dashboard
-            </h1>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
+        {/* Actions Toolbar */}
+        <div className="flex flex-wrap items-center justify-end gap-2 border-b border-slate-200 dark:border-purple-500/20 pb-3">
+          <div className="flex flex-wrap items-center gap-2 ml-auto">
             <button
               onClick={handleDownloadPDF}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-900/40 hover:bg-purple-800/60 border border-purple-500/30 text-purple-200 text-xs font-semibold transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-purple-900/40 hover:bg-slate-100 dark:hover:bg-purple-800/60 border border-slate-200 dark:border-purple-500/30 text-purple-700 dark:text-purple-200 text-xs font-semibold transition-all shadow-sm cursor-pointer"
             >
               <FileText className="w-3.5 h-3.5 text-purple-300" />
               Download PDF Report
@@ -252,7 +240,7 @@ export default function SuperAdminGlobalBilling() {
 
             <button
               onClick={handleExportExcel}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-950/60 hover:bg-emerald-900/70 border border-emerald-500/30 text-emerald-300 text-xs font-semibold transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-emerald-950/60 hover:bg-slate-100 dark:hover:bg-emerald-900/70 border border-slate-200 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-300 text-xs font-semibold transition-all shadow-sm cursor-pointer"
             >
               <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
               Export Excel
@@ -260,7 +248,7 @@ export default function SuperAdminGlobalBilling() {
 
             <button
               onClick={fetchData}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs font-semibold transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-xs font-semibold transition-all shadow-sm cursor-pointer"
             >
               <RefreshCw className="w-3.5 h-3.5" />
               Refresh
@@ -269,37 +257,37 @@ export default function SuperAdminGlobalBilling() {
         </div>
 
         {/* Date Filter Bar */}
-        <div className="p-3.5 rounded-xl bg-slate-900/60 border border-purple-500/20 backdrop-blur flex flex-wrap items-center justify-between gap-3 text-xs">
-          <div className="flex items-center gap-2 font-semibold text-slate-300">
+        <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2 font-semibold text-slate-700 dark:text-slate-300">
             <Calendar className="w-4 h-4 text-purple-400" />
             <span>Filter Billing Data by Date Range:</span>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-2">
-              <span className="text-slate-400 text-[11px]">Start:</span>
+              <span className="text-slate-500 dark:text-slate-400 text-[11px]">Start:</span>
               <input
                 type="date"
                 value={startDate}
                 onChange={e => setStartDate(e.target.value)}
-                className="px-2.5 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-purple-500"
+                className="px-2.5 py-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-xs text-slate-900 dark:text-white focus:outline-none focus:border-purple-500"
               />
             </div>
 
             <div className="flex items-center gap-2">
-              <span className="text-slate-400 text-[11px]">End:</span>
+              <span className="text-slate-500 dark:text-slate-400 text-[11px]">End:</span>
               <input
                 type="date"
                 value={endDate}
                 onChange={e => setEndDate(e.target.value)}
-                className="px-2.5 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-purple-500"
+                className="px-2.5 py-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-xs text-slate-900 dark:text-white focus:outline-none focus:border-purple-500"
               />
             </div>
 
             {(startDate || endDate) && (
               <button
                 onClick={() => { setStartDate(''); setEndDate(''); }}
-                className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px]"
+                className="px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded text-[11px] cursor-pointer"
               >
                 Clear Dates
               </button>
@@ -316,66 +304,66 @@ export default function SuperAdminGlobalBilling() {
 
         {/* Global Financial KPI Cards */}
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
-          <div className="p-4 rounded-xl bg-slate-900/70 border border-purple-500/20 backdrop-blur">
-            <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+          <div className="p-4 rounded-xl bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur">
+            <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
               <span className="font-semibold uppercase tracking-wider text-[10px]">Dsuite Billing</span>
               <DollarSign className="w-4 h-4 text-purple-400" />
             </div>
-            <div className="text-2xl font-black text-purple-300">
+            <div className="text-2xl font-black text-purple-700 dark:text-purple-300">
               ${(stats?.dsuite_billing !== undefined ? stats.dsuite_billing : (stats?.platform_billing || totalPlatformCost)).toFixed(2)}
             </div>
-            <div className="text-[10px] text-purple-400 mt-1">Dsuite AI Governance spend</div>
+            <div className="text-[10px] text-purple-600 dark:text-purple-400 mt-1">Dsuite AI Governance spend</div>
           </div>
 
-          <div className="p-4 rounded-xl bg-slate-900/70 border border-cyan-500/20 backdrop-blur">
-            <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+          <div className="p-4 rounded-xl bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-cyan-500/20 shadow-sm backdrop-blur">
+            <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
               <span className="font-semibold uppercase tracking-wider text-[10px]">Vibecoding Billing</span>
               <DollarSign className="w-4 h-4 text-cyan-400" />
             </div>
-            <div className="text-2xl font-black text-cyan-300">
+            <div className="text-2xl font-black text-cyan-700 dark:text-cyan-300">
               ${(stats?.vibecoding_billing !== undefined ? stats.vibecoding_billing : 0).toFixed(2)}
             </div>
-            <div className="text-[10px] text-cyan-400 mt-1">Vibecoding AI inference spend</div>
+            <div className="text-[10px] text-cyan-600 dark:text-cyan-400 mt-1">Vibecoding AI inference spend</div>
           </div>
 
-          <div className="p-4 rounded-xl bg-slate-900/70 border border-emerald-500/20 backdrop-blur">
-            <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+          <div className="p-4 rounded-xl bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-emerald-500/20 shadow-sm backdrop-blur">
+            <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
               <span className="font-semibold uppercase tracking-wider text-[10px]">Total Platform Cost</span>
               <DollarSign className="w-4 h-4 text-emerald-400" />
             </div>
-            <div className="text-2xl font-black text-emerald-400">${(stats?.platform_billing || totalPlatformCost).toFixed(2)}</div>
-            <div className="text-[10px] text-emerald-400 mt-1">Dsuite + Vibecoding combined</div>
+            <div className="text-2xl font-black text-emerald-600 dark:text-emerald-400">${(stats?.platform_billing || totalPlatformCost).toFixed(2)}</div>
+            <div className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1">Dsuite + Vibecoding combined</div>
           </div>
 
-          <div className="p-4 rounded-xl bg-slate-900/70 border border-purple-500/20 backdrop-blur">
-            <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+          <div className="p-4 rounded-xl bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur">
+            <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
               <span className="font-semibold uppercase tracking-wider text-[10px]">Total AI Tokens</span>
               <Cpu className="w-4 h-4 text-purple-400" />
             </div>
-            <div className="text-2xl font-black text-purple-300">{(stats?.ai_tokens_consumed || totalTokensConsumed).toLocaleString()}</div>
-            <div className="text-[10px] text-purple-400 mt-1">Prompt + completion tokens</div>
+            <div className="text-2xl font-black text-purple-700 dark:text-purple-300">{(stats?.ai_tokens_consumed || totalTokensConsumed).toLocaleString()}</div>
+            <div className="text-[10px] text-purple-600 dark:text-purple-400 mt-1">Prompt + completion tokens</div>
           </div>
 
-          <div className="p-4 rounded-xl bg-slate-900/70 border border-purple-500/20 backdrop-blur">
-            <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+          <div className="p-4 rounded-xl bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur">
+            <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
               <span className="font-semibold uppercase tracking-wider text-[10px]">Active Organizations</span>
               <Building2 className="w-4 h-4 text-cyan-400" />
             </div>
-            <div className="text-2xl font-black text-white">{orgs.length}</div>
-            <div className="text-[10px] text-cyan-400 mt-1">Registered tenant accounts</div>
+            <div className="text-2xl font-black text-slate-900 dark:text-white">{orgs.length}</div>
+            <div className="text-[10px] text-cyan-600 dark:text-cyan-400 mt-1">Registered tenant accounts</div>
           </div>
         </div>
 
         {/* Organization Financial Telemetry Table */}
-        <div className="p-5 rounded-2xl bg-slate-900/80 border border-purple-500/20 space-y-4">
+        <div className="p-5 rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-purple-500/20 shadow-sm space-y-4">
           {/* Toolbar: Search + Tag Filter inline */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
-              <h2 className="text-base font-bold text-white flex items-center gap-2">
+              <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
                 <Building2 className="w-4 h-4 text-purple-400" />
                 Cross-Organization Billing Breakdown
               </h2>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
                 View real-time token consumption, compute costs, and member counts for every organization.
               </p>
             </div>
@@ -388,7 +376,7 @@ export default function SuperAdminGlobalBilling() {
                   placeholder="Search organizations..."
                   value={searchQuery}
                   onChange={e => { setSearchQuery(e.target.value); setCurrentPage(1); }}
-                  className="pl-8 pr-3 py-1.5 bg-slate-800/60 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-400 focus:outline-none focus:border-purple-500 w-48"
+                  className="pl-8 pr-3 py-1.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-purple-500 w-48"
                 />
               </div>
 
@@ -397,7 +385,7 @@ export default function SuperAdminGlobalBilling() {
                 <div className="relative">
                   <button
                     onClick={() => setOrgTagDropdownOpen(o => !o)}
-                    className="flex items-center gap-2 px-3 py-1.5 bg-slate-800/70 hover:bg-slate-700/80 border border-slate-700 hover:border-purple-500/50 rounded-lg text-xs font-semibold text-slate-300 transition-all whitespace-nowrap"
+                    className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 dark:bg-slate-800/70 hover:bg-slate-200 dark:hover:bg-slate-700/80 border border-slate-200 dark:border-slate-700 hover:border-purple-500/50 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-300 transition-all whitespace-nowrap cursor-pointer"
                   >
                     <svg className="w-3.5 h-3.5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2a1 1 0 01-.293.707L13 13.414V19a1 1 0 01-.553.894l-4 2A1 1 0 017 21v-7.586L3.293 6.707A1 1 0 013 6V4z" /></svg>
                     Filter by Tag
@@ -410,9 +398,9 @@ export default function SuperAdminGlobalBilling() {
                   </button>
 
                   {orgTagDropdownOpen && (
-                    <div className="absolute right-0 top-full mt-1.5 z-50 w-60 bg-slate-900 border border-purple-500/30 rounded-xl shadow-2xl shadow-black/50 overflow-hidden">
-                      <div className="px-3 py-2 border-b border-slate-800 flex items-center justify-between">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Organization Tags</span>
+                    <div className="absolute right-0 top-full mt-1.5 z-50 w-60 bg-white dark:bg-slate-900 border border-slate-200 dark:border-purple-500/30 rounded-xl shadow-2xl overflow-hidden">
+                      <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                        <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Organization Tags</span>
                         {selectedOrgTags.length > 0 && (
                           <button
                             onClick={() => { setSelectedOrgTags([]); setCurrentPage(1); }}
@@ -433,7 +421,7 @@ export default function SuperAdminGlobalBilling() {
                                 setSelectedOrgTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
                                 setCurrentPage(1);
                               }}
-                              className="w-full flex items-center justify-between px-3 py-2 text-xs hover:bg-slate-800/80 transition-colors group"
+                              className="w-full flex items-center justify-between px-3 py-2 text-xs hover:bg-slate-100 dark:hover:bg-slate-800/80 transition-colors group cursor-pointer"
                             >
                               <span className="flex items-center gap-2">
                                 <span className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-all ${
@@ -443,7 +431,7 @@ export default function SuperAdminGlobalBilling() {
                                     <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
                                   )}
                                 </span>
-                                <span className={isSelected ? 'text-purple-200 font-semibold' : 'text-slate-300'}>{tag}</span>
+                                <span className={isSelected ? 'text-purple-700 dark:text-purple-200 font-semibold' : 'text-slate-700 dark:text-slate-300'}>{tag}</span>
                               </span>
                               <span className="text-[10px] text-slate-500">{count} org{count !== 1 ? 's' : ''}</span>
                             </button>
@@ -473,7 +461,7 @@ export default function SuperAdminGlobalBilling() {
 
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="bg-slate-800/40 text-slate-400 font-semibold uppercase text-[10px] tracking-wider border-b border-slate-800">
+              <thead className="bg-slate-50 dark:bg-slate-800/40 text-slate-500 dark:text-slate-400 font-semibold uppercase text-[10px] tracking-wider border-b border-slate-200 dark:border-slate-800">
                 <tr>
                   <th className="py-3 px-3">Organization</th>
                   <th className="py-3 px-3">Members</th>
@@ -485,7 +473,7 @@ export default function SuperAdminGlobalBilling() {
                   <th className="py-3 px-3 text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/60 text-slate-200">
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-800/60 text-slate-700 dark:text-slate-200">
                 {paginatedOrgs.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="py-6 text-center text-slate-400 italic">
@@ -494,20 +482,20 @@ export default function SuperAdminGlobalBilling() {
                   </tr>
                 ) : (
                   paginatedOrgs.map((org) => (
-                    <tr key={org.organization_name} className="hover:bg-slate-800/30 transition-colors">
-                      <td className="py-3.5 px-3 font-bold text-white flex items-center gap-2">
+                    <tr key={org.organization_name} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/30 transition-colors">
+                      <td className="py-3.5 px-3 font-bold text-slate-900 dark:text-white flex items-center gap-2">
                         <Building2 className="w-4 h-4 text-purple-400 shrink-0" />
                         {org.organization_name}
                       </td>
-                      <td className="py-3.5 px-3 text-slate-300 font-medium">
+                      <td className="py-3.5 px-3 text-slate-600 dark:text-slate-300 font-medium">
                         {org.user_count} members
                       </td>
                       <td className="py-3.5 px-3">
-                        <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-purple-500/10 text-purple-300 border border-purple-500/20">
+                        <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-purple-50 dark:bg-purple-500/10 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-500/20">
                           {org.max_agent_capacity} Agents
                         </span>
                       </td>
-                      <td className="py-3.5 px-3 text-slate-300 font-medium">
+                      <td className="py-3.5 px-3 text-slate-600 dark:text-slate-300 font-medium">
                         {org.total_onboarded_agents}
                       </td>
                       <td className="py-3.5 px-3">
@@ -515,7 +503,7 @@ export default function SuperAdminGlobalBilling() {
                           {org.organization_tags && org.organization_tags.length > 0 ? (
                             <>
                               {org.organization_tags.slice(0, expandedTags[org.organization_name] ? undefined : 2).map(t => (
-                                <span key={t} className="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 text-[9px] font-semibold">
+                                <span key={t} className="px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/20 text-[9px] font-semibold">
                                   {t}
                                 </span>
                               ))}
@@ -536,24 +524,24 @@ export default function SuperAdminGlobalBilling() {
                           )}
                         </div>
                       </td>
-                      <td className="py-3.5 px-3 font-mono font-semibold text-indigo-300">
+                      <td className="py-3.5 px-3 font-mono font-semibold text-indigo-700 dark:text-indigo-300">
                         {(org.total_tokens_consumed || 0).toLocaleString()}
                       </td>
-                      <td className="py-3.5 px-3 font-mono font-bold text-emerald-400">
+                      <td className="py-3.5 px-3 font-mono font-bold text-emerald-600 dark:text-emerald-400">
                         ${org.total_cost || 0}
                       </td>
                       <td className="py-3.5 px-3 text-right">
                         <div className="flex items-center justify-end gap-2">
                           <button
                             onClick={() => setSelectedOrg(org)}
-                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-purple-900/40 hover:bg-purple-800/60 border border-purple-500/30 text-xs font-semibold text-purple-200 transition-colors"
+                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-purple-50 dark:bg-purple-900/40 hover:bg-purple-100 dark:hover:bg-purple-800/60 border border-purple-200 dark:border-purple-500/30 text-xs font-semibold text-purple-700 dark:text-purple-200 transition-colors cursor-pointer"
                           >
                             <Eye className="w-3.5 h-3.5" />
                             View User Breakdown
                           </button>
                           <button
                             onClick={() => setSelectedOrgProj(org)}
-                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-blue-900/40 hover:bg-blue-800/60 border border-blue-500/30 text-xs font-semibold text-blue-200 transition-colors"
+                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-blue-50 dark:bg-blue-900/40 hover:bg-blue-100 dark:hover:bg-blue-800/60 border border-blue-200 dark:border-blue-500/30 text-xs font-semibold text-blue-700 dark:text-blue-200 transition-colors cursor-pointer"
                           >
                             <Layers className="w-3.5 h-3.5" />
                             View Project Breakdown
@@ -568,7 +556,7 @@ export default function SuperAdminGlobalBilling() {
           </div>
 
           {/* Pagination Controls */}
-          <div className="flex items-center justify-between pt-2 border-t border-slate-800 text-xs text-slate-400">
+          <div className="flex items-center justify-between pt-2 border-t border-slate-200 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400">
             <span>
               Page {currentPage} of {totalPages} ({filteredOrgs.length} organizations)
             </span>
@@ -576,14 +564,14 @@ export default function SuperAdminGlobalBilling() {
               <button
                 onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
                 disabled={currentPage === 1}
-                className="p-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-slate-300"
+                className="p-1 rounded bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-30 text-slate-600 dark:text-slate-300 cursor-pointer"
               >
                 <ChevronLeft className="w-4 h-4" />
               </button>
               <button
                 onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
                 disabled={currentPage === totalPages}
-                className="p-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-slate-300"
+                className="p-1 rounded bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-30 text-slate-600 dark:text-slate-300 cursor-pointer"
               >
                 <ChevronRight className="w-4 h-4" />
               </button>
@@ -595,42 +583,42 @@ export default function SuperAdminGlobalBilling() {
 
       {/* User Breakdown Modal */}
       {selectedOrg && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-          <div className="w-full max-w-4xl bg-slate-900 border border-purple-500/30 rounded-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
+          <div className="w-full max-w-4xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-purple-500/30 rounded-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div>
                 <span className="text-[10px] uppercase tracking-wider font-bold text-purple-400">Super Admin Financial Drilldown</span>
-                <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                <h3 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
                   <Building2 className="w-5 h-5 text-purple-400" />
                   {selectedOrg.organization_name} — Member Usage Breakdown
                 </h3>
               </div>
               <button
                 onClick={() => setSelectedOrg(null)}
-                className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+                className="p-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <div className="grid grid-cols-3 gap-3 text-xs">
-              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
                 <span className="text-slate-400">Total Members</span>
-                <div className="text-lg font-bold text-white">{selectedOrg.user_count}</div>
+                <div className="text-lg font-bold text-slate-900 dark:text-white">{selectedOrg.user_count}</div>
               </div>
-              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
                 <span className="text-slate-400">Organization Tokens</span>
                 <div className="text-lg font-bold text-purple-300">{(selectedOrg.total_tokens_consumed || 0).toLocaleString()}</div>
               </div>
-              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
                 <span className="text-slate-400">Organization Total Cost</span>
                 <div className="text-lg font-bold text-emerald-400">${selectedOrg.total_cost || 0}</div>
               </div>
             </div>
 
-            <div className="overflow-x-auto rounded-xl border border-slate-800">
+            <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-800/80 text-slate-300 uppercase text-[10px] font-semibold">
+                <thead className="bg-slate-100 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 uppercase text-[10px] font-semibold">
                   <tr>
                     <th className="py-2.5 px-3">User Email</th>
                     <th className="py-2.5 px-3">Name</th>
@@ -639,11 +627,11 @@ export default function SuperAdminGlobalBilling() {
                     <th className="py-2.5 px-3 text-right">Usage Cost</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-800 text-slate-200">
+                <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-slate-700 dark:text-slate-200">
                   {(selectedOrg.users || []).map((u) => (
-                    <tr key={u.id} className="hover:bg-slate-800/40">
-                      <td className="py-2.5 px-3 font-semibold text-white">{u.email}</td>
-                      <td className="py-2.5 px-3 text-slate-300">
+                    <tr key={u.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                      <td className="py-2.5 px-3 font-semibold text-slate-900 dark:text-white">{u.email}</td>
+                      <td className="py-2.5 px-3 text-slate-600 dark:text-slate-300">
                         {(u.first_name || u.last_name) ? `${u.first_name || ''} ${u.last_name || ''}`.trim() : '—'}
                       </td>
                       <td className="py-2.5 px-3">
@@ -672,7 +660,7 @@ export default function SuperAdminGlobalBilling() {
             <div className="flex justify-end pt-2">
               <button
                 onClick={() => setSelectedOrg(null)}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl text-xs"
+                className="px-4 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-white font-bold rounded-xl text-xs cursor-pointer"
               >
                 Close Drilldown
               </button>
@@ -683,34 +671,34 @@ export default function SuperAdminGlobalBilling() {
 
       {/* Project Breakdown Modal */}
       {selectedOrgProj && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-          <div className="w-full max-w-4xl bg-slate-900 border border-blue-500/30 rounded-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
+          <div className="w-full max-w-4xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-blue-500/30 rounded-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div>
                 <span className="text-[10px] uppercase tracking-wider font-bold text-blue-400">Super Admin Financial Drilldown</span>
-                <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                <h3 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
                   <Building2 className="w-5 h-5 text-blue-400" />
                   {selectedOrgProj.organization_name} — Project Usage Breakdown
                 </h3>
               </div>
               <button
                 onClick={() => { setSelectedOrgProj(null); setSelectedProjTags([]); setExpandedTags({}); }}
-                className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+                className="p-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <div className="grid grid-cols-3 gap-3 text-xs">
-              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
                 <span className="text-slate-400">Total Projects</span>
-                <div className="text-lg font-bold text-white">{(selectedOrgProj.projects || []).length}</div>
+                <div className="text-lg font-bold text-slate-900 dark:text-white">{(selectedOrgProj.projects || []).length}</div>
               </div>
-              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
                 <span className="text-slate-400">Organization Tokens</span>
                 <div className="text-lg font-bold text-blue-300">{(selectedOrgProj.total_tokens_consumed || 0).toLocaleString()}</div>
               </div>
-              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
                 <span className="text-slate-400">Organization Total Cost</span>
                 <div className="text-lg font-bold text-emerald-400">${selectedOrgProj.total_cost || 0}</div>
               </div>
@@ -735,8 +723,8 @@ export default function SuperAdminGlobalBilling() {
 
                 {projTagDropdownOpen && (
                   <div className="absolute left-0 top-full mt-1.5 z-50 w-56 bg-slate-900 border border-blue-500/30 rounded-xl shadow-2xl shadow-black/40 overflow-hidden">
-                    <div className="px-3 py-2 border-b border-slate-800 flex items-center justify-between">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Project Tags</span>
+                    <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Project Tags</span>
                       {selectedProjTags.length > 0 && (
                         <button
                           onClick={() => setSelectedProjTags([])}
@@ -754,7 +742,7 @@ export default function SuperAdminGlobalBilling() {
                           <button
                             key={tag}
                             onClick={() => setSelectedProjTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag])}
-                            className="w-full flex items-center justify-between px-3 py-2 text-xs hover:bg-slate-800/80 transition-colors group"
+                            className="w-full flex items-center justify-between px-3 py-2 text-xs hover:bg-slate-100 dark:hover:bg-slate-800/80 transition-colors group cursor-pointer"
                           >
                             <span className="flex items-center gap-2">
                               <span className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-all ${
@@ -790,9 +778,9 @@ export default function SuperAdminGlobalBilling() {
               </div>
             )}
 
-            <div className="overflow-x-auto rounded-xl border border-slate-800">
+            <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-800/80 text-slate-300 uppercase text-[10px] font-semibold">
+                <thead className="bg-slate-100 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 uppercase text-[10px] font-semibold">
                   <tr>
                     <th className="py-2.5 px-3">Project Name</th>
                     <th className="py-2.5 px-3">Tags</th>
@@ -800,17 +788,17 @@ export default function SuperAdminGlobalBilling() {
                     <th className="py-2.5 px-3 text-right">Usage Cost</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-800 text-slate-200">
+                <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-slate-700 dark:text-slate-200">
                   {filteredProjects.length > 0 ? (
                     filteredProjects.map((proj) => (
-                      <tr key={proj.project_token} className="hover:bg-slate-800/40">
-                        <td className="py-2.5 px-3 font-semibold text-white">{proj.project_name || 'Direct API / Custom Workspace'}</td>
+                      <tr key={proj.project_token} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                        <td className="py-2.5 px-3 font-semibold text-slate-900 dark:text-white">{proj.project_name || 'Direct API / Custom Workspace'}</td>
                         <td className="py-2.5 px-3">
                           <div className="flex flex-wrap gap-1 max-w-[180px]">
                             {proj.tags && proj.tags.length > 0 ? (
                               <>
                                 {proj.tags.slice(0, expandedTags[proj.project_token] ? undefined : 2).map(t => (
-                                  <span key={t} className="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 text-[9px] font-semibold">
+                                  <span key={t} className="px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/20 text-[9px] font-semibold">
                                     {t}
                                   </span>
                                 ))}
@@ -853,7 +841,7 @@ export default function SuperAdminGlobalBilling() {
             <div className="flex justify-end pt-2">
               <button
                 onClick={() => { setSelectedOrgProj(null); setSelectedProjTags([]); setExpandedTags({}); }}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl text-xs"
+                className="px-4 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-white font-bold rounded-xl text-xs cursor-pointer"
               >
                 Close Drilldown
               </button>

@@ -4,7 +4,7 @@ import { API_ENDPOINTS, API_BASE_URL } from '../config';
 import { clearAuthData, clearTenantScopedState } from '../utils/auth';
 import { customError } from '../utils/modalHelpers';
 import { useModal } from '../contexts/ModalContext';
-import { Menu, Settings, Moon, Sun, Lock, Mail, ShieldAlert, CheckCircle, BookOpen, Coins, AlertCircle } from 'lucide-react';
+import { Menu, Settings, Moon, Sun, Lock, Mail, ShieldAlert, ShieldCheck, CheckCircle, BookOpen, Coins, AlertCircle } from 'lucide-react';
 import Sidebar from './Sidebar';
 import RoadmapHeader from './RoadmapHeader';
 import AgentsPage from './AgentsPage';
@@ -210,28 +210,73 @@ export default function AppLayout({ children }) {
                                         : location.pathname === '/plugins' ? 'plugins'
                                             : location.pathname.startsWith('/share-doc') ? 'shareDoc'
                                                 : location.pathname.startsWith('/billing') ? 'billing'
-                                                    : 'main';
+                                                    : location.pathname === '/superadmin/dashboard' ? 'superadminDashboard'
+                                                        : location.pathname === '/superadmin/requests' ? 'superadminRequests'
+                                                            : location.pathname === '/superadmin/organizations' ? 'superadminOrganizations'
+                                                                : location.pathname === '/superadmin/global-billing' ? 'superadminGlobalBilling'
+                                                                    : location.pathname === '/superadmin/tokenops' ? 'superadminTokenOps'
+                                                                        : location.pathname === '/superadmin/roles' ? 'superadminRoles'
+                                                                            : location.pathname === '/superadmin/capacity' ? 'superadminCapacity'
+                                                                                : location.pathname === '/superadmin/logs' ? 'superadminLogs'
+                                                                                    : 'main';
 
     const isShareMode = location.pathname.startsWith('/share-doc');
 
-
-
-    const getViewLabel = useCallback((view) => {
+    const getPageHeaderInfo = useCallback((pathname, view) => {
         switch (view) {
-            case 'statusDashboard': return 'Project Status Dashboard';
-            case 'organizationAdmin': return 'Organization Admin';
-            case 'governance': return 'Project Setup & Governance';
-            case 'prerequisites': return 'Prerequisite Classification';
-            case 'taskCreation': return 'Task Creation Planner';
-            case 'resourceOnboarding': return 'Resource Onboarding';
-            case 'agentAnalysis': return 'Agent Analysis';
-            case 'governanceManagement': return 'Governance Management';
-            case 'agents': return 'Agents';
-            case 'plugins': return 'Plugins';
-            case 'billing': return 'Billing';
-            default: return 'Requirements Analyzer';
+            case 'statusDashboard':
+                return { title: 'Project Status Dashboard', subtitle: '' };
+            case 'organizationAdmin':
+                return { title: 'Organization Admin', subtitle: 'Identity & SSO Configuration' };
+            case 'governance':
+                return { title: 'Project Setup & Governance', subtitle: 'Project initiation and late-stage governance review' };
+            case 'prerequisites':
+                return { title: 'Prerequisite Classification', subtitle: 'AI-Identified Requirements & Credentials' };
+            case 'taskCreation':
+                return { title: 'Task Creation Planner', subtitle: 'Sprint, Milestone, and Task Generation' };
+            case 'resourceOnboarding':
+                return { title: 'Resource Onboarding', subtitle: 'Onboard AI agents for this project' };
+            case 'agentAnalysis':
+                return { title: 'Agent Analysis', subtitle: 'Executive Summary & Agent Analysis' };
+            case 'shareDoc':
+                return { title: 'Secure Document Share', subtitle: 'Upload, Manage, and Share Project Documents' };
+            case 'billing':
+                return { title: 'Billing & Activity', subtitle: 'Centralized cost, usage & operations tracking' };
+            case 'governanceManagement':
+                return { title: 'Governance Management', subtitle: 'Access control & policy administration' };
+            case 'agents':
+                return { title: 'Agents', subtitle: 'Manage and monitor AI agents' };
+            case 'plugins':
+                return { title: 'Plugins', subtitle: 'Extend DSuite with integrated plugins' };
+            case 'superadminDashboard':
+                return { title: 'Super Admin Dashboard', subtitle: 'Cross-Tenant Analytics, Costs & Telemetry' };
+            case 'superadminRequests':
+                return { title: 'Agent Capacity Requests', subtitle: 'Review & approve organization capacity increases' };
+            case 'superadminOrganizations':
+                return { title: 'Organizations', subtitle: 'Tenant organizations & capacity governance' };
+            case 'superadminGlobalBilling':
+                return { title: 'Global Billing Dashboard', subtitle: 'Multi-tenant platform billing, cost & token consumption' };
+            case 'superadminTokenOps':
+                return { title: 'TokenOps Hub', subtitle: 'Global token management, organization quotas & PAYG governance' };
+            case 'superadminRoles':
+                return { title: 'Roles & Permissions', subtitle: 'Platform security roles, permissions & governance hierarchy' };
+            case 'superadminCapacity':
+                return { title: 'Capacity Management', subtitle: 'Organization agent quota allocation' };
+            case 'superadminLogs':
+                return { title: 'Audit Logs', subtitle: 'Cross-tenant security & activity audit trail' };
+            default:
+                if (pathname.startsWith('/superadmin')) {
+                    return { title: 'Super Admin Control Center', subtitle: 'Platform Administration' };
+                }
+                return { title: 'Requirements Analyzer', subtitle: 'Project Insight & AI Assessment' };
         }
     }, []);
+
+    const pageHeader = getPageHeaderInfo(location.pathname, currentView);
+
+    const getViewLabel = useCallback((view) => {
+        return getPageHeaderInfo(location.pathname, view).title;
+    }, [getPageHeaderInfo, location.pathname]);
 
     const handleRequestAccess = async () => {
         if (!user || requestingAccess) return;
@@ -1313,7 +1358,7 @@ export default function AppLayout({ children }) {
 
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden relative w-full bg-app-bg-page h-full transition-all duration-300 ease-in-out">
                 {/* Global Top Navbar */}
-                <header className="bg-[#1c355e] text-white px-3 sm:px-4 md:px-5 py-2 sm:py-2.5 flex items-center justify-between shadow-md z-[250] shrink-0 min-w-0">
+                <header className="bg-[#1c355e] dark:bg-[#0c1527] dark:border-b dark:border-slate-800/80 text-white px-3 sm:px-4 md:px-5 py-2 sm:py-2.5 flex items-center justify-between shadow-md z-[250] shrink-0 min-w-0 transition-colors">
                     <div className="flex items-center gap-2 sm:gap-3 w-full min-w-0">
                         {!isSidebarOpen && (
                             <button
@@ -1329,58 +1374,27 @@ export default function AppLayout({ children }) {
                             {/* Page Title & Subtitle */}
                             <div className="min-w-0 mr-1 sm:mr-3 shrink">
                                 <h1
-                                    title={
-                                        currentView === 'statusDashboard' ? 'Project Status Dashboard' :
-                                            currentView === 'organizationAdmin' ? 'Organization Admin' :
-                                                currentView === 'governance' ? 'Project Setup & Governance' :
-                                                    currentView === 'prerequisites' ? 'Prerequisite Classification' :
-                                                        currentView === 'taskCreation' ? 'Task Creation Planner' :
-                                                            currentView === 'resourceOnboarding' ? 'Resource Onboarding' :
-                                                                currentView === 'agentAnalysis' ? 'Agent Analysis' :
-                                                                    currentView === 'shareDoc' ? 'Secure Document Share' :
-                                                                        currentView === 'billing' ? 'Billing & Activity' :
-                                                                            currentView === 'governanceManagement' ? 'Governance Management' :
-                                                                                currentView === 'agents' ? 'Agents' :
-                                                                                    currentView === 'plugins' ? 'Plugins' :
-                                                                                        'Requirements Analyzer'
-                                    }
+                                    title={pageHeader.title}
                                     className="text-sm sm:text-base md:text-lg lg:text-xl font-bold tracking-tight text-white truncate"
                                 >
-                                    {currentView === 'statusDashboard' ? 'Project Status Dashboard' :
-                                        currentView === 'organizationAdmin' ? 'Organization Admin' :
-                                            currentView === 'governance' ? 'Project Setup & Governance' :
-                                                currentView === 'prerequisites' ? 'Prerequisite Classification' :
-                                                    currentView === 'taskCreation' ? 'Task Creation Planner' :
-                                                        currentView === 'resourceOnboarding' ? 'Resource Onboarding' :
-                                                            currentView === 'agentAnalysis' ? 'Agent Analysis' :
-                                                                currentView === 'shareDoc' ? 'Secure Document Share' :
-                                                                    currentView === 'billing' ? 'Billing & Activity' :
-                                                                        currentView === 'governanceManagement' ? 'Governance Management' :
-                                                                            currentView === 'agents' ? 'Agents' :
-                                                                                currentView === 'plugins' ? 'Plugins' :
-                                                                                    'Requirements Analyzer'}
+                                    {pageHeader.title}
                                 </h1>
-                                {currentView !== 'statusDashboard' && (
-                                    <h2 className="text-[10px] md:text-xs italic text-white/60 mt-0.5 truncate max-w-[160px] sm:max-w-[220px] md:max-w-[320px]">
-                                        {currentView === 'organizationAdmin' ? 'Identity & SSO Configuration' :
-                                            currentView === 'governance' ? 'Project initiation and late-stage governance review' :
-                                                currentView === 'prerequisites' ? 'AI-Identified Requirements & Credentials' :
-                                                    currentView === 'taskCreation' ? 'Sprint, Milestone, and Task Generation' :
-                                                        currentView === 'resourceOnboarding' ? 'Onboard AI agents for this project' :
-                                                            currentView === 'agentAnalysis' ? 'Executive Summary & Agent Analysis' :
-                                                                currentView === 'shareDoc' ? 'Upload, Manage, and Share Project Documents' :
-                                                                    currentView === 'billing' ? 'Centralized cost, usage & operations tracking' :
-                                                                        currentView === 'governanceManagement' ? 'Access control & policy administration' :
-                                                                            currentView === 'agents' ? 'Manage and monitor AI agents' :
-                                                                                currentView === 'plugins' ? 'Extend DSuite with integrated plugins' :
-                                                                                    'Project Insight & AI Assessment'}
+                                {pageHeader.subtitle && (
+                                    <h2 className="text-[10px] md:text-xs italic text-white/60 mt-0.5 truncate max-w-[180px] sm:max-w-[260px] md:max-w-[400px]">
+                                        {pageHeader.subtitle}
                                     </h2>
                                 )}
                             </div>
 
                             {/* Right-side Controls Group */}
                             <div className="flex items-center gap-1.5 sm:gap-2 md:gap-2.5 ml-auto shrink-0">
-                                {(currentView === 'statusDashboard' || currentView === 'prerequisites' || currentView === 'governance' || currentView === 'taskCreation' || currentView === 'resourceOnboarding' || currentView === 'agentAnalysis' || currentView === 'main' || currentView === 'shareDoc') && location.pathname !== '/agents' && location.pathname !== '/plugins' && (
+                                {location.pathname.startsWith('/superadmin') && (
+                                    <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-purple-500/20 border border-purple-500/30 text-purple-200 text-xs font-bold shrink-0">
+                                        <ShieldCheck className="w-3.5 h-3.5 text-purple-400" />
+                                        <span>Super Admin</span>
+                                    </div>
+                                )}
+                                {!location.pathname.startsWith('/superadmin') && (currentView === 'statusDashboard' || currentView === 'prerequisites' || currentView === 'governance' || currentView === 'taskCreation' || currentView === 'resourceOnboarding' || currentView === 'agentAnalysis' || currentView === 'main' || currentView === 'shareDoc') && location.pathname !== '/agents' && location.pathname !== '/plugins' && (
                                     <div className="flex flex-row-reverse gap-1 sm:gap-1.5 items-center bg-white/10 p-1 rounded-lg border border-white/20">
                                         <div className="w-28 sm:w-32 md:w-36 lg:w-40 xl:w-44">
                                             <ProjectDropdown

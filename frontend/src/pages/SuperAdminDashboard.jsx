@@ -375,30 +375,17 @@ export default function SuperAdminDashboard() {
   }
 
   return (
-    <div className="h-full overflow-y-auto bg-gradient-to-br from-slate-950 via-slate-900 to-purple-950/30 p-4 sm:p-6 text-slate-100">
+    <div className="h-full overflow-y-auto bg-slate-50 dark:bg-slate-950 p-4 sm:p-6 text-slate-900 dark:text-slate-100 transition-colors">
       <div className="max-w-7xl mx-auto space-y-6">
         
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-purple-500/20 pb-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
-                Super Admin Control Center
-              </span>
-              <span className="text-xs text-slate-400">• Super Admin Access</span>
-            </div>
-            <h1 className="text-xl sm:text-2xl font-extrabold text-white mt-1 flex items-center gap-2">
-              <Shield className="w-6 h-6 text-purple-400" />
-              DSuite Analytics & Costs — Organizations
-            </h1>
-          </div>
-          
-          <div className="flex flex-wrap items-center gap-2">
+        {/* Actions Toolbar */}
+        <div className="flex flex-wrap items-center justify-end gap-2 border-b border-slate-200 dark:border-purple-500/20 pb-3">
+          <div className="flex flex-wrap items-center gap-2 ml-auto">
             {activeMainTab === 'platform' ? (
               <>
                 <button
                   onClick={handleDownloadPDF}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-900/40 hover:bg-purple-800/60 border border-purple-500/30 text-purple-200 text-xs font-semibold transition-all"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-purple-900/40 hover:bg-slate-100 dark:hover:bg-purple-800/60 border border-slate-200 dark:border-purple-500/30 text-purple-700 dark:text-purple-200 text-xs font-semibold transition-all shadow-sm cursor-pointer"
                 >
                   <FileText className="w-3.5 h-3.5 text-purple-300" />
                   Download PDF Report
@@ -406,7 +393,7 @@ export default function SuperAdminDashboard() {
 
                 <button
                   onClick={handleExportExcel}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-950/60 hover:bg-emerald-900/70 border border-emerald-500/30 text-emerald-300 text-xs font-semibold transition-all"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-emerald-950/60 hover:bg-slate-100 dark:hover:bg-emerald-900/70 border border-slate-200 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-300 text-xs font-semibold transition-all shadow-sm cursor-pointer"
                   title="Export Dsuite Platform Governance CSV"
                 >
                   <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
@@ -416,7 +403,7 @@ export default function SuperAdminDashboard() {
             ) : (
               <button
                 onClick={handleExportVibeExcel}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-950/80 hover:bg-cyan-900/90 border border-cyan-500/40 text-cyan-300 text-xs font-bold transition-all shadow-md shadow-cyan-950/50"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-cyan-950/80 hover:bg-slate-100 dark:hover:bg-cyan-900/90 border border-slate-200 dark:border-cyan-500/40 text-cyan-700 dark:text-cyan-300 text-xs font-bold transition-all shadow-sm cursor-pointer"
                 title="Export Vibecoding Telemetry CSV"
               >
                 <FileSpreadsheet className="w-3.5 h-3.5 text-cyan-400" />
@@ -426,7 +413,7 @@ export default function SuperAdminDashboard() {
 
             <button
               onClick={handleExportMasterExcel}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-purple-900/80 to-cyan-900/80 hover:from-purple-800 hover:to-cyan-800 border border-cyan-400/40 text-white text-xs font-bold transition-all shadow-md shadow-purple-950/50"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-purple-600 to-cyan-600 hover:from-purple-700 hover:to-cyan-700 border border-purple-500/40 text-white text-xs font-bold transition-all shadow-md cursor-pointer"
               title="Export Multi-Sheet Master Report (.xlsx) for both Dsuite & Vibecoding"
             >
               <FileSpreadsheet className="w-4 h-4 text-cyan-400" />
@@ -435,7 +422,7 @@ export default function SuperAdminDashboard() {
 
             <button
               onClick={fetchData}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs font-semibold transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-xs font-semibold transition-all shadow-sm cursor-pointer"
             >
               <RefreshCw className="w-3.5 h-3.5" />
               Refresh
@@ -444,37 +431,37 @@ export default function SuperAdminDashboard() {
         </div>
 
         {/* Date Filter Bar */}
-        <div className="p-3.5 rounded-xl bg-slate-900/60 border border-purple-500/20 backdrop-blur flex flex-wrap items-center justify-between gap-3 text-xs">
-          <div className="flex items-center gap-2 font-semibold text-slate-300">
+        <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2 font-semibold text-slate-700 dark:text-slate-300">
             <Calendar className="w-4 h-4 text-purple-400" />
             <span>Filter Telemetry by Date Range:</span>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-2">
-              <span className="text-slate-400 text-[11px]">Start:</span>
+              <span className="text-slate-500 dark:text-slate-400 text-[11px]">Start:</span>
               <input
                 type="date"
                 value={startDate}
                 onChange={e => setStartDate(e.target.value)}
-                className="px-2.5 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-purple-500"
+                className="px-2.5 py-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-xs text-slate-900 dark:text-white focus:outline-none focus:border-purple-500"
               />
             </div>
 
             <div className="flex items-center gap-2">
-              <span className="text-slate-400 text-[11px]">End:</span>
+              <span className="text-slate-500 dark:text-slate-400 text-[11px]">End:</span>
               <input
                 type="date"
                 value={endDate}
                 onChange={e => setEndDate(e.target.value)}
-                className="px-2.5 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-purple-500"
+                className="px-2.5 py-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-xs text-slate-900 dark:text-white focus:outline-none focus:border-purple-500"
               />
             </div>
 
             {(startDate || endDate) && (
               <button
                 onClick={() => { setStartDate(''); setEndDate(''); }}
-                className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px]"
+                className="px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded text-[11px] cursor-pointer"
               >
                 Clear Dates
               </button>
@@ -483,14 +470,14 @@ export default function SuperAdminDashboard() {
         </div>
 
         {/* Main Tab Navigation Bar */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-purple-500/20 pb-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-purple-500/20 pb-3">
           <div className="flex items-center gap-3">
             <button
               onClick={() => setActiveMainTab('platform')}
               className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-extrabold transition-all border ${
                 activeMainTab === 'platform'
                   ? 'bg-purple-600/90 text-white border-purple-500 shadow-lg shadow-purple-600/30'
-                  : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:bg-slate-800 hover:text-slate-200'
+                  : 'bg-white dark:bg-slate-900/60 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-slate-200 shadow-sm'
               }`}
             >
               <Shield className="w-4 h-4 text-purple-300" />
@@ -502,13 +489,13 @@ export default function SuperAdminDashboard() {
               className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-extrabold transition-all border ${
                 activeMainTab === 'vibecoding'
                   ? 'bg-cyan-600/90 text-white border-cyan-500 shadow-lg shadow-cyan-600/30'
-                  : 'bg-slate-900/60 text-slate-400 border-slate-800 hover:bg-slate-800 hover:text-slate-200'
+                  : 'bg-white dark:bg-slate-900/60 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-slate-200 shadow-sm'
               }`}
             >
               <Coins className="w-4 h-4 text-cyan-300" />
               <span>Vibecoding Analytics & Costs</span>
               {vibeData?.status === 'not_available' ? (
-                <span className="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400 border border-slate-700 font-mono font-bold">
+                <span className="px-2 py-0.5 rounded text-[10px] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-300 dark:border-slate-700 font-mono font-bold">
                   Not Available
                 </span>
               ) : (
@@ -524,7 +511,7 @@ export default function SuperAdminDashboard() {
           {activeMainTab === 'vibecoding' && (
             <button
               onClick={handleExportVibeExcel}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-950/60 hover:bg-emerald-900/70 border border-emerald-500/30 text-emerald-300 text-xs font-semibold transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-emerald-950/60 hover:bg-slate-100 dark:hover:bg-emerald-900/70 border border-slate-200 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-300 text-xs font-semibold transition-all shadow-sm cursor-pointer"
             >
               <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
               Export Vibecoding CSV
@@ -538,150 +525,150 @@ export default function SuperAdminDashboard() {
         {stats && (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
             
-            <div className="p-3.5 rounded-xl bg-slate-900/60 border border-purple-500/20 backdrop-blur">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+            <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur">
+              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
                 <span className="font-semibold uppercase tracking-wider text-[10px]">Organizations</span>
                 <Building2 className="w-4 h-4 text-purple-400" />
               </div>
-              <div className="text-xl font-bold text-white">{stats.total_organizations}</div>
-              <div className="text-[10px] text-slate-400 mt-0.5">Registered tenant accounts</div>
+              <div className="text-xl font-bold text-slate-900 dark:text-white">{stats.total_organizations}</div>
+              <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">Registered tenant accounts</div>
             </div>
 
-            <div className="p-3.5 rounded-xl bg-slate-900/60 border border-purple-500/20 backdrop-blur">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+            <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur">
+              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
                 <span className="font-semibold uppercase tracking-wider text-[10px]">Onboarded Agents</span>
                 <Bot className="w-4 h-4 text-emerald-400" />
               </div>
-              <div className="text-xl font-bold text-white">{stats.total_onboarded_agents}</div>
+              <div className="text-xl font-bold text-slate-900 dark:text-white">{stats.total_onboarded_agents}</div>
               <div className="text-[10px] text-emerald-400 mt-0.5">Across all organizations</div>
             </div>
 
-            <div className="p-3.5 rounded-xl bg-slate-900/60 border border-purple-500/20 backdrop-blur">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+            <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur">
+              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
                 <span className="font-semibold uppercase tracking-wider text-[10px]">Docker Containers</span>
                 <Container className="w-4 h-4 text-cyan-400" />
               </div>
-              <div className="text-xl font-bold text-white">{stats.total_running_containers}</div>
+              <div className="text-xl font-bold text-slate-900 dark:text-white">{stats.total_running_containers}</div>
               <div className="text-[10px] text-cyan-400 mt-0.5">Active worker environments</div>
             </div>
 
-            <div className="p-3.5 rounded-xl bg-slate-900/60 border border-purple-500/20 backdrop-blur">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+            <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur">
+              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
                 <span className="font-semibold uppercase tracking-wider text-[10px]">Dedicated Agents</span>
                 <Users className="w-4 h-4 text-blue-400" />
               </div>
-              <div className="text-xl font-bold text-white">{stats.dedicated_agents}</div>
+              <div className="text-xl font-bold text-slate-900 dark:text-white">{stats.dedicated_agents}</div>
               <div className="text-[10px] text-blue-400 mt-0.5">Project-exclusive agents</div>
             </div>
 
-            <div className="p-3.5 rounded-xl bg-slate-900/60 border border-purple-500/20 backdrop-blur">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+            <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur">
+              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
                 <span className="font-semibold uppercase tracking-wider text-[10px]">Shared Agents</span>
                 <Layers className="w-4 h-4 text-indigo-400" />
               </div>
-              <div className="text-xl font-bold text-white">{stats.shared_agents}</div>
+              <div className="text-xl font-bold text-slate-900 dark:text-white">{stats.shared_agents}</div>
               <div className="text-[10px] text-indigo-400 mt-0.5">Central capacity pool</div>
             </div>
 
-            <div className="p-3.5 rounded-xl bg-slate-900/60 border border-purple-500/20 backdrop-blur">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+            <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur">
+              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
                 <span className="font-semibold uppercase tracking-wider text-[10px]">Borrowed Dedicated</span>
                 <Activity className="w-4 h-4 text-amber-400" />
               </div>
-              <div className="text-xl font-bold text-white">{stats.borrowed_dedicated_agents}</div>
+              <div className="text-xl font-bold text-slate-900 dark:text-white">{stats.borrowed_dedicated_agents}</div>
               <div className="text-[10px] text-amber-400 mt-0.5">Serving shared tasks (preemptable)</div>
             </div>
 
-            <div className="p-3.5 rounded-xl bg-slate-900/60 border border-purple-500/20 backdrop-blur">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+            <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur">
+              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
                 <span className="font-semibold uppercase tracking-wider text-[10px]">Pending Requests</span>
                 <AlertCircle className="w-4 h-4 text-rose-400" />
               </div>
-              <div className="text-xl font-bold text-white">{stats.pending_capacity_requests}</div>
+              <div className="text-xl font-bold text-slate-900 dark:text-white">{stats.pending_capacity_requests}</div>
               <div className="text-[10px] text-rose-400 mt-0.5">Awaiting Super Admin approval</div>
             </div>
 
-            <div className="p-3.5 rounded-xl bg-slate-900/60 border border-purple-500/20 backdrop-blur">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+            <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur">
+              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
                 <span className="font-semibold uppercase tracking-wider text-[10px]">Dsuite Billing</span>
                 <DollarSign className="w-4 h-4 text-purple-400" />
               </div>
-              <div className="text-xl font-bold text-purple-300">
+              <div className="text-xl font-bold text-purple-700 dark:text-purple-300">
                 ${(stats.dsuite_billing !== undefined ? stats.dsuite_billing : (stats.platform_billing || 0)).toFixed(2)}
               </div>
-              <div className="text-[10px] text-purple-400 mt-0.5">Dsuite AI Governance cost</div>
+              <div className="text-[10px] text-purple-600 dark:text-purple-400 mt-0.5">Dsuite AI Governance cost</div>
             </div>
 
-            <div className="p-3.5 rounded-xl bg-slate-900/60 border border-cyan-500/20 backdrop-blur">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+            <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-cyan-500/20 shadow-sm backdrop-blur">
+              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
                 <span className="font-semibold uppercase tracking-wider text-[10px]">Vibecoding Billing</span>
                 <Coins className="w-4 h-4 text-cyan-400" />
               </div>
-              <div className="text-xl font-bold text-cyan-300">
+              <div className="text-xl font-bold text-cyan-700 dark:text-cyan-300">
                 ${(stats.vibecoding_billing !== undefined ? stats.vibecoding_billing : (vibeData?.summary?.total_cost || 0)).toFixed(2)}
               </div>
               <div className="text-[10px] text-cyan-400 mt-0.5">Vibecoding AI inference cost</div>
             </div>
 
-            <div className="p-3.5 rounded-xl bg-slate-900/60 border border-emerald-500/20 backdrop-blur">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+            <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-emerald-500/20 shadow-sm backdrop-blur">
+              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
                 <span className="font-semibold uppercase tracking-wider text-[10px]">Total Combined Billing</span>
                 <DollarSign className="w-4 h-4 text-emerald-400" />
               </div>
-              <div className="text-xl font-bold text-emerald-400">${stats.platform_billing}</div>
+              <div className="text-xl font-bold text-emerald-600 dark:text-emerald-400">${stats.platform_billing}</div>
               <div className="text-[10px] text-emerald-400 mt-0.5">Dsuite + Vibecoding total</div>
             </div>
 
-            <div className="p-3.5 rounded-xl bg-slate-900/60 border border-purple-500/20 backdrop-blur">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+            <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur">
+              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
                 <span className="font-semibold uppercase tracking-wider text-[10px]">AI Tokens Consumed</span>
                 <Cpu className="w-4 h-4 text-purple-400" />
               </div>
-              <div className="text-xl font-bold text-white">{stats.ai_tokens_consumed.toLocaleString()}</div>
-              <div className="text-[10px] text-purple-400 mt-0.5">Prompt + completion tokens</div>
+              <div className="text-xl font-bold text-slate-900 dark:text-white">{stats.ai_tokens_consumed.toLocaleString()}</div>
+              <div className="text-[10px] text-purple-600 dark:text-purple-400 mt-0.5">Prompt + completion tokens</div>
             </div>
 
-            <div className="p-3.5 rounded-xl bg-slate-900/60 border border-purple-500/20 backdrop-blur">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+            <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur">
+              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
                 <span className="font-semibold uppercase tracking-wider text-[10px]">Project Telemetry</span>
                 <FolderKanban className="w-4 h-4 text-cyan-400" />
               </div>
-              <div className="text-xl font-bold text-white">
+              <div className="text-xl font-bold text-slate-900 dark:text-white">
                 {stats.project_telemetry?.active} / {stats.project_telemetry?.total}
               </div>
               <div className="text-[10px] text-cyan-400 mt-0.5">Active / total registered</div>
             </div>
 
-            <div className="p-3.5 rounded-xl bg-slate-900/60 border border-purple-500/20 backdrop-blur">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+            <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur">
+              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
                 <span className="font-semibold uppercase tracking-wider text-[10px]">Active Users</span>
                 <UserCheck className="w-4 h-4 text-sky-400" />
               </div>
-              <div className="text-xl font-bold text-white">{stats.active_users}</div>
+              <div className="text-xl font-bold text-slate-900 dark:text-white">{stats.active_users}</div>
               <div className="text-[10px] text-sky-400 mt-0.5">Validated accounts</div>
             </div>
 
-            <div className="p-3.5 rounded-xl bg-slate-900/60 border border-purple-500/20 backdrop-blur">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+            <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur">
+              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
                 <span className="font-semibold uppercase tracking-wider text-[10px]">Agent Utilization</span>
                 <Percent className="w-4 h-4 text-purple-400" />
               </div>
-              <div className="text-xl font-bold text-white">{stats.agent_utilization}%</div>
-              <div className="text-[10px] text-purple-400 mt-0.5">Execution capacity active</div>
+              <div className="text-xl font-bold text-slate-900 dark:text-white">{stats.agent_utilization}%</div>
+              <div className="text-[10px] text-purple-600 dark:text-purple-400 mt-0.5">Execution capacity active</div>
             </div>
 
           </div>
         )}
 
         {/* Organizations Capacity Management Table */}
-        <div className="p-5 rounded-2xl bg-slate-900/80 border border-purple-500/20 space-y-4">
+        <div className="p-5 rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-purple-500/20 shadow-sm space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
-              <h2 className="text-base font-bold text-white flex items-center gap-2">
+              <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
                 <Building2 className="w-4 h-4 text-purple-400" />
                 Global Organizations Telemetry & Capacity
               </h2>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
                 Inspect organization tokens, user details, and enforce total agent onboarding capacity limits across all projects.
               </p>
             </div>
@@ -692,14 +679,14 @@ export default function SuperAdminDashboard() {
                 placeholder="Search organizations..."
                 value={searchQuery}
                 onChange={e => { setSearchQuery(e.target.value); setCurrentPage(1); }}
-                className="w-full pl-8 pr-3 py-1.5 bg-slate-800/60 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-400 focus:outline-none focus:border-purple-500"
+                className="w-full pl-8 pr-3 py-1.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-purple-500"
               />
             </div>
           </div>
 
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="bg-slate-800/40 text-slate-400 font-semibold uppercase text-[10px] tracking-wider border-b border-slate-800">
+              <thead className="bg-slate-50 dark:bg-slate-800/40 text-slate-500 dark:text-slate-400 font-semibold uppercase text-[10px] tracking-wider border-b border-slate-200 dark:border-slate-800">
                 <tr>
                   <th className="py-2.5 px-3">Organization</th>
                   <th className="py-2.5 px-3">Max Agent Capacity</th>
@@ -711,17 +698,17 @@ export default function SuperAdminDashboard() {
                   <th className="py-2.5 px-3 text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/60 text-slate-200">
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-800/60 text-slate-700 dark:text-slate-200">
                 {paginatedOrgs.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="py-6 text-center text-slate-400 italic">
+                    <td colSpan={8} className="py-6 text-center text-slate-400 dark:text-slate-500 italic">
                       No organizations found.
                     </td>
                   </tr>
                 ) : (
                   paginatedOrgs.map((org) => (
-                    <tr key={org.organization_name} className="hover:bg-slate-800/30 transition-colors">
-                      <td className="py-3 px-3 font-semibold text-white">
+                    <tr key={org.organization_name} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/30 transition-colors">
+                      <td className="py-3 px-3 font-semibold text-slate-900 dark:text-white">
                         {org.organization_name}
                       </td>
                       <td className="py-3 px-3">
@@ -732,7 +719,7 @@ export default function SuperAdminDashboard() {
                               min="1"
                               value={newCapacity}
                               onChange={e => setNewCapacity(e.target.value)}
-                              className="w-16 px-2 py-0.5 bg-slate-800 border border-purple-500 rounded text-xs text-white"
+                              className="w-16 px-2 py-0.5 bg-slate-50 dark:bg-slate-800 border border-purple-500 rounded text-xs text-slate-900 dark:text-white"
                             />
                             <button
                               onClick={() => handleUpdateCapacity(org.organization_name)}
@@ -743,18 +730,18 @@ export default function SuperAdminDashboard() {
                             </button>
                             <button
                               onClick={() => setEditingOrg(null)}
-                              className="px-2 py-0.5 bg-slate-700 text-slate-300 rounded text-[11px]"
+                              className="px-2 py-0.5 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 rounded text-[11px] cursor-pointer"
                             >
                               Cancel
                             </button>
                           </div>
                         ) : (
-                          <span className="inline-flex items-center gap-1 font-bold text-purple-300 bg-purple-500/10 px-2 py-0.5 rounded border border-purple-500/20">
+                          <span className="inline-flex items-center gap-1 font-bold text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-500/10 px-2 py-0.5 rounded border border-purple-200 dark:border-purple-500/20">
                             {org.max_agent_capacity} Agents Max
                           </span>
                         )}
                       </td>
-                      <td className="py-3 px-3 font-medium text-slate-300">
+                      <td className="py-3 px-3 font-medium text-slate-600 dark:text-slate-300">
                         {org.total_onboarded_agents}
                       </td>
                       <td className="py-3 px-3">
@@ -762,27 +749,27 @@ export default function SuperAdminDashboard() {
                           {org.available_capacity} slots remaining
                         </span>
                       </td>
-                      <td className="py-3 px-3 text-slate-300 font-medium">
+                      <td className="py-3 px-3 text-slate-600 dark:text-slate-300 font-medium">
                         {org.user_count} users
                       </td>
-                      <td className="py-3 px-3 text-purple-300 font-mono font-semibold">
+                      <td className="py-3 px-3 text-purple-700 dark:text-purple-300 font-mono font-semibold">
                         {(org.total_tokens_consumed || 0).toLocaleString()}
                       </td>
-                      <td className="py-3 px-3 text-emerald-400 font-mono font-bold">
+                      <td className="py-3 px-3 text-emerald-600 dark:text-emerald-400 font-mono font-bold">
                         ${org.total_cost || 0}
                       </td>
                       <td className="py-3 px-3 text-right">
                         <div className="flex items-center justify-end gap-2">
                           <button
                             onClick={() => setSelectedOrgModal(org)}
-                            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-purple-900/40 hover:bg-purple-800/60 border border-purple-500/30 text-xs font-semibold text-purple-200 transition-colors"
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-purple-50 dark:bg-purple-900/40 hover:bg-purple-100 dark:hover:bg-purple-800/60 border border-purple-200 dark:border-purple-500/30 text-xs font-semibold text-purple-700 dark:text-purple-200 transition-colors cursor-pointer"
                           >
                             <Eye className="w-3 h-3" />
                             Inspect Users
                           </button>
                           <button
                             onClick={() => setSelectedOrgProjModal(org)}
-                            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-blue-900/40 hover:bg-blue-800/60 border border-blue-500/30 text-xs font-semibold text-blue-200 transition-colors"
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-blue-50 dark:bg-blue-900/40 hover:bg-blue-100 dark:hover:bg-blue-800/60 border border-blue-200 dark:border-blue-500/30 text-xs font-semibold text-blue-700 dark:text-blue-200 transition-colors cursor-pointer"
                           >
                             <Layers className="w-3 h-3" />
                             Inspect Projects
@@ -792,7 +779,7 @@ export default function SuperAdminDashboard() {
                               setEditingOrg(org.organization_name);
                               setNewCapacity(org.max_agent_capacity);
                             }}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-slate-300 transition-colors"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 transition-colors cursor-pointer"
                           >
                             <Settings className="w-3 h-3" />
                             Cap Limit
@@ -807,7 +794,7 @@ export default function SuperAdminDashboard() {
           </div>
 
           {/* Pagination Controls */}
-          <div className="flex items-center justify-between pt-2 border-t border-slate-800 text-xs text-slate-400">
+          <div className="flex items-center justify-between pt-2 border-t border-slate-200 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400">
             <span>
               Page {currentPage} of {totalPages} ({filteredOrgs.length} organizations)
             </span>
@@ -815,14 +802,14 @@ export default function SuperAdminDashboard() {
               <button
                 onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
                 disabled={currentPage === 1}
-                className="p-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-slate-300"
+                className="p-1 rounded bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-30 text-slate-600 dark:text-slate-300 cursor-pointer"
               >
                 <ChevronLeft className="w-4 h-4" />
               </button>
               <button
                 onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
                 disabled={currentPage === totalPages}
-                className="p-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-slate-300"
+                className="p-1 rounded bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-30 text-slate-600 dark:text-slate-300 cursor-pointer"
               >
                 <ChevronRight className="w-4 h-4" />
               </button>
@@ -835,11 +822,11 @@ export default function SuperAdminDashboard() {
         {activeMainTab === 'vibecoding' && (
           <div className="space-y-6">
             {vibeData?.status === 'not_available' && (
-              <div className="p-4 rounded-xl bg-slate-900/80 border border-amber-500/30 text-amber-300 text-xs flex items-center justify-between gap-3 backdrop-blur">
+              <div className="p-4 rounded-xl bg-amber-50 dark:bg-slate-900/80 border border-amber-300 dark:border-amber-500/30 text-amber-800 dark:text-amber-300 text-xs flex items-center justify-between gap-3 shadow-sm backdrop-blur">
                 <div className="flex items-center gap-2.5">
                   <Coins className="w-5 h-5 text-amber-400 flex-shrink-0" />
                   <div>
-                    <span className="font-bold text-white">Vibecoding API Not Available:</span> The Vibecoding telemetry endpoint (/vibecoding/api/telemetry/usage-costs) is unreachable. No telemetry data is available.
+                    <span className="font-bold text-slate-900 dark:text-white">Vibecoding API Not Available:</span> The Vibecoding telemetry endpoint (/vibecoding/api/telemetry/usage-costs) is unreachable. No telemetry data is available.
                   </div>
                 </div>
                 <span className="px-2.5 py-1 rounded-md bg-amber-500/20 text-amber-300 text-[11px] font-mono font-semibold border border-amber-500/30 whitespace-nowrap">
@@ -851,83 +838,83 @@ export default function SuperAdminDashboard() {
             {/* Vibecoding Executive Metric Cards */}
             {vibeData?.summary && (
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-                <div className="p-3.5 rounded-xl bg-slate-900/60 border border-cyan-500/20 backdrop-blur">
-                  <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-cyan-500/20 shadow-sm backdrop-blur">
+                  <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
                     <span className="font-semibold uppercase tracking-wider text-[10px]">Organizations</span>
                     <Building2 className="w-4 h-4 text-cyan-400" />
                   </div>
-                  <div className="text-xl font-bold text-white">{vibeData.summary.total_organizations}</div>
+                  <div className="text-xl font-bold text-slate-900 dark:text-white">{vibeData.summary.total_organizations}</div>
                   <div className="text-[10px] text-cyan-400 mt-0.5">Active Tenants</div>
                 </div>
 
-                <div className="p-3.5 rounded-xl bg-slate-900/60 border border-purple-500/20 backdrop-blur">
-                  <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur">
+                  <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
                     <span className="font-semibold uppercase tracking-wider text-[10px]">Active Projects</span>
                     <FolderKanban className="w-4 h-4 text-purple-400" />
                   </div>
-                  <div className="text-xl font-bold text-white">{vibeData.summary.total_projects}</div>
-                  <div className="text-[10px] text-purple-400 mt-0.5">Vibecoding Workspaces</div>
+                  <div className="text-xl font-bold text-slate-900 dark:text-white">{vibeData.summary.total_projects}</div>
+                  <div className="text-[10px] text-purple-600 dark:text-purple-400 mt-0.5">Vibecoding Workspaces</div>
                 </div>
 
-                <div className="p-3.5 rounded-xl bg-slate-900/60 border border-blue-500/20 backdrop-blur">
-                  <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-blue-500/20 shadow-sm backdrop-blur">
+                  <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
                     <span className="font-semibold uppercase tracking-wider text-[10px]">Active Users</span>
                     <Users className="w-4 h-4 text-blue-400" />
                   </div>
-                  <div className="text-xl font-bold text-white">{vibeData.summary.total_users}</div>
+                  <div className="text-xl font-bold text-slate-900 dark:text-white">{vibeData.summary.total_users}</div>
                   <div className="text-[10px] text-blue-400 mt-0.5">Registered Developers</div>
                 </div>
 
-                <div className="p-3.5 rounded-xl bg-slate-900/60 border border-amber-500/20 backdrop-blur">
-                  <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-amber-500/20 shadow-sm backdrop-blur">
+                  <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
                     <span className="font-semibold uppercase tracking-wider text-[10px]">AI Prompts</span>
                     <Activity className="w-4 h-4 text-amber-400" />
                   </div>
-                  <div className="text-xl font-bold text-white">{vibeData.summary.total_prompts}</div>
+                  <div className="text-xl font-bold text-slate-900 dark:text-white">{vibeData.summary.total_prompts}</div>
                   <div className="text-[10px] text-amber-400 mt-0.5">Generations Logged</div>
                 </div>
 
-                <div className="p-3.5 rounded-xl bg-slate-900/60 border border-indigo-500/20 backdrop-blur">
-                  <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-indigo-500/20 shadow-sm backdrop-blur">
+                  <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
                     <span className="font-semibold uppercase tracking-wider text-[10px]">Tokens Consumed</span>
                     <Cpu className="w-4 h-4 text-indigo-400" />
                   </div>
-                  <div className="text-xl font-bold text-white">{(vibeData.summary.total_tokens || 0).toLocaleString()}</div>
+                  <div className="text-xl font-bold text-slate-900 dark:text-white">{(vibeData.summary.total_tokens || 0).toLocaleString()}</div>
                   <div className="text-[10px] text-indigo-400 mt-0.5">Prompt + Completion</div>
                 </div>
 
-                <div className="p-3.5 rounded-xl bg-slate-900/60 border border-emerald-500/20 backdrop-blur">
-                  <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-emerald-500/20 shadow-sm backdrop-blur">
+                  <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
                     <span className="font-semibold uppercase tracking-wider text-[10px]">Total Costs</span>
                     <Coins className="w-4 h-4 text-emerald-400" />
                   </div>
-                  <div className="text-xl font-bold text-emerald-400">${vibeData.summary.total_cost}</div>
+                  <div className="text-xl font-bold text-emerald-600 dark:text-emerald-400">${vibeData.summary.total_cost}</div>
                   <div className="text-[10px] text-emerald-400 mt-0.5">Calculated Usage Cost</div>
                 </div>
               </div>
             )}
 
             {/* Vibecoding Breakdown Table Container */}
-            <div className="p-5 rounded-2xl bg-slate-900/80 border border-cyan-500/20 space-y-4">
+            <div className="p-5 rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-cyan-500/20 shadow-sm space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
                 <div>
-                  <h2 className="text-base font-bold text-white flex items-center gap-2">
+                  <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
                     <Coins className="w-4 h-4 text-cyan-400" />
                     Vibecoding Cost Breakdown Telemetry
                   </h2>
-                  <p className="text-xs text-slate-400">
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
                     Detailed token usage and calculated platform costs categorized by Organization, Project, and User.
                   </p>
                 </div>
 
                 {/* Sub-Tabs Switcher */}
-                <div className="flex items-center gap-1.5 p-1 bg-slate-950/80 border border-slate-800 rounded-xl text-xs">
+                <div className="flex items-center gap-1.5 p-1 bg-slate-100 dark:bg-slate-950/80 border border-slate-200 dark:border-slate-800 rounded-xl text-xs">
                   <button
                     onClick={() => { setVibeSubTab('orgs'); setVibePage(1); }}
                     className={`px-3 py-1 rounded-lg font-bold transition-colors ${
                       vibeSubTab === 'orgs'
                         ? 'bg-cyan-600 text-white'
-                        : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800'
                     }`}
                   >
                     Organization-Wise
@@ -937,7 +924,7 @@ export default function SuperAdminDashboard() {
                     className={`px-3 py-1 rounded-lg font-bold transition-colors ${
                       vibeSubTab === 'projects'
                         ? 'bg-cyan-600 text-white'
-                        : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800'
                     }`}
                   >
                     Project-Wise
@@ -947,7 +934,7 @@ export default function SuperAdminDashboard() {
                     className={`px-3 py-1 rounded-lg font-bold transition-colors ${
                       vibeSubTab === 'users'
                         ? 'bg-cyan-600 text-white'
-                        : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800'
                     }`}
                   >
                     User-Wise
@@ -964,7 +951,7 @@ export default function SuperAdminDashboard() {
                     placeholder={`Search ${vibeSubTab}...`}
                     value={vibeSearchQuery}
                     onChange={e => { setVibeSearchQuery(e.target.value); setVibePage(1); }}
-                    className="w-full pl-8 pr-3 py-1.5 bg-slate-800/60 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-400 focus:outline-none focus:border-cyan-500"
+                    className="w-full pl-8 pr-3 py-1.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-cyan-500"
                   />
                 </div>
                 {vibeLoading && (
@@ -979,7 +966,7 @@ export default function SuperAdminDashboard() {
               {vibeSubTab === 'orgs' && (
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-800/40 text-slate-400 font-semibold uppercase text-[10px] tracking-wider border-b border-slate-800">
+                    <thead className="bg-slate-50 dark:bg-slate-800/40 text-slate-500 dark:text-slate-400 font-semibold uppercase text-[10px] tracking-wider border-b border-slate-200 dark:border-slate-800">
                       <tr>
                         <th className="py-2.5 px-3">Organization</th>
                         <th className="py-2.5 px-3">Active Users</th>
@@ -992,12 +979,12 @@ export default function SuperAdminDashboard() {
                         <th className="py-2.5 px-3 text-right">Actions</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-800/60 text-slate-200">
+                    <tbody className="divide-y divide-slate-200 dark:divide-slate-800/60 text-slate-700 dark:text-slate-200">
                       {vibeData?.organization_breakdown?.filter(o =>
                         o.organization_name.toLowerCase().includes(vibeSearchQuery.toLowerCase())
                       ).length === 0 ? (
                         <tr>
-                          <td colSpan={9} className="py-6 text-center text-slate-400 italic">
+                          <td colSpan={9} className="py-6 text-center text-slate-400 dark:text-slate-500 italic">
                             No Organization telemetry records found.
                           </td>
                         </tr>
@@ -1005,23 +992,23 @@ export default function SuperAdminDashboard() {
                         vibeData?.organization_breakdown?.filter(o =>
                           o.organization_name.toLowerCase().includes(vibeSearchQuery.toLowerCase())
                         ).map(org => (
-                          <tr key={org.organization_name} className="hover:bg-slate-800/30 transition-colors">
-                            <td className="py-3 px-3 font-semibold text-white">
+                          <tr key={org.organization_name} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/30 transition-colors">
+                            <td className="py-3 px-3 font-semibold text-slate-900 dark:text-white">
                               {org.organization_name}
                             </td>
-                            <td className="py-3 px-3 text-slate-300">
+                            <td className="py-3 px-3 text-slate-600 dark:text-slate-300">
                               {org.user_count} users
                             </td>
-                            <td className="py-3 px-3 text-slate-300">
+                            <td className="py-3 px-3 text-slate-600 dark:text-slate-300">
                               {org.project_count} projects
                             </td>
                             <td className="py-3 px-3 font-mono text-cyan-300">
                               {org.log_count}
                             </td>
-                            <td className="py-3 px-3 font-mono text-slate-400">
+                            <td className="py-3 px-3 font-mono text-slate-500 dark:text-slate-400">
                               {(org.prompt_tokens || 0).toLocaleString()}
                             </td>
-                            <td className="py-3 px-3 font-mono text-slate-400">
+                            <td className="py-3 px-3 font-mono text-slate-500 dark:text-slate-400">
                               {(org.completion_tokens || 0).toLocaleString()}
                             </td>
                             <td className="py-3 px-3 font-mono text-purple-300 font-semibold">
@@ -1033,7 +1020,7 @@ export default function SuperAdminDashboard() {
                             <td className="py-3 px-3 text-right">
                               <button
                                 onClick={() => setVibeSelectedOrg(org)}
-                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-cyan-900/40 hover:bg-cyan-800/60 border border-cyan-500/30 text-xs font-semibold text-cyan-200 transition-colors"
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-cyan-50 dark:bg-cyan-900/40 hover:bg-cyan-100 dark:hover:bg-cyan-800/60 border border-cyan-200 dark:border-cyan-500/30 text-xs font-semibold text-cyan-700 dark:text-cyan-200 transition-colors cursor-pointer"
                               >
                                 <Eye className="w-3 h-3" />
                                 Inspect Details
@@ -1051,7 +1038,7 @@ export default function SuperAdminDashboard() {
               {vibeSubTab === 'projects' && (
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-800/40 text-slate-400 font-semibold uppercase text-[10px] tracking-wider border-b border-slate-800">
+                    <thead className="bg-slate-50 dark:bg-slate-800/40 text-slate-500 dark:text-slate-400 font-semibold uppercase text-[10px] tracking-wider border-b border-slate-200 dark:border-slate-800">
                       <tr>
                         <th className="py-2.5 px-3">Project Name</th>
                         <th className="py-2.5 px-3">Project ID</th>
@@ -1064,7 +1051,7 @@ export default function SuperAdminDashboard() {
                         <th className="py-2.5 px-3 text-right">Total Cost</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-800/60 text-slate-200">
+                    <tbody className="divide-y divide-slate-200 dark:divide-slate-800/60 text-slate-700 dark:text-slate-200">
                       {vibeData?.project_breakdown?.filter(p =>
                         p.project_name.toLowerCase().includes(vibeSearchQuery.toLowerCase()) ||
                         p.project_id.toLowerCase().includes(vibeSearchQuery.toLowerCase()) ||
@@ -1072,7 +1059,7 @@ export default function SuperAdminDashboard() {
                         p.email.toLowerCase().includes(vibeSearchQuery.toLowerCase())
                       ).length === 0 ? (
                         <tr>
-                          <td colSpan={9} className="py-6 text-center text-slate-400 italic">
+                          <td colSpan={9} className="py-6 text-center text-slate-400 dark:text-slate-500 italic">
                             No Project telemetry records found.
                           </td>
                         </tr>
@@ -1083,26 +1070,26 @@ export default function SuperAdminDashboard() {
                           p.organization_name.toLowerCase().includes(vibeSearchQuery.toLowerCase()) ||
                           p.email.toLowerCase().includes(vibeSearchQuery.toLowerCase())
                         ).map(proj => (
-                          <tr key={proj.project_id} className="hover:bg-slate-800/30 transition-colors">
-                            <td className="py-3 px-3 font-semibold text-white">
+                          <tr key={proj.project_id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/30 transition-colors">
+                            <td className="py-3 px-3 font-semibold text-slate-900 dark:text-white">
                               {proj.project_name}
                             </td>
-                            <td className="py-3 px-3 text-slate-400 font-mono">
+                            <td className="py-3 px-3 text-slate-500 dark:text-slate-400 font-mono">
                               {proj.project_id}
                             </td>
-                            <td className="py-3 px-3 text-slate-300">
+                            <td className="py-3 px-3 text-slate-600 dark:text-slate-300">
                               {proj.organization_name}
                             </td>
-                            <td className="py-3 px-3 text-slate-300">
+                            <td className="py-3 px-3 text-slate-600 dark:text-slate-300">
                               {proj.email}
                             </td>
                             <td className="py-3 px-3 font-mono text-cyan-300">
                               {proj.log_count}
                             </td>
-                            <td className="py-3 px-3 font-mono text-slate-400">
+                            <td className="py-3 px-3 font-mono text-slate-500 dark:text-slate-400">
                               {(proj.prompt_tokens || 0).toLocaleString()}
                             </td>
-                            <td className="py-3 px-3 font-mono text-slate-400">
+                            <td className="py-3 px-3 font-mono text-slate-500 dark:text-slate-400">
                               {(proj.completion_tokens || 0).toLocaleString()}
                             </td>
                             <td className="py-3 px-3 font-mono text-purple-300 font-semibold">
@@ -1123,7 +1110,7 @@ export default function SuperAdminDashboard() {
               {vibeSubTab === 'users' && (
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-800/40 text-slate-400 font-semibold uppercase text-[10px] tracking-wider border-b border-slate-800">
+                    <thead className="bg-slate-50 dark:bg-slate-800/40 text-slate-500 dark:text-slate-400 font-semibold uppercase text-[10px] tracking-wider border-b border-slate-200 dark:border-slate-800">
                       <tr>
                         <th className="py-2.5 px-3">User Email / Username</th>
                         <th className="py-2.5 px-3">Full Name</th>
@@ -1137,7 +1124,7 @@ export default function SuperAdminDashboard() {
                         <th className="py-2.5 px-3 text-right">Actions</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-800/60 text-slate-200">
+                    <tbody className="divide-y divide-slate-200 dark:divide-slate-800/60 text-slate-700 dark:text-slate-200">
                       {vibeData?.user_breakdown?.filter(u =>
                         u.email.toLowerCase().includes(vibeSearchQuery.toLowerCase()) ||
                         u.username.toLowerCase().includes(vibeSearchQuery.toLowerCase()) ||
@@ -1145,7 +1132,7 @@ export default function SuperAdminDashboard() {
                         u.organization_name.toLowerCase().includes(vibeSearchQuery.toLowerCase())
                       ).length === 0 ? (
                         <tr>
-                          <td colSpan={10} className="py-6 text-center text-slate-400 italic">
+                          <td colSpan={10} className="py-6 text-center text-slate-400 dark:text-slate-500 italic">
                             No User telemetry records found.
                           </td>
                         </tr>
@@ -1156,26 +1143,26 @@ export default function SuperAdminDashboard() {
                           (u.full_name && u.full_name.toLowerCase().includes(vibeSearchQuery.toLowerCase())) ||
                           u.organization_name.toLowerCase().includes(vibeSearchQuery.toLowerCase())
                         ).map(user => (
-                          <tr key={user.username} className="hover:bg-slate-800/30 transition-colors">
-                            <td className="py-3 px-3 font-semibold text-white">
+                          <tr key={user.username} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/30 transition-colors">
+                            <td className="py-3 px-3 font-semibold text-slate-900 dark:text-white">
                               {user.email || user.username}
                             </td>
-                            <td className="py-3 px-3 text-slate-300">
+                            <td className="py-3 px-3 text-slate-600 dark:text-slate-300">
                               {user.full_name || '—'}
                             </td>
-                            <td className="py-3 px-3 text-slate-300">
+                            <td className="py-3 px-3 text-slate-600 dark:text-slate-300">
                               {user.organization_name}
                             </td>
-                            <td className="py-3 px-3 text-slate-300">
+                            <td className="py-3 px-3 text-slate-600 dark:text-slate-300">
                               {user.project_count} projects
                             </td>
                             <td className="py-3 px-3 font-mono text-cyan-300">
                               {user.log_count}
                             </td>
-                            <td className="py-3 px-3 font-mono text-slate-400">
+                            <td className="py-3 px-3 font-mono text-slate-500 dark:text-slate-400">
                               {(user.prompt_tokens || 0).toLocaleString()}
                             </td>
-                            <td className="py-3 px-3 font-mono text-slate-400">
+                            <td className="py-3 px-3 font-mono text-slate-500 dark:text-slate-400">
                               {(user.completion_tokens || 0).toLocaleString()}
                             </td>
                             <td className="py-3 px-3 font-mono text-purple-300 font-semibold">
@@ -1206,19 +1193,19 @@ export default function SuperAdminDashboard() {
 
       {/* Organization Detailed Inspection Modal */}
       {selectedOrgModal && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-          <div className="w-full max-w-4xl bg-slate-900 border border-purple-500/30 rounded-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
+          <div className="w-full max-w-4xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-purple-500/30 rounded-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
               <div>
                 <span className="text-[10px] uppercase tracking-wider font-bold text-purple-400">Organization Telemetry</span>
-                <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                <h3 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
                   <Building2 className="w-5 h-5 text-purple-400" />
                   {selectedOrgModal.organization_name}
                 </h3>
               </div>
               <button
                 onClick={() => setSelectedOrgModal(null)}
-                className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+                className="p-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1226,33 +1213,33 @@ export default function SuperAdminDashboard() {
 
             {/* Summary Row */}
             <div className="grid grid-cols-4 gap-3 text-xs">
-              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
-                <span className="text-slate-400">Max Capacity Cap</span>
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
+                <span className="text-slate-500 dark:text-slate-400">Max Capacity Cap</span>
                 <div className="text-lg font-bold text-purple-300">{selectedOrgModal.max_agent_capacity} Agents</div>
               </div>
-              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
-                <span className="text-slate-400">Onboarded Agents</span>
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
+                <span className="text-slate-500 dark:text-slate-400">Onboarded Agents</span>
                 <div className="text-lg font-bold text-emerald-400">{selectedOrgModal.total_onboarded_agents} Active</div>
               </div>
-              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
-                <span className="text-slate-400">Total AI Tokens</span>
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
+                <span className="text-slate-500 dark:text-slate-400">Total AI Tokens</span>
                 <div className="text-lg font-bold text-indigo-300">{(selectedOrgModal.total_tokens_consumed || 0).toLocaleString()}</div>
               </div>
-              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
-                <span className="text-slate-400">Total Usage Cost</span>
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
+                <span className="text-slate-500 dark:text-slate-400">Total Usage Cost</span>
                 <div className="text-lg font-bold text-emerald-400">${selectedOrgModal.total_cost || 0}</div>
               </div>
             </div>
 
             {/* User Breakdown Table */}
             <div>
-              <h4 className="text-sm font-bold text-white mb-2 flex items-center gap-2">
+              <h4 className="text-sm font-bold text-slate-900 dark:text-white mb-2 flex items-center gap-2">
                 <Users className="w-4 h-4 text-purple-400" />
                 Organization Users & Token Usage Breakdown
               </h4>
-              <div className="overflow-x-auto rounded-xl border border-slate-800">
+              <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
                 <table className="w-full text-left text-xs">
-                  <thead className="bg-slate-800/80 text-slate-300 uppercase text-[10px] font-semibold">
+                  <thead className="bg-slate-100 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 uppercase text-[10px] font-semibold">
                     <tr>
                       <th className="py-2.5 px-3">User Email</th>
                       <th className="py-2.5 px-3">Name</th>
@@ -1261,11 +1248,11 @@ export default function SuperAdminDashboard() {
                       <th className="py-2.5 px-3 text-right">Calculated Cost</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-800 text-slate-200">
+                  <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-slate-700 dark:text-slate-200">
                     {(selectedOrgModal.users || []).map((u) => (
-                      <tr key={u.id} className="hover:bg-slate-800/40">
-                        <td className="py-2.5 px-3 font-semibold text-white">{u.email}</td>
-                        <td className="py-2.5 px-3 text-slate-300">
+                      <tr key={u.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                        <td className="py-2.5 px-3 font-semibold text-slate-900 dark:text-white">{u.email}</td>
+                        <td className="py-2.5 px-3 text-slate-600 dark:text-slate-300">
                           {(u.first_name || u.last_name) ? `${u.first_name || ''} ${u.last_name || ''}`.trim() : '—'}
                         </td>
                         <td className="py-2.5 px-3">
@@ -1274,7 +1261,7 @@ export default function SuperAdminDashboard() {
                               ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
                               : u.is_org_admin
                               ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
-                              : 'bg-slate-800 text-slate-400'
+                              : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700'
                           }`}>
                             {u.is_super_admin ? 'SUPER ADMIN' : u.is_org_admin ? 'ORG ADMIN' : 'MEMBER'}
                           </span>
@@ -1295,7 +1282,7 @@ export default function SuperAdminDashboard() {
             <div className="flex justify-end pt-2">
               <button
                 onClick={() => setSelectedOrgModal(null)}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl text-xs"
+                className="px-4 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-white font-bold rounded-xl text-xs cursor-pointer"
               >
                 Close Inspection
               </button>
@@ -1306,42 +1293,42 @@ export default function SuperAdminDashboard() {
 
       {/* Project Breakdown Modal */}
       {selectedOrgProjModal && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-          <div className="w-full max-w-4xl bg-slate-900 border border-blue-500/30 rounded-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
+          <div className="w-full max-w-4xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-blue-500/30 rounded-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
               <div>
                 <span className="text-[10px] uppercase tracking-wider font-bold text-blue-400">Organization Telemetry</span>
-                <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                <h3 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
                   <Building2 className="w-5 h-5 text-blue-400" />
                   {selectedOrgProjModal.organization_name} — Project Usage Breakdown
                 </h3>
               </div>
               <button
                 onClick={() => setSelectedOrgProjModal(null)}
-                className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+                className="p-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <div className="grid grid-cols-3 gap-3 text-xs">
-              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
-                <span className="text-slate-400">Total Projects</span>
-                <div className="text-lg font-bold text-white">{(selectedOrgProjModal.projects || []).length}</div>
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
+                <span className="text-slate-500 dark:text-slate-400">Total Projects</span>
+                <div className="text-lg font-bold text-slate-900 dark:text-white">{(selectedOrgProjModal.projects || []).length}</div>
               </div>
-              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
-                <span className="text-slate-400">Organization Tokens</span>
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
+                <span className="text-slate-500 dark:text-slate-400">Organization Tokens</span>
                 <div className="text-lg font-bold text-blue-300">{(selectedOrgProjModal.total_tokens_consumed || 0).toLocaleString()}</div>
               </div>
-              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
-                <span className="text-slate-400">Organization Total Cost</span>
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
+                <span className="text-slate-500 dark:text-slate-400">Organization Total Cost</span>
                 <div className="text-lg font-bold text-emerald-400">${selectedOrgProjModal.total_cost || 0}</div>
               </div>
             </div>
 
-            <div className="overflow-x-auto rounded-xl border border-slate-800">
+            <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-800/80 text-slate-300 uppercase text-[10px] font-semibold">
+                <thead className="bg-slate-100 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 uppercase text-[10px] font-semibold">
                   <tr>
                     <th className="py-2.5 px-3">Project Name</th>
                     <th className="py-2.5 px-3">Project Token / ID</th>
@@ -1349,7 +1336,7 @@ export default function SuperAdminDashboard() {
                     <th className="py-2.5 px-3 text-right">Usage Cost</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-800 text-slate-200">
+                <tbody className="divide-y divide-slate-200 dark:divide-slate-800 text-slate-700 dark:text-slate-200">
                   {selectedOrgProjModal.projects && selectedOrgProjModal.projects.length > 0 ? (
                     selectedOrgProjModal.projects.map((proj) => {
                       const rawName = proj.project_name || 'Direct API / Custom Workspace';
@@ -1364,9 +1351,9 @@ export default function SuperAdminDashboard() {
                         : '—';
 
                       return (
-                        <tr key={proj.project_token} className="hover:bg-slate-800/40">
-                          <td className="py-2.5 px-3 font-semibold text-white">{formattedName}</td>
-                          <td className="py-2.5 px-3 font-mono text-slate-400 text-[11px]" title={proj.project_token}>
+                        <tr key={proj.project_token} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                          <td className="py-2.5 px-3 font-semibold text-slate-900 dark:text-white">{formattedName}</td>
+                          <td className="py-2.5 px-3 font-mono text-slate-500 dark:text-slate-400 text-[11px]" title={proj.project_token}>
                             {formattedToken}
                           </td>
                           <td className="py-2.5 px-3 text-right font-mono text-blue-300 font-semibold">
@@ -1380,7 +1367,7 @@ export default function SuperAdminDashboard() {
                     })
                   ) : (
                     <tr>
-                      <td colSpan={4} className="py-6 text-center text-slate-400 italic">
+                      <td colSpan={4} className="py-6 text-center text-slate-400 dark:text-slate-500 italic">
                         No active project tokens recorded (Direct API or idle)
                       </td>
                     </tr>
@@ -1392,7 +1379,7 @@ export default function SuperAdminDashboard() {
             <div className="flex justify-end pt-2">
               <button
                 onClick={() => setSelectedOrgProjModal(null)}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl text-xs"
+                className="px-4 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-white font-bold rounded-xl text-xs cursor-pointer"
               >
                 Close Inspection
               </button>
@@ -1403,52 +1390,52 @@ export default function SuperAdminDashboard() {
 
       {/* Vibecoding Organization Inspection Modal */}
       {vibeSelectedOrg && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-          <div className="w-full max-w-4xl bg-slate-900 border border-cyan-500/30 rounded-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
+          <div className="w-full max-w-4xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-cyan-500/30 rounded-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
               <div>
                 <span className="text-[10px] uppercase tracking-wider font-bold text-cyan-400">Vibecoding Organization Telemetry</span>
-                <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                <h3 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
                   <Building2 className="w-5 h-5 text-cyan-400" />
                   {vibeSelectedOrg.organization_name}
                 </h3>
               </div>
               <button
                 onClick={() => setVibeSelectedOrg(null)}
-                className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+                className="p-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <div className="grid grid-cols-4 gap-3 text-xs">
-              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
-                <span className="text-slate-400">Total Users</span>
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
+                <span className="text-slate-500 dark:text-slate-400">Total Users</span>
                 <div className="text-lg font-bold text-cyan-300">{vibeSelectedOrg.user_count} Users</div>
               </div>
-              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
-                <span className="text-slate-400">Total Projects</span>
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
+                <span className="text-slate-500 dark:text-slate-400">Total Projects</span>
                 <div className="text-lg font-bold text-purple-300">{vibeSelectedOrg.project_count} Projects</div>
               </div>
-              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
-                <span className="text-slate-400">Total AI Tokens</span>
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
+                <span className="text-slate-500 dark:text-slate-400">Total AI Tokens</span>
                 <div className="text-lg font-bold text-indigo-300">{(vibeSelectedOrg.total_tokens || 0).toLocaleString()}</div>
               </div>
-              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
-                <span className="text-slate-400">Total Usage Cost</span>
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
+                <span className="text-slate-500 dark:text-slate-400">Total Usage Cost</span>
                 <div className="text-lg font-bold text-emerald-400">${vibeSelectedOrg.total_cost || 0}</div>
               </div>
             </div>
 
             {/* Users in Org */}
             <div>
-              <h4 className="text-sm font-bold text-white mb-2 flex items-center gap-2">
+              <h4 className="text-sm font-bold text-slate-900 dark:text-white mb-2 flex items-center gap-2">
                 <Users className="w-4 h-4 text-cyan-400" />
                 Users in Organization
               </h4>
               <div className="flex flex-wrap gap-2">
                 {(vibeSelectedOrg.users || []).map(u => (
-                  <span key={u} className="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-xs font-mono text-cyan-200">
+                  <span key={u} className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono text-cyan-700 dark:text-cyan-200">
                     {u}
                   </span>
                 ))}
@@ -1457,13 +1444,13 @@ export default function SuperAdminDashboard() {
 
             {/* Projects in Org */}
             <div>
-              <h4 className="text-sm font-bold text-white mb-2 flex items-center gap-2">
+              <h4 className="text-sm font-bold text-slate-900 dark:text-white mb-2 flex items-center gap-2">
                 <FolderKanban className="w-4 h-4 text-purple-400" />
                 Projects in Organization
               </h4>
               <div className="flex flex-wrap gap-2">
                 {(vibeSelectedOrg.projects || []).map(p => (
-                  <span key={p} className="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-xs font-mono text-purple-200">
+                  <span key={p} className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono text-purple-700 dark:text-purple-200">
                     {p}
                   </span>
                 ))}
@@ -1473,7 +1460,7 @@ export default function SuperAdminDashboard() {
             <div className="flex justify-end pt-2">
               <button
                 onClick={() => setVibeSelectedOrg(null)}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl text-xs"
+                className="px-4 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-white font-bold rounded-xl text-xs cursor-pointer"
               >
                 Close Inspection
               </button>
@@ -1484,45 +1471,45 @@ export default function SuperAdminDashboard() {
 
       {/* Vibecoding User Inspection Modal */}
       {vibeSelectedUser && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-          <div className="w-full max-w-4xl bg-slate-900 border border-purple-500/30 rounded-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
+          <div className="w-full max-w-4xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-purple-500/30 rounded-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
               <div>
                 <span className="text-[10px] uppercase tracking-wider font-bold text-purple-400">Vibecoding User Telemetry</span>
-                <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                <h3 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
                   <Users className="w-5 h-5 text-purple-400" />
                   {vibeSelectedUser.email || vibeSelectedUser.username}
                 </h3>
               </div>
               <button
                 onClick={() => setVibeSelectedUser(null)}
-                className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white"
+                className="p-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <div className="grid grid-cols-4 gap-3 text-xs">
-              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
-                <span className="text-slate-400">Full Name</span>
-                <div className="text-base font-bold text-white">{vibeSelectedUser.full_name || '—'}</div>
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
+                <span className="text-slate-500 dark:text-slate-400">Full Name</span>
+                <div className="text-base font-bold text-slate-900 dark:text-white">{vibeSelectedUser.full_name || '—'}</div>
               </div>
-              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
-                <span className="text-slate-400">Organization</span>
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
+                <span className="text-slate-500 dark:text-slate-400">Organization</span>
                 <div className="text-base font-bold text-cyan-300">{vibeSelectedUser.organization_name}</div>
               </div>
-              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
-                <span className="text-slate-400">Total Tokens</span>
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
+                <span className="text-slate-500 dark:text-slate-400">Total Tokens</span>
                 <div className="text-base font-bold text-indigo-300">{(vibeSelectedUser.total_tokens || 0).toLocaleString()}</div>
               </div>
-              <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700/50">
-                <span className="text-slate-400">Total Usage Cost</span>
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700/50">
+                <span className="text-slate-500 dark:text-slate-400">Total Usage Cost</span>
                 <div className="text-base font-bold text-emerald-400">${vibeSelectedUser.total_cost || 0}</div>
               </div>
             </div>
 
             <div>
-              <h4 className="text-sm font-bold text-white mb-2 flex items-center gap-2">
+              <h4 className="text-sm font-bold text-slate-900 dark:text-white mb-2 flex items-center gap-2">
                 <FolderKanban className="w-4 h-4 text-purple-400" />
                 User Projects ({vibeSelectedUser.project_count})
               </h4>
@@ -1531,7 +1518,7 @@ export default function SuperAdminDashboard() {
                   const isJwt = p && p.startsWith('eyJ');
                   const displayStr = isJwt ? `Project (${p.substring(0, 10)}...${p.substring(p.length - 5)})` : p;
                   return (
-                    <span key={p} className="px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 text-xs font-mono text-purple-200" title={p}>
+                    <span key={p} className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono text-purple-700 dark:text-purple-200" title={p}>
                       {displayStr}
                     </span>
                   );
@@ -1542,7 +1529,7 @@ export default function SuperAdminDashboard() {
             <div className="flex justify-end pt-2">
               <button
                 onClick={() => setVibeSelectedUser(null)}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl text-xs"
+                className="px-4 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-white font-bold rounded-xl text-xs cursor-pointer"
               >
                 Close Inspection
               </button>
