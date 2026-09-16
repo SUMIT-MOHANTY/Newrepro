@@ -555,106 +555,106 @@ export default function SuperAdminTokenOps() {
 
             {/* Overview KPIs (8 Cards) */}
             {stats && (
-                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2.5">
+                <div className="grid grid-cols-2 md:grid-cols-4 2xl:grid-cols-8 gap-3">
                     {/* 1. Total Orgs */}
-                    <div className="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between">
-                        <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider truncate">Total Orgs</span>
-                            <Building2 className="w-3.5 h-3.5 text-slate-400" />
+                    <div className="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[95px]">
+                        <div className="flex items-start justify-between gap-1.5">
+                            <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider leading-tight">Total Orgs</span>
+                            <Building2 className="w-3.5 h-3.5 text-slate-400 flex-shrink-0 mt-0.5" />
                         </div>
-                        <div className="text-lg font-bold text-slate-800 dark:text-slate-100 mt-1">{stats.total_organizations}</div>
-                        <div className="text-[9px] text-slate-500 flex items-center gap-1 mt-0.5">
+                        <div className="text-base sm:text-lg font-bold text-slate-800 dark:text-slate-100 mt-1">{stats.total_organizations}</div>
+                        <div className="text-[9px] text-slate-500 flex items-center gap-1 mt-0.5 whitespace-nowrap">
                             <span className="text-indigo-600 font-semibold">{stats.prepaid_organizations} prep</span> · <span className="text-amber-600 font-semibold">{stats.payg_organizations} payg</span>
                         </div>
                     </div>
 
                     {/* 2. Tokens Consumed */}
-                    <div className="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between">
-                        <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-bold text-indigo-500 dark:text-indigo-400 uppercase tracking-wider truncate">Tokens Burned</span>
-                            <Coins className="w-3.5 h-3.5 text-indigo-500" />
+                    <div className="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[95px]">
+                        <div className="flex items-start justify-between gap-1.5">
+                            <span className="text-[10px] font-bold text-indigo-500 dark:text-indigo-400 uppercase tracking-wider leading-tight">Tokens Burned</span>
+                            <Coins className="w-3.5 h-3.5 text-indigo-500 flex-shrink-0 mt-0.5" />
                         </div>
-                        <div className="text-lg font-bold text-indigo-700 dark:text-indigo-300 mt-1 truncate">
+                        <div className="text-base sm:text-lg font-bold text-indigo-700 dark:text-indigo-300 mt-1">
                             {Number(stats.total_tokens_consumed || 0).toLocaleString()}
                         </div>
-                        <span className="text-[9px] text-slate-400">Total prompt + comp</span>
+                        <span className="text-[9px] text-slate-400 leading-tight">Total prompt + comp</span>
                     </div>
 
                     {/* 3. Consumption Cost */}
-                    <div className="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between">
-                        <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider truncate">Platform Cost</span>
-                            <DollarSign className="w-3.5 h-3.5 text-emerald-500" />
+                    <div className="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[95px]">
+                        <div className="flex items-start justify-between gap-1.5">
+                            <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider leading-tight">Platform Cost</span>
+                            <DollarSign className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0 mt-0.5" />
                         </div>
-                        <div className="text-lg font-bold text-emerald-700 dark:text-emerald-300 mt-1 truncate">
+                        <div className="text-base sm:text-lg font-bold text-emerald-700 dark:text-emerald-300 mt-1">
                             ${Number(stats.total_historical_cost || 0).toFixed(2)}
                         </div>
-                        <span className="text-[9px] text-slate-400">Across all AI calls</span>
+                        <span className="text-[9px] text-slate-400 leading-tight">Across all AI calls</span>
                     </div>
 
                     {/* 4. PAYG Spend */}
-                    <div className="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between">
-                        <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider truncate">PAYG Spend</span>
-                            <DollarSign className="w-3.5 h-3.5 text-amber-500" />
+                    <div className="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[95px]">
+                        <div className="flex items-start justify-between gap-1.5">
+                            <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider leading-tight">PAYG Spend</span>
+                            <DollarSign className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" />
                         </div>
-                        <div className="text-lg font-bold text-amber-700 dark:text-amber-300 mt-1 truncate">
+                        <div className="text-base sm:text-lg font-bold text-amber-700 dark:text-amber-300 mt-1">
                             ${Number(stats.total_payg_current_spend_usd || 0).toFixed(2)}
                         </div>
-                        <span className="text-[9px] text-amber-600 font-semibold">{stats.payg_organizations} active orgs</span>
+                        <span className="text-[9px] text-amber-600 font-semibold leading-tight">{stats.payg_organizations} active orgs</span>
                     </div>
 
                     {/* 5. Total Requests */}
-                    <div className="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between">
-                        <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider truncate">Total Requests</span>
-                            <Activity className="w-3.5 h-3.5 text-slate-400" />
+                    <div className="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[95px]">
+                        <div className="flex items-start justify-between gap-1.5">
+                            <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider leading-tight">Total Requests</span>
+                            <Activity className="w-3.5 h-3.5 text-slate-400 flex-shrink-0 mt-0.5" />
                         </div>
-                        <div className="text-lg font-bold text-slate-800 dark:text-slate-100 mt-1">
+                        <div className="text-base sm:text-lg font-bold text-slate-800 dark:text-slate-100 mt-1">
                             {Number(stats.total_requests || 0).toLocaleString()}
                         </div>
-                        <span className="text-[9px] text-slate-400">LLM API calls</span>
+                        <span className="text-[9px] text-slate-400 leading-tight">LLM API calls</span>
                     </div>
 
                     {/* 6. Pending Quota */}
                     <div 
                         onClick={() => setActiveTab('payg')}
-                        className={`bg-white dark:bg-slate-800 p-3 rounded-xl border shadow-sm hover:shadow-md transition flex flex-col justify-between cursor-pointer group ${
+                        className={`bg-white dark:bg-slate-800 p-3 rounded-xl border shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[95px] cursor-pointer group ${
                             (stats.pending_quota_requests || 0) > 0 ? 'border-amber-300 dark:border-amber-700 bg-amber-50/20' : 'border-slate-200 dark:border-slate-700'
                         }`}
                     >
-                        <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider truncate">Quota Requests</span>
-                            <Clock className="w-3.5 h-3.5 text-amber-500 group-hover:scale-110 transition" />
+                        <div className="flex items-start justify-between gap-1.5">
+                            <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider leading-tight">Quota Requests</span>
+                            <Clock className="w-3.5 h-3.5 text-amber-500 group-hover:scale-110 transition flex-shrink-0 mt-0.5" />
                         </div>
-                        <div className="text-lg font-bold text-amber-700 dark:text-amber-300 mt-1">{stats.pending_quota_requests || 0}</div>
-                        <span className="text-[9px] text-amber-600 font-semibold flex items-center gap-0.5">
+                        <div className="text-base sm:text-lg font-bold text-amber-700 dark:text-amber-300 mt-1">{stats.pending_quota_requests || 0}</div>
+                        <span className="text-[9px] text-amber-600 font-semibold flex items-center gap-0.5 leading-tight">
                             Review <ChevronRight className="w-2.5 h-2.5" />
                         </span>
                     </div>
 
                     {/* 7. Limit Warnings & Breaches */}
-                    <div className={`bg-white dark:bg-slate-800 p-3 rounded-xl border shadow-sm hover:shadow-md transition flex flex-col justify-between ${
+                    <div className={`bg-white dark:bg-slate-800 p-3 rounded-xl border shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[95px] ${
                         (stats.payg_limit_breaches || 0) > 0 ? 'border-rose-300 dark:border-rose-700 bg-rose-50/20' : 'border-slate-200 dark:border-slate-700'
                     }`}>
-                        <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-bold text-rose-500 dark:text-rose-400 uppercase tracking-wider truncate">Limit Breaches</span>
-                            <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />
+                        <div className="flex items-start justify-between gap-1.5">
+                            <span className="text-[10px] font-bold text-rose-500 dark:text-rose-400 uppercase tracking-wider leading-tight">Limit Breaches</span>
+                            <AlertTriangle className="w-3.5 h-3.5 text-rose-500 flex-shrink-0 mt-0.5" />
                         </div>
-                        <div className="text-lg font-bold text-rose-700 dark:text-rose-300 mt-1">{stats.payg_limit_breaches || 0}</div>
-                        <span className="text-[9px] text-rose-500 font-semibold">Hard limit exceed</span>
+                        <div className="text-base sm:text-lg font-bold text-rose-700 dark:text-rose-300 mt-1">{stats.payg_limit_breaches || 0}</div>
+                        <span className="text-[9px] text-rose-500 font-semibold leading-tight">Hard limit exceed</span>
                     </div>
 
                     {/* 8. Low Balance / Blocked */}
-                    <div className="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between">
-                        <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider truncate">Health / Holds</span>
-                            <Ban className="w-3.5 h-3.5 text-slate-400" />
+                    <div className="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[95px]">
+                        <div className="flex items-start justify-between gap-1.5">
+                            <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider leading-tight">Health / Holds</span>
+                            <Ban className="w-3.5 h-3.5 text-slate-400 flex-shrink-0 mt-0.5" />
                         </div>
-                        <div className="text-lg font-bold text-slate-800 dark:text-slate-100 mt-1">
+                        <div className="text-base sm:text-lg font-bold text-slate-800 dark:text-slate-100 mt-1">
                             {stats.blocked_organizations || 0}
                         </div>
-                        <span className="text-[9px] text-slate-500">
+                        <span className="text-[9px] text-slate-500 leading-tight">
                             {stats.low_balance_organizations || 0} low balance
                         </span>
                     </div>
