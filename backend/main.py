@@ -3872,32 +3872,6 @@ def get_superadmin_capacity_requests(
 ):
     _require_super_admin(current_user)
 
-    # Auto-sync any PENDING ProjectAgentRequest that doesn't have a CapacityIncreaseRequest
-    pending_project_reqs = db.query(models.ProjectAgentRequest).filter(
-        models.ProjectAgentRequest.status == "PENDING"
-    ).all()
-    for pr in pending_project_reqs:
-        existing_cap = db.query(models.CapacityIncreaseRequest).filter(
-            models.CapacityIncreaseRequest.organization_name == pr.organization_name,
-            models.CapacityIncreaseRequest.requested_by_user_id == pr.requested_by_user_id,
-            models.CapacityIncreaseRequest.project_token == pr.project_token,
-            models.CapacityIncreaseRequest.status == "PENDING"
-        ).first()
-        if not existing_cap:
-            inc = max(1, (pr.requested_shared_count or 0) + (pr.requested_dedicated_count or 0))
-            new_cap = models.CapacityIncreaseRequest(
-                organization_name=pr.organization_name,
-                requested_by_user_id=pr.requested_by_user_id,
-                project_token=pr.project_token,
-                requested_shared_count=pr.requested_shared_count,
-                requested_dedicated_count=pr.requested_dedicated_count,
-                total_requested_increase=inc,
-                reason=f"[{pr.project_name or pr.project_token}] {pr.reason or 'Project agent request'}",
-                status="PENDING"
-            )
-            db.add(new_cap)
-    db.commit()
-
     requests = db.query(models.CapacityIncreaseRequest).order_by(
         models.CapacityIncreaseRequest.created_at.desc()
     ).all()
@@ -3970,10 +3944,13 @@ def approve_superadmin_capacity_request(
     quota.dedicated_quota = max(int(quota.dedicated_quota or 0), approved_cap)
 
     # Sync corresponding ProjectAgentRequests to APPROVED
-    proj_reqs = db.query(models.ProjectAgentRequest).filter(
+    proj_reqs_query = db.query(models.ProjectAgentRequest).filter(
         func.lower(models.ProjectAgentRequest.organization_name) == req.organization_name.lower(),
-        models.ProjectAgentRequest.status == "PENDING"
-    ).all()
+        models.ProjectAgentRequest.status.in_(["ESCALATED", "PENDING"])
+    )
+    if getattr(req, "project_token", None):
+        proj_reqs_query = proj_reqs_query.filter(models.ProjectAgentRequest.project_token == req.project_token)
+    proj_reqs = proj_reqs_query.all()
     for pr in proj_reqs:
         pr.status = "APPROVED"
         pr.review_comment = payload.review_comment or "Approved by Super Admin"
@@ -4004,10 +3981,13 @@ def reject_superadmin_capacity_request(
     req.updated_at = datetime.utcnow()
 
     # Sync corresponding ProjectAgentRequests to REJECTED
-    proj_reqs = db.query(models.ProjectAgentRequest).filter(
+    proj_reqs_query = db.query(models.ProjectAgentRequest).filter(
         func.lower(models.ProjectAgentRequest.organization_name) == req.organization_name.lower(),
-        models.ProjectAgentRequest.status == "PENDING"
-    ).all()
+        models.ProjectAgentRequest.status.in_(["ESCALATED", "PENDING"])
+    )
+    if getattr(req, "project_token", None):
+        proj_reqs_query = proj_reqs_query.filter(models.ProjectAgentRequest.project_token == req.project_token)
+    proj_reqs = proj_reqs_query.all()
     for pr in proj_reqs:
         pr.status = "REJECTED"
         pr.review_comment = payload.review_comment or "Rejected by Super Admin"
@@ -4138,6 +4118,86 @@ def create_capacity_increase_request(
     db.refresh(req)
     return {"success": True, "message": "Capacity increase request submitted to Super Admin", "id": req.id}
 
+class ProjectRequestReviewPayload(BaseModel):
+    review_comment: Optional[str] = None
+
+@app.post("/api/agent/project-requests/{request_id}/approve")
+def approve_project_agent_request(
+    request_id: int,
+    payload: Optional[ProjectRequestReviewPayload] = None,
+    current_user: Annotated[models.User, Depends(auth.get_current_user)] = None,
+    db: Session = Depends(get_db)
+):
+    _require_org_admin_or_super_admin(current_user)
+
+    proj_req = db.query(models.ProjectAgentRequest).filter(
+        models.ProjectAgentRequest.id == request_id
+    ).first()
+    if not proj_req:
+        raise HTTPException(status_code=404, detail="Project request not found")
+
+    user_org = _normalized_text(getattr(current_user, "organization_name", None))
+    is_super = bool(getattr(current_user, "is_super_admin", False))
+    if not is_super:
+        if not user_org or user_org.lower() != (proj_req.organization_name or "").lower():
+            raise HTTPException(status_code=403, detail="Not authorized to approve requests for this organization")
+
+    if proj_req.status == "APPROVED":
+        return {"success": True, "message": "Request is already approved"}
+
+    # Check available capacity
+    quota = _get_or_init_org_agent_quota(db, proj_req.organization_name)
+    max_cap = int(getattr(quota, "max_agent_capacity", 0) or 0)
+    physical_onboarded = db.query(models.OrganizationAgentMapping).filter(
+        func.lower(models.OrganizationAgentMapping.organization_name) == proj_req.organization_name.lower(),
+        models.OrganizationAgentMapping.is_default.is_(False),
+        models.OrganizationAgentMapping.is_virtual_shared.is_(False),
+        models.OrganizationAgentMapping.project_token.isnot(None)
+    ).count()
+    available_cap = max(0, max_cap - physical_onboarded)
+    needed = (proj_req.requested_shared_count or 0) + (proj_req.requested_dedicated_count or 0)
+
+    if needed > available_cap:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot approve: organization requires {needed} agents, but only {available_cap} capacity slot(s) are available. Please escalate to Super Admin to increase capacity."
+        )
+
+    proj_req.status = "APPROVED"
+    proj_req.reviewed_by_user_id = current_user.id
+    proj_req.review_comment = (payload.review_comment if payload else None) or "Approved by Organization Admin"
+    proj_req.updated_at = datetime.utcnow()
+    db.commit()
+    return {"success": True, "message": "Project agent request approved successfully"}
+
+@app.post("/api/agent/project-requests/{request_id}/reject")
+def reject_project_agent_request(
+    request_id: int,
+    payload: Optional[ProjectRequestReviewPayload] = None,
+    current_user: Annotated[models.User, Depends(auth.get_current_user)] = None,
+    db: Session = Depends(get_db)
+):
+    _require_org_admin_or_super_admin(current_user)
+
+    proj_req = db.query(models.ProjectAgentRequest).filter(
+        models.ProjectAgentRequest.id == request_id
+    ).first()
+    if not proj_req:
+        raise HTTPException(status_code=404, detail="Project request not found")
+
+    user_org = _normalized_text(getattr(current_user, "organization_name", None))
+    is_super = bool(getattr(current_user, "is_super_admin", False))
+    if not is_super:
+        if not user_org or user_org.lower() != (proj_req.organization_name or "").lower():
+            raise HTTPException(status_code=403, detail="Not authorized to reject requests for this organization")
+
+    proj_req.status = "REJECTED"
+    proj_req.reviewed_by_user_id = current_user.id
+    proj_req.review_comment = (payload.review_comment if payload else None) or "Rejected by Organization Admin"
+    proj_req.updated_at = datetime.utcnow()
+    db.commit()
+    return {"success": True, "message": "Project agent request rejected"}
+
 @app.post("/api/agent/project-requests/{request_id}/escalate")
 def escalate_project_request_to_superadmin(
     request_id: int,
@@ -4152,7 +4212,18 @@ def escalate_project_request_to_superadmin(
     if not proj_req:
         raise HTTPException(status_code=404, detail="Project request not found")
 
+    user_org = _normalized_text(getattr(current_user, "organization_name", None))
+    is_super = bool(getattr(current_user, "is_super_admin", False))
+    if not is_super:
+        if not user_org or user_org.lower() != (proj_req.organization_name or "").lower():
+            raise HTTPException(status_code=403, detail="Not authorized to escalate requests for this organization")
+
+    if proj_req.status == "ESCALATED":
+        return {"success": True, "message": "Request is already escalated to Super Admin"}
+
     proj_req.status = "ESCALATED"
+    proj_req.reviewed_by_user_id = current_user.id
+    proj_req.updated_at = datetime.utcnow()
 
     # Create CapacityIncreaseRequest for Super Admin
     inc = max(1, (proj_req.requested_shared_count or 0) + (proj_req.requested_dedicated_count or 0))
@@ -5537,16 +5608,23 @@ def _get_or_init_org_agent_quota(
         func.lower(models.OrganizationAgentQuota.organization_name) == org.lower()
     ).first()
     if quota:
+        if not quota.max_agent_capacity or quota.max_agent_capacity <= 0:
+            quota.max_agent_capacity = 10
+            quota.shared_quota = max(10, int(quota.shared_quota or 0))
+            quota.dedicated_quota = max(10, int(quota.dedicated_quota or 0))
+            db.commit()
+            db.refresh(quota)
         return quota
 
-    # Initialize quotas to current usage so existing installs don't suddenly break.
+    # Initialize quotas to standard default 10
     usage = _count_org_agent_usage(db, org)
     shared_used = usage["shared"]
     dedicated_used = usage["dedicated"]
     quota = models.OrganizationAgentQuota(
         organization_name=org,
-        shared_quota=int(shared_used),
-        dedicated_quota=int(dedicated_used),
+        max_agent_capacity=10,
+        shared_quota=max(10, int(shared_used)),
+        dedicated_quota=max(10, int(dedicated_used)),
     )
     db.add(quota)
     db.commit()

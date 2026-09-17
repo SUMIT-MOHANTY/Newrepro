@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { MessageSquare, X, Send, Minimize2, Maximize2, Sparkles, Loader2, ChevronDown, Bot, Mic, MicOff, RefreshCw } from 'lucide-react';
+import {
+  MessageSquare, X, Send, Minimize2, Maximize2, Sparkles, Loader2,
+  ChevronDown, Bot, Mic, MicOff, RefreshCw, Coins, AlertCircle, Zap
+} from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -138,8 +141,33 @@ const AssistantBot = () => {
   const hasShownWelcomeRef = useRef(false);
   const [idleMessageShown, setIdleMessageShown] = useState(false);
   const [isUserIdle, setIsUserIdle] = useState(false);
+  const [userQuota, setUserQuota] = useState(null);
   const messagesEndRef = useRef(null);
   const location = useLocation();
+
+  const fetchUserQuota = async () => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    try {
+      const res = await fetch(API_ENDPOINTS.TOKENOPS_USER_MY_QUOTA, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.data) {
+          setUserQuota(data.data);
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to fetch user quota for assistant bot:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      fetchUserQuota();
+    }
+  }, [isOpen]);
 
   const handleIdleMessage = () => {
     const idleMsg = {
@@ -259,6 +287,8 @@ const AssistantBot = () => {
       const errorMsg = "⚠️ Unable to reach the AI Assistant service. Please verify your network connection and try again.";
       setMessages(prev => prev.map(m => m.id === msgId ? { ...m, text: errorMsg, isError: true } : m));
       return errorMsg;
+    } finally {
+      fetchUserQuota();
     }
   };
 
@@ -427,8 +457,8 @@ const AssistantBot = () => {
       {isOpen && (
         <div
           className={`fixed z-[250] backdrop-blur-xl border shadow-2xl transition-all duration-300 ${isMinimized
-              ? 'bottom-6 right-6 w-72 h-14'
-              : 'bottom-6 right-6 w-[360px] h-[520px] flex flex-col'
+            ? 'bottom-6 right-6 w-72 h-14'
+            : 'bottom-6 right-6 w-[360px] h-[520px] flex flex-col'
             }`}
           style={{
             borderRadius: '20px',
@@ -447,9 +477,9 @@ const AssistantBot = () => {
                   AI Assistant
                   <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
                 </h3>
-                <p className="text-xs text-white/80 font-medium">
-                  {currentContext?.title || 'Ready to help'} • {messages.length} messages
-                </p>
+                <div className="text-xs text-white/80 font-medium">
+                  <span className="truncate max-w-[180px]">{currentContext?.title || 'Ready to help'}</span>
+                </div>
               </div>
             </div>
             <div className="flex items-center gap-1 relative z-10">
@@ -478,7 +508,20 @@ const AssistantBot = () => {
           </div>
           {!isMinimized && (
             <>
-              <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 bg-gradient-to-b from-transparent to-app-bg-card/30">
+              <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 bg-gradient-to-b from-transparent to-app-bg-card/30 flex flex-col">
+                {messages.length === 0 && (
+                  <div className="flex flex-col items-center justify-center text-center p-6 my-auto text-slate-500">
+                    <div className="w-12 h-12 rounded-2xl bg-violet-100 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400 flex items-center justify-center mb-3 shadow-inner">
+                      <Bot className="w-6 h-6" />
+                    </div>
+                    <h4 className="text-sm font-bold text-slate-800 dark:text-slate-200 mb-1">
+                      {currentContext?.title || 'AI Assistant'}
+                    </h4>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 max-w-xs leading-relaxed">
+                      {currentContext?.description || 'Ask questions about this page, project workflows, or requirements.'}
+                    </p>
+                  </div>
+                )}
                 {messages.map((msg, index) => (
                   <div
                     key={msg.id}
@@ -487,12 +530,12 @@ const AssistantBot = () => {
                   >
                     <div className={`flex items-end gap-2 max-w-[85%] ${msg.type === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
                       <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${msg.type === 'user'
-                          ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white'
-                          : msg.isWelcome
-                            ? 'bg-gradient-to-r from-green-500 to-emerald-500 text-white'
-                            : msg.isIdle
-                              ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white'
-                              : 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white'
+                        ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white'
+                        : msg.isWelcome
+                          ? 'bg-gradient-to-r from-green-500 to-emerald-500 text-white'
+                          : msg.isIdle
+                            ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white'
+                            : 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white'
                         }`}>
                         {msg.type === 'user' ? (
                           <div className="w-5 h-5 bg-white/30 rounded-full"></div>
@@ -507,12 +550,12 @@ const AssistantBot = () => {
 
                       <div
                         className={`rounded-2xl px-4 py-3 text-sm relative ${msg.type === 'user'
-                            ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-lg shadow-violet-500/30'
-                            : msg.isWelcome
-                              ? 'bg-gradient-to-r from-green-50 to-emerald-50 text-green-800 border border-green-200 shadow-lg'
-                              : msg.isIdle
-                                ? 'bg-gradient-to-r from-orange-50 to-amber-50 text-orange-800 border border-orange-200 shadow-lg'
-                                : 'bg-white/90 backdrop-blur-sm text-gray-800 border border-gray-200/50 shadow-lg'
+                          ? 'bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-lg shadow-violet-500/30'
+                          : msg.isWelcome
+                            ? 'bg-gradient-to-r from-green-50 to-emerald-50 text-green-800 border border-green-200 shadow-lg'
+                            : msg.isIdle
+                              ? 'bg-gradient-to-r from-orange-50 to-amber-50 text-orange-800 border border-orange-200 shadow-lg'
+                              : 'bg-white/90 backdrop-blur-sm text-gray-800 border border-gray-200/50 shadow-lg'
                           }`}
                       >
                         {(msg.isWelcome || msg.isIdle) && (
@@ -561,7 +604,17 @@ const AssistantBot = () => {
                 <div ref={messagesEndRef} />
               </div>
 
-              <div className="p-4 bg-gradient-to-r from-gray-50 to-white border-t border-gray-200/50 flex-shrink-0" style={{ borderRadius: '0 0 20px 20px' }}>
+              <div className="p-3.5 bg-gradient-to-r from-gray-50 to-white border-t border-gray-200/50 flex-shrink-0" style={{ borderRadius: '0 0 20px 20px' }}>
+                {/* Quota Exhaustion Warning */}
+                {userQuota && !userQuota.is_payg && (userQuota.remaining_tokens || 0) <= 0 && (
+                  <div className="mb-2 p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
+                    <div className="text-[11px] leading-tight">
+                      <span className="font-bold">Token Quota Exhausted:</span> Your allocated token balance has run out. Please request a quota top-up to continue chatting.
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex items-center gap-3">
                   <div className="flex-1 relative">
                     <input
@@ -569,8 +622,13 @@ const AssistantBot = () => {
                       value={inputValue}
                       onChange={(e) => setInputValue(e.target.value)}
                       onKeyPress={handleKeyPress}
-                      placeholder="Type your message..."
-                      className="w-full bg-white border-2 border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:border-violet-500 focus:ring-4 focus:ring-violet-500/20 transition-all duration-200 pr-12"
+                      disabled={Boolean(userQuota && !userQuota.is_payg && (userQuota.remaining_tokens || 0) <= 0)}
+                      placeholder={
+                        userQuota && !userQuota.is_payg && (userQuota.remaining_tokens || 0) <= 0
+                          ? "Token quota exhausted"
+                          : "Type your message..."
+                      }
+                      className="w-full bg-white border-2 border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:border-violet-500 focus:ring-4 focus:ring-violet-500/20 transition-all duration-200 pr-12 disabled:bg-gray-100 disabled:cursor-not-allowed"
                     />
                     {inputValue && (
                       <button
@@ -584,9 +642,10 @@ const AssistantBot = () => {
 
                   <button
                     onClick={toggleVoiceInput}
-                    className={`p-3 rounded-xl transition-all duration-200 hover:scale-110 ${isListening
-                        ? 'bg-red-500 text-white shadow-lg shadow-red-500/40'
-                        : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+                    disabled={Boolean(userQuota && !userQuota.is_payg && (userQuota.remaining_tokens || 0) <= 0)}
+                    className={`p-3 rounded-xl transition-all duration-200 hover:scale-110 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100 ${isListening
+                      ? 'bg-red-500 text-white shadow-lg shadow-red-500/40'
+                      : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
                       }`}
                     title={isListening ? "Stop listening" : "Voice input"}
                   >
@@ -595,7 +654,7 @@ const AssistantBot = () => {
 
                   <button
                     onClick={handleSend}
-                    disabled={!inputValue.trim()}
+                    disabled={!inputValue.trim() || Boolean(userQuota && !userQuota.is_payg && (userQuota.remaining_tokens || 0) <= 0)}
                     className="p-3 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-xl hover:shadow-lg hover:shadow-violet-500/40 hover:scale-110 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:hover:shadow-none transition-all duration-200"
                     title="Send message"
                   >
@@ -603,20 +662,20 @@ const AssistantBot = () => {
                   </button>
                 </div>
 
-                <div className="flex items-center justify-between mt-3 text-xs text-gray-500">
+                <div className="flex items-center justify-between mt-2.5 text-xs text-gray-500">
                   <div className="flex items-center gap-2">
                     <div className="flex items-center gap-1">
                       <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                      <span>Online</span>
+                      <span className="text-[11px]">AI Online</span>
                     </div>
                     {isListening && (
                       <div className="flex items-center gap-1 text-red-500">
                         <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
-                        <span>Listening...</span>
+                        <span className="text-[11px]">Listening...</span>
                       </div>
                     )}
                   </div>
-                  <div className="text-right">
+                  <div className="text-right text-[11px] text-gray-400">
                     <span>Press Enter to send</span>
                   </div>
                 </div>
