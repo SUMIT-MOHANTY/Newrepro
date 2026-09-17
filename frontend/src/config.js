@@ -41,8 +41,10 @@ export const API_ENDPOINTS = {
     SUPERADMIN_CAPACITY_REQUEST_REJECT: (id) => `${API_BASE_URL}/api/superadmin/capacity-requests/${id}/reject`,
     SUPERADMIN_AUDIT_LOGS: `${API_BASE_URL}/api/superadmin/audit-logs`,
     ORG_CAPACITY_REQUEST: `${API_BASE_URL}/api/organization/capacity-request`,
-    ORG_CAPACITY_REQUESTS: `${API_BASE_URL}/api/organization/capacity-requests`,
     AGENT_PROJECT_REQUESTS: `${API_BASE_URL}/api/agent/project-requests`,
+    AGENT_PROJECT_REQUEST_APPROVE: (id) => `${API_BASE_URL}/api/agent/project-requests/${id}/approve`,
+    AGENT_PROJECT_REQUEST_REJECT: (id) => `${API_BASE_URL}/api/agent/project-requests/${id}/reject`,
+    AGENT_PROJECT_REQUEST_ESCALATE: (id) => `${API_BASE_URL}/api/agent/project-requests/${id}/escalate`,
     AGENT_CAPACITY_INCREASE_REQUEST: `${API_BASE_URL}/api/agent/capacity-increase-request`,
 
     // Documents

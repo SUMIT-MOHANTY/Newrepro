@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
-    CreditCard, CheckCircle2, ShieldAlert, Sparkles, Bot, Clock, 
+    CreditCard, CheckCircle2, Sparkles, Bot, Clock, 
     DollarSign, Search, Filter, Cpu, RefreshCw, AlertCircle, Zap, 
     User, Activity, ShieldCheck, Globe, Users, FileText, ArrowUpDown,
     CheckCircle, XCircle, ExternalLink, FileSpreadsheet, Coins
@@ -1791,22 +1791,6 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                             </tbody>
                         </table>
                     </div>
-                </div>
-
-                {/* Security/FAQ Compliance Badge */}
-                <div className="bg-app-bg-card border border-app-border rounded-xl p-6 flex flex-col sm:flex-row items-center gap-4 justify-between shadow-sm">
-                    <div className="flex items-center gap-3">
-                        <div className="p-3 bg-amber-50 dark:bg-app-status-warningBg rounded-lg text-amber-600 dark:text-amber-400 border border-amber-200/20">
-                            <ShieldAlert className="w-6 h-6" />
-                        </div>
-                        <div>
-                            <h4 className="font-bold text-app-text-main">Looking for custom security compliance?</h4>
-                            <p className="text-sm text-app-text-label font-semibold">We offer SOC2 type II compliance, high-availability setups, and on-premises agent execution.</p>
-                        </div>
-                    </div>
-                    <button className="whitespace-nowrap px-4 py-2 text-sm font-semibold text-amber-600 hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-300 border border-amber-300 hover:bg-amber-50 dark:border-amber-700/50 dark:hover:bg-amber-950/20 rounded-lg transition-colors cursor-pointer">
-                        Talk to Compliance
-                    </button>
                 </div>
             </div>
         </div>

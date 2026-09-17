@@ -285,9 +285,9 @@ class OrganizationAgentQuota(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     organization_name = Column(String, unique=True, index=True, nullable=False)
-    max_agent_capacity = Column(Integer, nullable=False, default=0) # Set by Super Admin
-    shared_quota = Column(Integer, nullable=False, default=0)
-    dedicated_quota = Column(Integer, nullable=False, default=0)
+    max_agent_capacity = Column(Integer, nullable=False, default=10) # Set by Super Admin
+    shared_quota = Column(Integer, nullable=False, default=10)
+    dedicated_quota = Column(Integer, nullable=False, default=10)
     # Sub-type breakdown
     shared_dev_quota = Column(Integer, nullable=False, default=0)
     shared_test_quota = Column(Integer, nullable=False, default=0)

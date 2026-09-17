@@ -217,6 +217,83 @@ export default function AgentsPage({ projects = [] }) {
     };
   }, []);
 
+  const handleApproveProjectRequest = async (req) => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    try {
+      const res = await fetch(API_ENDPOINTS.AGENT_PROJECT_REQUEST_APPROVE(req.id), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ review_comment: 'Approved by Organization Admin' })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to approve request');
+      }
+      showToast(`Request for "${req.project_name || req.project_token}" approved!`, 'success');
+      fetchProjectRequests();
+      if (typeof fetchQuota === 'function') fetchQuota();
+    } catch (err) {
+      showToast(err.message || 'Failed to approve request', 'error');
+    }
+  };
+
+  const handleRejectProjectRequest = async (req) => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    const comment = window.prompt(`Please enter reason for rejecting request for "${req.project_name || req.project_token}" (optional):`);
+    if (comment === null) return;
+
+    try {
+      const res = await fetch(API_ENDPOINTS.AGENT_PROJECT_REQUEST_REJECT(req.id), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ review_comment: comment.trim() || 'Rejected by Organization Admin' })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to reject request');
+      }
+      showToast(`Request for "${req.project_name || req.project_token}" rejected.`, 'info');
+      fetchProjectRequests();
+    } catch (err) {
+      showToast(err.message || 'Failed to reject request', 'error');
+    }
+  };
+
+  const handleEscalateProjectRequest = async (req) => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    const totalAgents = (req.requested_shared_count || 0) + (req.requested_dedicated_count || 0);
+    if (!window.confirm(`Escalate capacity request for "${req.project_name || req.project_token}" (+${totalAgents} agents) to Super Admin?`)) {
+      return;
+    }
+
+    try {
+      const res = await fetch(API_ENDPOINTS.AGENT_PROJECT_REQUEST_ESCALATE(req.id), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to escalate request');
+      }
+      showToast(`Request for "${req.project_name || req.project_token}" escalated to Super Admin!`, 'success');
+      fetchProjectRequests();
+    } catch (err) {
+      showToast(err.message || 'Failed to escalate request', 'error');
+    }
+  };
+
   const [showAddAgentModal, setShowAddAgentModal] = useState(false);
   const [newAgentName, setNewAgentName] = useState('');
   const [skillsContent, setSkillsContent] = useState('');
@@ -811,8 +888,13 @@ export default function AgentsPage({ projects = [] }) {
                           <td className="py-2.5 px-3 text-app-text-muted">{req.requested_by_email}</td>
                           <td className="py-2.5 px-3 font-bold text-emerald-400">+{req.requested_shared_count}</td>
                           <td className="py-2.5 px-3 font-bold text-blue-400">+{req.requested_dedicated_count}</td>
-                          <td className="py-2.5 px-3 text-app-text-muted italic max-w-xs truncate" title={req.reason}>
-                            {req.reason || 'No reason provided'}
+                          <td className="py-2.5 px-3 text-app-text-muted italic max-w-xs" title={req.reason}>
+                            <div className="truncate">{req.reason || 'No reason provided'}</div>
+                            {req.review_comment && (
+                              <div className="text-[10px] text-purple-400/90 truncate mt-0.5" title={`Admin Note: ${req.review_comment}`}>
+                                Note: {req.review_comment}
+                              </div>
+                            )}
                           </td>
                           <td className="py-2.5 px-3">
                             <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
@@ -826,13 +908,52 @@ export default function AgentsPage({ projects = [] }) {
                           </td>
                           <td className="py-2.5 px-3 text-right">
                             {isOrgAdmin && req.status === 'PENDING' ? (
-                              <button
-                                onClick={() => setShowRequestModal(true)}
-                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-purple-600 hover:bg-purple-500 text-white text-[11px] font-bold transition-all shadow-sm"
-                              >
-                                <Shield className="w-3 h-3" />
-                                Escalate to Super Admin
-                              </button>
+                              <div className="inline-flex items-center justify-end gap-1.5 flex-wrap">
+                                <button
+                                  onClick={() => handleApproveProjectRequest(req)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold transition-all shadow-sm"
+                                  title="Approve and allocate from existing organization capacity"
+                                >
+                                  <CheckCircle className="w-3 h-3" />
+                                  Approve
+                                </button>
+                                <button
+                                  onClick={() => handleRejectProjectRequest(req)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-bold transition-all shadow-sm"
+                                  title="Reject this request"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                  Reject
+                                </button>
+                                <button
+                                  onClick={() => handleEscalateProjectRequest(req)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-purple-600 hover:bg-purple-500 text-white text-[11px] font-bold transition-all shadow-sm"
+                                  title="Escalate to Super Admin for additional quota"
+                                >
+                                  <Shield className="w-3 h-3" />
+                                  Escalate
+                                </button>
+                              </div>
+                            ) : req.status === 'ESCALATED' ? (
+                              <span className="inline-flex items-center gap-1 text-[11px] text-purple-400 font-medium">
+                                <Clock className="w-3 h-3" />
+                                Escalated to Super Admin
+                              </span>
+                            ) : req.status === 'APPROVED' ? (
+                              <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400 font-medium">
+                                <CheckCircle className="w-3 h-3" />
+                                Approved
+                              </span>
+                            ) : req.status === 'REJECTED' ? (
+                              <span className="inline-flex items-center gap-1 text-[11px] text-rose-400 font-medium" title={req.review_comment || ''}>
+                                <AlertCircle className="w-3 h-3" />
+                                Rejected
+                              </span>
+                            ) : req.status === 'PENDING' ? (
+                              <span className="inline-flex items-center gap-1 text-[11px] text-amber-400 font-medium">
+                                <Clock className="w-3 h-3" />
+                                Awaiting Org Admin
+                              </span>
                             ) : (
                               <span className="text-app-text-muted text-[11px]">—</span>
                             )}

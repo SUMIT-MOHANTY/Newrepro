@@ -95,8 +95,42 @@ class OrgAnalyticsService:
             daily_usage=daily_list
         )
 
-    def get_ledger(self, organization_name: str, page: int = 1, size: int = 50) -> PaginatedLedgerResponse:
-        query = self.session.query(TokenTransactionLedger).filter_by(organization_name=organization_name)
+    def get_ledger(
+        self,
+        organization_name: str,
+        page: int = 1,
+        size: int = 10,
+        transaction_type: str | None = None,
+        search: str | None = None
+    ) -> PaginatedLedgerResponse:
+        from sqlalchemy import or_
+        from models import User
+        query = self.session.query(TokenTransactionLedger).filter(TokenTransactionLedger.organization_name == organization_name)
+
+        if transaction_type and transaction_type != "ALL":
+            if transaction_type == "INFLOW":
+                query = query.filter(TokenTransactionLedger.token_delta > 0)
+            elif transaction_type == "OUTFLOW":
+                query = query.filter(TokenTransactionLedger.token_delta < 0)
+            elif transaction_type == "ALLOCATION":
+                query = query.filter(TokenTransactionLedger.transaction_type.in_(["ALLOCATION", "PURCHASE", "REALLOCATION"]))
+            else:
+                query = query.filter(TokenTransactionLedger.transaction_type == transaction_type)
+
+        if search and search.strip():
+            s = f"%{search.strip()}%"
+            query = query.outerjoin(User, TokenTransactionLedger.user_id == User.id).filter(
+                or_(
+                    TokenTransactionLedger.remarks.ilike(s),
+                    TokenTransactionLedger.reference_id.ilike(s),
+                    TokenTransactionLedger.purpose.ilike(s),
+                    TokenTransactionLedger.project_name.ilike(s),
+                    User.first_name.ilike(s),
+                    User.last_name.ilike(s),
+                    User.email.ilike(s)
+                )
+            )
+
         total = query.count()
         offset = (page - 1) * size
         entries = query.order_by(TokenTransactionLedger.created_at.desc(), TokenTransactionLedger.id.desc()).offset(offset).limit(size).all()
@@ -226,5 +260,6 @@ class OrgAnalyticsService:
             items=items,
             total=total,
             page=page,
-            size=size
+            size=size,
+            total_pages=max(1, (total + size - 1) // size) if total > 0 else 1
         )

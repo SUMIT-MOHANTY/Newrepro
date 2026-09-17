@@ -118,3 +118,4 @@ class PaginatedLedgerResponse(BaseModel):
     total: int
     page: int
     size: int
+    total_pages: Optional[int] = None
