@@ -1210,7 +1210,7 @@ export default function OrgTokenOpsPanel({ user }) {
                         <table className="w-full text-left text-sm">
                             <thead className="bg-slate-50 dark:bg-slate-700/50 text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700">
                                 <tr>
-                                    <th className="px-6 py-4 font-semibold">Tx ID</th>
+                                    <th className="px-6 py-4 font-semibold">Tx #</th>
                                     <th className="px-6 py-4 font-semibold">Type</th>
                                     <th className="px-6 py-4 font-semibold">User</th>
                                     <th className="px-6 py-4 font-semibold">Circumstance / Purpose</th>
@@ -1230,9 +1230,14 @@ export default function OrgTokenOpsPanel({ user }) {
                                     </tr>
                                 ) : (
                                     ledger.map((tx) => (
-                                        <tr key={tx.transaction_id} className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition">
+                                        <tr key={tx.global_transaction_id || tx.transaction_id} className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition">
                                             <td className="px-6 py-4 font-mono text-xs text-slate-500">
-                                                #{tx.transaction_id}
+                                                <span 
+                                                    className="font-semibold text-slate-700 dark:text-slate-300"
+                                                    title={tx.global_transaction_id ? `Platform Audit Ref: #${tx.global_transaction_id}` : undefined}
+                                                >
+                                                    #{tx.transaction_id}
+                                                </span>
                                             </td>
                                             <td className="px-6 py-4">
                                                 <span className="px-2.5 py-1 text-xs font-semibold rounded-full bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300">

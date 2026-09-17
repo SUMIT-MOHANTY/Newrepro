@@ -99,7 +99,7 @@ class OrgAnalyticsService:
         query = self.session.query(TokenTransactionLedger).filter_by(organization_name=organization_name)
         total = query.count()
         offset = (page - 1) * size
-        entries = query.order_by(TokenTransactionLedger.created_at.desc()).offset(offset).limit(size).all()
+        entries = query.order_by(TokenTransactionLedger.created_at.desc(), TokenTransactionLedger.id.desc()).offset(offset).limit(size).all()
         
         # Load user details for user_ids in entries to avoid n+1 query patterns
         user_ids = list(set([e.user_id for e in entries if e.user_id]))
@@ -190,7 +190,7 @@ class OrgAnalyticsService:
             return ttype.replace("_", " ").title()
 
         items = []
-        for e in entries:
+        for idx, e in enumerate(entries):
             payg_cost = _extract_payg_cost(e.remarks)
             abs_delta = abs(e.token_delta)
             cost_usd = payg_cost if payg_cost is not None else round(abs_delta * reference_price, 6)
@@ -198,9 +198,13 @@ class OrgAnalyticsService:
             p_tok = getattr(e, "project_token", None)
             p_name = getattr(e, "project_name", None) or (project_map.get(p_tok) if p_tok else None)
 
+            # Organization-scoped sequential ID (#1 = oldest tx for this org, #total = newest tx)
+            org_tx_id = max(1, total - (offset + idx))
+
             items.append(
                 FinancialLedgerView(
-                    transaction_id=e.id,
+                    transaction_id=org_tx_id,
+                    global_transaction_id=e.id,
                     user_id=e.user_id,
                     user_name=user_map.get(e.user_id, {}).get("name") if e.user_id else None,
                     user_email=user_map.get(e.user_id, {}).get("email") if e.user_id else None,

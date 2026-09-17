@@ -16840,14 +16840,33 @@ async def generate_tasks_locally(
             "polling_interval_seconds": 7,
         }
     
+    except HTTPException as http_exc:
+        if gen_job:
+            gen_job.set_failed(str(http_exc.detail))
+        raise
     except ValueError as val_err:
         logger.warning(f"Task generation validation error: {val_err}")
+        if gen_job:
+            gen_job.set_failed(str(val_err))
         raise HTTPException(
             status_code=400,
             detail=str(val_err)
         )
     except Exception as e:
         logger.error(f"Task generation failed: {e}")
+        err_str = str(e)
+        if gen_job:
+            gen_job.set_failed(err_str)
+        if "TOKEN_EXHAUSTED" in err_str or "402" in err_str:
+            raise HTTPException(
+                status_code=402,
+                detail="TOKEN_EXHAUSTED"
+            )
+        if "PAYG_HARD_LIMIT_REACHED" in err_str:
+            raise HTTPException(
+                status_code=402,
+                detail="PAYG_HARD_LIMIT_REACHED"
+            )
         raise HTTPException(
             status_code=500,
             detail=f"Task generation failed: {str(e)}"

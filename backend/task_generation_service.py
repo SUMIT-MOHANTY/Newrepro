@@ -665,6 +665,10 @@ Return a valid JSON object:
         except Exception as e:
             last_error = str(e)
             logger.warning(f"AI Dynamic Sprint Planning attempt {attempt} failed: {e}")
+            err_str = str(e).upper()
+            if any(term in err_str for term in ["TOKEN_EXHAUSTED", "PAYG_HARD_LIMIT_REACHED", "ORGANIZATION_BLOCKED", "USER_BLOCKED", "402"]):
+                logger.info(f"Non-retryable billing/quota error in sprint planning: {e}. Aborting retry loop.")
+                raise e
         
         if attempt < max_attempts:
             await asyncio.sleep(2 * attempt)
