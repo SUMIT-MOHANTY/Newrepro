@@ -144,6 +144,8 @@ class DailyUsageView(BaseModel):
 
 class TopUserView(BaseModel):
     user_id: int
+    user_name: Optional[str] = None
+    email: Optional[str] = None
     tokens: int
 
 class OrganizationAnalytics(BaseModel):

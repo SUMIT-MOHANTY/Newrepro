@@ -7,6 +7,70 @@ import {
 } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 
+function SlidingSegmentedControl({ 
+    options, 
+    value, 
+    onChange, 
+    className = "", 
+    pillClassName = "bg-white dark:bg-slate-800 shadow-sm",
+    activeTextClassName = "text-indigo-600 dark:text-indigo-400 font-bold",
+    inactiveTextClassName = "text-slate-500 hover:text-slate-800 dark:text-slate-300" 
+}) {
+    const containerRef = React.useRef(null);
+    const [sliderStyle, setSliderStyle] = React.useState({ left: 0, width: 0, opacity: 0 });
+
+    React.useEffect(() => {
+        if (!containerRef.current) return;
+        const activeBtn = containerRef.current.querySelector(`[data-value="${value}"]`);
+        if (activeBtn) {
+            setSliderStyle({
+                left: activeBtn.offsetLeft,
+                width: activeBtn.offsetWidth,
+                opacity: 1
+            });
+        }
+    }, [value, options]);
+
+    return (
+        <div
+            ref={containerRef}
+            className={`relative inline-flex items-center bg-slate-100 dark:bg-slate-700/60 p-1 rounded-xl text-xs font-semibold shrink-0 whitespace-nowrap select-none ${className}`}
+        >
+            {/* Sliding Pill Indicator */}
+            <span
+                className={`absolute top-1 bottom-1 rounded-lg transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] pointer-events-none ${pillClassName}`}
+                style={{
+                    left: `${sliderStyle.left}px`,
+                    width: `${sliderStyle.width}px`,
+                    opacity: sliderStyle.opacity
+                }}
+            />
+            {options.map((opt) => {
+                const val = typeof opt === 'object' ? opt.v : opt;
+                const label = typeof opt === 'object' ? (opt.label || opt.v) : (val === 'all' ? 'All' : val);
+                const customCol = typeof opt === 'object' && opt.col ? opt.col : null;
+                const isSelected = value === val;
+
+                return (
+                    <button
+                        key={val}
+                        type="button"
+                        data-value={val}
+                        onClick={() => onChange(val)}
+                        className={`relative z-10 px-2.5 py-1 rounded-lg transition-colors duration-200 cursor-pointer whitespace-nowrap ${
+                            isSelected
+                                ? (customCol ? `${customCol} font-bold` : activeTextClassName)
+                                : inactiveTextClassName
+                        }`}
+                    >
+                        {label}
+                    </button>
+                );
+            })}
+        </div>
+    );
+}
+
 export default function SuperAdminTokenOps() {
     const [stats, setStats] = useState(null);
     const [organizations, setOrganizations] = useState([]);
@@ -528,7 +592,10 @@ export default function SuperAdminTokenOps() {
             )}
 
             {/* Actions Toolbar */}
-            <div className="flex justify-end items-center pb-1">
+            <div className="flex justify-between items-center pb-1">
+                <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    Usage & Cost Insights
+                </h2>
                 <button 
                     onClick={fetchData} 
                     disabled={loading}
@@ -555,106 +622,106 @@ export default function SuperAdminTokenOps() {
 
             {/* Overview KPIs (8 Cards) */}
             {stats && (
-                <div className="grid grid-cols-2 md:grid-cols-4 2xl:grid-cols-8 gap-3">
+                <div className="grid grid-cols-2 md:grid-cols-4 2xl:grid-cols-8 gap-2.5">
                     {/* 1. Total Orgs */}
-                    <div className="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[95px]">
+                    <div className="bg-white dark:bg-slate-800 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[76px]">
                         <div className="flex items-start justify-between gap-1.5">
                             <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider leading-tight">Total Orgs</span>
-                            <Building2 className="w-3.5 h-3.5 text-slate-400 flex-shrink-0 mt-0.5" />
+                            <Building2 className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
                         </div>
-                        <div className="text-base sm:text-lg font-bold text-slate-800 dark:text-slate-100 mt-1">{stats.total_organizations}</div>
+                        <div className="text-base sm:text-lg font-bold text-slate-800 dark:text-slate-100 mt-0.5">{stats.total_organizations}</div>
                         <div className="text-[9px] text-slate-500 flex items-center gap-1 mt-0.5 whitespace-nowrap">
                             <span className="text-indigo-600 font-semibold">{stats.prepaid_organizations} prep</span> · <span className="text-amber-600 font-semibold">{stats.payg_organizations} payg</span>
                         </div>
                     </div>
 
                     {/* 2. Tokens Consumed */}
-                    <div className="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[95px]">
+                    <div className="bg-white dark:bg-slate-800 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[76px]">
                         <div className="flex items-start justify-between gap-1.5">
                             <span className="text-[10px] font-bold text-indigo-500 dark:text-indigo-400 uppercase tracking-wider leading-tight">Tokens Burned</span>
-                            <Coins className="w-3.5 h-3.5 text-indigo-500 flex-shrink-0 mt-0.5" />
+                            <Coins className="w-3.5 h-3.5 text-indigo-500 flex-shrink-0" />
                         </div>
-                        <div className="text-base sm:text-lg font-bold text-indigo-700 dark:text-indigo-300 mt-1">
+                        <div className="text-base sm:text-lg font-bold text-indigo-700 dark:text-indigo-300 mt-0.5">
                             {Number(stats.total_tokens_consumed || 0).toLocaleString()}
                         </div>
-                        <span className="text-[9px] text-slate-400 leading-tight">Total prompt + comp</span>
+                        <span className="text-[9px] text-slate-400 leading-tight mt-0.5">Total prompt + comp</span>
                     </div>
 
                     {/* 3. Consumption Cost */}
-                    <div className="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[95px]">
+                    <div className="bg-white dark:bg-slate-800 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[76px]">
                         <div className="flex items-start justify-between gap-1.5">
                             <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider leading-tight">Platform Cost</span>
-                            <DollarSign className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0 mt-0.5" />
+                            <DollarSign className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
                         </div>
-                        <div className="text-base sm:text-lg font-bold text-emerald-700 dark:text-emerald-300 mt-1">
+                        <div className="text-base sm:text-lg font-bold text-emerald-700 dark:text-emerald-300 mt-0.5">
                             ${Number(stats.total_historical_cost || 0).toFixed(2)}
                         </div>
-                        <span className="text-[9px] text-slate-400 leading-tight">Across all AI calls</span>
+                        <span className="text-[9px] text-slate-400 leading-tight mt-0.5">Across all AI calls</span>
                     </div>
 
                     {/* 4. PAYG Spend */}
-                    <div className="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[95px]">
+                    <div className="bg-white dark:bg-slate-800 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[76px]">
                         <div className="flex items-start justify-between gap-1.5">
                             <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider leading-tight">PAYG Spend</span>
-                            <DollarSign className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" />
+                            <DollarSign className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />
                         </div>
-                        <div className="text-base sm:text-lg font-bold text-amber-700 dark:text-amber-300 mt-1">
+                        <div className="text-base sm:text-lg font-bold text-amber-700 dark:text-amber-300 mt-0.5">
                             ${Number(stats.total_payg_current_spend_usd || 0).toFixed(2)}
                         </div>
-                        <span className="text-[9px] text-amber-600 font-semibold leading-tight">{stats.payg_organizations} active orgs</span>
+                        <span className="text-[9px] text-amber-600 font-semibold leading-tight mt-0.5">{stats.payg_organizations} active orgs</span>
                     </div>
 
                     {/* 5. Total Requests */}
-                    <div className="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[95px]">
+                    <div className="bg-white dark:bg-slate-800 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[76px]">
                         <div className="flex items-start justify-between gap-1.5">
                             <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider leading-tight">Total Requests</span>
-                            <Activity className="w-3.5 h-3.5 text-slate-400 flex-shrink-0 mt-0.5" />
+                            <Activity className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
                         </div>
-                        <div className="text-base sm:text-lg font-bold text-slate-800 dark:text-slate-100 mt-1">
+                        <div className="text-base sm:text-lg font-bold text-slate-800 dark:text-slate-100 mt-0.5">
                             {Number(stats.total_requests || 0).toLocaleString()}
                         </div>
-                        <span className="text-[9px] text-slate-400 leading-tight">LLM API calls</span>
+                        <span className="text-[9px] text-slate-400 leading-tight mt-0.5">LLM API calls</span>
                     </div>
 
                     {/* 6. Pending Quota */}
                     <div 
                         onClick={() => setActiveTab('payg')}
-                        className={`bg-white dark:bg-slate-800 p-3 rounded-xl border shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[95px] cursor-pointer group ${
+                        className={`bg-white dark:bg-slate-800 p-2.5 rounded-xl border shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[76px] cursor-pointer group ${
                             (stats.pending_quota_requests || 0) > 0 ? 'border-amber-300 dark:border-amber-700 bg-amber-50/20' : 'border-slate-200 dark:border-slate-700'
                         }`}
                     >
                         <div className="flex items-start justify-between gap-1.5">
                             <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider leading-tight">Quota Requests</span>
-                            <Clock className="w-3.5 h-3.5 text-amber-500 group-hover:scale-110 transition flex-shrink-0 mt-0.5" />
+                            <Clock className="w-3.5 h-3.5 text-amber-500 group-hover:scale-110 transition flex-shrink-0" />
                         </div>
-                        <div className="text-base sm:text-lg font-bold text-amber-700 dark:text-amber-300 mt-1">{stats.pending_quota_requests || 0}</div>
-                        <span className="text-[9px] text-amber-600 font-semibold flex items-center gap-0.5 leading-tight">
+                        <div className="text-base sm:text-lg font-bold text-amber-700 dark:text-amber-300 mt-0.5">{stats.pending_quota_requests || 0}</div>
+                        <span className="text-[9px] text-amber-600 font-semibold flex items-center gap-0.5 leading-tight mt-0.5">
                             Review <ChevronRight className="w-2.5 h-2.5" />
                         </span>
                     </div>
 
                     {/* 7. Limit Warnings & Breaches */}
-                    <div className={`bg-white dark:bg-slate-800 p-3 rounded-xl border shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[95px] ${
+                    <div className={`bg-white dark:bg-slate-800 p-2.5 rounded-xl border shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[76px] ${
                         (stats.payg_limit_breaches || 0) > 0 ? 'border-rose-300 dark:border-rose-700 bg-rose-50/20' : 'border-slate-200 dark:border-slate-700'
                     }`}>
                         <div className="flex items-start justify-between gap-1.5">
                             <span className="text-[10px] font-bold text-rose-500 dark:text-rose-400 uppercase tracking-wider leading-tight">Limit Breaches</span>
-                            <AlertTriangle className="w-3.5 h-3.5 text-rose-500 flex-shrink-0 mt-0.5" />
+                            <AlertTriangle className="w-3.5 h-3.5 text-rose-500 flex-shrink-0" />
                         </div>
-                        <div className="text-base sm:text-lg font-bold text-rose-700 dark:text-rose-300 mt-1">{stats.payg_limit_breaches || 0}</div>
-                        <span className="text-[9px] text-rose-500 font-semibold leading-tight">Hard limit exceed</span>
+                        <div className="text-base sm:text-lg font-bold text-rose-700 dark:text-rose-300 mt-0.5">{stats.payg_limit_breaches || 0}</div>
+                        <span className="text-[9px] text-rose-500 font-semibold leading-tight mt-0.5">Hard limit exceed</span>
                     </div>
 
                     {/* 8. Low Balance / Blocked */}
-                    <div className="bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[95px]">
+                    <div className="bg-white dark:bg-slate-800 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-md transition flex flex-col justify-between min-h-[76px]">
                         <div className="flex items-start justify-between gap-1.5">
                             <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider leading-tight">Health / Holds</span>
-                            <Ban className="w-3.5 h-3.5 text-slate-400 flex-shrink-0 mt-0.5" />
+                            <Ban className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
                         </div>
-                        <div className="text-base sm:text-lg font-bold text-slate-800 dark:text-slate-100 mt-1">
+                        <div className="text-base sm:text-lg font-bold text-slate-800 dark:text-slate-100 mt-0.5">
                             {stats.blocked_organizations || 0}
                         </div>
-                        <span className="text-[9px] text-slate-500 leading-tight">
+                        <span className="text-[9px] text-slate-500 leading-tight mt-0.5">
                             {stats.low_balance_organizations || 0} low balance
                         </span>
                     </div>
@@ -743,14 +810,17 @@ export default function SuperAdminTokenOps() {
                                 Refresh
                             </button>
                             {/* Range Switcher */}
-                            <div className="flex bg-slate-100 dark:bg-slate-700/60 p-1 rounded-xl text-xs font-semibold">
-                                {['7d', '30d', '90d'].map((r) => (
-                                    <button key={r} onClick={() => setTrendRange(r)}
-                                        className={`px-2.5 py-1 rounded-lg uppercase tracking-wider transition cursor-pointer ${trendRange === r ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:text-slate-300'}`}>
-                                        {r}
-                                    </button>
-                                ))}
-                            </div>
+                            <SlidingSegmentedControl
+                                options={[
+                                    { v: '7d', label: '7D' },
+                                    { v: '30d', label: '30D' },
+                                    { v: '90d', label: '90D' }
+                                ]}
+                                value={trendRange}
+                                onChange={(r) => setTrendRange(r)}
+                                pillClassName="bg-indigo-600 shadow-sm"
+                                activeTextClassName="text-white font-bold"
+                            />
                         </div>
                     </div>
 
@@ -783,18 +853,18 @@ export default function SuperAdminTokenOps() {
                             slate: 'text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700',
                         };
                         return (
-                            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
                                 {kpis.map(k => {
                                     const cls = colorMap[k.color];
                                     const Icon = k.icon;
                                     return (
-                                        <div key={k.label} className={`rounded-2xl border p-4 flex flex-col gap-1 shadow-sm ${cls}`}>
+                                        <div key={k.label} className={`rounded-xl border p-2.5 sm:p-3 flex flex-col justify-between shadow-sm min-h-[76px] ${cls}`}>
                                             <div className="flex items-center justify-between">
-                                                <span className="text-[10px] font-bold uppercase tracking-wider opacity-70">{k.label}</span>
-                                                <Icon className="w-4 h-4 opacity-60" />
+                                                <span className="text-[10px] font-bold uppercase tracking-wider opacity-70 leading-tight">{k.label}</span>
+                                                <Icon className="w-3.5 h-3.5 opacity-60 shrink-0" />
                                             </div>
-                                            <div className="text-2xl font-black mt-1">{analyticsLoading ? '—' : k.value}</div>
-                                            <div className="text-[10px] opacity-60 font-semibold">{k.sub}</div>
+                                            <div className="text-lg sm:text-xl font-bold mt-0.5">{analyticsLoading ? '—' : k.value}</div>
+                                            <div className="text-[10px] opacity-60 font-semibold mt-0.5">{k.sub}</div>
                                         </div>
                                     );
                                 })}
@@ -804,41 +874,40 @@ export default function SuperAdminTokenOps() {
 
                     {/* ── Trend Chart ── */}
                     <div className="bg-white dark:bg-slate-800 p-5 sm:p-6 rounded-2xl border border-slate-200/80 dark:border-slate-700 shadow-sm space-y-4">
-                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
                             <div>
                                 <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
                                     <TrendingUp className="w-5 h-5 text-indigo-500" />Platform Consumption Trends
                                 </h3>
-                                <p className="text-xs text-slate-400 mt-0.5">Daily aggregates across all organizations. Use filters to narrow by metric, chart style, or specific org.</p>
+                                <p className="text-xs text-slate-400 mt-0.5">
+                                    Daily consumption metrics and trends across all tenant organizations.
+                                </p>
                             </div>
-                            <div className="flex flex-wrap items-center gap-2">
+                            <div className="flex items-center justify-end gap-2 flex-nowrap shrink-0 overflow-x-auto no-scrollbar ml-auto">
                                 {/* Chart Mode */}
-                                <div className="flex bg-slate-100 dark:bg-slate-700/60 p-1 rounded-xl text-xs font-semibold">
-                                    {[{v:'line', label:'Line'},{v:'bar', label:'Bar'}].map(m => (
-                                        <button key={m.v} onClick={() => setChartMode(m.v)}
-                                            className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${chartMode === m.v ? 'bg-white dark:bg-slate-800 text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:text-slate-300'}`}>
-                                            {m.label}
-                                        </button>
-                                    ))}
-                                </div>
+                                <SlidingSegmentedControl
+                                    options={[
+                                        { v: 'line', label: 'Line' },
+                                        { v: 'bar', label: 'Bar' }
+                                    ]}
+                                    value={chartMode}
+                                    onChange={setChartMode}
+                                />
                                 {/* Metric Switcher */}
-                                <div className="flex bg-slate-100 dark:bg-slate-700/60 p-1 rounded-xl text-xs font-semibold">
-                                    {[
-                                        {v:'tokens', label:'Tokens', col:'text-indigo-600'},
-                                        {v:'cost', label:'Cost ($)', col:'text-emerald-600'},
-                                        {v:'requests', label:'Requests', col:'text-amber-600'},
-                                        {v:'infra_cost', label:'Infra ($)', col:'text-violet-600'},
-                                    ].map(m => (
-                                        <button key={m.v} onClick={() => setTrendMetric(m.v)}
-                                            className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${trendMetric === m.v ? `bg-white dark:bg-slate-800 ${m.col} shadow-sm` : 'text-slate-500 hover:text-slate-800 dark:text-slate-300'}`}>
-                                            {m.label}
-                                        </button>
-                                    ))}
-                                </div>
+                                <SlidingSegmentedControl
+                                    options={[
+                                        { v: 'tokens', label: 'Tokens', col: 'text-indigo-600 dark:text-indigo-400' },
+                                        { v: 'cost', label: 'Cost ($)', col: 'text-emerald-600 dark:text-emerald-400' },
+                                        { v: 'requests', label: 'Requests', col: 'text-amber-600 dark:text-amber-400' },
+                                        { v: 'infra_cost', label: 'Infra ($)', col: 'text-violet-600 dark:text-violet-400' }
+                                    ]}
+                                    value={trendMetric}
+                                    onChange={setTrendMetric}
+                                />
                                 {/* Org Filter */}
                                 {topOrgsData?.by_tokens?.length > 0 && (
                                     <select value={orgChartFilter} onChange={e => setOrgChartFilter(e.target.value)}
-                                        className="text-xs px-2 py-1.5 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer">
+                                        className="text-xs px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer shrink-0 whitespace-nowrap">
                                         <option value="all">All Orgs</option>
                                         {topOrgsData.by_tokens.map(o => <option key={o.organization_name} value={o.organization_name}>{o.organization_name}</option>)}
                                     </select>
@@ -999,7 +1068,7 @@ export default function SuperAdminTokenOps() {
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
 
                         {/* Model Distribution (2/3 width) */}
-                        <div className="lg:col-span-2 bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-700 shadow-sm space-y-4">
+                        <div className="lg:col-span-2 bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-700 shadow-sm space-y-3 flex flex-col justify-between">
                             <div className="flex items-center justify-between">
                                 <div>
                                     <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
@@ -1012,7 +1081,7 @@ export default function SuperAdminTokenOps() {
                             {modelsData.length === 0 ? (
                                 <div className="py-10 text-center text-slate-400 text-xs border border-dashed border-slate-200 dark:border-slate-700 rounded-xl">No model usage recorded yet.</div>
                             ) : (
-                                <div className="space-y-3 max-h-80 overflow-y-auto pr-1 custom-scrollbar">
+                                <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1 custom-scrollbar">
                                     {modelsData.map((m,idx) => {
                                         const palettes=[
                                             {bar:'bg-indigo-500',badge:'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800'},
@@ -1027,16 +1096,17 @@ export default function SuperAdminTokenOps() {
                                         const isTop = idx===0;
                                         const isMostExpensive = modelsData.reduce((prev,cur)=>prev.cost_usd>cur.cost_usd?prev:cur)===m;
                                         return (
-                                            <div key={m.model} className="p-3 bg-slate-50 dark:bg-slate-900/40 rounded-xl border border-slate-100 dark:border-slate-750 space-y-2 hover:border-indigo-200 dark:hover:border-indigo-800 transition">
-                                                <div className="flex justify-between items-start gap-2">
+                                            <div key={m.model} className="p-2.5 bg-slate-50 dark:bg-slate-900/40 rounded-xl border border-slate-100 dark:border-slate-750 space-y-1.5 hover:border-indigo-200 dark:hover:border-indigo-800 transition">
+                                                <div className="flex justify-between items-center gap-2">
                                                     <div className="flex items-center gap-2 flex-wrap min-w-0">
                                                         <span className={`px-2 py-0.5 rounded-lg text-xs font-mono font-semibold border truncate ${c.badge}`}>{m.model}</span>
                                                         {isTop && <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">Most Used</span>}
                                                         {isMostExpensive && !isTop && <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300">Highest Spend</span>}
                                                     </div>
-                                                    <div className="text-right shrink-0">
-                                                        <span className="text-xs font-bold text-slate-800 dark:text-slate-200 font-mono">{m.percentage}%</span>
-                                                        <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono block">${Number(m.cost_usd).toFixed(3)}</span>
+                                                    <div className="text-right shrink-0 flex items-center gap-1.5 font-mono">
+                                                        <span className="text-xs font-bold text-slate-800 dark:text-slate-200">{m.percentage}%</span>
+                                                        <span className="text-slate-300 dark:text-slate-600 text-xs font-normal">|</span>
+                                                        <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400">${Number(m.cost_usd).toFixed(3)}</span>
                                                     </div>
                                                 </div>
                                                 <div className="w-full bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full overflow-hidden">
@@ -1057,7 +1127,7 @@ export default function SuperAdminTokenOps() {
                         </div>
 
                         {/* Billing Mode Distribution (1/3 width) */}
-                        <div className="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-700 shadow-sm space-y-4">
+                        <div className="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-700 shadow-sm flex flex-col justify-between">
                             <div>
                                 <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
                                     <Layers className="w-4 h-4 text-indigo-500"/>Billing Mode Split
@@ -1076,8 +1146,8 @@ export default function SuperAdminTokenOps() {
                                     {label:'Prepaid', count:prepaid, pct:pct(prepaid), color:'bg-indigo-500', text:'text-indigo-700 dark:text-indigo-300', bg:'bg-indigo-50 dark:bg-indigo-950/30'},
                                     {label:'Blocked', count:blocked, pct:pct(blocked), color:'bg-rose-500', text:'text-rose-700 dark:text-rose-300', bg:'bg-rose-50 dark:bg-rose-950/30'},
                                 ];
-                                // SVG Donut
-                                const donutR=50, cx=70, cy=70, strokeW=18;
+                                // SVG Donut (enlarged to fill space proportionally)
+                                const donutR=60, cx=82, cy=82, strokeW=18;
                                 const circum=2*Math.PI*donutR;
                                 let offset=0;
                                 const donutSegs=[
@@ -1086,9 +1156,9 @@ export default function SuperAdminTokenOps() {
                                     {pct:blocked/total, col:'#f43f5e'},
                                 ];
                                 return (
-                                    <div className="space-y-4">
-                                        <div className="flex justify-center">
-                                            <svg width="140" height="140" viewBox="0 0 140 140">
+                                    <div className="flex flex-col justify-between flex-1 mt-1 space-y-2">
+                                        <div className="flex justify-center items-center my-auto py-1">
+                                            <svg width="164" height="164" viewBox="0 0 164 164">
                                                 <circle cx={cx} cy={cy} r={donutR} fill="none" stroke="currentColor" className="text-slate-100 dark:text-slate-700" strokeWidth={strokeW}/>
                                                 {donutSegs.map((s,i)=>{
                                                     const dash=s.pct*circum;
@@ -1097,28 +1167,28 @@ export default function SuperAdminTokenOps() {
                                                     offset+=dash;
                                                     return el;
                                                 })}
-                                                <text x={cx} y={cy-5} textAnchor="middle" className="text-[10px] fill-slate-400 dark:fill-slate-500" fontSize="10">Total</text>
-                                                <text x={cx} y={cy+12} textAnchor="middle" className="fill-slate-800 dark:fill-white" fontSize="18" fontWeight="bold">{orgs.length}</text>
+                                                <text x={cx} y={cy-6} textAnchor="middle" className="text-[11px] fill-slate-400 dark:fill-slate-500 font-medium" fontSize="11">Total</text>
+                                                <text x={cx} y={cy+16} textAnchor="middle" className="fill-slate-800 dark:fill-white font-bold" fontSize="22">{orgs.length}</text>
                                             </svg>
                                         </div>
-                                        <div className="space-y-2">
+                                        <div className="space-y-1.5">
                                             {modes.map(m=>(
-                                                <div key={m.label} className={`flex items-center justify-between p-2.5 rounded-xl ${m.bg} cursor-pointer hover:opacity-80 transition`}
+                                                <div key={m.label} className={`flex items-center justify-between py-1.5 px-2.5 rounded-xl ${m.bg} cursor-pointer hover:opacity-80 transition`}
                                                     onClick={()=>setTopOrgsBillingFilter(topOrgsBillingFilter===m.label?'all':m.label)}>
                                                     <div className="flex items-center gap-2">
-                                                        <div className={`w-2.5 h-2.5 rounded-full ${m.color}`}/>
+                                                        <div className={`w-2 h-2 rounded-full ${m.color}`}/>
                                                         <span className={`text-xs font-bold ${m.text}`}>{m.label}</span>
                                                         {topOrgsBillingFilter===m.label && <span className="text-[9px] text-slate-500">(filtered)</span>}
                                                     </div>
-                                                    <div className="text-right">
-                                                        <div className={`text-sm font-black ${m.text}`}>{m.count}</div>
-                                                        <div className="text-[10px] text-slate-400">{m.pct}%</div>
+                                                    <div className="text-center min-w-[28px]">
+                                                        <div className={`text-xs font-black ${m.text}`}>{m.count}</div>
+                                                        <div className="text-[9px] text-slate-400">{m.pct}%</div>
                                                     </div>
                                                 </div>
                                             ))}
                                         </div>
                                         {topOrgsBillingFilter !== 'all' && (
-                                            <button onClick={()=>setTopOrgsBillingFilter('all')} className="w-full text-[10px] text-slate-500 hover:text-indigo-600 font-semibold py-1 transition cursor-pointer">
+                                            <button onClick={()=>setTopOrgsBillingFilter('all')} className="w-full text-[10px] text-slate-500 hover:text-indigo-600 font-semibold py-0.5 transition cursor-pointer">
                                                 ✕ Clear filter
                                             </button>
                                         )}
@@ -1130,32 +1200,35 @@ export default function SuperAdminTokenOps() {
 
                     {/* ── Top Orgs Leaderboard ── */}
                     <div className="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-700 shadow-sm space-y-4">
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
                             <div>
                                 <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
                                     <Award className="w-4 h-4 text-indigo-500"/>Top Organizations Leaderboard
                                 </h3>
                                 <p className="text-xs text-slate-400 mt-0.5">Highest-consuming tenant organizations. Filter and sort to identify cost leaders or at-risk tenants.</p>
                             </div>
-                            <div className="flex flex-wrap items-center gap-2">
+                            <div className="flex items-center gap-2 flex-nowrap shrink-0 overflow-x-auto no-scrollbar">
                                 {/* Billing Mode Filter */}
-                                <div className="flex bg-slate-100 dark:bg-slate-700/60 p-1 rounded-xl text-xs font-semibold">
-                                    {['all','PAYG','Prepaid','blocked'].map(f=>(
-                                        <button key={f} onClick={()=>setTopOrgsBillingFilter(f)}
-                                            className={`px-2.5 py-1 rounded-lg capitalize transition cursor-pointer ${topOrgsBillingFilter===f?'bg-white dark:bg-slate-800 text-indigo-600 shadow-sm':'text-slate-500 hover:text-slate-800 dark:text-slate-300'}`}>
-                                            {f==='all'?'All':f}
-                                        </button>
-                                    ))}
-                                </div>
+                                <SlidingSegmentedControl
+                                    options={[
+                                        { v: 'all', label: 'All' },
+                                        { v: 'PAYG', label: 'PAYG' },
+                                        { v: 'Prepaid', label: 'Prepaid' },
+                                        { v: 'blocked', label: 'Blocked' }
+                                    ]}
+                                    value={topOrgsBillingFilter}
+                                    onChange={setTopOrgsBillingFilter}
+                                />
                                 {/* Sort */}
-                                <div className="flex bg-slate-100 dark:bg-slate-700/60 p-1 rounded-xl text-xs font-semibold">
-                                    {[{v:'tokens',label:'Tokens'},{v:'cost',label:'Cost'},{v:'requests',label:'Requests'}].map(s=>(
-                                        <button key={s.v} onClick={()=>setTopOrgsSort(s.v)}
-                                            className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${topOrgsSort===s.v?'bg-white dark:bg-slate-800 text-indigo-600 shadow-sm':'text-slate-500 hover:text-slate-800 dark:text-slate-300'}`}>
-                                            {s.label}
-                                        </button>
-                                    ))}
-                                </div>
+                                <SlidingSegmentedControl
+                                    options={[
+                                        { v: 'tokens', label: 'Tokens' },
+                                        { v: 'cost', label: 'Cost' },
+                                        { v: 'requests', label: 'Requests' }
+                                    ]}
+                                    value={topOrgsSort}
+                                    onChange={setTopOrgsSort}
+                                />
                             </div>
                         </div>
 
@@ -1368,7 +1441,7 @@ export default function SuperAdminTokenOps() {
 
                     <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200/80 dark:border-slate-700 overflow-hidden shadow-sm">
                         <div className="overflow-x-auto custom-scrollbar">
-                            <table className="w-full text-left text-xs sm:text-sm">
+                            <table className="w-full text-left text-xs">
                                 <thead className="bg-slate-50 dark:bg-slate-750 text-slate-600 dark:text-slate-300 font-semibold border-b border-slate-200 dark:border-slate-700">
                                     <tr>
                                         <th className="px-4 py-3 min-w-[180px]">Organization</th>
@@ -1393,30 +1466,32 @@ export default function SuperAdminTokenOps() {
                                     ) : (
                                         filteredOrgs.map((org) => (
                                             <tr key={org.organization_name} className="hover:bg-indigo-50/30 dark:hover:bg-slate-700/30 transition-colors">
-                                                <td className="px-4 py-3 font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-                                                    <Building2 className="w-4 h-4 text-slate-400 shrink-0" />
-                                                    <span className="truncate">{org.organization_name}</span>
+                                                <td className="px-4 py-3 font-semibold text-xs text-slate-900 dark:text-white">
+                                                    <div className="flex items-center gap-2">
+                                                        <Building2 className="w-4 h-4 text-slate-400 shrink-0" />
+                                                        <span className="truncate">{org.organization_name}</span>
+                                                    </div>
                                                 </td>
                                                 <td className="px-4 py-3">
-                                                    <div className="font-semibold text-slate-900 dark:text-white">{formatCurrency(org.purchased_tokens, org.reference_price)}</div>
+                                                    <div className="font-semibold text-xs text-slate-900 dark:text-white">{formatCurrency(org.purchased_tokens, org.reference_price)}</div>
                                                     <div className="text-[10px] text-slate-500 font-mono mt-0.5">{Number(org.purchased_tokens || 0).toLocaleString()} tokens</div>
                                                 </td>
                                                 <td className="px-4 py-3">
-                                                    <div className="font-semibold text-rose-600 dark:text-rose-400">{formatCurrency(org.consumed_tokens, org.reference_price)}</div>
+                                                    <div className="font-semibold text-xs text-rose-600 dark:text-rose-400">{formatCurrency(org.consumed_tokens, org.reference_price)}</div>
                                                     <div className="text-[10px] text-slate-500 font-mono mt-0.5">{Number(org.consumed_tokens || 0).toLocaleString()} tokens</div>
                                                 </td>
                                                 <td className="px-4 py-3">
-                                                    <div className="font-semibold text-indigo-600 dark:text-indigo-400">{formatCurrency(org.reserved_tokens, org.reference_price)}</div>
+                                                    <div className="font-semibold text-xs text-indigo-600 dark:text-indigo-400">{formatCurrency(org.reserved_tokens, org.reference_price)}</div>
                                                     <div className="text-[10px] text-slate-500 font-mono mt-0.5">{Number(org.reserved_tokens || 0).toLocaleString()} tokens</div>
                                                 </td>
                                                 <td className="px-4 py-3">
-                                                    <div className="font-bold text-emerald-600 dark:text-emerald-400">{formatCurrency(org.remaining_tokens, org.reference_price)}</div>
+                                                    <div className="font-bold text-xs text-emerald-600 dark:text-emerald-400">{formatCurrency(org.remaining_tokens, org.reference_price)}</div>
                                                     <div className="text-[10px] text-slate-500 font-mono mt-0.5">{Number(org.remaining_tokens || 0).toLocaleString()} tokens</div>
                                                 </td>
-                                                <td className="px-4 py-3">
+                                                <td className="px-4 py-3 text-xs">
                                                      {org.payg_enabled ? (
                                                          <div className="relative group inline-block">
-                                                             <span className="px-2.5 py-1 text-[11px] font-bold rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20 whitespace-nowrap cursor-help inline-flex items-center gap-1.5 shadow-sm">
+                                                             <span className="px-2.5 py-1 text-xs font-bold rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20 whitespace-nowrap cursor-help inline-flex items-center gap-1.5 shadow-sm">
                                                                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
                                                                  PAYG Active
                                                              </span>
@@ -1446,15 +1521,15 @@ export default function SuperAdminTokenOps() {
                                                              </div>
                                                          </div>
                                                      ) : (
-                                                         <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-800">
+                                                         <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-800">
                                                              Prepaid
                                                          </span>
                                                      )}
                                                 </td>
-                                                <td className="px-4 py-3 min-w-[170px]">
+                                                <td className="px-4 py-3 min-w-[170px] text-xs">
                                                     {org.payg_enabled ? (
                                                         <div className="space-y-1">
-                                                            <div className="flex items-center justify-between text-[11px]">
+                                                            <div className="flex items-center justify-between text-xs">
                                                                 <span className="text-slate-500">Spend:</span>
                                                                 <span className="font-bold text-amber-600 dark:text-amber-400 font-mono">
                                                                     ${Number(org.payg_current_spend_usd || 0).toFixed(2)}
@@ -1479,10 +1554,10 @@ export default function SuperAdminTokenOps() {
                                                         <span className="text-slate-400 dark:text-slate-500 text-xs">N/A (Prepaid)</span>
                                                     )}
                                                 </td>
-                                                <td className="px-4 py-3">
+                                                <td className="px-4 py-3 text-xs">
                                                     {org.payg_enabled ? (
                                                         <div className="flex items-center gap-1.5">
-                                                            <span className="font-semibold text-slate-800 dark:text-slate-200">
+                                                            <span className="font-semibold text-xs text-slate-800 dark:text-slate-200">
                                                                 {org.payg_grace_period_months} month{org.payg_grace_period_months > 1 ? 's' : ''}
                                                             </span>
                                                             <button
@@ -1494,21 +1569,21 @@ export default function SuperAdminTokenOps() {
                                                             </button>
                                                         </div>
                                                     ) : (
-                                                        <span className="text-slate-400 dark:text-slate-500 font-medium">N/A (Prepaid)</span>
+                                                        <span className="text-slate-400 dark:text-slate-500 font-medium text-xs">N/A (Prepaid)</span>
                                                     )}
                                                 </td>
-                                                <td className="px-4 py-3">
+                                                <td className="px-4 py-3 text-xs">
                                                     {org.is_blocked ? (
-                                                        <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-rose-50 text-rose-700 border border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800">
+                                                        <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-rose-50 text-rose-700 border border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800">
                                                             Blocked
                                                         </span>
                                                     ) : (
-                                                        <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800">
+                                                        <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800">
                                                             Active
                                                         </span>
                                                     )}
                                                 </td>
-                                                <td className="px-4 py-3 text-right whitespace-nowrap">
+                                                <td className="px-4 py-3 text-right text-xs whitespace-nowrap">
                                                     <div className="flex items-center justify-end gap-1.5">
                                                         {org.payg_enabled ? (
                                                             <button
@@ -1576,7 +1651,7 @@ export default function SuperAdminTokenOps() {
 
                     <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200/80 dark:border-slate-700 overflow-hidden shadow-sm">
                         <div className="overflow-x-auto custom-scrollbar">
-                            <table className="w-full text-left text-xs sm:text-sm">
+                            <table className="w-full text-left text-xs">
                                 <thead className="bg-slate-50 dark:bg-slate-750 text-slate-600 dark:text-slate-300 font-semibold border-b border-slate-200 dark:border-slate-700">
                                     <tr>
                                         <th className="px-4 py-3 min-w-[180px]">Model Name</th>
@@ -1596,23 +1671,23 @@ export default function SuperAdminTokenOps() {
                                     ) : (
                                         pricingList.map((p) => (
                                             <tr key={p.model_name} className="hover:bg-indigo-50/30 dark:hover:bg-slate-700/30 transition-colors">
-                                                <td className="px-4 py-3 font-bold text-slate-900 dark:text-white">{p.model_name}</td>
-                                                <td className="px-4 py-3 font-mono">${p.price_per_token.toFixed(8)}</td>
-                                                <td className="px-4 py-3 font-mono font-semibold text-indigo-600 dark:text-indigo-400">
+                                                <td className="px-4 py-3 font-semibold text-xs text-slate-900 dark:text-white">{p.model_name}</td>
+                                                <td className="px-4 py-3 font-mono text-xs">${p.price_per_token.toFixed(8)}</td>
+                                                <td className="px-4 py-3 font-mono font-semibold text-xs text-indigo-600 dark:text-indigo-400">
                                                     ${(p.price_per_token * 1000000).toFixed(2)}
                                                 </td>
-                                                <td className="px-4 py-3">
+                                                <td className="px-4 py-3 text-xs">
                                                     {p.is_active ? (
-                                                        <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800">
+                                                        <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800">
                                                             Active
                                                         </span>
                                                     ) : (
-                                                        <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-slate-100 text-slate-600 border border-slate-200 dark:bg-slate-700 dark:text-slate-400 dark:border-slate-600">
+                                                        <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-slate-100 text-slate-600 border border-slate-200 dark:bg-slate-700 dark:text-slate-400 dark:border-slate-600">
                                                             Inactive
                                                         </span>
                                                     )}
                                                 </td>
-                                                <td className="px-4 py-3 text-right whitespace-nowrap">
+                                                <td className="px-4 py-3 text-right text-xs whitespace-nowrap">
                                                     <button
                                                         onClick={() => setPricingModal({ open: true, modelName: p.model_name, price: p.price_per_token.toString() })}
                                                         className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 rounded-lg text-xs font-semibold inline-flex items-center gap-1 transition cursor-pointer"
@@ -1648,17 +1723,17 @@ export default function SuperAdminTokenOps() {
                         </button>
                     </div>
                     <div className="overflow-x-auto custom-scrollbar">
-                        <table className="w-full text-left text-xs sm:text-sm">
+                        <table className="w-full text-left text-xs">
                             <thead className="bg-slate-50 dark:bg-slate-750 text-slate-600 dark:text-slate-300 font-semibold border-b border-slate-200 dark:border-slate-700">
                                 <tr>
-                                    <th className="px-4 py-3 min-w-[70px]">Req #</th>
-                                    <th className="px-4 py-3 min-w-[160px]">Organization</th>
-                                    <th className="px-4 py-3 min-w-[130px]">Request Type</th>
-                                    <th className="px-4 py-3 min-w-[120px]">Requested Quota</th>
-                                    <th className="px-4 py-3 min-w-[100px]">Requester</th>
+                                    <th className="px-4 py-3 min-w-[70px] whitespace-nowrap">Req #</th>
+                                    <th className="px-4 py-3 min-w-[160px] whitespace-nowrap">Organization</th>
+                                    <th className="px-4 py-3 min-w-[130px] whitespace-nowrap">Request Type</th>
+                                    <th className="px-4 py-3 min-w-[150px] whitespace-nowrap">Requested Quota</th>
+                                    <th className="px-4 py-3 min-w-[120px] whitespace-nowrap">Requester</th>
                                     <th className="px-4 py-3 min-w-[180px]">Reason / Remarks</th>
-                                    <th className="px-4 py-3 min-w-[100px]">Status</th>
-                                    <th className="px-4 py-3 min-w-[170px] text-right">Actions</th>
+                                    <th className="px-4 py-3 min-w-[100px] whitespace-nowrap">Status</th>
+                                    <th className="px-4 py-3 min-w-[170px] text-right whitespace-nowrap">Actions</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100 dark:divide-slate-700/60 text-slate-800 dark:text-slate-200">
@@ -1671,13 +1746,15 @@ export default function SuperAdminTokenOps() {
                                 ) : (
                                     quotaRequests.map((req) => (
                                         <tr key={req.id} className="hover:bg-indigo-50/30 dark:hover:bg-slate-700/30 transition-colors">
-                                            <td className="px-4 py-3 font-mono font-semibold">#{req.id}</td>
-                                            <td className="px-4 py-3 font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                                                <Building2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                                                <span className="truncate">{req.organization_name}</span>
+                                            <td className="px-4 py-3 font-mono font-semibold text-xs text-slate-700 dark:text-slate-300 whitespace-nowrap">#{req.id}</td>
+                                            <td className="px-4 py-3 font-semibold text-xs text-slate-900 dark:text-white whitespace-nowrap">
+                                                <div className="flex items-center gap-1.5">
+                                                    <Building2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                                    <span className="truncate">{req.organization_name}</span>
+                                                </div>
                                             </td>
-                                            <td className="px-4 py-3">
-                                                 <span className={`px-2 py-0.5 text-[11px] font-semibold rounded-full border ${
+                                            <td className="px-4 py-3 text-xs whitespace-nowrap">
+                                                 <span className={`px-2 py-0.5 text-xs font-semibold rounded-full border ${
                                                      req.request_type === 'TOKEN_INCREASE'
                                                          ? 'bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-800'
                                                          : req.request_type === 'PAYG_DISABLEMENT'
@@ -1687,7 +1764,7 @@ export default function SuperAdminTokenOps() {
                                                      {req.request_type === 'TOKEN_INCREASE' ? 'Token Increase' : req.request_type === 'PAYG_DISABLEMENT' ? 'Prepaid Switch' : 'PAYG Enable'}
                                                  </span>
                                              </td>
-                                             <td className="px-4 py-3 font-mono font-bold text-indigo-600 dark:text-indigo-400">
+                                             <td className="px-4 py-3 font-mono font-semibold text-xs text-indigo-600 dark:text-indigo-400 whitespace-nowrap">
                                                  {req.request_type === 'TOKEN_INCREASE'
                                                      ? `+${Number(req.requested_tokens || 0).toLocaleString()} tokens`
                                                      : req.request_type === 'PAYG_DISABLEMENT'
@@ -1695,14 +1772,14 @@ export default function SuperAdminTokenOps() {
                                                          : 'Unlimited PAYG'
                                                  }
                                              </td>
-                                            <td className="px-4 py-3 text-slate-500 dark:text-slate-400 text-xs" title={req.requester_email || ''}>
+                                            <td className="px-4 py-3 text-slate-600 dark:text-slate-400 text-xs" title={req.requester_email || ''}>
                                                 {req.requester_name || `User #${req.requested_by}`}
                                             </td>
                                             <td className="px-4 py-3 text-slate-600 dark:text-slate-300 text-xs max-w-xs truncate" title={req.remarks || ''}>
                                                 {req.remarks || <span className="text-slate-400 italic">None provided</span>}
                                             </td>
-                                            <td className="px-4 py-3">
-                                                <span className={`px-2 py-0.5 text-[11px] font-semibold rounded-full border ${
+                                            <td className="px-4 py-3 text-xs">
+                                                <span className={`px-2 py-0.5 text-xs font-semibold rounded-full border ${
                                                     req.status === 'APPROVED'
                                                         ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
                                                         : req.status === 'REJECTED'
@@ -1712,7 +1789,7 @@ export default function SuperAdminTokenOps() {
                                                     {req.status}
                                                 </span>
                                             </td>
-                                            <td className="px-4 py-3 text-right whitespace-nowrap">
+                                            <td className="px-4 py-3 text-right text-xs whitespace-nowrap">
                                                 {req.status === 'REQUESTED' ? (
                                                     <div className="flex items-center justify-end gap-1.5">
                                                         <button
@@ -2250,14 +2327,17 @@ export default function SuperAdminTokenOps() {
                                     <h4 className="text-xs font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider mb-2">
                                         Recent 7-Day Activity
                                     </h4>
-                                    <div className="grid grid-cols-7 gap-1 text-center">
+                                    <div className="grid grid-cols-7 gap-2 text-center">
                                         {orgDetailData.daily_usage?.map((d) => (
-                                            <div key={d.date} className="p-2 bg-slate-50 dark:bg-slate-900/40 rounded-lg border border-slate-150 dark:border-slate-750">
-                                                <div className="text-[9px] text-slate-400 font-mono">{d.date.slice(5)}</div>
-                                                <div className="text-xs font-bold text-slate-800 dark:text-slate-200 mt-1 font-mono">
+                                            <div
+                                                key={d.date}
+                                                className="p-2 bg-slate-50 dark:bg-slate-900/40 rounded-lg border border-[#dbdbdb] hover:border-slate-600 dark:border-slate-700 dark:hover:border-slate-400 transition-colors duration-150 flex flex-col items-center justify-center cursor-default"
+                                            >
+                                                <div className="text-[10px] text-slate-400 font-mono leading-none">{d.date.slice(5)}</div>
+                                                <div className="text-xs font-bold text-slate-800 dark:text-slate-200 font-mono leading-none mt-1">
                                                     {d.tokens > 1000 ? `${(d.tokens / 1000).toFixed(1)}k` : d.tokens}
                                                 </div>
-                                                <div className="text-[9px] text-slate-400 font-mono">{d.requests} req</div>
+                                                <div className="text-[10px] text-slate-400 font-mono leading-none mt-1">{d.requests} req</div>
                                             </div>
                                         ))}
                                     </div>
@@ -2272,10 +2352,17 @@ export default function SuperAdminTokenOps() {
                                         <div className="text-xs text-slate-400 italic py-2">No user usage recorded.</div>
                                     ) : (
                                         <div className="space-y-1.5">
-                                            {orgDetailData.top_users.map((u, i) => (
-                                                <div key={u.user_id} className="flex justify-between items-center p-2 bg-slate-50 dark:bg-slate-900/30 rounded-lg text-xs font-mono">
-                                                    <span className="font-semibold text-slate-700 dark:text-slate-300">User #{u.user_id}</span>
-                                                    <span className="font-bold text-indigo-600 dark:text-indigo-400">{Number(u.tokens).toLocaleString()} tokens</span>
+                                            {orgDetailData.top_users.map((u) => (
+                                                <div key={u.user_id} className="flex justify-between items-center p-2.5 bg-slate-50 dark:bg-slate-900/30 rounded-lg text-xs">
+                                                    <div className="flex items-center gap-2 min-w-0">
+                                                        <div className="w-6 h-6 rounded-full bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 flex items-center justify-center font-bold text-[10px] shrink-0">
+                                                            {(u.user_name || `U${u.user_id}`).charAt(0).toUpperCase()}
+                                                        </div>
+                                                        <span className="font-semibold text-slate-800 dark:text-slate-200 truncate" title={u.email || u.user_name || ''}>
+                                                            {u.user_name || `User #${u.user_id}`}
+                                                        </span>
+                                                    </div>
+                                                    <span className="font-bold font-mono text-indigo-600 dark:text-indigo-400 shrink-0">{Number(u.tokens).toLocaleString()} tokens</span>
                                                 </div>
                                             ))}
                                         </div>

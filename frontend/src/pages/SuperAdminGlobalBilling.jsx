@@ -227,28 +227,37 @@ export default function SuperAdminGlobalBilling() {
     <div className="h-full overflow-y-auto bg-slate-50 dark:bg-slate-950 p-4 sm:p-6 text-slate-900 dark:text-slate-100 transition-colors">
       <div className="max-w-7xl mx-auto space-y-6">
         
-        {/* Actions Toolbar */}
-        <div className="flex flex-wrap items-center justify-end gap-2 border-b border-slate-200 dark:border-purple-500/20 pb-3">
-          <div className="flex flex-wrap items-center gap-2 ml-auto">
+        {/* Header / Actions Toolbar */}
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-slate-200 dark:border-purple-500/20 pb-3">
+          <div>
+            <h2 className="text-lg sm:text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <CreditCard className="w-5 h-5 text-purple-600 dark:text-purple-400 shrink-0" />
+              Billing & Consumption Overview
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Platform spend, token usage telemetry, and tenant cost analytics.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 flex-nowrap shrink-0 overflow-x-auto no-scrollbar">
             <button
               onClick={handleDownloadPDF}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-purple-900/40 hover:bg-slate-100 dark:hover:bg-purple-800/60 border border-slate-200 dark:border-purple-500/30 text-purple-700 dark:text-purple-200 text-xs font-semibold transition-all shadow-sm cursor-pointer"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-purple-900/40 hover:bg-slate-100 dark:hover:bg-purple-800/60 border border-slate-200 dark:border-purple-500/30 text-purple-700 dark:text-purple-200 text-xs font-semibold transition-all shadow-sm cursor-pointer whitespace-nowrap shrink-0"
             >
-              <FileText className="w-3.5 h-3.5 text-purple-300" />
+              <FileText className="w-3.5 h-3.5 text-purple-500 dark:text-purple-300" />
               Download PDF Report
             </button>
 
             <button
               onClick={handleExportExcel}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-emerald-950/60 hover:bg-slate-100 dark:hover:bg-emerald-900/70 border border-slate-200 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-300 text-xs font-semibold transition-all shadow-sm cursor-pointer"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-emerald-950/60 hover:bg-slate-100 dark:hover:bg-emerald-900/70 border border-slate-200 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-300 text-xs font-semibold transition-all shadow-sm cursor-pointer whitespace-nowrap shrink-0"
             >
-              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
               Export Excel
             </button>
 
             <button
               onClick={fetchData}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-xs font-semibold transition-all shadow-sm cursor-pointer"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 text-xs font-semibold transition-all shadow-sm cursor-pointer whitespace-nowrap shrink-0"
             >
               <RefreshCw className="w-3.5 h-3.5" />
               Refresh
