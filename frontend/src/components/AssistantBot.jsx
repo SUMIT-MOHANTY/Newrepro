@@ -145,6 +145,7 @@ const AssistantBot = () => {
   const messagesEndRef = useRef(null);
   const location = useLocation();
 
+
   const fetchUserQuota = async () => {
     const token = localStorage.getItem('token');
     if (!token) return;
@@ -450,6 +451,12 @@ const AssistantBot = () => {
       <div className="absolute inset-0 rounded-full bg-white/30 scale-0 group-active:scale-150 transition-transform duration-200 pointer-events-none"></div>
     </div>
   );
+
+  // Safely hide assistant bot on tickets/support pages after all hooks have run
+  if (location.pathname.startsWith('/tickets') || location.pathname.startsWith('/superadmin/tickets')) {
+    return null;
+  }
+
   return (
     <>
       {!isOpen && <FloatingBall />}

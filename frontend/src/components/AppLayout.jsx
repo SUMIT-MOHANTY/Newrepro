@@ -4,7 +4,7 @@ import { API_ENDPOINTS, API_BASE_URL } from '../config';
 import { clearAuthData, clearTenantScopedState } from '../utils/auth';
 import { customError } from '../utils/modalHelpers';
 import { useModal } from '../contexts/ModalContext';
-import { Menu, Settings, Moon, Sun, Lock, Mail, ShieldAlert, ShieldCheck, CheckCircle, BookOpen, Coins, AlertCircle } from 'lucide-react';
+import { Menu, Settings, Moon, Sun, Lock, Mail, ShieldAlert, ShieldCheck, CheckCircle, BookOpen, Coins, AlertCircle, LifeBuoy } from 'lucide-react';
 import Sidebar from './Sidebar';
 import RoadmapHeader from './RoadmapHeader';
 import AgentsPage from './AgentsPage';
@@ -210,6 +210,7 @@ export default function AppLayout({ children }) {
                                         : location.pathname === '/plugins' ? 'plugins'
                                             : location.pathname.startsWith('/share-doc') ? 'shareDoc'
                                                 : location.pathname.startsWith('/billing') ? 'billing'
+                                                    : (location.pathname.startsWith('/tickets') || location.pathname === '/superadmin/tickets') ? 'supportTickets'
                                                     : location.pathname === '/superadmin/dashboard' ? 'superadminDashboard'
                                                         : location.pathname === '/superadmin/requests' ? 'superadminRequests'
                                                             : location.pathname === '/superadmin/organizations' ? 'superadminOrganizations'
@@ -242,6 +243,8 @@ export default function AppLayout({ children }) {
                 return { title: 'Secure Document Share', subtitle: 'Upload, Manage, and Share Project Documents' };
             case 'billing':
                 return { title: 'Billing & Activity', subtitle: 'Centralized cost, usage & operations tracking' };
+            case 'supportTickets':
+                return { title: 'Support & Assistance Hub', subtitle: 'Omni-channel helpdesk & real-time resolution' };
             case 'governanceManagement':
                 return { title: 'Governance Management', subtitle: 'Access control & policy administration' };
             case 'agents':
@@ -403,8 +406,16 @@ export default function AppLayout({ children }) {
         if (!user || !rbac) return false;
 
         const path = location.pathname || '/';
-        if (path === '/app' || path.startsWith('/app/') || path.startsWith('/share-doc')) return false;
-        if (rbac?.is_org_admin) return false;
+        if (
+            path === '/app' || 
+            path.startsWith('/app/') || 
+            path.startsWith('/share-doc') || 
+            path === '/tickets' || 
+            path.startsWith('/tickets') || 
+            path === '/superadmin/tickets' ||
+            path === '/docs'
+        ) return false;
+        if (user?.is_super_admin || rbac?.is_org_admin) return false;
 
         const allowed = Array.isArray(rbac?.allowed_paths) ? rbac.allowed_paths : [];
         let rbacPath = path;
@@ -710,7 +721,7 @@ export default function AppLayout({ children }) {
 
         // Only navigate if we're on a project URL (/a/{token}) or a non-step page
         const isOnProjectUrl = location.pathname.startsWith('/a/');
-        const isOnSpecialPage = ['/agents', '/organization-admin', '/plugins', '/billing'].includes(location.pathname);
+        const isOnSpecialPage = ['/agents', '/organization-admin', '/plugins', '/billing', '/tickets', '/superadmin/tickets'].includes(location.pathname);
 
         if (isOnProjectUrl && !isOnSpecialPage) {
             lastNavigatedProjectRef.current = selectedProjectKey;
@@ -1329,6 +1340,8 @@ export default function AppLayout({ children }) {
         isShareMode,
         handleCreateShareProject,
         unifiedProjects,
+        isDarkMode,
+        setIsDarkMode,
     };
 
     return (
@@ -1504,7 +1517,7 @@ export default function AppLayout({ children }) {
                 {/* ── Project-level Roadmap Stepper — shown on project workflow pages only ── */}
                 {
                     roadmapDataForView && 
-                    !['/agents', '/plugins', '/share-doc', '/organization-admin', '/billing', '/docs'].includes(location.pathname) && 
+                    !['/agents', '/plugins', '/share-doc', '/organization-admin', '/billing', '/docs', '/tickets', '/superadmin/tickets'].includes(location.pathname) && 
                     !location.pathname.startsWith('/superadmin') && (
                         <div className="bg-app-bg-card border-b border-app-border-light shadow-sm shrink-0 overflow-x-auto z-[240] relative">
                             <RoadmapHeader

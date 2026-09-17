@@ -431,6 +431,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from support_tickets_endpoints import router as support_tickets_router
+app.include_router(support_tickets_router)
+
 from llm_gateway import (
     current_user_id_var,
     current_project_token_var,
@@ -2681,6 +2684,7 @@ ORG_MANAGED_PAGES: list[schemas.OrganizationPage] = [
     schemas.OrganizationPage(path="/organization-admin", label="Organization Admin"),
     schemas.OrganizationPage(path="/governance-management", label="Governance Management"),
     schemas.OrganizationPage(path="/billing", label="Billing & Activity"),
+    schemas.OrganizationPage(path="/tickets", label="Support Tickets"),
 ]
 
 def _hash_invite_token(token: str) -> str:
@@ -2750,7 +2754,8 @@ def _get_user_allowed_paths(db: Session, user: models.User) -> tuple[Optional[st
             "/superadmin/global-billing",
             "/superadmin/roles",
             "/superadmin/capacity",
-            "/superadmin/logs"
+            "/superadmin/logs",
+            "/superadmin/tickets",
         ]
         return "Super Admin", superadmin_paths
 
@@ -2775,13 +2780,15 @@ def _get_user_allowed_paths(db: Session, user: models.User) -> tuple[Optional[st
             db.refresh(mapping)
 
     if not mapping:
-        return None, []
+        return None, ["/tickets"]
 
     role = db.query(models.OrganizationRole).filter(models.OrganizationRole.id == mapping.role_id).first()
     if not role:
-        return None, []
+        return None, ["/tickets"]
 
     allowed_paths = sorted({(perm.path or "").strip() for perm in (role.permissions or []) if (perm.path or "").strip()})
+    if "/tickets" not in allowed_paths:
+        allowed_paths.append("/tickets")
     return role.name, allowed_paths
 
 def _can_manage_governance(db: Session, user: models.User) -> bool:

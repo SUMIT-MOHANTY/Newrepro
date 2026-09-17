@@ -32,6 +32,7 @@ import SuperAdminGlobalBilling from './pages/SuperAdminGlobalBilling';
 import SuperAdminRoles from './pages/SuperAdminRoles';
 import SuperAdminAuditLogs from './pages/SuperAdminAuditLogs';
 import SuperAdminTokenOps from './pages/SuperAdminTokenOps';
+import SupportTickets from './pages/SupportTickets';
 
 function App() {
   return (
@@ -126,6 +127,16 @@ function App() {
         <Route path="/billing" element={
           <AppLayout>
             {(layoutProps) => <Billing {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/tickets" element={
+          <AppLayout>
+            {(layoutProps) => <SupportTickets {...layoutProps} />}
+          </AppLayout>
+        } />
+        <Route path="/superadmin/tickets" element={
+          <AppLayout>
+            {(layoutProps) => <SupportTickets {...layoutProps} />}
           </AppLayout>
         } />
         {/* Super Admin routes */}
