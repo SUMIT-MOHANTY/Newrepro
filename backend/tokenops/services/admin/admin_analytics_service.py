@@ -7,7 +7,7 @@ from tokenops.models.organization import Organization
 from tokenops.models.token_wallet import OrganizationWallet
 from tokenops.models.summary import OrganizationUsageSummary, UserUsageSummary
 from tokenops.models.quota_request import TokenQuotaRequest
-from models import AIUsageLog
+from models import AIUsageLog, User
 from tokenops.schemas.superadmin import (
     AnalyticsOverview, OrganizationAnalytics, DailyUsageView, TopUserView,
     TrendPoint, UsageTrendsResponse, ModelUsageView,
@@ -356,14 +356,33 @@ class AdminAnalyticsService:
                     
         daily_usage = [DailyUsageView(**day_map[k]) for k in sorted(day_map.keys())]
         
-        top_user_summaries = self.session.query(UserUsageSummary).filter_by(
-            organization_name=organization_name
-        ).order_by(UserUsageSummary.total_tokens.desc()).limit(5).all()
+        top_user_summaries = (
+            self.session.query(UserUsageSummary, User)
+            .outerjoin(User, UserUsageSummary.user_id == User.id)
+            .filter(UserUsageSummary.organization_name == organization_name)
+            .order_by(UserUsageSummary.total_tokens.desc())
+            .limit(5)
+            .all()
+        )
         
-        top_users = [
-            TopUserView(user_id=u.user_id, tokens=int(u.total_tokens or 0))
-            for u in top_user_summaries
-        ]
+        top_users = []
+        for summary, user in top_user_summaries:
+            name = None
+            email = None
+            if user:
+                full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+                name = full_name if full_name else (user.email or f"User #{summary.user_id}")
+                email = user.email
+            else:
+                name = f"User #{summary.user_id}"
+            top_users.append(
+                TopUserView(
+                    user_id=summary.user_id,
+                    user_name=name,
+                    email=email,
+                    tokens=int(summary.total_tokens or 0)
+                )
+            )
         
         return OrganizationAnalytics(
             organization_name=organization_name,
