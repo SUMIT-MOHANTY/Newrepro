@@ -2750,7 +2750,7 @@ def _get_vibecoding_usage_logs(start_dt=None, end_dt=None):
     If the API is not available, returns an empty list (direct SQLite fallback removed).
     """
     import requests
-    vibecoding_url = os.getenv("VIBECODING_BACKEND_URL", "http://localhost:8001")
+    vibecoding_url = os.getenv("VIBECODING_BACKEND_URL", "http://127.0.0.1:8001")
     if not vibecoding_url:
         return []
     if not vibecoding_url.endswith("/"):
@@ -2765,7 +2765,7 @@ def _get_vibecoding_usage_logs(start_dt=None, end_dt=None):
         telemetry_url += "?" + "&".join(q_params)
 
     try:
-        resp = requests.get(telemetry_url, timeout=3)
+        resp = requests.get(telemetry_url, timeout=(0.5, 1.5))
         if resp.ok:
             data = resp.json()
             raw_logs = data.get("logs", [])
@@ -3118,6 +3118,8 @@ def get_superadmin_organizations(
         ).all() if row[0] and row[0].strip()
     }))
 
+    vibe_logs = _get_vibecoding_usage_logs(start_dt, end_dt)
+
     result = []
     for name in org_names:
         quota = db.query(models.OrganizationAgentQuota).filter(
@@ -3168,7 +3170,6 @@ def get_superadmin_organizations(
                 "model": l.model or "DSuite Model"
             })
             
-        vibe_logs = _get_vibecoding_usage_logs(start_dt, end_dt)
         org_emails = {u.email.lower() for u in users}
         for vl in vibe_logs:
             if vl["username"] and vl["username"].lower() in org_emails:
@@ -3339,7 +3340,7 @@ def get_superadmin_vibecoding_costs(
 
     # 1. Fetch raw data from Vibecoding Service HTTP endpoint if available, else SQLite DB fallback
     vibe_data = None
-    vibecoding_url = os.getenv("VIBECODING_BACKEND_URL", "http://localhost:8001")
+    vibecoding_url = os.getenv("VIBECODING_BACKEND_URL", "http://127.0.0.1:8001")
     if vibecoding_url:
         if not vibecoding_url.endswith("/"):
             vibecoding_url += "/"
@@ -3351,7 +3352,7 @@ def get_superadmin_vibecoding_costs(
             telemetry_url += "?" + "&".join(q_params)
 
         try:
-            resp = requests.get(telemetry_url, timeout=3)
+            resp = requests.get(telemetry_url, timeout=(0.5, 1.5))
             if resp.ok:
                 vibe_data = resp.json()
         except Exception as err:

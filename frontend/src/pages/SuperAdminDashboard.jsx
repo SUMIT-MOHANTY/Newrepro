@@ -684,18 +684,18 @@ export default function SuperAdminDashboard() {
             </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
+          <div className="overflow-x-auto custom-scrollbar pb-2">
+            <table className="w-full text-left text-xs min-w-[950px]">
               <thead className="bg-slate-50 dark:bg-slate-800/40 text-slate-500 dark:text-slate-400 font-semibold uppercase text-[10px] tracking-wider border-b border-slate-200 dark:border-slate-800">
                 <tr>
-                  <th className="py-2.5 px-3">Organization</th>
-                  <th className="py-2.5 px-3">Max Agent Capacity</th>
-                  <th className="py-2.5 px-3">Onboarded Agents</th>
-                  <th className="py-2.5 px-3">Available Slots</th>
-                  <th className="py-2.5 px-3">Users</th>
-                  <th className="py-2.5 px-3">Tokens Consumed</th>
-                  <th className="py-2.5 px-3">Total Cost</th>
-                  <th className="py-2.5 px-3 text-right">Actions</th>
+                  <th className="py-2.5 px-3 whitespace-nowrap">Organization</th>
+                  <th className="py-2.5 px-3 text-center whitespace-nowrap">Max Agent Capacity</th>
+                  <th className="py-2.5 px-3 text-center whitespace-nowrap">Onboarded Agents</th>
+                  <th className="py-2.5 px-3 text-center whitespace-nowrap">Available Slots</th>
+                  <th className="py-2.5 px-3 text-center whitespace-nowrap">Users</th>
+                  <th className="py-2.5 px-3 text-center whitespace-nowrap">Tokens Consumed</th>
+                  <th className="py-2.5 px-3 text-center whitespace-nowrap">Total Cost</th>
+                  <th className="py-2.5 px-3 text-right whitespace-nowrap">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800/60 text-slate-700 dark:text-slate-200">
@@ -708,12 +708,12 @@ export default function SuperAdminDashboard() {
                 ) : (
                   paginatedOrgs.map((org) => (
                     <tr key={org.organization_name} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/30 transition-colors">
-                      <td className="py-3 px-3 font-semibold text-slate-900 dark:text-white">
+                      <td className="py-3 px-3 font-semibold text-slate-900 dark:text-white whitespace-nowrap">
                         {org.organization_name}
                       </td>
-                      <td className="py-3 px-3">
+                      <td className="py-3 px-3 text-center whitespace-nowrap">
                         {editingOrg === org.organization_name ? (
-                          <div className="flex items-center gap-1.5">
+                          <div className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap">
                             <input
                               type="number"
                               min="1"
@@ -724,52 +724,54 @@ export default function SuperAdminDashboard() {
                             <button
                               onClick={() => handleUpdateCapacity(org.organization_name)}
                               disabled={updatingCap}
-                              className="px-2 py-0.5 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded text-[11px]"
+                              className="px-2 py-0.5 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded text-[11px] whitespace-nowrap"
                             >
                               Save
                             </button>
                             <button
                               onClick={() => setEditingOrg(null)}
-                              className="px-2 py-0.5 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 rounded text-[11px] cursor-pointer"
+                              className="px-2 py-0.5 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 rounded text-[11px] cursor-pointer whitespace-nowrap"
                             >
                               Cancel
                             </button>
                           </div>
                         ) : (
-                          <span className="inline-flex items-center gap-1 font-bold text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-500/10 px-2 py-0.5 rounded border border-purple-200 dark:border-purple-500/20">
-                            {org.max_agent_capacity} Agents Max
-                          </span>
+                          <div className="flex justify-center">
+                            <span className="inline-flex items-center gap-1 font-bold text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-500/10 px-2 py-0.5 rounded border border-purple-200 dark:border-purple-500/20 whitespace-nowrap">
+                              {org.max_agent_capacity} Agents Max
+                            </span>
+                          </div>
                         )}
                       </td>
-                      <td className="py-3 px-3 font-medium text-slate-600 dark:text-slate-300">
+                      <td className="py-3 px-3 text-center font-medium text-slate-600 dark:text-slate-300 whitespace-nowrap">
                         {org.total_onboarded_agents}
                       </td>
-                      <td className="py-3 px-3">
-                        <span className={`font-semibold ${org.available_capacity > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      <td className="py-3 px-3 text-center whitespace-nowrap">
+                        <span className={`font-semibold whitespace-nowrap ${org.available_capacity > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                           {org.available_capacity} slots remaining
                         </span>
                       </td>
-                      <td className="py-3 px-3 text-slate-600 dark:text-slate-300 font-medium">
+                      <td className="py-3 px-3 text-center text-slate-600 dark:text-slate-300 font-medium whitespace-nowrap">
                         {org.user_count} users
                       </td>
-                      <td className="py-3 px-3 text-purple-700 dark:text-purple-300 font-mono font-semibold">
+                      <td className="py-3 px-3 text-center text-purple-700 dark:text-purple-300 font-mono font-semibold whitespace-nowrap">
                         {(org.total_tokens_consumed || 0).toLocaleString()}
                       </td>
-                      <td className="py-3 px-3 text-emerald-600 dark:text-emerald-400 font-mono font-bold">
+                      <td className="py-3 px-3 text-center text-emerald-600 dark:text-emerald-400 font-mono font-bold whitespace-nowrap">
                         ${org.total_cost || 0}
                       </td>
-                      <td className="py-3 px-3 text-right">
-                        <div className="flex items-center justify-end gap-2">
+                      <td className="py-3 px-3 text-right whitespace-nowrap">
+                        <div className="flex items-center justify-end gap-2 whitespace-nowrap flex-nowrap">
                           <button
                             onClick={() => setSelectedOrgModal(org)}
-                            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-purple-50 dark:bg-purple-900/40 hover:bg-purple-100 dark:hover:bg-purple-800/60 border border-purple-200 dark:border-purple-500/30 text-xs font-semibold text-purple-700 dark:text-purple-200 transition-colors cursor-pointer"
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-purple-50 dark:bg-purple-900/40 hover:bg-purple-100 dark:hover:bg-purple-800/60 border border-purple-200 dark:border-purple-500/30 text-xs font-semibold text-purple-700 dark:text-purple-200 transition-colors cursor-pointer whitespace-nowrap flex-shrink-0"
                           >
                             <Eye className="w-3 h-3" />
                             Inspect Users
                           </button>
                           <button
                             onClick={() => setSelectedOrgProjModal(org)}
-                            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-blue-50 dark:bg-blue-900/40 hover:bg-blue-100 dark:hover:bg-blue-800/60 border border-blue-200 dark:border-blue-500/30 text-xs font-semibold text-blue-700 dark:text-blue-200 transition-colors cursor-pointer"
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-blue-50 dark:bg-blue-900/40 hover:bg-blue-100 dark:hover:bg-blue-800/60 border border-blue-200 dark:border-blue-500/30 text-xs font-semibold text-blue-700 dark:text-blue-200 transition-colors cursor-pointer whitespace-nowrap flex-shrink-0"
                           >
                             <Layers className="w-3 h-3" />
                             Inspect Projects
@@ -779,7 +781,7 @@ export default function SuperAdminDashboard() {
                               setEditingOrg(org.organization_name);
                               setNewCapacity(org.max_agent_capacity);
                             }}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 transition-colors cursor-pointer"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 transition-colors cursor-pointer whitespace-nowrap flex-shrink-0"
                           >
                             <Settings className="w-3 h-3" />
                             Cap Limit
