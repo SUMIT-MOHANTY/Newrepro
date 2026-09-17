@@ -78,7 +78,13 @@ class TaskGenerationJob:
         """Mark job as failed."""
         self.status = "failed"
         self.error = error_message
-        self.status_message = f"Task generation failed: {error_message}"
+        err_upper = str(error_message).upper()
+        if "TOKEN_EXHAUSTED" in err_upper or "402" in err_upper:
+            self.status_message = "Task generation failed: Token quota exhausted. Please allocate more tokens."
+        elif "PAYG_HARD_LIMIT_REACHED" in err_upper:
+            self.status_message = "Task generation failed: Spending limit reached."
+        else:
+            self.status_message = f"Task generation failed: {error_message}"
         self.updated_at = datetime.utcnow()
         logger.error(f"[{self.project_token}] Task generation job failed: {error_message}")
 

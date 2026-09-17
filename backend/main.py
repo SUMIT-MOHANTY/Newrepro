@@ -513,6 +513,12 @@ def _save_activity_log_bg(
 # Executor pool for background activity logging
 _activity_logger_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
+def _is_jwt_token_string(val: Optional[str]) -> bool:
+    if not val or not isinstance(val, str):
+        return False
+    parts = val.strip().split(".")
+    return len(parts) == 3 and parts[0].startswith("ey")
+
 @app.middleware("http")
 async def log_user_activities(request: Request, call_next):
     path = request.url.path
@@ -547,13 +553,34 @@ async def log_user_activities(request: Request, call_next):
         except Exception:
             pass
 
-    # Extract project token
-    project_token = (
+    # Extract project token safely (never let JWT task tokens become project_token)
+    raw_header_token = (
         request.headers.get("x-project-token")
         or request.headers.get("X-Project-Token")
-        or request.headers.get("x-task-token")
-        or request.headers.get("X-Task-Token")
     )
+    if raw_header_token and not _is_jwt_token_string(raw_header_token):
+        project_token = raw_header_token.strip()
+    else:
+        project_token = None
+
+    if not project_token:
+        raw_task_token = request.headers.get("x-task-token") or request.headers.get("X-Task-Token")
+        if raw_task_token:
+            if not _is_jwt_token_string(raw_task_token):
+                project_token = raw_task_token.strip()
+            else:
+                # If it's a JWT, attempt to resolve via client_id, but never use the raw JWT
+                try:
+                    db_session = SessionLocal()
+                    try:
+                        resolved = _resolve_project_token(db_session, raw_task_token)
+                        if resolved and not _is_jwt_token_string(resolved):
+                            project_token = resolved
+                    finally:
+                        db_session.close()
+                except Exception:
+                    pass
+
     if not project_token:
         project_token = request.query_params.get("project_token")
     if not project_token:
@@ -564,7 +591,7 @@ async def log_user_activities(request: Request, call_next):
                 parsed = urllib.parse.urlparse(referer)
                 queries = urllib.parse.parse_qs(parsed.query)
                 token_list = queries.get("project_token")
-                if token_list:
+                if token_list and not _is_jwt_token_string(token_list[0]):
                     project_token = token_list[0]
             except Exception:
                 pass
@@ -573,7 +600,7 @@ async def log_user_activities(request: Request, call_next):
         m = re.search(r"/projects?/([^/?#]+)", path)
         if m:
             candidate = m.group(1)
-            if candidate not in ("list", "create", "all", "recent", "stats", "export"):
+            if candidate not in ("list", "create", "all", "recent", "stats", "export") and not _is_jwt_token_string(candidate):
                 project_token = candidate
 
     # If project_token is still not found and user is authenticated, fall back to user's last_project_token
@@ -582,12 +609,15 @@ async def log_user_activities(request: Request, call_next):
             db_session = SessionLocal()
             try:
                 u = db_session.query(models.User).filter(models.User.id == user_id).first()
-                if u and u.last_project_token:
+                if u and u.last_project_token and not _is_jwt_token_string(u.last_project_token):
                     project_token = u.last_project_token
             finally:
                 db_session.close()
         except Exception:
             pass
+
+    if _is_jwt_token_string(project_token):
+        project_token = None
 
     # Resolve project name if project_token is present
     project_name = None
@@ -1155,6 +1185,27 @@ async def assistant_chat(
         llm_gateway.current_user_id_var.set(current_user.id)
         llm_gateway.current_user_org_var.set(getattr(current_user, "organization_name", None))
         llm_gateway.current_purpose_var.set("Copilot Chat")
+
+        # Extract candidate project token / name from context if present
+        candidate_project_token = None
+        candidate_project_name = None
+        if isinstance(context, dict):
+            candidate_project_token = context.get("project_token") or context.get("projectToken")
+            candidate_project_name = context.get("project_name") or context.get("projectName")
+            if not candidate_project_token and "currentPath" in context:
+                try:
+                    import urllib.parse
+                    parsed_url = urllib.parse.urlparse(str(context["currentPath"]))
+                    q = urllib.parse.parse_qs(parsed_url.query)
+                    if "project_token" in q:
+                        candidate_project_token = q["project_token"][0]
+                except Exception:
+                    pass
+        if candidate_project_token:
+            llm_gateway.current_project_token_var.set(candidate_project_token)
+        if candidate_project_name:
+            llm_gateway.current_project_name_var.set(candidate_project_name)
+
         assistant_reply = await ai_service.chat_with_llm(
             message=payload.message,
             context=context
@@ -1181,15 +1232,36 @@ async def assistant_chat_stream(
     llm_gateway.current_user_org_var.set(org_name)
     llm_gateway.current_purpose_var.set("Copilot Chat")
 
+    context = getattr(payload, 'context', None)
+    candidate_project_token = None
+    candidate_project_name = None
+    if isinstance(context, dict):
+        candidate_project_token = context.get("project_token") or context.get("projectToken")
+        candidate_project_name = context.get("project_name") or context.get("projectName")
+        if not candidate_project_token and "currentPath" in context:
+            try:
+                import urllib.parse
+                parsed_url = urllib.parse.urlparse(str(context["currentPath"]))
+                q = urllib.parse.parse_qs(parsed_url.query)
+                if "project_token" in q:
+                    candidate_project_token = q["project_token"][0]
+            except Exception:
+                pass
+    if candidate_project_token:
+        llm_gateway.current_project_token_var.set(candidate_project_token)
+    if candidate_project_name:
+        llm_gateway.current_project_name_var.set(candidate_project_name)
+
     async def generate():
         try:
-            context = getattr(payload, 'context', None)
             messages = ai_service.build_chat_messages(payload.message, context)
             async for chunk in llm_gateway.call_llm_streaming(
                 messages=messages,
                 user_id=user_id,
                 organization_name=org_name,
                 purpose="Copilot Chat",
+                project_token=candidate_project_token,
+                project_name=candidate_project_name,
             ):
                 if chunk.startswith("data: "):
                     data_str = chunk[6:].strip()
@@ -16630,6 +16702,13 @@ async def generate_tasks_locally(
     Supports progressive per-sprint generation and live polling status updates every 7s.
     """
     try:
+        # Explicitly set context variables for task generation so all AI planning calls attribute to the real project
+        user_org = getattr(current_user, "organization_name", None)
+        llm_gateway.current_user_id_var.set(current_user.id)
+        llm_gateway.current_user_org_var.set(user_org)
+        llm_gateway.current_project_token_var.set(request.project_token)
+        llm_gateway.current_purpose_var.set("Task Generation & Sprint Planning")
+
         from task_generation_service import generate_tasks_locally as gen_tasks
         from task_generation_job_manager import get_task_generation_job_manager
 
@@ -16762,14 +16841,33 @@ async def generate_tasks_locally(
             "polling_interval_seconds": 7,
         }
     
+    except HTTPException as http_exc:
+        if gen_job:
+            gen_job.set_failed(str(http_exc.detail))
+        raise
     except ValueError as val_err:
         logger.warning(f"Task generation validation error: {val_err}")
+        if gen_job:
+            gen_job.set_failed(str(val_err))
         raise HTTPException(
             status_code=400,
             detail=str(val_err)
         )
     except Exception as e:
         logger.error(f"Task generation failed: {e}")
+        err_str = str(e)
+        if gen_job:
+            gen_job.set_failed(err_str)
+        if "TOKEN_EXHAUSTED" in err_str or "402" in err_str:
+            raise HTTPException(
+                status_code=402,
+                detail="TOKEN_EXHAUSTED"
+            )
+        if "PAYG_HARD_LIMIT_REACHED" in err_str:
+            raise HTTPException(
+                status_code=402,
+                detail="PAYG_HARD_LIMIT_REACHED"
+            )
         raise HTTPException(
             status_code=500,
             detail=f"Task generation failed: {str(e)}"

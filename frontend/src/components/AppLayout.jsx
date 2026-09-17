@@ -1466,7 +1466,7 @@ export default function AppLayout({ children }) {
                                                 </span>
                                             )}
                                             {isQuotaExhausted && (
-                                                <span className="ml-1 px-1 py-0.2 rounded bg-rose-500 text-white text-[8px] sm:text-[9px] font-extrabold tracking-wider uppercase shadow-sm shadow-rose-950">
+                                                <span className="ml-1 inline-flex items-center justify-center px-1.5 py-0.5 rounded-full bg-rose-500 text-white text-[9px] font-black tracking-wider uppercase leading-none shadow-sm shadow-rose-950/40 select-none">
                                                     Exhausted
                                                 </span>
                                             )}

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+    AlertCircle,
+    AlertTriangle,
     ArrowRight,
     CalendarDays,
     CheckCircle2,
@@ -14,6 +16,7 @@ import {
     ChevronDown,
     ChevronRight,
     Lock,
+    X,
 } from 'lucide-react';
 import { API_ENDPOINTS, API_BASE_URL } from '../config';
 import { upsertDraftProject, getDraftProject } from '../utils/draftProjects';
@@ -45,44 +48,164 @@ function extractEntityName(item, key) {
     return fallback || '';
 }
 
-function getErrorMessage(errorPayload, fallback) {
-    if (!errorPayload) return fallback;
+function formatTaskErrorMessage(errorPayload, fallback = 'Task creation failed. Please try again.') {
+    if (!errorPayload) return null;
 
-    // Extract error message from various possible formats
-    let errorMessage = '';
-    if (typeof errorPayload.detail === 'string') {
-        errorMessage = errorPayload.detail;
-    } else if (typeof errorPayload.error === 'string') {
-        errorMessage = errorPayload.error;
-    } else if (typeof errorPayload.message === 'string') {
-        errorMessage = errorPayload.message;
-    } else {
-        return fallback;
-    }
+    let raw = '';
+    let statusCode = null;
 
-    // Convert technical error messages to user-friendly ones
-    if (errorMessage.toLowerCase().includes('already exists')) {
-        // Extract entity type and name if possible
-        const sprintMatch = errorMessage.match(/sprint.*?"([^"]+)"|sprint.*?name\s+["']([^"']+)["']/i);
-        const milestoneMatch = errorMessage.match(/milestone.*?"([^"]+)"|milestone.*?name\s+["']([^"']+)["']/i);
-
-        if (sprintMatch) {
-            const sprintName = sprintMatch[1] || sprintMatch[2];
-            return sprintName
-                ? `A sprint named "${sprintName}" already exists in this project. The system will use the existing sprint.`
-                : 'A sprint with this name already exists in this project. The system will use the existing sprint.';
-        } else if (milestoneMatch) {
-            const milestoneName = milestoneMatch[1] || milestoneMatch[2];
-            return milestoneName
-                ? `A milestone named "${milestoneName}" already exists in this project. The system will use the existing milestone.`
-                : 'A milestone with this name already exists in this project. The system will use the existing milestone.';
+    if (errorPayload && typeof errorPayload === 'object') {
+        if (errorPayload.status) statusCode = errorPayload.status;
+        if (typeof errorPayload.detail === 'string') {
+            raw = errorPayload.detail;
+        } else if (errorPayload.detail && typeof errorPayload.detail === 'object') {
+            raw = errorPayload.detail.message || JSON.stringify(errorPayload.detail);
+        } else if (typeof errorPayload.error === 'string') {
+            raw = errorPayload.error;
+        } else if (typeof errorPayload.message === 'string') {
+            raw = errorPayload.message;
         } else {
-            return 'This item already exists in the project. The system will continue with the existing item.';
+            raw = String(errorPayload);
         }
+    } else {
+        raw = String(errorPayload);
     }
 
-    return errorMessage || fallback;
-    return fallback;
+    // Try parsing if raw is a JSON string
+    try {
+        if (typeof raw === 'string' && (raw.startsWith('{') || raw.includes('"detail"'))) {
+            const parsed = JSON.parse(raw);
+            if (parsed.detail) raw = typeof parsed.detail === 'string' ? parsed.detail : JSON.stringify(parsed.detail);
+            else if (parsed.message) raw = parsed.message;
+            else if (parsed.error) raw = parsed.error;
+        }
+    } catch {
+        // ignore
+    }
+
+    const upper = String(raw).toUpperCase();
+
+    // Check specific known conditions
+    if (upper.includes('TOKEN_EXHAUSTED') || (upper.includes('402') && upper.includes('TOKEN')) || statusCode === 402) {
+        return {
+            type: 'token_exhausted',
+            title: 'Token Quota Exhausted',
+            message: 'Your organization has exhausted its available token quota. Please allocate more tokens or review your subscription in Billing to proceed.',
+            canGoToBilling: true,
+        };
+    }
+
+    if (upper.includes('PAYG_HARD_LIMIT_REACHED')) {
+        return {
+            type: 'billing_limit',
+            title: 'Spending Limit Reached',
+            message: "Your organization's pay-as-you-go spending limit has been reached. Please contact your administrator to adjust the limit.",
+            canGoToBilling: true,
+        };
+    }
+
+    if (upper.includes('PAYG ACCESS SUSPENDED') || upper.includes('OVERDUE') || upper.includes('GRACE PERIOD')) {
+        return {
+            type: 'billing_suspended',
+            title: 'Payment Required',
+            message: 'Your organization has overdue invoices exceeding its grace period. Please review your billing status to resume AI services.',
+            canGoToBilling: true,
+        };
+    }
+
+    if (upper.includes('ORGANIZATION_BLOCKED')) {
+        return {
+            type: 'account_blocked',
+            title: 'Organization Blocked',
+            message: 'Your organization account is currently suspended. Please contact the administrator or review billing.',
+            canGoToBilling: true,
+        };
+    }
+
+    if (upper.includes('USER_BLOCKED')) {
+        return {
+            type: 'account_blocked',
+            title: 'User Account Blocked',
+            message: 'Your user account has been blocked. Please contact your organization administrator.',
+            canGoToBilling: false,
+        };
+    }
+
+    if (upper.includes('PAYMENT_REQUIRED') || upper.includes(' 402') || upper.includes('402:')) {
+        return {
+            type: 'token_exhausted',
+            title: 'Payment Required / Token Limit',
+            message: 'Payment is required or your token quota is exhausted. Please check your token balance in the billing dashboard.',
+            canGoToBilling: true,
+        };
+    }
+
+    if (raw.toLowerCase().includes('already exists')) {
+        const sprintMatch = raw.match(/sprint.*?"([^"]+)"|sprint.*?name\s+["']([^"']+)["']/i);
+        const milestoneMatch = raw.match(/milestone.*?"([^"]+)"|milestone.*?name\s+["']([^"']+)["']/i);
+        const name = sprintMatch ? (sprintMatch[1] || sprintMatch[2]) : (milestoneMatch ? (milestoneMatch[1] || milestoneMatch[2]) : null);
+        return {
+            type: 'warning',
+            title: 'Item Already Exists',
+            message: name ? `An item named "${name}" already exists in this project. The system will continue with the existing item.` : 'This item already exists in the project.',
+            canGoToBilling: false,
+        };
+    }
+
+    if (upper.includes('401') || upper.includes('UNAUTHORIZED')) {
+        return {
+            type: 'auth_error',
+            title: 'Session Expired',
+            message: 'Your session has expired. Please log in again to continue.',
+            canGoToBilling: false,
+        };
+    }
+
+    if (upper.includes('403') || upper.includes('FORBIDDEN')) {
+        return {
+            type: 'auth_error',
+            title: 'Access Restricted',
+            message: 'You do not have permission to generate tasks for this project. Please contact your administrator.',
+            canGoToBilling: false,
+        };
+    }
+
+    if (upper.includes('TIMEOUT') || upper.includes('TIMED OUT') || upper.includes('504')) {
+        return {
+            type: 'timeout',
+            title: 'Request Timed Out',
+            message: 'The AI planning process took longer than expected. Please verify your repository connection and try again.',
+            canGoToBilling: false,
+        };
+    }
+
+    if (upper.includes('500') || upper.includes('INTERNAL SERVER ERROR')) {
+        return {
+            type: 'server_error',
+            title: 'AI Service Unavailable',
+            message: 'The AI planning service is temporarily unavailable or experiencing high load. Please try again in a few moments.',
+            canGoToBilling: false,
+        };
+    }
+
+    // Clean up technical wrappers like "Task generation failed: ..." or "AI Dynamic Sprint Planning failed after 5 attempts. Last error: ..."
+    let cleanMessage = raw
+        .replace(/^Task generation failed:\s*/i, '')
+        .replace(/^AI Dynamic Sprint Planning failed after \d+ attempts\.\s*(Last error:\s*)?/i, '')
+        .replace(/^(Error|Exception|Fail|Failure|Failed):\s*/i, '')
+        .trim();
+
+    return {
+        type: 'general',
+        title: 'Task Generation Failed',
+        message: cleanMessage || fallback,
+        canGoToBilling: false,
+    };
+}
+
+function getErrorMessage(errorPayload, fallback) {
+    const formatted = formatTaskErrorMessage(errorPayload, fallback);
+    return formatted?.message || fallback || '';
 }
 
 function sanitizePrerequisiteForAiPayload(item = {}) {
@@ -956,11 +1079,16 @@ export default function TaskCreation({
                 });
                 const generateJson = await generateRes.json().catch(() => ({}));
                 if (!generateRes.ok) {
-                    const errorMsg = getErrorMessage(generateJson, 'Failed to generate tasks');
-                    if (errorMsg.toLowerCase().includes('already exists') || errorMsg.toLowerCase().includes('will use the existing')) {
-                        console.warn('Sprint/milestone already exists, continuing:', errorMsg);
+                    const errorObj = formatTaskErrorMessage(
+                        generateJson?.detail ? generateJson : { ...generateJson, status: generateRes.status },
+                        'Failed to generate tasks'
+                    );
+                    if (errorObj?.type === 'warning' || errorObj?.message?.toLowerCase().includes('already exists') || errorObj?.message?.toLowerCase().includes('will use the existing')) {
+                        console.warn('Sprint/milestone already exists, continuing:', errorObj?.message);
                     } else {
-                        throw new Error(errorMsg);
+                        const err = new Error(errorObj?.message || 'Task creation failed');
+                        err.errorObj = errorObj;
+                        throw err;
                     }
                 }
 
@@ -982,7 +1110,7 @@ export default function TaskCreation({
                 }
                 if (!syncedToNxdune && syncError) {
                     console.warn('NXDUNE sync failed:', syncError);
-                    setError(`Tasks generated but NXDUNE sync failed: ${syncError}`);
+                    setError(formatTaskErrorMessage(`Tasks generated but NXDUNE sync failed: ${syncError}`));
                 }
                 setLiveCreatedTaskCount(createdCount);
                 setCreationStageIndex(1);
@@ -990,7 +1118,8 @@ export default function TaskCreation({
                 if (pollInterval) clearInterval(pollInterval);
             }
         } catch (e) {
-            setError(e?.message || 'Task creation failed');
+            const formatted = e?.errorObj || formatTaskErrorMessage(e?.message || e || 'Task creation failed');
+            setError(formatted);
         } finally {
             setIsGenerating(false);
         }
@@ -1468,7 +1597,41 @@ export default function TaskCreation({
                         </div>
 
                         {error && (
-                            <div className="text-xs text-app-status-error bg-app-status-errorBg border border-red-200 rounded-xl px-4 py-3">{error}</div>
+                            <div className="rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 p-4 shadow-sm animate-fade-in transition-all">
+                                <div className="flex items-start gap-3">
+                                    <div className="p-2 bg-red-100 dark:bg-red-900/50 text-red-600 dark:text-red-400 rounded-lg shrink-0 mt-0.5">
+                                        <AlertCircle className="w-5 h-5" />
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                        <h4 className="text-sm font-bold text-red-900 dark:text-red-200 mb-0.5">
+                                            {typeof error === 'object' && error?.title ? error.title : 'Unable to Complete Action'}
+                                        </h4>
+                                        <p className="text-xs text-red-700 dark:text-red-300 leading-relaxed">
+                                            {typeof error === 'object' && error?.message ? error.message : String(error)}
+                                        </p>
+                                        {typeof error === 'object' && error?.canGoToBilling && (
+                                            <div className="mt-3 flex items-center gap-2.5">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => navigate('/billing')}
+                                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg bg-red-600 hover:bg-red-700 text-white shadow-sm transition-all active:scale-95 cursor-pointer"
+                                                >
+                                                    <span>Go to Billing &amp; Tokens</span>
+                                                    <ArrowRight className="w-3.5 h-3.5" />
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => setError(null)}
+                                        className="text-red-400 hover:text-red-600 dark:hover:text-red-200 p-1 rounded-md hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors cursor-pointer"
+                                        title="Dismiss"
+                                    >
+                                        <X className="w-4 h-4" />
+                                    </button>
+                                </div>
+                            </div>
                         )}
                         {success && (
                             <div className="text-xs text-app-status-success bg-app-status-successBg border border-emerald-200 rounded-xl px-4 py-3 flex items-start gap-2.5">

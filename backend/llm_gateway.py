@@ -321,11 +321,19 @@ def check_ai_allowance(
 
         if p_token:
             # 1. Resolve project owner organization UUID
-            project_org_id, project_org = resolver.resolve(p_token)
-            target_tenant = project_org.name
+            try:
+                project_org_id, project_org = resolver.resolve(p_token)
+                target_tenant = project_org.name
+            except Exception:
+                if user_org:
+                    active_org_id, active_org = resolver.resolve(user_org)
+                    project_org_id, project_org = active_org_id, active_org
+                    target_tenant = active_org.name
+                else:
+                    raise
 
             # 2. If user active organization is present in context, enforce strict UUID match
-            if user_org:
+            if user_org and target_tenant != user_org:
                 active_org_id, active_org = resolver.resolve(user_org)
                 if active_org_id != project_org_id:
                     raise HTTPException(
