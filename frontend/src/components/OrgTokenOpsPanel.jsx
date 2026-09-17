@@ -20,6 +20,7 @@ export default function OrgTokenOpsPanel({ user }) {
     const [successMessage, setSuccessMessage] = useState('');
     const [openDropdownUserId, setOpenDropdownUserId] = useState(null);
     const [activeSubTab, setActiveSubTab] = useState('users'); // 'users' | 'member_requests' | 'requests' | 'ledger' | 'reports'
+    const [viewDropdownOpen, setViewDropdownOpen] = useState(false);
 
     // Financial Ledger Filters, Sorting & Pagination State
     const [ledgerFilter, setLedgerFilter] = useState('ALL'); // 'ALL' | 'AI_CONSUMPTION' | 'ALLOCATION' | 'REVOCATION' | 'INFLOW' | 'OUTFLOW'
@@ -29,7 +30,9 @@ export default function OrgTokenOpsPanel({ user }) {
     const [ledgerPage, setLedgerPage] = useState(1);
     const [ledgerPageSize, setLedgerPageSize] = useState(10);
     const [ledgerTotal, setLedgerTotal] = useState(0);
+    const [allLedgerTotal, setAllLedgerTotal] = useState(0);
     const [ledgerLoading, setLedgerLoading] = useState(false);
+    const [ledgerFilterDropdownOpen, setLedgerFilterDropdownOpen] = useState(false);
 
     // Modal States
     const [allocateModal, setAllocateModal] = useState({ open: false, userId: null, userName: '', amount: '', remarks: '' });
@@ -267,8 +270,12 @@ export default function OrgTokenOpsPanel({ user }) {
             if (res.ok) {
                 const data = await res.json();
                 if (data.success && data.data) {
+                    const totalCount = data.data.total !== undefined ? data.data.total : (data.data.items || []).length;
                     setLedger(data.data.items || []);
-                    setLedgerTotal(data.data.total !== undefined ? data.data.total : (data.data.items || []).length);
+                    setLedgerTotal(totalCount);
+                    if ((!filter || filter === 'ALL') && (!search || !search.trim())) {
+                        setAllLedgerTotal(totalCount);
+                    }
                     setLedgerPage(data.data.page || page);
                     setLedgerPageSize(data.data.size || size);
                 }
@@ -584,9 +591,9 @@ export default function OrgTokenOpsPanel({ user }) {
             {reserve && (
                 reserve.payg_enabled ? (
                     /* PAYG KPI CARDS */
-                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-3.5">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-3">
                         {/* Card 1: Billing Mode */}
-                        <div className="bg-amber-50/40 dark:bg-amber-950/20 p-3.5 sm:p-4 rounded-xl border border-amber-200/80 dark:border-amber-800/60 shadow-xs relative flex flex-col justify-between hover:border-amber-300 dark:hover:border-amber-700 transition-colors">
+                        <div className="bg-amber-50/40 dark:bg-amber-950/20 p-3 rounded-xl border border-amber-200/80 dark:border-amber-800/60 shadow-xs relative flex flex-col justify-between hover:border-amber-300 dark:hover:border-amber-700 transition-colors">
                             <div className="flex items-center justify-between gap-1">
                                 <span className="text-[10px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wider">Billing Mode</span>
                                 <div className="relative group">
@@ -596,15 +603,15 @@ export default function OrgTokenOpsPanel({ user }) {
                                     </div>
                                 </div>
                             </div>
-                            <div className="text-xl sm:text-2xl font-bold text-amber-700 dark:text-amber-400 mt-2 flex items-center gap-1.5">
-                                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse inline-block"></span>
-                                PAYG Active
+                            <div className="text-lg sm:text-xl font-bold text-amber-700 dark:text-amber-400 mt-1.5 flex items-center gap-1.5 whitespace-nowrap">
+                                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0 inline-block"></span>
+                                <span>PAYG Active</span>
                             </div>
-                            <span className="text-[11px] text-app-text-muted mt-1 block font-medium">Billed monthly post-paid</span>
+                            <span className="text-[11px] text-app-text-muted mt-1 block font-medium truncate">Billed monthly post-paid</span>
                         </div>
 
                         {/* Card 2: MTD Spend */}
-                        <div className="bg-app-bg-card p-3.5 sm:p-4 rounded-xl border border-app-border shadow-xs relative flex flex-col justify-between hover:border-slate-300 dark:hover:border-slate-600 transition-colors">
+                        <div className="bg-app-bg-card p-3 rounded-xl border border-app-border shadow-xs relative flex flex-col justify-between hover:border-slate-300 dark:hover:border-slate-600 transition-colors">
                             <div className="flex items-center justify-between gap-1">
                                 <span className="text-[10px] font-bold text-app-text-muted uppercase tracking-wider">Current MTD Spend</span>
                                 <div className="relative group">
@@ -614,16 +621,16 @@ export default function OrgTokenOpsPanel({ user }) {
                                     </div>
                                 </div>
                             </div>
-                            <div className="text-xl sm:text-2xl font-bold text-app-text-main mt-2 font-mono">
+                            <div className="text-lg sm:text-xl font-bold text-app-text-main mt-1.5 whitespace-nowrap">
                                 {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(reserve.payg_current_spend_usd || 0)}
                             </div>
-                            <span className="text-[11px] text-app-text-muted mt-1 block font-medium font-mono">
+                            <span className="text-[11px] text-app-text-muted mt-1 block font-medium truncate">
                                 {Number(Math.round((reserve.payg_current_spend_usd || 0) / (reserve.reference_price || 0.000007))).toLocaleString()} MTD tokens
                             </span>
                         </div>
 
                         {/* Card 3: Soft Limit */}
-                        <div className="bg-app-bg-card p-3.5 sm:p-4 rounded-xl border border-app-border shadow-xs relative flex flex-col justify-between hover:border-slate-300 dark:hover:border-slate-600 transition-colors">
+                        <div className="bg-app-bg-card p-3 rounded-xl border border-app-border shadow-xs relative flex flex-col justify-between hover:border-slate-300 dark:hover:border-slate-600 transition-colors">
                             <div className="flex items-center justify-between gap-1">
                                 <span className="text-[10px] font-bold text-app-text-muted uppercase tracking-wider">Soft Limit</span>
                                 <div className="relative group">
@@ -633,14 +640,14 @@ export default function OrgTokenOpsPanel({ user }) {
                                     </div>
                                 </div>
                             </div>
-                            <div className="text-xl sm:text-2xl font-bold text-amber-600 dark:text-amber-400 mt-2 font-mono">
+                            <div className="text-lg sm:text-xl font-bold text-amber-600 dark:text-amber-400 mt-1.5 whitespace-nowrap">
                                 {reserve.payg_soft_limit_usd ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(reserve.payg_soft_limit_usd) : 'No Limit'}
                             </div>
-                            <span className="text-[11px] text-app-text-muted mt-1 block font-medium">Alert notification trigger</span>
+                            <span className="text-[11px] text-app-text-muted mt-1 block font-medium truncate">Alert notification trigger</span>
                         </div>
 
                         {/* Card 4: Hard Limit */}
-                        <div className="bg-app-bg-card p-3.5 sm:p-4 rounded-xl border border-app-border shadow-xs relative flex flex-col justify-between hover:border-slate-300 dark:hover:border-slate-600 transition-colors">
+                        <div className="bg-app-bg-card p-3 rounded-xl border border-app-border shadow-xs relative flex flex-col justify-between hover:border-slate-300 dark:hover:border-slate-600 transition-colors">
                             <div className="flex items-center justify-between gap-1">
                                 <span className="text-[10px] font-bold text-app-text-muted uppercase tracking-wider">Hard Limit</span>
                                 <div className="relative group">
@@ -650,14 +657,14 @@ export default function OrgTokenOpsPanel({ user }) {
                                     </div>
                                 </div>
                             </div>
-                            <div className="text-xl sm:text-2xl font-bold text-rose-600 dark:text-rose-400 mt-2 font-mono">
+                            <div className="text-lg sm:text-xl font-bold text-rose-600 dark:text-rose-400 mt-1.5 whitespace-nowrap">
                                 {reserve.payg_hard_limit_usd ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(reserve.payg_hard_limit_usd) : 'No Limit'}
                             </div>
-                            <span className="text-[11px] text-app-text-muted mt-1 block font-medium">Hard execution block</span>
+                            <span className="text-[11px] text-app-text-muted mt-1 block font-medium truncate">Hard execution block</span>
                         </div>
 
                         {/* Card 5: Total Consumed */}
-                        <div className="bg-emerald-50/40 dark:bg-emerald-950/20 p-3.5 sm:p-4 rounded-xl border border-emerald-200/80 dark:border-emerald-800/60 shadow-xs relative flex flex-col justify-between hover:border-emerald-300 dark:hover:border-emerald-700 transition-colors col-span-2 sm:col-span-1">
+                        <div className="bg-emerald-50/40 dark:bg-emerald-950/20 p-3 rounded-xl border border-emerald-200/80 dark:border-emerald-800/60 shadow-xs relative flex flex-col justify-between hover:border-emerald-300 dark:hover:border-emerald-700 transition-colors col-span-2 sm:col-span-1">
                             <div className="flex items-center justify-between gap-1">
                                 <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-400 uppercase tracking-wider">Total Consumed</span>
                                 <div className="relative group">
@@ -667,19 +674,19 @@ export default function OrgTokenOpsPanel({ user }) {
                                     </div>
                                 </div>
                             </div>
-                            <div className="text-xl sm:text-2xl font-bold text-emerald-700 dark:text-emerald-300 mt-2 font-mono">
+                            <div className="text-lg sm:text-xl font-bold text-emerald-700 dark:text-emerald-300 mt-1.5 whitespace-nowrap">
                                 {formatCurrency(reserve.consumed_tokens, reserve.reference_price)}
                             </div>
-                            <span className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 block font-mono">
+                            <span className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 block font-medium truncate">
                                 {Number(reserve.consumed_tokens || 0).toLocaleString()} total tokens
                             </span>
                         </div>
                     </div>
                 ) : (
                     /* PREPAID KPI CARDS */
-                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-3.5">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 sm:gap-3">
                         {/* Total Approved */}
-                        <div className="bg-app-bg-card p-3.5 sm:p-4 rounded-xl border border-app-border shadow-xs relative flex flex-col justify-between hover:border-slate-300 dark:hover:border-slate-600 transition-colors">
+                        <div className="bg-app-bg-card p-3 rounded-xl border border-app-border shadow-xs relative flex flex-col justify-between hover:border-slate-300 dark:hover:border-slate-600 transition-colors">
                             <div className="flex items-center justify-between gap-1">
                                 <span className="text-[10px] font-bold text-app-text-muted uppercase tracking-wider">Total Approved Value</span>
                                 <div className="relative group">
@@ -689,16 +696,16 @@ export default function OrgTokenOpsPanel({ user }) {
                                     </div>
                                 </div>
                             </div>
-                            <div className="text-xl sm:text-2xl font-bold tracking-tight text-app-text-main mt-2 font-mono">
+                            <div className="text-lg sm:text-xl font-bold tracking-tight text-app-text-main mt-1.5 font-mono whitespace-nowrap">
                                 {formatCurrency(reserve.purchased_tokens, reserve.reference_price)}
                             </div>
-                            <span className="text-[11px] text-app-text-muted mt-1 block font-mono">
+                            <span className="text-[11px] text-app-text-muted mt-1 block font-mono truncate">
                                 {Number(reserve.purchased_tokens || 0).toLocaleString()} tokens
                             </span>
                         </div>
 
                         {/* In Org Reserve */}
-                        <div className="bg-indigo-50/40 dark:bg-indigo-950/20 p-3.5 sm:p-4 rounded-xl border border-indigo-200/80 dark:border-indigo-800/60 shadow-xs relative flex flex-col justify-between hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors">
+                        <div className="bg-indigo-50/40 dark:bg-indigo-950/20 p-3 rounded-xl border border-indigo-200/80 dark:border-indigo-800/60 shadow-xs relative flex flex-col justify-between hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors">
                             <div className="flex items-center justify-between gap-1">
                                 <span className="text-[10px] font-bold text-indigo-700 dark:text-indigo-400 uppercase tracking-wider">In Org Reserve</span>
                                 <div className="relative group">
@@ -708,16 +715,16 @@ export default function OrgTokenOpsPanel({ user }) {
                                     </div>
                                 </div>
                             </div>
-                            <div className="text-xl sm:text-2xl font-bold tracking-tight text-indigo-700 dark:text-indigo-300 mt-2 font-mono">
+                            <div className="text-lg sm:text-xl font-bold tracking-tight text-indigo-700 dark:text-indigo-300 mt-1.5 font-mono whitespace-nowrap">
                                 {formatCurrency(reserve.reserved_tokens, reserve.reference_price)}
                             </div>
-                            <span className="text-[11px] text-indigo-600 dark:text-indigo-400 mt-1 block font-medium font-mono">
+                            <span className="text-[11px] text-indigo-600 dark:text-indigo-400 mt-1 block font-medium font-mono truncate">
                                 {Number(reserve.reserved_tokens || 0).toLocaleString()} tokens
                             </span>
                         </div>
 
                         {/* Allocated Value */}
-                        <div className="bg-app-bg-card p-3.5 sm:p-4 rounded-xl border border-app-border shadow-xs relative flex flex-col justify-between hover:border-slate-300 dark:hover:border-slate-600 transition-colors">
+                        <div className="bg-app-bg-card p-3 rounded-xl border border-app-border shadow-xs relative flex flex-col justify-between hover:border-slate-300 dark:hover:border-slate-600 transition-colors">
                             <div className="flex items-center justify-between gap-1">
                                 <span className="text-[10px] font-bold text-app-text-muted uppercase tracking-wider">Allocated Value</span>
                                 <div className="relative group">
@@ -727,16 +734,16 @@ export default function OrgTokenOpsPanel({ user }) {
                                     </div>
                                 </div>
                             </div>
-                            <div className="text-xl sm:text-2xl font-bold tracking-tight text-app-text-main mt-2 font-mono">
+                            <div className="text-lg sm:text-xl font-bold tracking-tight text-app-text-main mt-1.5 font-mono whitespace-nowrap">
                                 {formatCurrency(reserve.allocated_tokens, reserve.reference_price)}
                             </div>
-                            <span className="text-[11px] text-app-text-muted mt-1 block font-mono">
+                            <span className="text-[11px] text-app-text-muted mt-1 block font-mono truncate">
                                 {Number(reserve.allocated_tokens || 0).toLocaleString()} tokens
                             </span>
                         </div>
 
                         {/* Consumed Value */}
-                        <div className="bg-app-bg-card p-3.5 sm:p-4 rounded-xl border border-app-border shadow-xs relative flex flex-col justify-between hover:border-slate-300 dark:hover:border-slate-600 transition-colors">
+                        <div className="bg-app-bg-card p-3 rounded-xl border border-app-border shadow-xs relative flex flex-col justify-between hover:border-slate-300 dark:hover:border-slate-600 transition-colors">
                             <div className="flex items-center justify-between gap-1">
                                 <span className="text-[10px] font-bold text-app-text-muted uppercase tracking-wider">Consumed Value</span>
                                 <div className="relative group">
@@ -746,16 +753,16 @@ export default function OrgTokenOpsPanel({ user }) {
                                     </div>
                                 </div>
                             </div>
-                            <div className="text-xl sm:text-2xl font-bold tracking-tight text-rose-600 dark:text-rose-400 mt-2 font-mono">
+                            <div className="text-lg sm:text-xl font-bold tracking-tight text-rose-600 dark:text-rose-400 mt-1.5 font-mono whitespace-nowrap">
                                 {formatCurrency(reserve.consumed_tokens, reserve.reference_price)}
                             </div>
-                            <span className="text-[11px] text-app-text-muted mt-1 block font-mono">
+                            <span className="text-[11px] text-app-text-muted mt-1 block font-mono truncate">
                                 {Number(reserve.consumed_tokens || 0).toLocaleString()} tokens
                             </span>
                         </div>
 
                         {/* Net Remaining Value */}
-                        <div className="bg-emerald-50/40 dark:bg-emerald-950/20 p-3.5 sm:p-4 rounded-xl border border-emerald-200/80 dark:border-emerald-800/60 shadow-xs relative flex flex-col justify-between hover:border-emerald-300 dark:hover:border-emerald-700 transition-colors col-span-2 sm:col-span-1">
+                        <div className="bg-emerald-50/40 dark:bg-emerald-950/20 p-3 rounded-xl border border-emerald-200/80 dark:border-emerald-800/60 shadow-xs relative flex flex-col justify-between hover:border-emerald-300 dark:hover:border-emerald-700 transition-colors col-span-2 sm:col-span-1">
                             <div className="flex items-center justify-between gap-1">
                                 <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-400 uppercase tracking-wider">Net Remaining Value</span>
                                 <div className="relative group">
@@ -765,7 +772,7 @@ export default function OrgTokenOpsPanel({ user }) {
                                     </div>
                                 </div>
                             </div>
-                            <div className="text-xl sm:text-2xl font-bold tracking-tight text-emerald-700 dark:text-emerald-300 mt-2 font-mono">
+                            <div className="text-lg sm:text-xl font-bold tracking-tight text-emerald-700 dark:text-emerald-300 mt-1.5 font-mono whitespace-nowrap">
                                 {(() => {
                                     const price = reserve.reference_price || 0.000007;
                                     const approvedUsd = Number(((reserve.purchased_tokens || 0) * price).toFixed(2));
@@ -773,66 +780,125 @@ export default function OrgTokenOpsPanel({ user }) {
                                     return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(approvedUsd - consumedUsd);
                                 })()}
                             </div>
-                            <span className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 block font-mono">
+                            <span className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 block font-mono truncate">
                                 {Number((reserve.purchased_tokens || 0) - (reserve.consumed_tokens || 0)).toLocaleString()} tokens
                             </span>
                         </div>
                     </div>
                 )
-            )}
-
-            {/* Sub Tabs Toolbar */}
-            <div className="flex items-center gap-2 p-1.5 rounded-2xl bg-slate-100/90 dark:bg-slate-900/60 border border-slate-200/90 dark:border-slate-800 shadow-inner overflow-x-auto custom-scrollbar">
-                {[
+            )}            {/* Sub Tabs / Workspaces Header Toolbar */}
+            {(() => {
+                const subTabsList = [
                     { id: 'users', label: 'User Quota Allocations', icon: Users, count: usersList.length },
                     { id: 'member_requests', label: 'Member Top-Up Requests', icon: Users, count: memberRequests.length, pendingCount: memberRequests.filter(r => r.status === 'PENDING').length },
                     { id: 'requests', label: 'Org Quota Requests', icon: Coins, count: quotaRequests.length },
                     { id: 'ledger', label: 'Financial Ledger', icon: FileText, count: ledger.length },
                     { id: 'reports', label: 'Daily Usage History', icon: Activity },
-                ].map((tab) => {
-                    const isActive = activeSubTab === tab.id;
-                    const Icon = tab.icon;
-                    return (
-                        <button
-                            key={tab.id}
-                            type="button"
-                            onClick={() => setActiveSubTab(tab.id)}
-                            className={`group px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-150 flex items-center gap-2 cursor-pointer whitespace-nowrap border select-none active:scale-[0.98] ${
-                                isActive
-                                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm shadow-indigo-500/25 ring-2 ring-indigo-500/20'
-                                    : 'bg-white dark:bg-slate-800/90 text-slate-700 dark:text-slate-300 border-slate-200/90 dark:border-slate-700/80 hover:bg-slate-50 dark:hover:bg-slate-700/70 hover:text-indigo-600 dark:hover:text-indigo-400 hover:border-indigo-300 dark:hover:border-indigo-500/50 shadow-xs'
-                            }`}
-                        >
-                            <Icon className={`w-4 h-4 shrink-0 transition-colors ${
-                                isActive ? 'text-white' : 'text-slate-500 dark:text-slate-400 group-hover:text-indigo-600 dark:group-hover:text-indigo-400'
-                            }`} />
-                            <span>{tab.label}</span>
-                            {tab.count !== undefined && (
-                                <span className={`px-2 py-0.5 text-[11px] font-mono font-medium rounded-md transition-colors ${
-                                    isActive
-                                        ? 'bg-white/20 text-white'
-                                        : 'bg-slate-200/80 dark:bg-slate-700/70 text-slate-600 dark:text-slate-300 group-hover:bg-indigo-100 dark:group-hover:bg-indigo-950/60 group-hover:text-indigo-600'
-                                }`}>
-                                    {tab.count}
-                                </span>
-                            )}
-                            {tab.pendingCount > 0 && (
-                                <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold tracking-wide uppercase whitespace-nowrap shadow-2xs transition-all ${
-                                    isActive
-                                        ? 'bg-white text-rose-600 shadow-sm'
-                                        : 'bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 border border-rose-200/80 dark:border-rose-800/60'
-                                }`}>
-                                    <span className="relative flex h-1.5 w-1.5 shrink-0">
-                                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
-                                        <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-rose-500"></span>
+                ];
+                const selectedTab = subTabsList.find(t => t.id === activeSubTab) || subTabsList[0];
+                const SelectedIcon = selectedTab.icon;
+
+                return (
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-xs relative">
+                        <div>
+                            <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                                <Sliders className="w-4 h-4 text-indigo-500" />
+                                TokenOps Workspaces & Telemetry
+                            </h3>
+                            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                                Switch between user allocations, pending requests, audit ledgers, and usage history.
+                            </p>
+                        </div>
+
+                        {/* Right side: Selected Tab Badge (left of dropdown) + View Dropdown */}
+                        <div className="flex items-center gap-2.5 shrink-0 flex-wrap sm:flex-nowrap">
+                            {/* Selected Active Tab Indicator */}
+                            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800/60 text-xs font-bold shadow-2xs">
+                                <SelectedIcon className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                                <span className="whitespace-nowrap">{selectedTab.label}</span>
+                                {selectedTab.count !== undefined && (
+                                    <span className="px-1.5 py-0.2 text-[10px] font-mono font-bold bg-indigo-200/70 dark:bg-indigo-900/60 text-indigo-800 dark:text-indigo-200 rounded">
+                                        {selectedTab.count}
                                     </span>
-                                    <span>{tab.pendingCount} new</span>
-                                </span>
-                            )}
-                        </button>
-                    );
-                })}
-            </div>
+                                )}
+                                {selectedTab.pendingCount > 0 && (
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded-full text-[9px] font-black uppercase bg-rose-500 text-white shadow-xs">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse"></span>
+                                        {selectedTab.pendingCount}
+                                    </span>
+                                )}
+                            </div>
+
+                            {/* Dropdown Menu */}
+                            <div className="relative">
+                                <button
+                                    type="button"
+                                    onClick={() => setViewDropdownOpen(prev => !prev)}
+                                    className="h-8.5 px-3 rounded-xl bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700/80 text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700 text-xs font-semibold flex items-center gap-2 shadow-2xs transition-colors cursor-pointer whitespace-nowrap"
+                                >
+                                    <span>Switch Workspace</span>
+                                    <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-150 ${viewDropdownOpen ? 'rotate-180' : ''}`} />
+                                </button>
+
+                                {viewDropdownOpen && (
+                                    <>
+                                        <div 
+                                            className="fixed inset-0 z-40" 
+                                            onClick={() => setViewDropdownOpen(false)} 
+                                        />
+                                        <div className="absolute right-0 mt-1.5 w-64 p-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50 divide-y divide-slate-100 dark:divide-slate-800/80 animate-in fade-in-50 zoom-in-95">
+                                            <div className="px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                                Available Workspaces
+                                            </div>
+                                            <div className="py-1 space-y-0.5">
+                                                {subTabsList.map((tab) => {
+                                                    const isSelected = activeSubTab === tab.id;
+                                                    const Icon = tab.icon;
+                                                    return (
+                                                        <button
+                                                            key={tab.id}
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setActiveSubTab(tab.id);
+                                                                setViewDropdownOpen(false);
+                                                            }}
+                                                            className={`w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-xs font-semibold transition-colors cursor-pointer text-left ${
+                                                                isSelected
+                                                                    ? 'bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 font-bold'
+                                                                    : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
+                                                            }`}
+                                                        >
+                                                            <div className="flex items-center gap-2 min-w-0">
+                                                                <Icon className={`w-3.5 h-3.5 shrink-0 ${isSelected ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400'}`} />
+                                                                <span className="truncate">{tab.label}</span>
+                                                            </div>
+                                                            <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                                                                {tab.count !== undefined && (
+                                                                    <span className="px-1.5 py-0.2 text-[10px] font-mono text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 rounded">
+                                                                        {tab.count}
+                                                                    </span>
+                                                                )}
+                                                                {tab.pendingCount > 0 && (
+                                                                    <span className="px-1.5 py-0.2 text-[9px] font-black uppercase rounded bg-rose-500 text-white">
+                                                                        {tab.pendingCount}
+                                                                    </span>
+                                                                )}
+                                                                {isSelected && (
+                                                                    <Check className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 ml-0.5" />
+                                                                )}
+                                                            </div>
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
 
             {/* TAB 1: User Quota Allocations Table */}
             {activeSubTab === 'users' && (
@@ -1211,19 +1277,19 @@ export default function OrgTokenOpsPanel({ user }) {
                         <table className="w-full text-sm border-collapse">
                             <thead className="bg-app-bg-muted/60 text-app-text-muted border-b border-app-border text-[11px] font-bold uppercase tracking-wider">
                                 <tr>
-                                    <th className="px-4 py-3 text-center align-middle font-bold">Req #</th>
-                                    <th className="px-4 py-3 text-center align-middle font-bold">Type</th>
-                                    <th className="px-4 py-3 text-center align-middle font-bold">Requested Quota</th>
-                                    <th className="px-4 py-3 text-left align-middle font-bold">Reason</th>
-                                    <th className="px-4 py-3 text-left align-middle font-bold">Admin Feedback</th>
-                                    <th className="px-4 py-3 text-center align-middle font-bold">Status</th>
-                                    <th className="px-4 py-3 text-center align-middle font-bold">Submitted</th>
+                                    <th className="px-4 py-3 text-center align-middle font-bold whitespace-nowrap">Req #</th>
+                                    <th className="px-4 py-3 text-center align-middle font-bold whitespace-nowrap">Type</th>
+                                    <th className="px-4 py-3 text-center align-middle font-bold whitespace-nowrap">Requested Quota</th>
+                                    <th className="px-4 py-3 text-center align-middle font-bold whitespace-nowrap">Reason</th>
+                                    <th className="px-4 py-3 text-center align-middle font-bold whitespace-nowrap">Admin Feedback</th>
+                                    <th className="px-4 py-3 text-center align-middle font-bold whitespace-nowrap">Status</th>
+                                    <th className="px-4 py-3 text-center align-middle font-bold whitespace-nowrap">Submitted</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-app-border text-app-text-main text-xs">
                                 {quotaRequests.length === 0 ? (
                                     <tr>
-                                        <td colSpan="7" className="px-4 py-8 text-center text-app-text-muted align-middle">
+                                        <td colSpan="7" className="px-4 py-8 text-center text-app-text-muted align-middle whitespace-nowrap">
                                             No quota requests submitted yet.
                                         </td>
                                     </tr>
@@ -1232,9 +1298,9 @@ export default function OrgTokenOpsPanel({ user }) {
                                         const reqNum = r.request_number || (quotaRequests.length - index);
                                         return (
                                             <tr key={r.id} className="hover:bg-app-bg-hover transition-colors">
-                                                <td className="px-4 py-3 text-center align-middle font-mono text-xs font-semibold text-app-text-muted">#{reqNum}</td>
-                                                <td className="px-4 py-3 text-center align-middle">
-                                                    <span className={`inline-flex items-center px-2 py-0.5 text-[10px] font-bold rounded-md uppercase tracking-wider border ${
+                                                <td className="px-4 py-3 text-center align-middle font-mono text-xs font-semibold text-app-text-muted whitespace-nowrap">#{reqNum}</td>
+                                                <td className="px-4 py-3 text-center align-middle whitespace-nowrap">
+                                                    <span className={`inline-flex items-center px-2 py-0.5 text-[10px] font-bold rounded-md uppercase tracking-wider border whitespace-nowrap ${
                                                         r.request_type === 'TOKEN_INCREASE'
                                                             ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-400 border-indigo-200/60 dark:border-indigo-800/60'
                                                             : 'bg-purple-50 text-purple-700 dark:bg-purple-950/50 dark:text-purple-400 border-purple-200/60 dark:border-purple-800/60'
@@ -1242,19 +1308,53 @@ export default function OrgTokenOpsPanel({ user }) {
                                                         {r.request_type === 'TOKEN_INCREASE' ? 'Token Increase' : 'PAYG Enablement'}
                                                     </span>
                                                 </td>
-                                                <td className="px-4 py-3 text-center align-middle font-semibold font-mono">
+                                                <td className="px-4 py-3 text-center align-middle font-semibold font-mono whitespace-nowrap">
                                                     {r.request_type === 'TOKEN_INCREASE'
                                                         ? `+${Number(r.requested_tokens || 0).toLocaleString()} Tokens`
                                                         : 'Unlimited PAYG'}
                                                 </td>
-                                                <td className="px-4 py-3 text-left align-middle text-xs text-app-text-muted max-w-xs truncate">
-                                                    {r.remarks || '—'}
+                                                <td className="px-4 py-3 text-center align-middle text-xs text-app-text-muted">
+                                                    {(() => {
+                                                        if (!r.remarks) return '—';
+                                                        const text = r.remarks.trim();
+                                                        if (text.length <= 30) {
+                                                            return <span className="whitespace-nowrap">{text}</span>;
+                                                        }
+                                                        const words = text.split(/\s+/);
+                                                        const lines = [];
+                                                        let current = '';
+                                                        for (const word of words) {
+                                                            if ((current ? current + ' ' + word : word).length <= 30) {
+                                                                current = current ? current + ' ' + word : word;
+                                                            } else {
+                                                                if (current) lines.push(current);
+                                                                if (word.length > 30) {
+                                                                    let rem = word;
+                                                                    while (rem.length > 30) {
+                                                                        lines.push(rem.slice(0, 30));
+                                                                        rem = rem.slice(30);
+                                                                    }
+                                                                    current = rem;
+                                                                } else {
+                                                                    current = word;
+                                                                }
+                                                            }
+                                                        }
+                                                        if (current) lines.push(current);
+                                                        return (
+                                                            <div className="flex flex-col items-center justify-center text-center leading-snug">
+                                                                {lines.map((line, lIdx) => (
+                                                                    <span key={lIdx} className="whitespace-nowrap">{line}</span>
+                                                                ))}
+                                                            </div>
+                                                        );
+                                                    })()}
                                                 </td>
-                                                <td className="px-4 py-3 text-left align-middle text-xs text-app-text-muted max-w-xs truncate">
+                                                <td className="px-4 py-3 text-center align-middle text-xs text-app-text-muted whitespace-nowrap">
                                                     {r.admin_notes || '—'}
                                                 </td>
-                                                <td className="px-4 py-3 text-center align-middle">
-                                                    <span className={`inline-flex items-center px-2.5 py-0.5 text-xs font-semibold rounded-full border ${
+                                                <td className="px-4 py-3 text-center align-middle whitespace-nowrap">
+                                                    <span className={`inline-flex items-center px-2.5 py-0.5 text-xs font-semibold rounded-full border whitespace-nowrap ${
                                                         r.status === 'APPROVED'
                                                             ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400 border-emerald-200/60 dark:border-emerald-800/60'
                                                             : r.status === 'REJECTED'
@@ -1326,50 +1426,93 @@ export default function OrgTokenOpsPanel({ user }) {
                 return (
                     <div className="bg-app-bg-card rounded-xl border border-app-border overflow-hidden shadow-xs">
                         {/* Ledger Header & Quick Filters Bar */}
-                        <div className="p-3.5 sm:p-4 border-b border-app-border bg-app-bg-muted/30 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                        <div className="p-3.5 sm:p-4 border-b border-app-border bg-app-bg-muted/30 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
                             <div>
                                 <h3 className="text-sm font-bold text-app-text-main flex items-center gap-2">
                                     <FileText className="w-4 h-4 text-indigo-500" /> Organization Financial Ledger
                                     {ledgerLoading && <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-500" />}
                                 </h3>
                                 <p className="text-xs text-app-text-muted mt-0.5">
-                                    Audited record of token allocations, reallocations, revocations, and AI consumptions.
+                                    Audited token allocations, revocations, and AI usage.
                                 </p>
                             </div>
 
-                            <div className="flex flex-wrap items-center gap-2">
-                                {/* Filter Pills */}
-                                <div className="inline-flex items-center p-1 bg-slate-200/60 dark:bg-slate-800 rounded-lg border border-app-border text-xs font-semibold">
-                                    {[
-                                        { id: 'ALL', label: `All (${ledgerFilter === 'ALL' ? ledgerTotal : 'All'})` },
+                            <div className="flex items-center gap-2.5 flex-nowrap shrink-0">
+                                {/* Active Ledger Filter Badge (left to the dropdown) */}
+                                {(() => {
+                                    const ledgerFilterOptions = [
+                                        { id: 'ALL', label: `All (${allLedgerTotal || ledgerTotal || 0})` },
                                         { id: 'AI_CONSUMPTION', label: 'AI Consumption' },
                                         { id: 'ALLOCATION', label: 'Allocations / Top-ups' },
                                         { id: 'REVOCATION', label: 'Revocations' }
-                                    ].map(f => (
-                                        <button
-                                            key={f.id}
-                                            type="button"
-                                            onClick={() => handleFilterChange(f.id)}
-                                            className={`px-2.5 py-1 rounded-md transition-all cursor-pointer ${
-                                                ledgerFilter === f.id
-                                                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs font-bold'
-                                                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
-                                            }`}
-                                        >
-                                            {f.label}
-                                        </button>
-                                    ))}
-                                </div>
+                                    ];
+                                    const currentFilter = ledgerFilterOptions.find(f => f.id === ledgerFilter) || ledgerFilterOptions[0];
 
-                                {/* Search */}
-                                <div className="relative">
+                                    return (
+                                        <>
+                                            <div className="inline-flex items-center px-3 py-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800/60 text-xs font-bold shadow-2xs shrink-0 whitespace-nowrap">
+                                                <span>{currentFilter.label}</span>
+                                            </div>
+
+                                            {/* Filter Dropdown Menu */}
+                                            <div className="relative shrink-0">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setLedgerFilterDropdownOpen(prev => !prev)}
+                                                    className="h-8.5 px-3 rounded-lg bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700/80 text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700 text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer whitespace-nowrap"
+                                                >
+                                                    <span>Filter Type</span>
+                                                    <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-150 ${ledgerFilterDropdownOpen ? 'rotate-180' : ''}`} />
+                                                </button>
+
+                                                {ledgerFilterDropdownOpen && (
+                                                    <>
+                                                        <div 
+                                                            className="fixed inset-0 z-40" 
+                                                            onClick={() => setLedgerFilterDropdownOpen(false)} 
+                                                        />
+                                                        <div className="absolute right-0 mt-1.5 w-52 p-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50 animate-in fade-in-50 zoom-in-95 space-y-0.5">
+                                                            <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                                                Filter Records
+                                                            </div>
+                                                            {ledgerFilterOptions.map(f => {
+                                                                const isSelected = ledgerFilter === f.id;
+                                                                return (
+                                                                    <button
+                                                                        key={f.id}
+                                                                        type="button"
+                                                                        onClick={() => {
+                                                                            handleFilterChange(f.id);
+                                                                            setLedgerFilterDropdownOpen(false);
+                                                                        }}
+                                                                        className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium text-left transition-colors cursor-pointer ${
+                                                                            isSelected
+                                                                                ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-semibold'
+                                                                                : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                                                                        }`}
+                                                                    >
+                                                                        <span>{f.label}</span>
+                                                                        {isSelected && <Check className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />}
+                                                                    </button>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    </>
+                                                )}
+                                            </div>
+                                        </>
+                                    );
+                                })()}
+
+                                {/* Search Input */}
+                                <div className="relative shrink-0">
                                     <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
                                     <input
                                         type="text"
                                         value={ledgerSearch}
                                         onChange={(e) => setLedgerSearch(e.target.value)}
                                         placeholder="Search user, ref..."
-                                        className="pl-8 pr-2.5 py-1 text-xs rounded-lg border border-app-border bg-app-bg-card text-app-text-main focus:outline-hidden focus:ring-1 focus:ring-indigo-500 w-36 sm:w-44"
+                                        className="pl-8 pr-2.5 py-1.5 text-xs rounded-lg border border-app-border bg-app-bg-card text-app-text-main focus:outline-hidden focus:ring-1 focus:ring-indigo-500 w-36 sm:w-44 h-8.5"
                                     />
                                 </div>
                             </div>
