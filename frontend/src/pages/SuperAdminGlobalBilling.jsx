@@ -303,54 +303,70 @@ export default function SuperAdminGlobalBilling() {
         )}
 
         {/* Global Financial KPI Cards */}
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
-          <div className="p-4 rounded-xl bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+          <div className="p-3 rounded-xl bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur flex flex-col justify-between overflow-hidden">
             <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
-              <span className="font-semibold uppercase tracking-wider text-[10px]">Dsuite Billing</span>
-              <DollarSign className="w-4 h-4 text-purple-400" />
+              <span className="font-semibold uppercase tracking-wider text-[10px] whitespace-nowrap overflow-x-auto no-scrollbar">Dsuite Billing</span>
+              <DollarSign className="w-3.5 h-3.5 text-purple-400 shrink-0" />
             </div>
-            <div className="text-2xl font-black text-purple-700 dark:text-purple-300">
+            <div className="text-lg sm:text-xl font-bold text-purple-700 dark:text-purple-300 overflow-x-auto no-scrollbar whitespace-nowrap">
               ${(stats?.dsuite_billing !== undefined ? stats.dsuite_billing : (stats?.platform_billing || totalPlatformCost)).toFixed(2)}
             </div>
-            <div className="text-[10px] text-purple-600 dark:text-purple-400 mt-1">Dsuite AI Governance spend</div>
+            <div className="text-[10px] text-purple-600 dark:text-purple-400 mt-0.5 overflow-x-auto no-scrollbar whitespace-nowrap" title="Dsuite AI Governance spend">
+              Dsuite AI Governance spend
+            </div>
           </div>
 
-          <div className="p-4 rounded-xl bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-cyan-500/20 shadow-sm backdrop-blur">
+          <div className="p-3 rounded-xl bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-cyan-500/20 shadow-sm backdrop-blur flex flex-col justify-between overflow-hidden">
             <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
-              <span className="font-semibold uppercase tracking-wider text-[10px]">Vibecoding Billing</span>
-              <DollarSign className="w-4 h-4 text-cyan-400" />
+              <span className="font-semibold uppercase tracking-wider text-[10px] whitespace-nowrap overflow-x-auto no-scrollbar">Vibecoding Billing</span>
+              <DollarSign className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
             </div>
-            <div className="text-2xl font-black text-cyan-700 dark:text-cyan-300">
+            <div className="text-lg sm:text-xl font-bold text-cyan-700 dark:text-cyan-300 overflow-x-auto no-scrollbar whitespace-nowrap">
               ${(stats?.vibecoding_billing !== undefined ? stats.vibecoding_billing : 0).toFixed(2)}
             </div>
-            <div className="text-[10px] text-cyan-600 dark:text-cyan-400 mt-1">Vibecoding AI inference spend</div>
+            <div className="text-[10px] text-cyan-600 dark:text-cyan-400 mt-0.5 overflow-x-auto no-scrollbar whitespace-nowrap" title="Vibecoding AI inference spend">
+              Vibecoding AI inference spend
+            </div>
           </div>
 
-          <div className="p-4 rounded-xl bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-emerald-500/20 shadow-sm backdrop-blur">
+          <div className="p-3 rounded-xl bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-emerald-500/20 shadow-sm backdrop-blur flex flex-col justify-between overflow-hidden">
             <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
-              <span className="font-semibold uppercase tracking-wider text-[10px]">Total Platform Cost</span>
-              <DollarSign className="w-4 h-4 text-emerald-400" />
+              <span className="font-semibold uppercase tracking-wider text-[10px] whitespace-nowrap overflow-x-auto no-scrollbar">Total Platform Cost</span>
+              <DollarSign className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
             </div>
-            <div className="text-2xl font-black text-emerald-600 dark:text-emerald-400">${(stats?.platform_billing || totalPlatformCost).toFixed(2)}</div>
-            <div className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1">Dsuite + Vibecoding combined</div>
+            <div className="text-lg sm:text-xl font-bold text-emerald-600 dark:text-emerald-400 overflow-x-auto no-scrollbar whitespace-nowrap">
+              ${(stats?.platform_billing || totalPlatformCost).toFixed(2)}
+            </div>
+            <div className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-0.5 overflow-x-auto no-scrollbar whitespace-nowrap" title="Dsuite + Vibecoding combined">
+              Dsuite + Vibecoding combined
+            </div>
           </div>
 
-          <div className="p-4 rounded-xl bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur">
+          <div className="p-3 rounded-xl bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur flex flex-col justify-between overflow-hidden">
             <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
-              <span className="font-semibold uppercase tracking-wider text-[10px]">Total AI Tokens</span>
-              <Cpu className="w-4 h-4 text-purple-400" />
+              <span className="font-semibold uppercase tracking-wider text-[10px] whitespace-nowrap overflow-x-auto no-scrollbar">Total AI Tokens</span>
+              <Cpu className="w-3.5 h-3.5 text-purple-400 shrink-0" />
             </div>
-            <div className="text-2xl font-black text-purple-700 dark:text-purple-300">{(stats?.ai_tokens_consumed || totalTokensConsumed).toLocaleString()}</div>
-            <div className="text-[10px] text-purple-600 dark:text-purple-400 mt-1">Prompt + completion tokens</div>
+            <div className="text-lg sm:text-xl font-bold text-purple-700 dark:text-purple-300 overflow-x-auto no-scrollbar whitespace-nowrap">
+              {(stats?.ai_tokens_consumed || totalTokensConsumed).toLocaleString()}
+            </div>
+            <div className="text-[10px] text-purple-600 dark:text-purple-400 mt-0.5 overflow-x-auto no-scrollbar whitespace-nowrap" title="Prompt + completion tokens">
+              Prompt + completion tokens
+            </div>
           </div>
 
-          <div className="p-4 rounded-xl bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur">
+          <div className="p-3 rounded-xl bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-purple-500/20 shadow-sm backdrop-blur flex flex-col justify-between overflow-hidden">
             <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
-              <span className="font-semibold uppercase tracking-wider text-[10px]">Active Organizations</span>
-              <Building2 className="w-4 h-4 text-cyan-400" />
+              <span className="font-semibold uppercase tracking-wider text-[10px] whitespace-nowrap overflow-x-auto no-scrollbar">Active Organizations</span>
+              <Building2 className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
             </div>
-            <div className="text-2xl font-black text-slate-900 dark:text-white">{orgs.length}</div>
-            <div className="text-[10px] text-cyan-600 dark:text-cyan-400 mt-1">Registered tenant accounts</div>
+            <div className="text-lg sm:text-xl font-bold text-slate-900 dark:text-white overflow-x-auto no-scrollbar whitespace-nowrap">
+              {orgs.length}
+            </div>
+            <div className="text-[10px] text-cyan-600 dark:text-cyan-400 mt-0.5 overflow-x-auto no-scrollbar whitespace-nowrap" title="Registered tenant accounts">
+              Registered tenant accounts
+            </div>
           </div>
         </div>
 
@@ -459,18 +475,18 @@ export default function SuperAdminGlobalBilling() {
             </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
+          <div className="overflow-x-auto custom-scrollbar pb-2">
+            <table className="w-full text-left text-xs min-w-[950px]">
               <thead className="bg-slate-50 dark:bg-slate-800/40 text-slate-500 dark:text-slate-400 font-semibold uppercase text-[10px] tracking-wider border-b border-slate-200 dark:border-slate-800">
                 <tr>
-                  <th className="py-3 px-3">Organization</th>
-                  <th className="py-3 px-3">Members</th>
-                  <th className="py-3 px-3">Max Capacity</th>
-                  <th className="py-3 px-3">Onboarded Agents</th>
-                  <th className="py-3 px-3">Tags</th>
-                  <th className="py-3 px-3">AI Tokens Consumed</th>
-                  <th className="py-3 px-3">Total Usage Cost</th>
-                  <th className="py-3 px-3 text-right">Actions</th>
+                  <th className="py-3 px-3 whitespace-nowrap">Organization</th>
+                  <th className="py-3 px-3 text-center whitespace-nowrap">Members</th>
+                  <th className="py-3 px-3 text-center whitespace-nowrap">Max Capacity</th>
+                  <th className="py-3 px-3 text-center whitespace-nowrap">Onboarded Agents</th>
+                  <th className="py-3 px-3 text-center whitespace-nowrap">Tags</th>
+                  <th className="py-3 px-3 text-center whitespace-nowrap">AI Tokens Consumed</th>
+                  <th className="py-3 px-3 text-center whitespace-nowrap">Total Usage Cost</th>
+                  <th className="py-3 px-3 text-right whitespace-nowrap">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800/60 text-slate-700 dark:text-slate-200">
@@ -483,27 +499,31 @@ export default function SuperAdminGlobalBilling() {
                 ) : (
                   paginatedOrgs.map((org) => (
                     <tr key={org.organization_name} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/30 transition-colors">
-                      <td className="py-3.5 px-3 font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                        <Building2 className="w-4 h-4 text-purple-400 shrink-0" />
-                        {org.organization_name}
+                      <td className="py-3.5 px-3 font-bold text-slate-900 dark:text-white whitespace-nowrap">
+                        <div className="flex items-center gap-2 whitespace-nowrap">
+                          <Building2 className="w-4 h-4 text-purple-400 shrink-0" />
+                          {org.organization_name}
+                        </div>
                       </td>
-                      <td className="py-3.5 px-3 text-slate-600 dark:text-slate-300 font-medium">
+                      <td className="py-3.5 px-3 text-center text-slate-600 dark:text-slate-300 font-medium whitespace-nowrap">
                         {org.user_count} members
                       </td>
-                      <td className="py-3.5 px-3">
-                        <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-purple-50 dark:bg-purple-500/10 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-500/20">
-                          {org.max_agent_capacity} Agents
-                        </span>
+                      <td className="py-3.5 px-3 text-center whitespace-nowrap">
+                        <div className="flex justify-center">
+                          <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-purple-50 dark:bg-purple-500/10 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-500/20 whitespace-nowrap">
+                            {org.max_agent_capacity} Agents
+                          </span>
+                        </div>
                       </td>
-                      <td className="py-3.5 px-3 text-slate-600 dark:text-slate-300 font-medium">
+                      <td className="py-3.5 px-3 text-center text-slate-600 dark:text-slate-300 font-medium whitespace-nowrap">
                         {org.total_onboarded_agents}
                       </td>
-                      <td className="py-3.5 px-3">
-                        <div className="flex flex-wrap gap-1 max-w-[150px]">
+                      <td className="py-3.5 px-3 text-center whitespace-nowrap">
+                        <div className="flex flex-wrap items-center justify-center gap-1 max-w-[150px] mx-auto">
                           {org.organization_tags && org.organization_tags.length > 0 ? (
                             <>
                               {org.organization_tags.slice(0, expandedTags[org.organization_name] ? undefined : 2).map(t => (
-                                <span key={t} className="px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/20 text-[9px] font-semibold">
+                                <span key={t} className="px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/20 text-[9px] font-semibold whitespace-nowrap">
                                   {t}
                                 </span>
                               ))}
@@ -513,7 +533,7 @@ export default function SuperAdminGlobalBilling() {
                                     e.stopPropagation();
                                     setExpandedTags(prev => ({ ...prev, [org.organization_name]: !prev[org.organization_name] }));
                                   }}
-                                  className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[9px] font-semibold transition-all hover:scale-105"
+                                  className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[9px] font-semibold transition-all hover:scale-105 whitespace-nowrap cursor-pointer"
                                 >
                                   {expandedTags[org.organization_name] ? 'show less' : `+${org.organization_tags.length - 2} more`}
                                 </button>
@@ -524,24 +544,24 @@ export default function SuperAdminGlobalBilling() {
                           )}
                         </div>
                       </td>
-                      <td className="py-3.5 px-3 font-mono font-semibold text-indigo-700 dark:text-indigo-300">
+                      <td className="py-3.5 px-3 text-center font-mono font-semibold text-indigo-700 dark:text-indigo-300 whitespace-nowrap">
                         {(org.total_tokens_consumed || 0).toLocaleString()}
                       </td>
-                      <td className="py-3.5 px-3 font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                      <td className="py-3.5 px-3 text-center font-mono font-bold text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
                         ${org.total_cost || 0}
                       </td>
-                      <td className="py-3.5 px-3 text-right">
-                        <div className="flex items-center justify-end gap-2">
+                      <td className="py-3.5 px-3 text-right whitespace-nowrap">
+                        <div className="flex items-center justify-end gap-2 whitespace-nowrap flex-nowrap">
                           <button
                             onClick={() => setSelectedOrg(org)}
-                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-purple-50 dark:bg-purple-900/40 hover:bg-purple-100 dark:hover:bg-purple-800/60 border border-purple-200 dark:border-purple-500/30 text-xs font-semibold text-purple-700 dark:text-purple-200 transition-colors cursor-pointer"
+                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-purple-50 dark:bg-purple-900/40 hover:bg-purple-100 dark:hover:bg-purple-800/60 border border-purple-200 dark:border-purple-500/30 text-xs font-semibold text-purple-700 dark:text-purple-200 transition-colors cursor-pointer whitespace-nowrap flex-shrink-0"
                           >
                             <Eye className="w-3.5 h-3.5" />
                             View User Breakdown
                           </button>
                           <button
                             onClick={() => setSelectedOrgProj(org)}
-                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-blue-50 dark:bg-blue-900/40 hover:bg-blue-100 dark:hover:bg-blue-800/60 border border-blue-200 dark:border-blue-500/30 text-xs font-semibold text-blue-700 dark:text-blue-200 transition-colors cursor-pointer"
+                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-blue-50 dark:bg-blue-900/40 hover:bg-blue-100 dark:hover:bg-blue-800/60 border border-blue-200 dark:border-blue-500/30 text-xs font-semibold text-blue-700 dark:text-blue-200 transition-colors cursor-pointer whitespace-nowrap flex-shrink-0"
                           >
                             <Layers className="w-3.5 h-3.5" />
                             View Project Breakdown

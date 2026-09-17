@@ -46,6 +46,16 @@
     .dark .custom-scrollbar {
         scrollbar-color: #334155 transparent;
     }
+
+    /* Hidden Scrollbar */
+    .no-scrollbar::-webkit-scrollbar {
+        display: none;
+    }
+
+    .no-scrollbar {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+    }
 }
 
 /* Force sRGB colors for html2canvas compatibility */
