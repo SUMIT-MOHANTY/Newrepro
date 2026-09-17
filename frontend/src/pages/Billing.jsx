@@ -725,10 +725,10 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                                 Centralized tracking of costs, usage, and operations generated inside <span className="font-semibold text-app-text-main">{organization_name}</span>.
                             </p>
                         </div>
-                        <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap no-print">
+                        <div className="flex items-center gap-2 self-start md:self-auto flex-nowrap shrink-0 overflow-x-auto no-print">
                             <button
                                 onClick={handleDownloadReport}
-                                className="h-9 px-3.5 bg-app-bg-card hover:bg-app-bg-hover text-app-text-main border border-app-border rounded-lg text-xs font-semibold inline-flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
+                                className="h-9 px-3.5 bg-app-bg-card hover:bg-app-bg-hover text-app-text-main border border-app-border rounded-lg text-xs font-semibold inline-flex items-center gap-2 shadow-xs transition-colors cursor-pointer whitespace-nowrap shrink-0"
                                 title="Download PDF Report"
                             >
                                 <ExternalLink className="w-3.5 h-3.5 text-app-text-muted" />
@@ -736,7 +736,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                             </button>
                             <button
                                 onClick={handleExportExcel}
-                                className="h-9 px-3.5 bg-app-bg-card hover:bg-app-bg-hover text-app-text-main border border-app-border rounded-lg text-xs font-semibold inline-flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
+                                className="h-9 px-3.5 bg-app-bg-card hover:bg-app-bg-hover text-app-text-main border border-app-border rounded-lg text-xs font-semibold inline-flex items-center gap-2 shadow-xs transition-colors cursor-pointer whitespace-nowrap shrink-0"
                                 title="Export Excel Spreadsheet"
                             >
                                 <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
@@ -745,7 +745,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                             <button
                                 onClick={() => fetchBillingData(true)}
                                 disabled={refreshing}
-                                className="h-9 px-3.5 bg-app-bg-card hover:bg-app-bg-hover text-app-text-main border border-app-border rounded-lg text-xs font-semibold inline-flex items-center gap-2 disabled:opacity-50 shadow-xs transition-colors cursor-pointer"
+                                className="h-9 px-3.5 bg-app-bg-card hover:bg-app-bg-hover text-app-text-main border border-app-border rounded-lg text-xs font-semibold inline-flex items-center gap-2 disabled:opacity-50 shadow-xs transition-colors cursor-pointer whitespace-nowrap shrink-0"
                                 title="Refresh Logs"
                             >
                                 <RefreshCw className={`w-3.5 h-3.5 text-app-text-muted ${refreshing ? 'animate-spin' : ''}`} />
@@ -757,7 +757,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                     {/* Unified Controls Toolbar: Navigation Tabs & Date Range Filter */}
                     <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 no-print">
                         {/* Navigation Tabs */}
-                        <div className="inline-flex p-1 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700/80 shadow-xs overflow-x-auto custom-scrollbar">
+                        <div className="inline-flex p-1 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700/80 shadow-xs max-w-full overflow-x-auto custom-scrollbar md:no-scrollbar">
                             <button 
                                 className={`px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-semibold transition-all flex items-center gap-2 cursor-pointer whitespace-nowrap ${
                                     activeTab === 'overview' 
@@ -807,12 +807,12 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                         </div>
 
                         {/* Compact Date Range Filter */}
-                        <div className="flex items-center gap-2.5 bg-app-bg-card border border-app-border rounded-xl px-3 py-1.5 shadow-xs self-start lg:self-auto flex-wrap">
-                            <div className="flex items-center gap-1.5 text-app-text-muted text-xs font-semibold">
+                        <div className="flex items-center gap-2.5 bg-app-bg-card border border-app-border rounded-xl px-3 py-1.5 shadow-xs self-start lg:self-auto flex-nowrap shrink-0 whitespace-nowrap overflow-x-auto">
+                            <div className="flex items-center gap-1.5 text-app-text-muted text-xs font-semibold shrink-0">
                                 <Clock className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
-                                <span className="uppercase tracking-wider text-[10px] hidden sm:inline">Range:</span>
+                                <span className="uppercase tracking-wider text-[10px] whitespace-nowrap">Range:</span>
                             </div>
-                            <div className="flex items-center gap-1.5 text-xs">
+                            <div className="flex items-center gap-1.5 text-xs shrink-0 whitespace-nowrap">
                                 <input
                                     type="date"
                                     value={startDate}
@@ -820,7 +820,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                                     aria-label="Start Date"
                                     className="h-7 px-2 bg-app-bg-muted border border-app-border hover:border-slate-400 dark:hover:border-slate-500 text-[11px] text-app-text-main rounded-md focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
                                 />
-                                <span className="text-app-text-muted text-[11px] font-medium">to</span>
+                                <span className="text-app-text-muted text-[11px] font-medium shrink-0">to</span>
                                 <input
                                     type="date"
                                     value={endDate}
@@ -832,7 +832,7 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                             {(startDate || endDate) && (
                                 <button
                                     onClick={() => { setStartDate(''); setEndDate(''); }}
-                                    className="h-6 px-2 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 border border-rose-200 dark:border-rose-800/60 text-rose-600 dark:text-rose-400 text-[10px] font-bold rounded-md transition-colors cursor-pointer"
+                                    className="h-6 px-2 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 border border-rose-200 dark:border-rose-800/60 text-rose-600 dark:text-rose-400 text-[10px] font-bold rounded-md transition-colors cursor-pointer shrink-0 whitespace-nowrap"
                                 >
                                     Clear
                                 </button>
@@ -844,122 +844,122 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                     {activeTab === 'overview' && (
                         <div className="space-y-6 animate-fade-in">
                             {/* KPI Grid */}
-                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
                                 {/* Total Cost */}
-                                <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-4 sm:p-5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
+                                <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-3 sm:p-3.5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
                                     <div className="flex items-center justify-between gap-2">
-                                        <span className="text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">
+                                        <span className="text-[10px] sm:text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">
                                             Total Organization Cost
                                         </span>
-                                        <div className="w-8 h-8 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
-                                            <DollarSign className="w-4 h-4" />
+                                        <div className="w-7 h-7 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                                            <DollarSign className="w-3.5 h-3.5" />
                                         </div>
                                     </div>
-                                    <div className="mt-3">
-                                        <div className="text-2xl font-bold tracking-tight text-app-text-main">
+                                    <div className="mt-1.5">
+                                        <div className="text-xl sm:text-2xl font-bold tracking-tight text-app-text-main">
                                             ${(orgSummary.total_cost ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 3 })}
                                         </div>
-                                        <p className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 flex items-center gap-1 font-medium">
+                                        <p className="text-[10px] sm:text-[11px] text-emerald-600 dark:text-emerald-400 mt-0.5 flex items-center gap-1 font-medium">
                                             <CheckCircle2 className="w-3 h-3 shrink-0" /> Token + Infra Cost ($0.70/hr)
                                         </p>
                                     </div>
                                 </div>
 
                                 {/* Token Cost */}
-                                <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-4 sm:p-5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
+                                <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-3 sm:p-3.5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
                                     <div className="flex items-center justify-between gap-2">
-                                        <span className="text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">
+                                        <span className="text-[10px] sm:text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">
                                             Token Cost (AI Usage)
                                         </span>
-                                        <div className="w-8 h-8 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
-                                            <FileText className="w-4 h-4" />
+                                        <div className="w-7 h-7 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+                                            <FileText className="w-3.5 h-3.5" />
                                         </div>
                                     </div>
-                                    <div className="mt-3">
-                                        <div className="text-2xl font-bold tracking-tight text-app-text-main">
+                                    <div className="mt-1.5">
+                                        <div className="text-xl sm:text-2xl font-bold tracking-tight text-app-text-main">
                                             ${(orgSummary.total_token_cost ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 3 })}
                                         </div>
-                                        <p className="text-[11px] text-app-text-muted mt-1 font-medium">
+                                        <p className="text-[10px] sm:text-[11px] text-app-text-muted mt-0.5 font-medium">
                                             Prompt + Completion token spend
                                         </p>
                                     </div>
                                 </div>
 
                                 {/* Infra Cost */}
-                                <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-4 sm:p-5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
+                                <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-3 sm:p-3.5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
                                     <div className="flex items-center justify-between gap-2">
-                                        <span className="text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">
+                                        <span className="text-[10px] sm:text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">
                                             Infra Cost
                                         </span>
-                                        <div className="w-8 h-8 rounded-lg bg-purple-50 dark:bg-purple-950/40 text-purple-600 dark:text-purple-400 flex items-center justify-center shrink-0">
-                                            <Clock className="w-4 h-4" />
+                                        <div className="w-7 h-7 rounded-lg bg-purple-50 dark:bg-purple-950/40 text-purple-600 dark:text-purple-400 flex items-center justify-center shrink-0">
+                                            <Clock className="w-3.5 h-3.5" />
                                         </div>
                                     </div>
-                                    <div className="mt-3">
-                                        <div className="text-2xl font-bold tracking-tight text-app-text-main">
+                                    <div className="mt-1.5">
+                                        <div className="text-xl sm:text-2xl font-bold tracking-tight text-app-text-main">
                                             ${(orgSummary.total_infra_cost ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 3 })}
                                         </div>
-                                        <p className="text-[11px] text-app-text-muted mt-1 font-medium">
+                                        <p className="text-[10px] sm:text-[11px] text-app-text-muted mt-0.5 font-medium">
                                             Active user compute hours ($0.70/hr)
                                         </p>
                                     </div>
                                 </div>
 
                                 {/* Prompt Tokens */}
-                                <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-4 sm:p-5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
+                                <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-3 sm:p-3.5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
                                     <div className="flex items-center justify-between gap-2">
-                                        <span className="text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">
+                                        <span className="text-[10px] sm:text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">
                                             Prompt Tokens
                                         </span>
-                                        <div className="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
-                                            <Zap className="w-4 h-4" />
+                                        <div className="w-7 h-7 rounded-lg bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
+                                            <Zap className="w-3.5 h-3.5" />
                                         </div>
                                     </div>
-                                    <div className="mt-3">
-                                        <div className="text-2xl font-bold tracking-tight text-app-text-main">
+                                    <div className="mt-1.5">
+                                        <div className="text-xl sm:text-2xl font-bold tracking-tight text-app-text-main">
                                             {orgSummary.total_prompt_tokens?.toLocaleString() || 0}
                                         </div>
-                                        <p className="text-[11px] text-app-text-muted mt-1 font-medium">
+                                        <p className="text-[10px] sm:text-[11px] text-app-text-muted mt-0.5 font-medium">
                                             Input tokens sent to AI models
                                         </p>
                                     </div>
                                 </div>
 
                                 {/* Completion Tokens */}
-                                <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-4 sm:p-5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
+                                <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-3 sm:p-3.5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
                                     <div className="flex items-center justify-between gap-2">
-                                        <span className="text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">
+                                        <span className="text-[10px] sm:text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">
                                             Completion Tokens
                                         </span>
-                                        <div className="w-8 h-8 rounded-lg bg-pink-50 dark:bg-pink-950/40 text-pink-600 dark:text-pink-400 flex items-center justify-center shrink-0">
-                                            <Bot className="w-4 h-4" />
+                                        <div className="w-7 h-7 rounded-lg bg-pink-50 dark:bg-pink-950/40 text-pink-600 dark:text-pink-400 flex items-center justify-center shrink-0">
+                                            <Bot className="w-3.5 h-3.5" />
                                         </div>
                                     </div>
-                                    <div className="mt-3">
-                                        <div className="text-2xl font-bold tracking-tight text-app-text-main">
+                                    <div className="mt-1.5">
+                                        <div className="text-xl sm:text-2xl font-bold tracking-tight text-app-text-main">
                                             {orgSummary.total_completion_tokens?.toLocaleString() || 0}
                                         </div>
-                                        <p className="text-[11px] text-app-text-muted mt-1 font-medium">
+                                        <p className="text-[10px] sm:text-[11px] text-app-text-muted mt-0.5 font-medium">
                                             Output tokens generated by models
                                         </p>
                                     </div>
                                 </div>
 
                                 {/* Org Members */}
-                                <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-4 sm:p-5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
+                                <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-3 sm:p-3.5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
                                     <div className="flex items-center justify-between gap-2">
-                                        <span className="text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">
+                                        <span className="text-[10px] sm:text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">
                                             Org Members
                                         </span>
-                                        <div className="w-8 h-8 rounded-lg bg-teal-50 dark:bg-teal-950/40 text-teal-600 dark:text-teal-400 flex items-center justify-center shrink-0">
-                                            <Users className="w-4 h-4" />
+                                        <div className="w-7 h-7 rounded-lg bg-teal-50 dark:bg-teal-950/40 text-teal-600 dark:text-teal-400 flex items-center justify-center shrink-0">
+                                            <Users className="w-3.5 h-3.5" />
                                         </div>
                                     </div>
-                                    <div className="mt-3">
-                                        <div className="text-2xl font-bold tracking-tight text-app-text-main">
+                                    <div className="mt-1.5">
+                                        <div className="text-xl sm:text-2xl font-bold tracking-tight text-app-text-main">
                                             {processedUsers.length}
                                         </div>
-                                        <p className="text-[11px] text-app-text-muted mt-1 font-medium">
+                                        <p className="text-[10px] sm:text-[11px] text-app-text-muted mt-0.5 font-medium">
                                             Active members in organization
                                         </p>
                                     </div>
