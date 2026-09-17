@@ -709,244 +709,291 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                         }
                     }
                 `}} />
-                <div className="max-w-6xl mx-auto px-4 py-8">
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
                     {/* Header */}
-                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-6">
-                        <div>
-                            <span className="px-3 py-1 text-xs font-semibold rounded-full bg-indigo-50 dark:bg-app-primary-light text-indigo-700 dark:text-app-primary-dark border border-indigo-200/50 dark:border-app-border inline-flex items-center gap-1.5 mb-3">
-                                <ShieldCheck className="w-3.5 h-3.5" /> Organization Administration
-                            </span>
-                            <h1 className="text-2xl font-extrabold text-app-text-main sm:text-3xl">
-                                Org Billing & Activity Logs
-                            </h1>
-                            <p className="mt-1.5 text-sm text-app-text-label font-medium">
-                                Centralized tracking of costs, usage, and operations generated inside the <strong className="text-app-text-main">{organization_name}</strong> organization.
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-app-border/80">
+                        <div className="space-y-1">
+                            <div className="flex items-center gap-2.5 flex-wrap">
+                                <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-app-text-main">
+                                    Org Billing & Activity Logs
+                                </h1>
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 text-xs font-semibold rounded-full bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-400 border border-indigo-200/60 dark:border-indigo-800/60 shadow-xs">
+                                    <ShieldCheck className="w-3.5 h-3.5" /> Org Admin
+                                </span>
+                            </div>
+                            <p className="text-xs sm:text-sm text-app-text-muted">
+                                Centralized tracking of costs, usage, and operations generated inside <span className="font-semibold text-app-text-main">{organization_name}</span>.
                             </p>
                         </div>
-                        <div className="flex gap-3 self-start md:self-auto no-print">
+                        <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap no-print">
                             <button
                                 onClick={handleDownloadReport}
-                                className="px-4 py-2 border border-app-border bg-app-bg-card text-app-text-label hover:bg-app-bg-hover rounded-lg transition-all text-xs font-semibold flex items-center gap-2 shadow-sm cursor-pointer"
+                                className="h-9 px-3.5 bg-app-bg-card hover:bg-app-bg-hover text-app-text-main border border-app-border rounded-lg text-xs font-semibold inline-flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
+                                title="Download PDF Report"
                             >
-                                <ExternalLink className="w-3.5 h-3.5" />
+                                <ExternalLink className="w-3.5 h-3.5 text-app-text-muted" />
                                 Download Report
                             </button>
                             <button
                                 onClick={handleExportExcel}
-                                className="px-4 py-2 border border-app-border bg-app-bg-card text-app-text-label hover:bg-app-bg-hover rounded-lg transition-all text-xs font-semibold flex items-center gap-2 shadow-sm cursor-pointer"
+                                className="h-9 px-3.5 bg-app-bg-card hover:bg-app-bg-hover text-app-text-main border border-app-border rounded-lg text-xs font-semibold inline-flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
+                                title="Export Excel Spreadsheet"
                             >
-                                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-500" />
+                                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
                                 Export Excel
                             </button>
                             <button
                                 onClick={() => fetchBillingData(true)}
                                 disabled={refreshing}
-                                className="px-4 py-2 border border-app-border bg-app-bg-card text-app-text-label hover:bg-app-bg-hover rounded-lg transition-all text-xs font-semibold flex items-center gap-2 disabled:opacity-50 shadow-sm cursor-pointer"
+                                className="h-9 px-3.5 bg-app-bg-card hover:bg-app-bg-hover text-app-text-main border border-app-border rounded-lg text-xs font-semibold inline-flex items-center gap-2 disabled:opacity-50 shadow-xs transition-colors cursor-pointer"
+                                title="Refresh Logs"
                             >
-                                <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+                                <RefreshCw className={`w-3.5 h-3.5 text-app-text-muted ${refreshing ? 'animate-spin' : ''}`} />
                                 {refreshing ? 'Refreshing...' : 'Refresh Logs'}
                             </button>
                         </div>
                     </div>
 
-                    {/* Date Range Filter */}
-                    <div className="mb-6 p-4 rounded-xl bg-app-bg-card border border-app-border flex flex-wrap items-center gap-4 shadow-sm no-print">
-                        <div className="flex items-center gap-2">
-                            <Clock className="w-4 h-4 text-app-primary" />
-                            <span className="text-xs font-bold text-app-text-label uppercase tracking-wider">Filter by Date Range:</span>
+                    {/* Unified Controls Toolbar: Navigation Tabs & Date Range Filter */}
+                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 no-print">
+                        {/* Navigation Tabs */}
+                        <div className="inline-flex p-1 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700/80 shadow-xs overflow-x-auto custom-scrollbar">
+                            <button 
+                                className={`px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-semibold transition-all flex items-center gap-2 cursor-pointer whitespace-nowrap ${
+                                    activeTab === 'overview' 
+                                        ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs' 
+                                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                                }`}
+                                onClick={() => { setActiveTab('overview'); setSearchTerm(''); }}
+                            >
+                                <Activity className="w-3.5 h-3.5" />
+                                Overview
+                            </button>
+                            <button 
+                                className={`px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-semibold transition-all flex items-center gap-2 cursor-pointer whitespace-nowrap ${
+                                    activeTab === 'users' 
+                                        ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs' 
+                                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                                }`}
+                                onClick={() => { setActiveTab('users'); setSearchTerm(''); }}
+                            >
+                                <Users className="w-3.5 h-3.5" />
+                                User Engagement
+                            </button>
+                            <button 
+                                className={`px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-semibold transition-all flex items-center gap-2 cursor-pointer whitespace-nowrap ${
+                                    activeTab === 'projects' 
+                                        ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs' 
+                                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                                }`}
+                                onClick={() => { setActiveTab('projects'); setSearchTerm(''); }}
+                            >
+                                <Globe className="w-3.5 h-3.5" />
+                                Projects Hub
+                            </button>
+                            {isOrgAdmin && (
+                                <button 
+                                    className={`px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-semibold transition-all flex items-center gap-2 cursor-pointer whitespace-nowrap ${
+                                        activeTab === 'tokenops' 
+                                            ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs' 
+                                            : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                                    }`}
+                                    onClick={() => { setActiveTab('tokenops'); setSearchTerm(''); }}
+                                >
+                                    <Coins className="w-3.5 h-3.5" />
+                                    TokenOps Quotas
+                                </button>
+                            )}
                         </div>
-                        <div className="flex flex-wrap items-center gap-3">
-                            <div className="flex items-center gap-2">
-                                <label className="text-xs text-app-text-muted font-semibold">Start:</label>
+
+                        {/* Compact Date Range Filter */}
+                        <div className="flex items-center gap-2.5 bg-app-bg-card border border-app-border rounded-xl px-3 py-1.5 shadow-xs self-start lg:self-auto flex-wrap">
+                            <div className="flex items-center gap-1.5 text-app-text-muted text-xs font-semibold">
+                                <Clock className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                                <span className="uppercase tracking-wider text-[10px] hidden sm:inline">Range:</span>
+                            </div>
+                            <div className="flex items-center gap-1.5 text-xs">
                                 <input
                                     type="date"
                                     value={startDate}
                                     onChange={(e) => setStartDate(e.target.value)}
-                                    className="px-3 py-1 bg-app-bg-muted border border-app-border hover:border-app-border-active focus:border-app-primary text-xs text-app-text-main rounded-lg focus:outline-none transition-all cursor-pointer"
+                                    aria-label="Start Date"
+                                    className="h-7 px-2 bg-app-bg-muted border border-app-border hover:border-slate-400 dark:hover:border-slate-500 text-[11px] text-app-text-main rounded-md focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
                                 />
-                            </div>
-                            <div className="flex items-center gap-2">
-                                <label className="text-xs text-app-text-muted font-semibold">End:</label>
+                                <span className="text-app-text-muted text-[11px] font-medium">to</span>
                                 <input
                                     type="date"
                                     value={endDate}
                                     onChange={(e) => setEndDate(e.target.value)}
-                                    className="px-3 py-1 bg-app-bg-muted border border-app-border hover:border-app-border-active focus:border-app-primary text-xs text-app-text-main rounded-lg focus:outline-none transition-all cursor-pointer"
+                                    aria-label="End Date"
+                                    className="h-7 px-2 bg-app-bg-muted border border-app-border hover:border-slate-400 dark:hover:border-slate-500 text-[11px] text-app-text-main rounded-md focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
                                 />
                             </div>
                             {(startDate || endDate) && (
                                 <button
                                     onClick={() => { setStartDate(''); setEndDate(''); }}
-                                    className="px-3 py-1 bg-rose-50 hover:bg-rose-105 dark:bg-app-status-errorBg/20 dark:hover:bg-app-status-errorBg/40 border border-rose-200 dark:border-rose-900/30 text-rose-600 dark:text-rose-450 text-xs font-bold rounded-lg transition-colors cursor-pointer"
+                                    className="h-6 px-2 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 border border-rose-200 dark:border-rose-800/60 text-rose-600 dark:text-rose-400 text-[10px] font-bold rounded-md transition-colors cursor-pointer"
                                 >
-                                    Clear Dates
+                                    Clear
                                 </button>
                             )}
                         </div>
                     </div>
 
-                    {/* Navigation Tabs */}
-                    <div className="flex gap-2 mb-8 bg-app-bg-muted p-1.5 rounded-xl border border-app-border w-fit no-print">
-                        <button 
-                            className={`px-5 py-2 rounded-lg text-sm font-semibold transition-all ${activeTab === 'overview' ? 'bg-app-primary text-white shadow-md' : 'text-app-text-label hover:bg-app-bg-hover dark:text-app-text-muted dark:hover:bg-app-bg-card'}`}
-                            onClick={() => { setActiveTab('overview'); setSearchTerm(''); }}
-                        >
-                            Overview
-                        </button>
-                        <button 
-                            className={`px-5 py-2 rounded-lg text-sm font-semibold transition-all ${activeTab === 'users' ? 'bg-app-primary text-white shadow-md' : 'text-app-text-label hover:bg-app-bg-hover dark:text-app-text-muted dark:hover:bg-app-bg-card'}`}
-                            onClick={() => { setActiveTab('users'); setSearchTerm(''); }}
-                        >
-                            User Engagement
-                        </button>
-                        <button 
-                            className={`px-5 py-2 rounded-lg text-sm font-semibold transition-all ${activeTab === 'projects' ? 'bg-app-primary text-white shadow-md' : 'text-app-text-label hover:bg-app-bg-hover dark:text-app-text-muted dark:hover:bg-app-bg-card'}`}
-                            onClick={() => { setActiveTab('projects'); setSearchTerm(''); }}
-                        >
-                            Projects Hub
-                        </button>
-                        {isOrgAdmin && (
-                            <button 
-                                className={`px-5 py-2 rounded-lg text-sm font-semibold transition-all flex items-center gap-1.5 ${activeTab === 'tokenops' ? 'bg-app-primary text-white shadow-md' : 'text-app-text-label hover:bg-app-bg-hover dark:text-app-text-muted dark:hover:bg-app-bg-card'}`}
-                                onClick={() => { setActiveTab('tokenops'); setSearchTerm(''); }}
-                            >
-                                <Coins className="w-3.5 h-3.5" />
-                                TokenOps Quotas
-                            </button>
-                        )}
-                    </div>
-
                     {/* OVERVIEW TAB */}
                     {activeTab === 'overview' && (
-                        <div className="space-y-8 animate-fade-in">
+                        <div className="space-y-6 animate-fade-in">
                             {/* KPI Grid */}
                             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                                 {/* Total Cost */}
-                                <div className="bg-app-bg-card border border-app-border rounded-xl p-5 hover:border-app-primary-dark transition-all shadow-sm relative overflow-hidden">
-                                    <div className="flex items-center justify-between mb-3">
-                                        <span className="text-xs font-semibold text-app-text-muted uppercase tracking-wider">Total Organization Cost</span>
-                                        <div className="p-2 bg-emerald-50 dark:bg-app-status-successBg rounded-lg text-emerald-600 dark:text-emerald-400 border border-emerald-200/20">
+                                <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-4 sm:p-5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <span className="text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">
+                                            Total Organization Cost
+                                        </span>
+                                        <div className="w-8 h-8 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
                                             <DollarSign className="w-4 h-4" />
                                         </div>
                                     </div>
-                                    <h3 className="text-2xl font-black text-app-text-main">
-                                        ${(orgSummary.total_cost ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                    </h3>
-                                    <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 flex items-center gap-1 font-semibold">
-                                        <CheckCircle2 className="w-3 h-3" /> Token Cost + Infra Cost ($0.70/hr)
-                                    </p>
-                                    <div className="absolute top-0 left-0 w-1 h-full bg-emerald-500" />
+                                    <div className="mt-3">
+                                        <div className="text-2xl font-bold tracking-tight text-app-text-main">
+                                            ${(orgSummary.total_cost ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 3 })}
+                                        </div>
+                                        <p className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 flex items-center gap-1 font-medium">
+                                            <CheckCircle2 className="w-3 h-3 shrink-0" /> Token + Infra Cost ($0.70/hr)
+                                        </p>
+                                    </div>
                                 </div>
 
                                 {/* Token Cost */}
-                                <div className="bg-app-bg-card border border-app-border rounded-xl p-5 hover:border-app-primary-dark transition-all shadow-sm relative overflow-hidden">
-                                    <div className="flex items-center justify-between mb-3">
-                                        <span className="text-xs font-semibold text-app-text-muted uppercase tracking-wider">Token Cost (AI Usage)</span>
-                                        <div className="p-2 bg-blue-50 dark:bg-app-primary-light rounded-lg text-blue-600 dark:text-blue-450 border border-blue-200/20">
+                                <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-4 sm:p-5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <span className="text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">
+                                            Token Cost (AI Usage)
+                                        </span>
+                                        <div className="w-8 h-8 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
                                             <FileText className="w-4 h-4" />
                                         </div>
                                     </div>
-                                    <h3 className="text-2xl font-black text-app-text-main">
-                                        ${(orgSummary.total_token_cost ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                    </h3>
-                                    <p className="text-[10px] text-app-text-label mt-1 font-medium">
-                                        Prompt + Completion token spend
-                                    </p>
-                                    <div className="absolute top-0 left-0 w-1 h-full bg-blue-500" />
+                                    <div className="mt-3">
+                                        <div className="text-2xl font-bold tracking-tight text-app-text-main">
+                                            ${(orgSummary.total_token_cost ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 3 })}
+                                        </div>
+                                        <p className="text-[11px] text-app-text-muted mt-1 font-medium">
+                                            Prompt + Completion token spend
+                                        </p>
+                                    </div>
                                 </div>
 
-                                {/* Infra Cost ($0.70/hr) */}
-                                <div className="bg-app-bg-card border border-app-border rounded-xl p-5 hover:border-app-primary-dark transition-all shadow-sm relative overflow-hidden">
-                                    <div className="flex items-center justify-between mb-3">
-                                        <span className="text-xs font-semibold text-app-text-muted uppercase tracking-wider">Infra Cost</span>
-                                        <div className="p-2 bg-purple-50 dark:bg-app-primary-light rounded-lg text-purple-650 dark:text-purple-400 border border-purple-200/20">
+                                {/* Infra Cost */}
+                                <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-4 sm:p-5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <span className="text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">
+                                            Infra Cost
+                                        </span>
+                                        <div className="w-8 h-8 rounded-lg bg-purple-50 dark:bg-purple-950/40 text-purple-600 dark:text-purple-400 flex items-center justify-center shrink-0">
                                             <Clock className="w-4 h-4" />
                                         </div>
                                     </div>
-                                    <h3 className="text-2xl font-black text-app-text-main">
-                                        ${(orgSummary.total_infra_cost ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                    </h3>
-                                    <p className="text-[10px] text-app-text-label mt-1 font-medium">
-                                        Calculated from active usage hours per user
-                                    </p>
-                                    <div className="absolute top-0 left-0 w-1 h-full bg-purple-500" />
+                                    <div className="mt-3">
+                                        <div className="text-2xl font-bold tracking-tight text-app-text-main">
+                                            ${(orgSummary.total_infra_cost ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 3 })}
+                                        </div>
+                                        <p className="text-[11px] text-app-text-muted mt-1 font-medium">
+                                            Active user compute hours ($0.70/hr)
+                                        </p>
+                                    </div>
                                 </div>
 
                                 {/* Prompt Tokens */}
-                                <div className="bg-app-bg-card border border-app-border rounded-xl p-5 hover:border-app-primary-dark transition-all shadow-sm relative overflow-hidden">
-                                    <div className="flex items-center justify-between mb-3">
-                                        <span className="text-xs font-semibold text-app-text-muted uppercase tracking-wider">Prompt Tokens</span>
-                                        <div className="p-2 bg-indigo-50 dark:bg-app-primary-light rounded-lg text-indigo-600 dark:text-indigo-400 border border-indigo-200/20">
-                                            <FileText className="w-4 h-4" />
+                                <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-4 sm:p-5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <span className="text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">
+                                            Prompt Tokens
+                                        </span>
+                                        <div className="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
+                                            <Zap className="w-4 h-4" />
                                         </div>
                                     </div>
-                                    <h3 className="text-2xl font-black text-app-text-main">
-                                        {orgSummary.total_prompt_tokens?.toLocaleString()}
-                                    </h3>
-                                    <p className="text-[10px] text-app-text-label mt-1 font-medium">
-                                        Tokens sent to AI models
-                                    </p>
-                                    <div className="absolute top-0 left-0 w-1 h-full bg-indigo-500" />
+                                    <div className="mt-3">
+                                        <div className="text-2xl font-bold tracking-tight text-app-text-main">
+                                            {orgSummary.total_prompt_tokens?.toLocaleString() || 0}
+                                        </div>
+                                        <p className="text-[11px] text-app-text-muted mt-1 font-medium">
+                                            Input tokens sent to AI models
+                                        </p>
+                                    </div>
                                 </div>
 
                                 {/* Completion Tokens */}
-                                <div className="bg-app-bg-card border border-app-border rounded-xl p-5 hover:border-app-primary-dark transition-all shadow-sm relative overflow-hidden">
-                                    <div className="flex items-center justify-between mb-3">
-                                        <span className="text-xs font-semibold text-app-text-muted uppercase tracking-wider">Completion Tokens</span>
-                                        <div className="p-2 bg-pink-50 dark:bg-app-primary-light rounded-lg text-pink-600 dark:text-pink-400 border border-pink-200/20">
+                                <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-4 sm:p-5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <span className="text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">
+                                            Completion Tokens
+                                        </span>
+                                        <div className="w-8 h-8 rounded-lg bg-pink-50 dark:bg-pink-950/40 text-pink-600 dark:text-pink-400 flex items-center justify-center shrink-0">
                                             <Bot className="w-4 h-4" />
                                         </div>
                                     </div>
-                                    <h3 className="text-2xl font-black text-app-text-main">
-                                        {orgSummary.total_completion_tokens?.toLocaleString()}
-                                    </h3>
-                                    <p className="text-[10px] text-app-text-label mt-1 font-medium">
-                                        Tokens generated by AI models
-                                    </p>
-                                    <div className="absolute top-0 left-0 w-1 h-full bg-pink-500" />
+                                    <div className="mt-3">
+                                        <div className="text-2xl font-bold tracking-tight text-app-text-main">
+                                            {orgSummary.total_completion_tokens?.toLocaleString() || 0}
+                                        </div>
+                                        <p className="text-[11px] text-app-text-muted mt-1 font-medium">
+                                            Output tokens generated by models
+                                        </p>
+                                    </div>
                                 </div>
 
                                 {/* Org Members */}
-                                <div className="bg-app-bg-card border border-app-border rounded-xl p-5 hover:border-app-primary-dark transition-all shadow-sm relative overflow-hidden">
-                                    <div className="flex items-center justify-between mb-3">
-                                        <span className="text-xs font-semibold text-app-text-muted uppercase tracking-wider">Org Members</span>
-                                        <div className="p-2 bg-teal-50 dark:bg-app-primary-light rounded-lg text-teal-600 dark:text-teal-400 border border-teal-200/20">
+                                <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-4 sm:p-5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <span className="text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">
+                                            Org Members
+                                        </span>
+                                        <div className="w-8 h-8 rounded-lg bg-teal-50 dark:bg-teal-950/40 text-teal-600 dark:text-teal-400 flex items-center justify-center shrink-0">
                                             <Users className="w-4 h-4" />
                                         </div>
                                     </div>
-                                    <h3 className="text-2xl font-black text-app-text-main">
-                                        {processedUsers.length}
-                                    </h3>
-                                    <p className="text-[10px] text-app-text-label mt-1 font-medium">
-                                        Active users in organization
-                                    </p>
-                                    <div className="absolute top-0 left-0 w-1 h-full bg-teal-500" />
+                                    <div className="mt-3">
+                                        <div className="text-2xl font-bold tracking-tight text-app-text-main">
+                                            {processedUsers.length}
+                                        </div>
+                                        <p className="text-[11px] text-app-text-muted mt-1 font-medium">
+                                            Active members in organization
+                                        </p>
+                                    </div>
                                 </div>
                             </div>
 
                             {/* Cost Breakdown by AI Model */}
                             {orgSummary.cost_by_model && Object.keys(orgSummary.cost_by_model).length > 0 && (
-                                <div className="bg-app-bg-card border border-app-border rounded-xl p-6 shadow-sm">
-                                    <h3 className="text-base font-bold text-app-text-main mb-4 flex items-center gap-2">
-                                        <Cpu className="w-4 h-4 text-app-primary" /> Cost Breakdown by AI Model
-                                    </h3>
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                                <div className="bg-app-bg-card border border-app-border rounded-xl p-5 sm:p-6 shadow-xs">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className="text-sm sm:text-base font-bold text-app-text-main flex items-center gap-2">
+                                            <Cpu className="w-4 h-4 text-indigo-500" /> Cost Breakdown by AI Model
+                                        </h3>
+                                        <span className="text-[11px] font-semibold text-app-text-muted bg-app-bg-muted px-2.5 py-0.5 rounded-full border border-app-border">
+                                            {Object.keys(orgSummary.cost_by_model).length} {Object.keys(orgSummary.cost_by_model).length === 1 ? 'Model' : 'Models'}
+                                        </span>
+                                    </div>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3.5">
                                         {Object.entries(orgSummary.cost_by_model).map(([modelName, costValue]) => {
                                             const percentage = orgSummary.total_cost > 0
                                                 ? Math.round((costValue / orgSummary.total_cost) * 100)
                                                 : 0;
                                             return (
-                                                <div key={modelName} className="p-4 rounded-xl border border-app-border bg-app-bg-muted/50">
-                                                    <div className="flex justify-between items-center mb-1">
-                                                        <span className="text-xs font-bold text-app-text-label font-mono truncate mr-2" title={modelName}>{modelName}</span>
-                                                        <span className="text-sm font-black text-app-text-main">${costValue.toFixed(4)}</span>
+                                                <div key={modelName} className="p-3.5 rounded-xl border border-app-border/80 bg-app-bg-muted/40 hover:bg-app-bg-muted/70 transition-colors">
+                                                    <div className="flex justify-between items-center mb-1.5">
+                                                        <span className="text-xs font-bold text-app-text-main font-mono truncate mr-2" title={modelName}>{modelName}</span>
+                                                        <span className="text-xs font-bold text-app-text-main">${costValue.toFixed(4)}</span>
                                                     </div>
-                                                    <div className="w-full bg-app-bg-hover rounded-full h-1.5 overflow-hidden">
-                                                        <div className="h-full bg-app-primary rounded-full" style={{ width: `${percentage}%` }} />
+                                                    <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-1.5 overflow-hidden">
+                                                        <div className="h-full bg-indigo-500 rounded-full transition-all duration-300" style={{ width: `${percentage}%` }} />
                                                     </div>
-                                                    <div className="flex justify-between text-[10px] text-app-text-muted mt-1 font-semibold">
+                                                    <div className="flex justify-between text-[10px] text-app-text-muted mt-1.5 font-medium">
                                                         <span>Share</span>
-                                                        <span>{percentage}%</span>
+                                                        <span className="font-semibold text-app-text-main">{percentage}%</span>
                                                     </div>
                                                 </div>
                                             );
@@ -959,64 +1006,101 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
 
                     {/* USER ENGAGEMENT TAB */}
                     {activeTab === 'users' && (
-                        <div className="bg-app-bg-card border border-app-border rounded-xl p-6 shadow-sm animate-fade-in">
-                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-                                <h3 className="text-base font-bold text-app-text-main flex items-center gap-2">
-                                    <Users className="w-4 h-4 text-app-primary" /> User Engagement Stats
-                                </h3>
+                        <div className="bg-app-bg-card border border-app-border rounded-xl p-5 sm:p-6 shadow-xs animate-fade-in space-y-4">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                <div className="flex items-center gap-2">
+                                    <h3 className="text-base font-bold text-app-text-main flex items-center gap-2">
+                                        <Users className="w-4 h-4 text-indigo-500" /> User Engagement Stats
+                                    </h3>
+                                    <span className="text-[11px] font-semibold text-app-text-muted bg-app-bg-muted px-2.5 py-0.5 rounded-full border border-app-border">
+                                        {processedUsers.length} {processedUsers.length === 1 ? 'User' : 'Users'}
+                                    </span>
+                                </div>
                                 <div className="relative no-print">
-                                    <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 transform -translate-y-1/2 text-app-text-light" />
+                                    <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 transform -translate-y-1/2 text-app-text-muted" />
                                     <input
                                         type="text"
                                         placeholder="Search by name or email..."
                                         value={searchTerm}
                                         onChange={(e) => setSearchTerm(e.target.value)}
-                                        className="pl-9 pr-4 py-1.5 bg-app-bg-muted border border-app-border hover:border-app-border-active focus:border-app-primary text-xs text-app-text-main rounded-lg focus:outline-none transition-all w-[220px]"
+                                        className="pl-9 pr-3.5 py-1.5 bg-app-bg-muted border border-app-border hover:border-slate-400 dark:hover:border-slate-500 focus:border-indigo-500 text-xs text-app-text-main rounded-lg focus:outline-none transition-all w-[220px] shadow-xs"
                                     />
                                 </div>
                             </div>
 
-                            <div className="overflow-x-auto rounded-lg border border-app-border">
+                            <div className="overflow-x-auto rounded-xl border border-app-border/80 shadow-2xs">
                                 <table className="w-full text-left border-collapse text-xs">
                                     <thead>
-                                        <tr className="border-b border-app-border bg-app-bg-muted/70 text-app-text-label uppercase font-bold tracking-wider text-[10px] select-none">
-                                            <th className="py-3.5 px-4 font-bold cursor-pointer hover:text-app-primary" onClick={() => handleUserSort('name')}>
-                                                Name {userSortField === 'name' ? (userSortAsc ? '▲' : '▼') : '⇅'}
+                                        <tr className="border-b border-app-border bg-slate-50/80 dark:bg-slate-800/60 text-app-text-muted uppercase font-bold tracking-wider text-[10px] select-none">
+                                            <th className="py-3 px-4 font-bold text-left align-middle cursor-pointer hover:text-app-text-main transition-colors" onClick={() => handleUserSort('name')}>
+                                                <div className="inline-flex items-center gap-1">
+                                                    <span>Name</span>
+                                                    <span className="text-[10px] text-slate-400">{userSortField === 'name' ? (userSortAsc ? '↑' : '↓') : '↕'}</span>
+                                                </div>
                                             </th>
-                                            <th className="py-3.5 px-4 font-bold cursor-pointer hover:text-app-primary" onClick={() => handleUserSort('email')}>
-                                                Email {userSortField === 'email' ? (userSortAsc ? '▲' : '▼') : '⇅'}
+                                            <th className="py-3 px-4 font-bold text-left align-middle cursor-pointer hover:text-app-text-main transition-colors" onClick={() => handleUserSort('email')}>
+                                                <div className="inline-flex items-center gap-1">
+                                                    <span>Email</span>
+                                                    <span className="text-[10px] text-slate-400">{userSortField === 'email' ? (userSortAsc ? '↑' : '↓') : '↕'}</span>
+                                                </div>
                                             </th>
-                                            <th className="py-3.5 px-4 font-bold">Status</th>
-                                            <th className="py-3.5 px-4 font-bold cursor-pointer hover:text-app-primary" onClick={() => handleUserSort('last_login')}>
-                                                Last Login {userSortField === 'last_login' ? (userSortAsc ? '▲' : '▼') : '⇅'}
+                                            <th className="py-3 px-3.5 font-bold text-center align-middle">
+                                                Status
                                             </th>
-                                            <th className="py-3.5 px-4 font-bold text-right cursor-pointer hover:text-app-primary" onClick={() => handleUserSort('projects_count')}>
-                                                Projects {userSortField === 'projects_count' ? (userSortAsc ? '▲' : '▼') : '⇅'}
+                                            <th className="py-3 px-3.5 font-bold text-center align-middle cursor-pointer hover:text-app-text-main transition-colors" onClick={() => handleUserSort('last_login')}>
+                                                <div className="flex items-center justify-center gap-1">
+                                                    <span>Last Login</span>
+                                                    <span className="text-[10px] text-slate-400">{userSortField === 'last_login' ? (userSortAsc ? '↑' : '↓') : '↕'}</span>
+                                                </div>
                                             </th>
-                                            <th className="py-3.5 px-4 font-bold text-right cursor-pointer hover:text-app-primary" onClick={() => handleUserSort('session_count')}>
-                                                Sessions {userSortField === 'session_count' ? (userSortAsc ? '▲' : '▼') : '⇅'}
+                                            <th className="py-3 px-3 font-bold text-center align-middle cursor-pointer hover:text-app-text-main transition-colors" onClick={() => handleUserSort('projects_count')}>
+                                                <div className="flex items-center justify-center gap-1">
+                                                    <span>Projects</span>
+                                                    <span className="text-[10px] text-slate-400">{userSortField === 'projects_count' ? (userSortAsc ? '↑' : '↓') : '↕'}</span>
+                                                </div>
                                             </th>
-                                            <th className="py-3.5 px-4 font-bold text-right cursor-pointer hover:text-app-primary" onClick={() => handleUserSort('total_duration_hours')}>
-                                                Session Time (Hrs) {userSortField === 'total_duration_hours' ? (userSortAsc ? '▲' : '▼') : '⇅'}
+                                            <th className="py-3 px-3 font-bold text-center align-middle cursor-pointer hover:text-app-text-main transition-colors" onClick={() => handleUserSort('session_count')}>
+                                                <div className="flex items-center justify-center gap-1">
+                                                    <span>Sessions</span>
+                                                    <span className="text-[10px] text-slate-400">{userSortField === 'session_count' ? (userSortAsc ? '↑' : '↓') : '↕'}</span>
+                                                </div>
                                             </th>
-                                            <th className="py-3.5 px-4 font-bold text-right cursor-pointer hover:text-app-primary" onClick={() => handleUserSort('ai_tokens')}>
-                                                AI Tokens {userSortField === 'ai_tokens' ? (userSortAsc ? '▲' : '▼') : '⇅'}
+                                            <th className="py-3 px-3.5 font-bold text-center align-middle cursor-pointer hover:text-app-text-main transition-colors" onClick={() => handleUserSort('total_duration_hours')}>
+                                                <div className="flex items-center justify-center gap-1">
+                                                    <span>Session Time</span>
+                                                    <span className="text-[10px] text-slate-400">{userSortField === 'total_duration_hours' ? (userSortAsc ? '↑' : '↓') : '↕'}</span>
+                                                </div>
                                             </th>
-                                            <th className="py-3.5 px-4 font-bold text-right cursor-pointer hover:text-app-primary" onClick={() => handleUserSort('token_cost')}>
-                                                Token Cost {userSortField === 'token_cost' ? (userSortAsc ? '▲' : '▼') : '⇅'}
+                                            <th className="py-3 px-3.5 font-bold text-center align-middle cursor-pointer hover:text-app-text-main transition-colors" onClick={() => handleUserSort('ai_tokens')}>
+                                                <div className="flex items-center justify-center gap-1">
+                                                    <span>AI Tokens</span>
+                                                    <span className="text-[10px] text-slate-400">{userSortField === 'ai_tokens' ? (userSortAsc ? '↑' : '↓') : '↕'}</span>
+                                                </div>
                                             </th>
-                                            <th className="py-3.5 px-4 font-bold text-right cursor-pointer hover:text-app-primary" onClick={() => handleUserSort('infra_cost')}>
-                                                Infra Cost ($0.70/hr) {userSortField === 'infra_cost' ? (userSortAsc ? '▲' : '▼') : '⇅'}
+                                            <th className="py-3 px-3.5 font-bold text-center align-middle cursor-pointer hover:text-app-text-main transition-colors" onClick={() => handleUserSort('token_cost')}>
+                                                <div className="flex items-center justify-center gap-1">
+                                                    <span>Token Cost</span>
+                                                    <span className="text-[10px] text-slate-400">{userSortField === 'token_cost' ? (userSortAsc ? '↑' : '↓') : '↕'}</span>
+                                                </div>
                                             </th>
-                                            <th className="py-3.5 px-4 font-bold text-right cursor-pointer hover:text-app-primary" onClick={() => handleUserSort('total_cost')}>
-                                                Total Cost {userSortField === 'total_cost' ? (userSortAsc ? '▲' : '▼') : '⇅'}
+                                            <th className="py-3 px-3.5 font-bold text-center align-middle cursor-pointer hover:text-app-text-main transition-colors" onClick={() => handleUserSort('infra_cost')}>
+                                                <div className="flex items-center justify-center gap-1">
+                                                    <span>Infra Cost</span>
+                                                    <span className="text-[10px] text-slate-400">{userSortField === 'infra_cost' ? (userSortAsc ? '↑' : '↓') : '↕'}</span>
+                                                </div>
+                                            </th>
+                                            <th className="py-3 px-3.5 font-bold text-center align-middle cursor-pointer hover:text-app-text-main transition-colors" onClick={() => handleUserSort('total_cost')}>
+                                                <div className="flex items-center justify-center gap-1">
+                                                    <span>Total Cost</span>
+                                                    <span className="text-[10px] text-slate-400">{userSortField === 'total_cost' ? (userSortAsc ? '↑' : '↓') : '↕'}</span>
+                                                </div>
                                             </th>
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-app-border bg-app-bg-card text-app-text-main">
                                         {processedUsers.length === 0 ? (
                                             <tr>
-                                                <td colSpan="11" className="py-8 px-4 text-center text-app-text-muted font-semibold">
+                                                <td colSpan="11" className="py-8 px-4 text-center text-app-text-muted font-semibold align-middle">
                                                     No organization members found matching your search.
                                                 </td>
                                             </tr>
@@ -1025,47 +1109,55 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                                                 <tr 
                                                     key={u.id} 
                                                     onClick={() => setSelectedUserDetail(u)}
-                                                    className="hover:bg-app-bg-hover transition-colors cursor-pointer"
+                                                    className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors cursor-pointer"
                                                 >
-                                                    <td className="py-3.5 px-4 font-bold flex items-center gap-1.5">
-                                                        <User className="w-3.5 h-3.5 text-app-text-muted" />
-                                                        {u.name}
+                                                    <td className="py-3.5 px-4 font-bold text-left align-middle">
+                                                        <div className="flex items-center gap-2">
+                                                            <div className="w-7 h-7 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-500 shrink-0">
+                                                                <User className="w-3.5 h-3.5" />
+                                                            </div>
+                                                            <span className="truncate max-w-[160px]">{u.name}</span>
+                                                        </div>
                                                     </td>
-                                                    <td className="py-3.5 px-4 text-app-text-label font-mono font-semibold">{u.email}</td>
-                                                    <td className="py-3.5 px-4">
-                                                        {u.is_active ? (
-                                                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 dark:bg-app-status-successBg text-emerald-700 dark:text-emerald-350 border border-emerald-250/20 inline-flex items-center gap-1">
-                                                                <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full" /> Active
-                                                            </span>
-                                                        ) : (
-                                                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-app-bg-muted text-app-text-muted border border-app-border inline-flex items-center gap-1">
-                                                                <span className="w-1.5 h-1.5 bg-app-text-light rounded-full" /> Inactive
-                                                            </span>
-                                                        )}
+                                                    <td className="py-3.5 px-4 text-left align-middle font-mono text-[11px] text-app-text-muted">
+                                                        {u.email}
                                                     </td>
-                                                    <td className="py-3.5 px-4 text-app-text-muted font-semibold">
+                                                    <td className="py-3.5 px-3.5 text-center align-middle">
+                                                        <div className="flex items-center justify-center">
+                                                            {u.is_active ? (
+                                                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border border-emerald-200/60 dark:border-emerald-800/60 inline-flex items-center gap-1">
+                                                                    <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full" /> Active
+                                                                </span>
+                                                            ) : (
+                                                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-500 border border-slate-200 dark:border-slate-700 inline-flex items-center gap-1">
+                                                                    <span className="w-1.5 h-1.5 bg-slate-400 rounded-full" /> Inactive
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    </td>
+                                                    <td className="py-3.5 px-3.5 text-center align-middle text-[11px] text-app-text-muted whitespace-nowrap font-medium">
                                                         {u.last_login ? new Date(u.last_login).toLocaleString() : 'Never'}
                                                     </td>
-                                                    <td className="py-3.5 px-4 text-right font-mono font-bold">
+                                                    <td className="py-3.5 px-3 text-center align-middle font-mono font-bold text-app-text-main">
                                                         {u.projects_count}
                                                     </td>
-                                                    <td className="py-3.5 px-4 text-right font-mono font-bold">
+                                                    <td className="py-3.5 px-3 text-center align-middle font-mono font-bold text-app-text-main">
                                                         {u.session_count}
                                                     </td>
-                                                    <td className="py-3.5 px-4 text-right font-mono font-bold">
-                                                        {u.total_duration_hours} hrs
+                                                    <td className="py-3.5 px-3.5 text-center align-middle font-mono font-bold text-app-text-main whitespace-nowrap">
+                                                        {u.total_duration_hours} <span className="text-[10px] text-app-text-muted font-normal">hrs</span>
                                                     </td>
-                                                    <td className="py-3.5 px-4 text-right font-mono font-semibold text-app-text-label">
-                                                        {u.ai_tokens?.toLocaleString()}
+                                                    <td className="py-3.5 px-3.5 text-center align-middle font-mono font-semibold text-app-text-main">
+                                                        {u.ai_tokens ? u.ai_tokens.toLocaleString() : '0'}
                                                     </td>
-                                                    <td className="py-3.5 px-4 text-right font-mono font-semibold text-blue-600 dark:text-blue-400">
-                                                        ${(u.token_cost || 0).toLocaleString(undefined, { minimumFractionDigits: 4 })}
+                                                    <td className="py-3.5 px-3.5 text-center align-middle font-mono font-semibold text-blue-600 dark:text-blue-400">
+                                                        ${(u.token_cost || 0).toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })}
                                                     </td>
-                                                    <td className="py-3.5 px-4 text-right font-mono font-semibold text-purple-600 dark:text-purple-400">
-                                                        ${(u.infra_cost || 0).toLocaleString(undefined, { minimumFractionDigits: 4 })}
+                                                    <td className="py-3.5 px-3.5 text-center align-middle font-mono font-semibold text-purple-600 dark:text-purple-400">
+                                                        ${(u.infra_cost || 0).toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })}
                                                     </td>
-                                                    <td className="py-3.5 px-4 text-right font-mono font-bold text-emerald-600 dark:text-emerald-450">
-                                                        ${(u.total_cost || 0).toLocaleString(undefined, { minimumFractionDigits: 4 })}
+                                                    <td className="py-3.5 px-3.5 text-center align-middle font-mono font-bold text-emerald-600 dark:text-emerald-450">
+                                                        ${(u.total_cost || 0).toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })}
                                                     </td>
                                                 </tr>
                                             ))
@@ -1078,67 +1170,92 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
 
                     {/* PROJECTS HUB TAB */}
                     {activeTab === 'projects' && (
-                        <div className="bg-app-bg-card border border-app-border rounded-xl p-6 shadow-sm animate-fade-in">
-                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-                                <h3 className="text-base font-bold text-app-text-main flex items-center gap-2">
-                                    <Globe className="w-4 h-4 text-app-primary" /> Projects Hub
-                                </h3>
+                        <div className="bg-app-bg-card border border-app-border rounded-xl p-5 sm:p-6 shadow-xs animate-fade-in space-y-4">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                <div className="flex items-center gap-2">
+                                    <h3 className="text-base font-bold text-app-text-main flex items-center gap-2">
+                                        <Globe className="w-4 h-4 text-indigo-500" /> Projects Hub
+                                    </h3>
+                                    <span className="text-[11px] font-semibold text-app-text-muted bg-app-bg-muted px-2.5 py-0.5 rounded-full border border-app-border">
+                                        {processedProjects.length} {processedProjects.length === 1 ? 'Project' : 'Projects'}
+                                    </span>
+                                </div>
                                 <div className="relative no-print">
-                                    <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 transform -translate-y-1/2 text-app-text-light" />
+                                    <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 transform -translate-y-1/2 text-app-text-muted" />
                                     <input
                                         type="text"
                                         placeholder="Search projects..."
                                         value={searchTerm}
                                         onChange={(e) => setSearchTerm(e.target.value)}
-                                        className="pl-9 pr-4 py-1.5 bg-app-bg-muted border border-app-border hover:border-app-border-active focus:border-app-primary text-xs text-app-text-main rounded-lg focus:outline-none transition-all w-[220px]"
+                                        className="pl-9 pr-3.5 py-1.5 bg-app-bg-muted border border-app-border hover:border-slate-400 dark:hover:border-slate-500 focus:border-indigo-500 text-xs text-app-text-main rounded-lg focus:outline-none transition-all w-[220px] shadow-xs"
                                     />
                                 </div>
                             </div>
 
-                            <div className="overflow-x-auto rounded-lg border border-app-border">
+                            <div className="overflow-x-auto rounded-xl border border-app-border/80 shadow-2xs">
                                 <table className="w-full text-left border-collapse text-xs">
                                     <thead>
-                                        <tr className="border-b border-app-border bg-app-bg-muted/70 text-app-text-label uppercase font-bold tracking-wider text-[10px]">
-                                            <th className="py-3.5 px-4 font-bold">Project Name</th>
-                                            <th className="py-3.5 px-4 font-bold">Project Token</th>
-                                            <th className="py-3.5 px-4 font-bold">Owner Email</th>
-                                            <th className="py-3.5 px-4 font-bold">Classification</th>
-                                            <th className="py-3.5 px-4 font-bold text-right">Runs</th>
-                                            <th className="py-3.5 px-4 font-bold text-center">Status</th>
-                                            <th className="py-3.5 px-4 font-bold text-center">Created At</th>
+                                        <tr className="border-b border-app-border bg-slate-50/80 dark:bg-slate-800/60 text-app-text-muted uppercase font-bold tracking-wider text-[10px]">
+                                            <th className="py-3 px-4 font-bold text-left align-middle">Project Name</th>
+                                            <th className="py-3 px-4 font-bold text-left align-middle">Project Token</th>
+                                            <th className="py-3 px-4 font-bold text-left align-middle">Owner Email</th>
+                                            <th className="py-3 px-4 font-bold text-center align-middle">Classification</th>
+                                            <th className="py-3 px-4 font-bold text-center align-middle">Runs</th>
+                                            <th className="py-3 px-4 font-bold text-center align-middle">Status</th>
+                                            <th className="py-3 px-4 font-bold text-center align-middle">Created At</th>
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-app-border bg-app-bg-card text-app-text-main">
                                         {processedProjects.length === 0 ? (
                                             <tr>
-                                                <td colSpan="7" className="py-8 px-4 text-center text-app-text-muted font-semibold">
+                                                <td colSpan="7" className="py-8 px-4 text-center text-app-text-muted font-semibold align-middle">
                                                     No projects found in organization.
                                                 </td>
                                             </tr>
                                         ) : (
                                             processedProjects.map((p) => (
-                                                <tr key={p.project_token} className="hover:bg-app-bg-hover transition-colors">
-                                                    <td className="py-3.5 px-4 font-bold">
-                                                        {p.project_name}
+                                                <tr key={p.project_token} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors">
+                                                    <td className="py-3.5 px-4 font-bold text-left align-middle text-app-text-main">
+                                                        <div className="flex items-center gap-2">
+                                                            <div className="w-7 h-7 rounded-lg bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
+                                                                <Globe className="w-3.5 h-3.5" />
+                                                            </div>
+                                                            <span className="truncate max-w-[200px]">{p.project_name}</span>
+                                                        </div>
                                                     </td>
-                                                    <td className="py-3.5 px-4 font-mono text-app-text-muted font-semibold">{p.project_token}</td>
-                                                    <td className="py-3.5 px-4 text-app-text-label font-mono font-semibold">{p.owner_email}</td>
-                                                    <td className="py-3.5 px-4 font-semibold text-app-text-label">
-                                                        {p.classification}
-                                                    </td>
-                                                    <td className="py-3.5 px-4 text-right font-mono font-bold">
-                                                        {p.total_runs}
-                                                    </td>
-                                                    <td className="py-3.5 px-4 text-center">
-                                                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                                            p.run_status === 'success' ? 'bg-emerald-50 dark:bg-app-status-successBg text-emerald-700 dark:text-emerald-350 border border-emerald-250/20' :
-                                                            p.run_status === 'failed' ? 'bg-rose-50 dark:bg-app-status-errorBg text-rose-700 dark:text-rose-400 border border-rose-250/20' :
-                                                            'bg-amber-50 dark:bg-app-status-warningBg text-amber-700 dark:text-amber-450 border border-amber-250/20'
-                                                        }`}>
-                                                            {p.run_status}
+                                                    <td className="py-3.5 px-4 text-left align-middle">
+                                                        <span className="px-2 py-0.5 rounded-md bg-app-bg-muted/80 border border-app-border/80 font-mono text-[11px] text-app-text-muted">
+                                                            {p.project_token}
                                                         </span>
                                                     </td>
-                                                    <td className="py-3.5 px-4 text-center text-app-text-muted font-semibold">
+                                                    <td className="py-3.5 px-4 text-left align-middle text-app-text-label font-mono text-[11px]">
+                                                        {p.owner_email}
+                                                    </td>
+                                                    <td className="py-3.5 px-4 text-center align-middle">
+                                                        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700/80 uppercase tracking-wider">
+                                                            {p.classification}
+                                                        </span>
+                                                    </td>
+                                                    <td className="py-3.5 px-4 text-center align-middle font-mono font-bold text-app-text-main">
+                                                        {p.total_runs}
+                                                    </td>
+                                                    <td className="py-3.5 px-4 text-center align-middle">
+                                                        <div className="flex items-center justify-center">
+                                                            <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold inline-flex items-center gap-1 ${
+                                                                p.run_status === 'success' ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-350 border border-emerald-200/50' :
+                                                                p.run_status === 'failed' ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border border-rose-200/50' :
+                                                                'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border border-amber-200/50'
+                                                            }`}>
+                                                                <span className={`w-1.5 h-1.5 rounded-full ${
+                                                                    p.run_status === 'success' ? 'bg-emerald-500' :
+                                                                    p.run_status === 'failed' ? 'bg-rose-500' :
+                                                                    'bg-amber-500'
+                                                                }`} />
+                                                                {p.run_status}
+                                                            </span>
+                                                        </div>
+                                                    </td>
+                                                    <td className="py-3.5 px-4 text-center align-middle text-app-text-muted text-[11px] font-medium whitespace-nowrap">
                                                         {p.submission_date ? new Date(p.submission_date).toLocaleDateString() : '—'}
                                                     </td>
                                                 </tr>
@@ -1394,36 +1511,39 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
 
     return (
         <div className="flex-1 overflow-y-auto h-full bg-app-bg-page custom-scrollbar">
-            <div className="max-w-6xl mx-auto px-4 py-8">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
                 {/* Header */}
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8">
-                    <div>
-                        <span className="px-3 py-1 text-xs font-semibold rounded-full bg-blue-50 dark:bg-app-primary-light text-blue-700 dark:text-app-primary-dark border border-blue-200/50 inline-flex items-center gap-1.5 mb-3">
-                            <Sparkles className="w-3.5 h-3.5" /> Billing & Agent Metrics
-                        </span>
-                        <h1 className="text-2xl font-extrabold text-app-text-main sm:text-3xl">
-                            Execution Billing Dashboard
-                        </h1>
-                        <p className="mt-1.5 text-sm text-app-text-label font-medium">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-app-border/80">
+                    <div className="space-y-1">
+                        <div className="flex items-center gap-2.5 flex-wrap">
+                            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-app-text-main">
+                                Execution Billing Dashboard
+                            </h1>
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 text-xs font-semibold rounded-full bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-400 border border-blue-200/60 dark:border-blue-800/60 shadow-xs">
+                                <Sparkles className="w-3.5 h-3.5" /> Agent Metrics
+                            </span>
+                        </div>
+                        <p className="text-xs sm:text-sm text-app-text-muted">
                             Real-time tracking of tasks completed, resource time logs, and computed cost share per agent.
                         </p>
                     </div>
                     <button
                         onClick={() => fetchBillingData(true)}
                         disabled={refreshing}
-                        className="self-start md:self-auto px-4 py-2 border border-app-border bg-app-bg-card text-app-text-label hover:bg-app-bg-hover rounded-lg transition-all text-xs font-semibold flex items-center gap-2 disabled:opacity-50 shadow-sm cursor-pointer"
+                        className="h-9 px-3.5 bg-app-bg-card hover:bg-app-bg-hover text-app-text-main border border-app-border rounded-lg text-xs font-semibold inline-flex items-center gap-2 disabled:opacity-50 shadow-xs transition-colors self-start sm:self-auto cursor-pointer"
+                        title="Sync Log"
                     >
-                        <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+                        <RefreshCw className={`w-3.5 h-3.5 text-app-text-muted ${refreshing ? 'animate-spin' : ''}`} />
                         {refreshing ? 'Syncing...' : 'Sync Log'}
                     </button>
                 </div>
 
                 {/* Project Context Info */}
                 {activeProject && (
-                    <div className="mb-6 p-4 rounded-xl bg-blue-50/50 dark:bg-app-primary-light/10 border border-blue-100 dark:border-app-border flex items-center justify-between shadow-sm">
+                    <div className="p-3.5 rounded-xl bg-blue-50/50 dark:bg-app-primary-light/10 border border-blue-100 dark:border-app-border flex items-center justify-between shadow-xs">
                         <div className="flex items-center gap-2">
                             <Zap className="w-4 h-4 text-blue-600 dark:text-app-primary-dark" />
-                            <span className="text-xs font-semibold text-app-text-label">
+                            <span className="text-xs text-app-text-label">
                                 Active Project: <strong className="text-app-text-main font-bold">{activeProject.name || selectedProjectKey}</strong>
                             </span>
                         </div>
@@ -1434,69 +1554,77 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
                 )}
 
                 {/* Metrics Overview Cards */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                     {/* Total Cost Card */}
-                    <div className="bg-app-bg-card border border-app-border rounded-xl p-5 hover:border-app-primary-dark transition-all shadow-sm">
-                        <div className="flex items-center justify-between mb-3">
-                            <span className="text-xs font-semibold text-app-text-muted uppercase tracking-wider">Total Costs</span>
-                            <div className="p-2 bg-emerald-50 dark:bg-app-status-successBg rounded-lg text-emerald-600 dark:text-emerald-400 border border-emerald-200/20">
+                    <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-4 sm:p-5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
+                        <div className="flex items-center justify-between gap-2">
+                            <span className="text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">Total Costs</span>
+                            <div className="w-8 h-8 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
                                 <DollarSign className="w-4 h-4" />
                             </div>
                         </div>
-                        <h3 className="text-2xl font-black text-app-text-main">
-                            ${summary?.total_amount_due?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                        </h3>
-                        <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 flex items-center gap-1 font-semibold">
-                            <CheckCircle2 className="w-3 h-3" /> Fully verified executions
-                        </p>
+                        <div className="mt-3">
+                            <div className="text-2xl font-bold tracking-tight text-app-text-main">
+                                ${summary?.total_amount_due?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            </div>
+                            <p className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 flex items-center gap-1 font-medium">
+                                <CheckCircle2 className="w-3 h-3 shrink-0" /> Fully verified executions
+                            </p>
+                        </div>
                     </div>
 
                     {/* Billable Hours */}
-                    <div className="bg-app-bg-card border border-app-border rounded-xl p-5 hover:border-app-primary-dark transition-all shadow-sm">
-                        <div className="flex items-center justify-between mb-3">
-                            <span className="text-xs font-semibold text-app-text-muted uppercase tracking-wider">Billable Time</span>
-                            <div className="p-2 bg-blue-50 dark:bg-app-primary-light rounded-lg text-blue-650 dark:text-blue-400 border border-blue-200/20">
+                    <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-4 sm:p-5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
+                        <div className="flex items-center justify-between gap-2">
+                            <span className="text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">Billable Time</span>
+                            <div className="w-8 h-8 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
                                 <Clock className="w-4 h-4" />
                             </div>
                         </div>
-                        <h3 className="text-2xl font-black text-app-text-main">
-                            {summary?.total_hours_billed} <span className="text-xs text-app-text-muted font-normal">hrs</span>
-                        </h3>
-                        <p className="text-[10px] text-app-text-muted mt-1 font-medium">
-                            Cumulated time spent
-                        </p>
+                        <div className="mt-3">
+                            <div className="text-2xl font-bold tracking-tight text-app-text-main">
+                                {summary?.total_hours_billed} <span className="text-xs text-app-text-muted font-normal">hrs</span>
+                            </div>
+                            <p className="text-[11px] text-app-text-muted mt-1 font-medium">
+                                Cumulated time spent
+                            </p>
+                        </div>
                     </div>
 
                     {/* Tasks Completed */}
-                    <div className="bg-app-bg-card border border-app-border rounded-xl p-5 hover:border-app-primary-dark transition-all shadow-sm">
-                        <div className="flex items-center justify-between mb-3">
-                            <span className="text-xs font-semibold text-app-text-muted uppercase tracking-wider">Tasks Completed</span>
-                            <div className="p-2 bg-indigo-50 dark:bg-app-primary-light rounded-lg text-indigo-650 dark:text-indigo-400 border border-indigo-200/20">
+                    <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-4 sm:p-5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
+                        <div className="flex items-center justify-between gap-2">
+                            <span className="text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">Tasks Completed</span>
+                            <div className="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
                                 <CheckCircle2 className="w-4 h-4" />
                             </div>
                         </div>
-                        <h3 className="text-2xl font-black text-app-text-main">
-                            {summary?.total_tasks_completed}
-                        </h3>
-                        <p className="text-[10px] text-app-text-muted mt-1 font-medium">
-                            Completed agent threads
-                        </p>
+                        <div className="mt-3">
+                            <div className="text-2xl font-bold tracking-tight text-app-text-main">
+                                {summary?.total_tasks_completed}
+                            </div>
+                            <p className="text-[11px] text-app-text-muted mt-1 font-medium">
+                                Completed agent threads
+                            </p>
+                        </div>
                     </div>
 
                     {/* Unique Agents */}
-                    <div className="bg-app-bg-card border border-app-border rounded-xl p-5 hover:border-app-primary-dark transition-all shadow-sm">
-                        <div className="flex items-center justify-between mb-3">
-                            <span className="text-xs font-semibold text-app-text-muted uppercase tracking-wider">Agents Used</span>
-                            <div className="p-2 bg-purple-50 dark:bg-app-primary-light rounded-lg text-purple-650 dark:text-purple-400 border border-purple-200/20">
+                    <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-xl p-4 sm:p-5 transition-all shadow-xs hover:shadow-md flex flex-col justify-between">
+                        <div className="flex items-center justify-between gap-2">
+                            <span className="text-[11px] font-semibold text-app-text-muted uppercase tracking-wider">Agents Used</span>
+                            <div className="w-8 h-8 rounded-lg bg-purple-50 dark:bg-purple-950/40 text-purple-600 dark:text-purple-400 flex items-center justify-center shrink-0">
                                 <Bot className="w-4 h-4" />
                             </div>
                         </div>
-                        <h3 className="text-2xl font-black text-app-text-main">
-                            {agent_breakdown.length}
-                        </h3>
-                        <p className="text-[10px] text-app-text-muted mt-1 font-medium">
-                            Includes sub & master agents
-                        </p>
+                        <div className="mt-3">
+                            <div className="text-2xl font-bold tracking-tight text-app-text-main">
+                                {agent_breakdown.length}
+                            </div>
+                            <p className="text-[11px] text-app-text-muted mt-1 font-medium">
+                                Includes sub & master agents
+                            </p>
+                        </div>
                     </div>
                 </div>
 

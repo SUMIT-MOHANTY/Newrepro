@@ -196,6 +196,20 @@ const AssistantBot = () => {
         body: JSON.stringify({ message: prompt, context })
       });
 
+      if (response.status === 402) {
+        const errorMsg = "⚠️ **Token Quota Exhausted**: Your allocated token balance has run out. Please request a quota top-up to continue chatting with the AI Assistant.";
+        setMessages(prev => prev.map(m => m.id === msgId ? { ...m, text: errorMsg, isError: true } : m));
+        return errorMsg;
+      }
+
+      if (response.status === 403) {
+        const errData = await response.json().catch(() => ({}));
+        const detail = errData?.detail || 'Access Denied';
+        const errorMsg = `⚠️ **Access Denied**: ${detail}`;
+        setMessages(prev => prev.map(m => m.id === msgId ? { ...m, text: errorMsg, isError: true } : m));
+        return errorMsg;
+      }
+
       if (response.ok && response.body) {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -210,6 +224,15 @@ const AssistantBot = () => {
             if (data === '[DONE]') continue;
             try {
               const parsed = JSON.parse(data);
+              if (parsed.error) {
+                const isExhausted = typeof parsed.error === 'string' && (parsed.error.includes('EXHAUSTED') || parsed.error.includes('quota') || parsed.error.includes('402'));
+                const errorMsg = isExhausted
+                  ? "⚠️ **Token Quota Exhausted**: Your allocated token balance has run out. Please request a quota top-up to continue chatting with the AI Assistant."
+                  : `⚠️ **AI Error**: ${parsed.error}`;
+                accumulated = errorMsg;
+                setMessages(prev => prev.map(m => m.id === msgId ? { ...m, text: errorMsg, isError: true } : m));
+                return accumulated;
+              }
               if (parsed.content) {
                 accumulated += parsed.content;
                 setMessages(prev => prev.map(m => m.id === msgId ? { ...m, text: accumulated } : m));
@@ -221,13 +244,21 @@ const AssistantBot = () => {
       } else {
         // fallback: non-streaming
         const data = await response.json().catch(() => null);
-        const text = data?.response || '';
-        setMessages(prev => prev.map(m => m.id === msgId ? { ...m, text } : m));
+        const detail = data?.detail || data?.error || data?.response || '';
+        if (detail && typeof detail === 'string' && (detail.includes('EXHAUSTED') || detail.includes('quota') || detail.includes('402'))) {
+          const text = "⚠️ **Token Quota Exhausted**: Your allocated token balance has run out. Please request a quota top-up to continue chatting with the AI Assistant.";
+          setMessages(prev => prev.map(m => m.id === msgId ? { ...m, text, isError: true } : m));
+          return text;
+        }
+        const text = data?.response || data?.detail || '';
+        setMessages(prev => prev.map(m => m.id === msgId ? { ...m, text, isError: !response.ok } : m));
         return text;
       }
     } catch (err) {
       console.error('Stream error:', err);
-      return null;
+      const errorMsg = "⚠️ Unable to reach the AI Assistant service. Please verify your network connection and try again.";
+      setMessages(prev => prev.map(m => m.id === msgId ? { ...m, text: errorMsg, isError: true } : m));
+      return errorMsg;
     }
   };
 

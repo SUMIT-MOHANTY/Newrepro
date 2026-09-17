@@ -1252,9 +1252,18 @@ async def assistant_chat_stream(
     if candidate_project_name:
         llm_gateway.current_project_name_var.set(candidate_project_name)
 
+    messages = ai_service.build_chat_messages(payload.message, context)
+
+    # Pre-validate allowance before opening the stream so client gets immediate HTTP 402 if quota exhausted
+    reserved_cost = llm_gateway.check_ai_allowance(
+        user_id=user_id,
+        organization_name=org_name,
+        project_token=candidate_project_token,
+        messages=messages
+    )
+
     async def generate():
         try:
-            messages = ai_service.build_chat_messages(payload.message, context)
             async for chunk in llm_gateway.call_llm_streaming(
                 messages=messages,
                 user_id=user_id,
@@ -1262,6 +1271,7 @@ async def assistant_chat_stream(
                 purpose="Copilot Chat",
                 project_token=candidate_project_token,
                 project_name=candidate_project_name,
+                reserved_cost=reserved_cost,
             ):
                 if chunk.startswith("data: "):
                     data_str = chunk[6:].strip()
