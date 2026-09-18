@@ -1556,10 +1556,10 @@ export default function OrgTokenOpsPanel({ user }) {
                                         <th 
                                             onClick={() => handleLedgerSort('balance_after')} 
                                             className="px-4 py-3 text-center align-middle font-bold cursor-pointer hover:bg-app-bg-hover transition-colors select-none group"
-                                            title="Click to sort by Balance After"
+                                            title="Click to sort by Balance After (Tokens)"
                                         >
                                             <div className="inline-flex items-center justify-center gap-1">
-                                                <span>Balance After</span>
+                                                <span>Balance After (Tokens)</span>
                                                 {ledgerSortKey === 'balance_after' ? (
                                                     ledgerSortOrder === 'asc' ? <ChevronUp className="w-3.5 h-3.5 text-indigo-500" /> : <ChevronDown className="w-3.5 h-3.5 text-indigo-500" />
                                                 ) : (
@@ -1642,7 +1642,7 @@ export default function OrgTokenOpsPanel({ user }) {
                                                 <td className={`px-4 py-3 text-center align-middle font-bold ${tx.token_delta >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
                                                     <div className="font-semibold font-mono text-xs">
                                                         {tx.token_delta >= 0 ? '+' : ''}
-                                                        {Number(tx.token_delta).toLocaleString()} tokens
+                                                        {Number(tx.token_delta).toLocaleString()}
                                                     </div>
                                                     <div className="text-[10px] text-app-text-muted font-mono mt-0.5">
                                                         {tx.token_delta >= 0 ? '+' : ''}
@@ -1651,7 +1651,7 @@ export default function OrgTokenOpsPanel({ user }) {
                                                 </td>
                                                 <td className="px-4 py-3 text-center align-middle font-mono text-xs text-app-text-main font-semibold">
                                                     {tx.balance_after !== null && tx.balance_after !== undefined
-                                                        ? `${Number(tx.balance_after).toLocaleString()} tokens`
+                                                        ? Number(tx.balance_after).toLocaleString()
                                                         : '—'}
                                                 </td>
                                                 <td className="px-4 py-3 text-center align-middle font-mono text-xs text-emerald-600 dark:text-emerald-400 font-semibold">
