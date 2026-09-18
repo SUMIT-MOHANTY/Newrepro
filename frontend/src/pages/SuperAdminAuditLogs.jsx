@@ -91,15 +91,26 @@ export default function SuperAdminAuditLogs() {
     <div className="h-full overflow-y-auto bg-slate-50 dark:bg-slate-950 p-4 sm:p-6 text-slate-900 dark:text-slate-100 transition-colors">
       <div className="max-w-7xl mx-auto space-y-6">
         
-        {/* Actions Toolbar */}
-        <div className="flex justify-end items-center border-b border-slate-200 dark:border-purple-500/20 pb-3">
-          <button
-            onClick={fetchLogs}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white dark:bg-purple-900/40 hover:bg-slate-100 dark:hover:bg-purple-800/50 border border-slate-200 dark:border-purple-500/30 text-purple-700 dark:text-purple-200 text-xs font-semibold transition-all shadow-sm cursor-pointer"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-            Refresh Logs
-          </button>
+        {/* Page Header / Actions Toolbar */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-purple-500/20 pb-4">
+          <div>
+            <h1 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-2.5">
+              <Activity className="w-5 h-5 text-purple-600 dark:text-purple-400 shrink-0" />
+              Audit Logs & Security Events
+            </h1>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Comprehensive platform audit trails, access security events, and cross-tenant operations.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+            <button
+              onClick={fetchLogs}
+              className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-white dark:bg-purple-900/40 hover:bg-slate-100 dark:hover:bg-purple-800/50 border border-slate-200 dark:border-purple-500/30 text-purple-700 dark:text-purple-200 text-xs font-semibold transition-all shadow-sm cursor-pointer whitespace-nowrap"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+              Refresh Logs
+            </button>
+          </div>
         </div>
 
         {error && (
@@ -111,7 +122,7 @@ export default function SuperAdminAuditLogs() {
 
         {/* Audit Log Table */}
         <div className="p-5 rounded-2xl bg-white dark:bg-slate-900/80 border border-slate-200 dark:border-purple-500/20 shadow-sm space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
             <div>
               <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
                 <Activity className="w-4 h-4 text-purple-400" />
@@ -121,11 +132,12 @@ export default function SuperAdminAuditLogs() {
                 Real-time security and operations log across all platform organizations.
               </p>
             </div>
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="flex items-center rounded-lg bg-slate-100 dark:bg-slate-800/80 p-0.5 border border-slate-200 dark:border-slate-700">
+            <div className="flex items-center gap-2.5 flex-nowrap shrink-0 overflow-x-auto no-scrollbar">
+              {/* Category Filter Pills */}
+              <div className="flex items-center rounded-lg bg-slate-100 dark:bg-slate-800/80 p-0.5 border border-slate-200 dark:border-slate-700 shrink-0">
                 <button
                   onClick={() => { setCategoryFilter('ALL'); setCurrentPage(1); }}
-                  className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${
+                  className={`px-3 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer whitespace-nowrap ${
                     categoryFilter === 'ALL'
                       ? 'bg-purple-600 text-white shadow-sm'
                       : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
@@ -135,7 +147,7 @@ export default function SuperAdminAuditLogs() {
                 </button>
                 <button
                   onClick={() => { setCategoryFilter('TOKENOPS'); setCurrentPage(1); }}
-                  className={`px-3 py-1 text-xs font-semibold rounded-md transition-all flex items-center gap-1.5 ${
+                  className={`px-3 py-1 text-xs font-semibold rounded-md transition-all flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
                     categoryFilter === 'TOKENOPS'
                       ? 'bg-purple-600 text-white shadow-sm'
                       : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
@@ -146,14 +158,15 @@ export default function SuperAdminAuditLogs() {
                 </button>
               </div>
 
-              <div className="relative w-full sm:w-64">
-                <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
+              {/* Search Bar */}
+              <div className="relative w-48 sm:w-64 shrink-0">
+                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
                   placeholder="Search by user, org, action..."
                   value={searchQuery}
                   onChange={e => { setSearchQuery(e.target.value); setCurrentPage(1); }}
-                  className="w-full pl-8 pr-3 py-1.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-purple-500"
+                  className="w-full pl-8 pr-3 py-1 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-purple-500 h-7.5"
                 />
               </div>
             </div>
