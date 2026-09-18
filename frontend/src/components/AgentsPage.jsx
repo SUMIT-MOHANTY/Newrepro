@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Users, Trash2, Edit, Activity, Clock, CheckCircle, AlertCircle, RefreshCw, Filter, Server, Database, GitBranch, Bot, Globe, Plus, Upload, Code, Coffee, Zap, Triangle, Hash, Link2, Terminal, Cpu, Workflow, Shield, ShieldCheck, Layers, Building2, Send } from 'lucide-react';
+import { Users, Trash2, Edit, Activity, Clock, CheckCircle, AlertCircle, RefreshCw, Filter, Server, Database, GitBranch, Bot, Globe, Plus, Upload, Code, Coffee, Zap, Triangle, Hash, Link2, Terminal, Cpu, Workflow, Shield, ShieldCheck, Layers, Building2, Send, ChevronRight, TrendingUp, PlusCircle } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 import RequestCapacityModal from './RequestCapacityModal';
 
@@ -750,104 +750,113 @@ export default function AgentsPage({ projects = [] }) {
           </div>
         ) : quotaSummary ? (
           <div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {/* ── Left Card: Shared Agents in Use ── */}
-              <div className="rounded-xl border border-emerald-500/25 bg-gradient-to-br from-emerald-500/10 to-teal-500/5 p-4 shadow-sm hover:shadow-lg hover:border-emerald-500/40 transition-all duration-300 flex flex-col justify-between">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4">
+              {/* ── Card 1: Shared Agents in Use ── */}
+              <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-2xl p-3.5 sm:p-4 shadow-xs hover:shadow-md transition-all flex flex-col justify-between">
                 <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <div className="p-1.5 rounded-lg bg-emerald-500/20 text-emerald-400">
-                        <Bot className="w-4 h-4" />
-                      </div>
-                      <span className="text-sm font-bold text-app-text-main">Shared Agents</span>
+                  <div className="flex items-center gap-2.5 mb-3">
+                    <div className="w-9 h-9 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                      <Users className="w-4 h-4" />
                     </div>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                      Org-Wide Pool
-                    </span>
+                    <span className="text-sm font-bold text-app-text-main">Shared Agents</span>
                   </div>
 
-                  <div className="mt-3 flex items-baseline justify-between">
-                    <span className="text-3xl font-black text-emerald-400">{quotaSummary ? quotaSummary.sharedUsed : sharedAgents.length}</span>
-                    <span className="text-xs font-semibold text-app-text-muted">Active in Projects</span>
+                  <div className="text-3xl font-bold tracking-tight text-emerald-600 dark:text-emerald-400">
+                    {quotaSummary ? quotaSummary.sharedUsed : sharedAgents.length}
                   </div>
                 </div>
 
-                <div className="mt-4 pt-2 border-t border-app-border-light/30 flex items-center justify-between text-[11px] text-app-text-muted">
-                  <span>Allocation Mode:</span>
-                  <span className="font-bold text-emerald-300">Floating / Multi-Project</span>
+                <div className="mt-3 space-y-1.5">
+                  <div className="text-xs text-app-text-muted font-medium">Allocation Mode</div>
+                  <div>
+                    <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200/80 dark:border-emerald-800/60">
+                      Floating / Multi-Project
+                    </span>
+                  </div>
                 </div>
               </div>
 
-              {/* ── Middle Card: Dedicated Agents in Use ── */}
-              <div className="rounded-xl border border-purple-500/25 bg-gradient-to-br from-purple-500/10 to-pink-500/5 p-4 shadow-sm hover:shadow-lg hover:border-purple-500/40 transition-all duration-300 flex flex-col justify-between">
+              {/* ── Card 2: Dedicated Agents in Use ── */}
+              <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-2xl p-3.5 sm:p-4 shadow-xs hover:shadow-md transition-all flex flex-col justify-between">
                 <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <div className="p-1.5 rounded-lg bg-purple-500/20 text-purple-400">
-                        <Activity className="w-4 h-4" />
-                      </div>
-                      <span className="text-sm font-bold text-app-text-main">Dedicated Agents</span>
+                  <div className="flex items-center gap-2.5 mb-3">
+                    <div className="w-9 h-9 rounded-xl bg-purple-50 dark:bg-purple-950/50 text-purple-600 dark:text-purple-400 flex items-center justify-center shrink-0">
+                      <Activity className="w-4 h-4" />
                     </div>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
-                      Project-Bound
-                    </span>
+                    <span className="text-sm font-bold text-app-text-main">Dedicated Agents</span>
                   </div>
 
-                  <div className="mt-3 flex items-baseline justify-between">
-                    <span className="text-3xl font-black text-purple-400">{quotaSummary ? quotaSummary.dedicatedUsed : dedicatedAgents.length}</span>
-                    <span className="text-xs font-semibold text-app-text-muted">Active in Projects</span>
+                  <div className="text-3xl font-bold tracking-tight text-purple-600 dark:text-purple-400">
+                    {quotaSummary ? quotaSummary.dedicatedUsed : dedicatedAgents.length}
                   </div>
                 </div>
 
-                <div className="mt-4 pt-2 border-t border-app-border-light/30 flex items-center justify-between text-[11px] text-app-text-muted">
-                  <span>Allocation Mode:</span>
-                  <span className="font-bold text-purple-300">Dedicated Home Project</span>
+                <div className="mt-3 space-y-1.5">
+                  <div className="text-xs text-app-text-muted font-medium">Allocation Mode</div>
+                  <div>
+                    <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-purple-50 dark:bg-purple-950/50 text-purple-700 dark:text-purple-300 border border-purple-200/80 dark:border-purple-800/60">
+                      Dedicated Home Project
+                    </span>
+                  </div>
                 </div>
               </div>
 
-              {/* ── Right Card: Capacity Governance Summary & Request Trigger ── */}
-              <div className="rounded-xl border border-blue-500/25 bg-gradient-to-br from-blue-500/10 to-indigo-500/5 p-4 shadow-sm hover:shadow-lg hover:border-blue-500/40 transition-all duration-300 flex flex-col justify-between">
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="p-1.5 rounded-lg bg-blue-500/20 text-blue-400">
-                        <Server className="w-4 h-4" />
-                      </div>
-                      <span className="text-sm font-bold text-app-text-main">Capacity Governance</span>
+              {/* ── Card 3: Capacity Governance Summary ── */}
+              <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-2xl p-3.5 sm:p-4 shadow-xs hover:shadow-md transition-all flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center gap-2.5 mb-3">
+                    <div className="w-9 h-9 rounded-xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+                      <Server className="w-4 h-4" />
                     </div>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
-                      Super Admin Approved
-                    </span>
+                    <span className="text-sm font-bold text-app-text-main">Capacity Governance</span>
                   </div>
 
-                  <div className="space-y-2 pt-1 border-t border-app-border-light/30">
-                    <div className="flex items-center justify-between text-xs">
+                  <div className="space-y-2 mt-1 text-[11px] xl:text-xs">
+                    <div className="flex items-center justify-between gap-1 whitespace-nowrap">
                       <span className="text-app-text-muted">Total Super Admin Cap:</span>
-                      <span className="font-extrabold text-purple-400">{quota?.max_agent_capacity || 10} Max Agents</span>
+                      <span className="font-bold text-blue-600 dark:text-blue-400">
+                        {quota?.max_agent_capacity || 10} Max Agents
+                      </span>
                     </div>
-                    <div className="flex items-center justify-between text-xs">
+                    <div className="flex items-center justify-between gap-1 whitespace-nowrap">
                       <span className="text-app-text-muted">Currently Active Agents:</span>
-                      <span className="font-bold text-emerald-400">
+                      <span className="font-bold text-emerald-600 dark:text-emerald-400">
                         {quotaSummary.sharedUsed + quotaSummary.dedicatedUsed} Active
                       </span>
                     </div>
-                    <div className="flex items-center justify-between text-xs">
+                    <div className="flex items-center justify-between gap-1 whitespace-nowrap">
                       <span className="text-app-text-muted">Available Capacity Slots:</span>
-                      <span className="font-bold text-blue-400">
+                      <span className="font-bold text-blue-600 dark:text-blue-400">
                         {Math.max(0, (quota?.max_agent_capacity || 10) - (quotaSummary.sharedUsed + quotaSummary.dedicatedUsed))} Slots
                       </span>
                     </div>
                   </div>
                 </div>
+              </div>
 
-                <div className="mt-4">
+              {/* ── Card 4: Capacity Request ── */}
+              <div className="bg-app-bg-card border border-app-border hover:border-slate-300 dark:hover:border-slate-600 rounded-2xl p-3.5 sm:p-4 shadow-xs hover:shadow-md transition-all flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center gap-2.5 mb-3">
+                    <div className="w-9 h-9 rounded-xl bg-purple-50 dark:bg-purple-950/50 text-purple-600 dark:text-purple-400 flex items-center justify-center shrink-0">
+                      <TrendingUp className="w-4 h-4" />
+                    </div>
+                    <span className="text-sm font-bold text-app-text-main">Capacity Request</span>
+                  </div>
+
+                  <p className="text-xs text-app-text-muted leading-relaxed mt-1">
+                    Request additional capacity for projects when required.
+                  </p>
+                </div>
+
+                <div className="mt-3">
                   <button
                     type="button"
                     onClick={() => setShowRequestModal(true)}
-                    className="w-full py-2 px-3 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-purple-600/30"
+                    className="w-full py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-semibold transition-all flex items-center justify-center gap-1.5 shadow-sm cursor-pointer whitespace-nowrap"
                   >
-                    <Shield className="w-4 h-4" />
-                    <span>{isOrgAdmin ? 'Request Capacity Increase (Super Admin)' : 'Notify Org Admin for Agent Capacity'}</span>
+                    <PlusCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>Request Capacity Increase</span>
                   </button>
                 </div>
               </div>
