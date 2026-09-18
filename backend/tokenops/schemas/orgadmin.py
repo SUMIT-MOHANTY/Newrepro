@@ -98,6 +98,7 @@ class UserConsumptionView(BaseModel):
 class FinancialLedgerView(BaseModel):
     transaction_id: int
     global_transaction_id: Optional[int] = None
+    organization_name: Optional[str] = None
     user_id: Optional[int]
     user_name: Optional[str] = None
     user_email: Optional[str] = None

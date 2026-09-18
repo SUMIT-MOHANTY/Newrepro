@@ -3,7 +3,9 @@ import {
     Coins, Building2, Shield, DollarSign, Activity, RefreshCw, 
     AlertCircle, CheckCircle2, Plus, Edit, Ban, Check, UserCheck, XCircle, Search,
     BarChart2, TrendingUp, PieChart, AlertTriangle, ArrowUpRight, Zap, Award, 
-    Sparkles, Clock, Sliders, ChevronRight, Info, Calendar, ArrowRight, Eye, Layers
+    Sparkles, Clock, Sliders, ChevronRight, Info, Calendar, ArrowRight, Eye, Layers,
+    FileText, Folder, CheckSquare, Scale, GitPullRequest, MessageSquare, Compass,
+    RotateCcw, ArrowRightLeft, CreditCard, ChevronDown, ChevronUp, ChevronLeft, ArrowUpDown, Filter, X
 } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 
@@ -83,7 +85,115 @@ export default function SuperAdminTokenOps() {
     const [successMessage, setSuccessMessage] = useState('');
     const [toast, setToast] = useState(null); // { message: string, type: 'success' | 'error' }
     const [searchQuery, setSearchQuery] = useState('');
-    const [activeTab, setActiveTab] = useState('analytics'); // 'analytics' | 'wallets' | 'pricing' | 'payg'
+    const [activeTab, setActiveTab] = useState('analytics'); // 'analytics' | 'wallets' | 'ledger' | 'pricing' | 'payg'
+
+    // Financial Ledger Filters, Sorting & Pagination State
+    const [ledger, setLedger] = useState([]);
+    const [ledgerFilter, setLedgerFilter] = useState('ALL'); // 'ALL' | 'AI_CONSUMPTION' | 'ALLOCATION' | 'REVOCATION' | 'INFLOW' | 'OUTFLOW'
+    const [ledgerOrgFilter, setLedgerOrgFilter] = useState('ALL'); // 'ALL' or specific organization_name
+    const [ledgerPurposeFilter, setLedgerPurposeFilter] = useState('ALL'); // 'ALL' or specific purpose/circumstance
+    const [ledgerSearch, setLedgerSearch] = useState('');
+    const [ledgerSortKey, setLedgerSortKey] = useState('created_at'); // 'transaction_id' | 'token_delta' | 'balance_after' | 'created_at'
+    const [ledgerSortOrder, setLedgerSortOrder] = useState('desc'); // 'asc' | 'desc'
+    const [ledgerPage, setLedgerPage] = useState(1);
+    const [ledgerPageSize, setLedgerPageSize] = useState(10);
+    const [ledgerTotal, setLedgerTotal] = useState(0);
+    const [allLedgerTotal, setAllLedgerTotal] = useState(0);
+    const [ledgerLoading, setLedgerLoading] = useState(false);
+    const [ledgerFilterDropdownOpen, setLedgerFilterDropdownOpen] = useState(false);
+    const [ledgerOrgDropdownOpen, setLedgerOrgDropdownOpen] = useState(false);
+    const [ledgerPurposeDropdownOpen, setLedgerPurposeDropdownOpen] = useState(false);
+
+    const localTimezone = (() => {
+        try {
+            return new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' })
+                .formatToParts(new Date())
+                .find(part => part.type === 'timeZoneName')?.value || '';
+        } catch (e) {
+            return '';
+        }
+    })();
+
+    const formatTimestamp = (ts) => {
+        if (!ts) return '—';
+        let s = String(ts).trim();
+        if (!s.endsWith('Z') && !/[+-]\d{2}:?\d{2}$/.test(s)) {
+            s = s.includes('T') ? `${s}Z` : `${s.replace(' ', 'T')}Z`;
+        }
+        const d = new Date(s);
+        return isNaN(d.getTime()) ? ts : d.toLocaleString();
+    };
+
+    const formatLedgerCurrency = (amount, pricePerToken = 0.000007) => {
+        const val = (amount || 0) * pricePerToken;
+        if (Math.abs(val) > 0 && Math.abs(val) < 0.01) {
+            return val < 0 ? '< -$0.01' : '< $0.01';
+        }
+        if (val === 0) return '$0.00';
+        return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val);
+    };
+
+    const renderPurposeBadge = (purpose, type) => {
+        const p = purpose || (
+            type === 'ALLOCATION' ? 'Admin Quota Allocation' : 
+            type === 'PURCHASE' ? 'Token Pack Purchase' : 
+            type === 'REALLOCATION' ? 'User Wallet Reallocation' : 
+            type === 'REVOCATION' ? 'Quota Revocation' : 
+            type === 'MANUAL_ADJUSTMENT' ? 'Manual Balance Adjustment' : 
+            'AI Consumption'
+        );
+        
+        let badgeStyle = "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700";
+        let iconElement = <Zap className="w-3 h-3 text-amber-500 shrink-0" />;
+
+        if (p.includes('Screening')) {
+            badgeStyle = "bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800/60";
+            iconElement = <CheckSquare className="w-3 h-3 text-purple-500 shrink-0" />;
+        } else if (p.includes('Analysis') || p.includes('Architecture')) {
+            badgeStyle = "bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800/60";
+            iconElement = <Search className="w-3 h-3 text-indigo-500 shrink-0" />;
+        } else if (p.includes('Gap')) {
+            badgeStyle = "bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800/60";
+            iconElement = <Scale className="w-3 h-3 text-amber-500 shrink-0" />;
+        } else if (p.includes('Test')) {
+            badgeStyle = "bg-cyan-50 dark:bg-cyan-950/40 text-cyan-700 dark:text-cyan-300 border-cyan-200 dark:border-cyan-800/60";
+            iconElement = <Sparkles className="w-3 h-3 text-cyan-500 shrink-0" />;
+        } else if (p.includes('Agent') || p.includes('Coding') || p.includes('Playground')) {
+            badgeStyle = "bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/60";
+            iconElement = <Coins className="w-3 h-3 text-rose-500 shrink-0" />;
+        } else if (p.includes('PR') || p.includes('Commit')) {
+            badgeStyle = "bg-teal-50 dark:bg-teal-950/40 text-teal-700 dark:text-teal-300 border-teal-200 dark:border-teal-800/60";
+            iconElement = <GitPullRequest className="w-3 h-3 text-teal-500 shrink-0" />;
+        } else if (p.includes('Ingestion') || p.includes('OCR')) {
+            badgeStyle = "bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-800/60";
+            iconElement = <FileText className="w-3 h-3 text-sky-500 shrink-0" />;
+        } else if (p.includes('Chat') || p.includes('Copilot') || p.includes('Assistant')) {
+            badgeStyle = "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/60";
+            iconElement = <MessageSquare className="w-3 h-3 text-emerald-500 shrink-0" />;
+        } else if (p.includes('Decomposition') || p.includes('Checklist') || p.includes('Planning')) {
+            badgeStyle = "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800/60";
+            iconElement = <Compass className="w-3 h-3 text-blue-500 shrink-0" />;
+        } else if (p.includes('Revocation')) {
+            badgeStyle = "bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/60";
+            iconElement = <RotateCcw className="w-3 h-3 text-rose-500 shrink-0" />;
+        } else if (p.includes('Reallocation')) {
+            badgeStyle = "bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-800/60";
+            iconElement = <ArrowRightLeft className="w-3 h-3 text-sky-500 shrink-0" />;
+        } else if (p.includes('Allocation') || p.includes('Purchase')) {
+            badgeStyle = "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/60";
+            iconElement = <CreditCard className="w-3 h-3 text-emerald-500 shrink-0" />;
+        } else if (p.includes('Manual')) {
+            badgeStyle = "bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800/60";
+            iconElement = <Sliders className="w-3 h-3 text-amber-500 shrink-0" />;
+        }
+
+        return (
+            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold border ${badgeStyle}`}>
+                {iconElement}
+                <span className="font-medium whitespace-nowrap">{p}</span>
+            </span>
+        );
+    };
 
     // Analytics Tab State
     const [trendRange, setTrendRange] = useState('30d'); // '7d' | '30d' | '90d'
@@ -288,6 +398,58 @@ export default function SuperAdminTokenOps() {
         fetchData();
         fetchAnalyticsData(trendRange);
     }, [trendRange]);
+
+    const fetchSuperAdminLedgerData = async (page = 1, size = 10, org = ledgerOrgFilter, filter = ledgerFilter, purpose = ledgerPurposeFilter, search = ledgerSearch) => {
+        setLedgerLoading(true);
+        try {
+            let url = `${API_ENDPOINTS.TOKENOPS_ADMIN_LEDGER}?page=${page}&size=${size}`;
+            if (org && org !== 'ALL') {
+                url += `&organization_name=${encodeURIComponent(org)}`;
+            }
+            if (filter && filter !== 'ALL') {
+                url += `&transaction_type=${encodeURIComponent(filter)}`;
+            }
+            if (purpose && purpose !== 'ALL') {
+                url += `&purpose=${encodeURIComponent(purpose)}`;
+            }
+            if (search && search.trim()) {
+                url += `&search=${encodeURIComponent(search.trim())}`;
+            }
+            const res = await fetch(url, { headers: getHeaders() });
+            if (res.ok) {
+                const data = await res.json();
+                if (data.success && data.data) {
+                    const totalCount = data.data.total !== undefined ? data.data.total : (data.data.items || []).length;
+                    setLedger(data.data.items || []);
+                    setLedgerTotal(totalCount);
+                    if ((!filter || filter === 'ALL') && (!purpose || purpose === 'ALL') && (!search || !search.trim()) && (!org || org === 'ALL')) {
+                        setAllLedgerTotal(totalCount);
+                    }
+                    setLedgerPage(data.data.page || page);
+                    setLedgerPageSize(data.data.size || size);
+                }
+            }
+        } catch (e) {
+            console.warn('Failed to load superadmin ledger:', e);
+        } finally {
+            setLedgerLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        if (activeTab !== 'ledger') return;
+        const timer = setTimeout(() => {
+            setLedgerPage(1);
+            fetchSuperAdminLedgerData(1, ledgerPageSize, ledgerOrgFilter, ledgerFilter, ledgerPurposeFilter, ledgerSearch);
+        }, 350);
+        return () => clearTimeout(timer);
+    }, [ledgerSearch]);
+
+    useEffect(() => {
+        if (activeTab === 'ledger') {
+            fetchSuperAdminLedgerData(ledgerPage, ledgerPageSize, ledgerOrgFilter, ledgerFilter, ledgerPurposeFilter, ledgerSearch);
+        }
+    }, [activeTab, ledgerOrgFilter, ledgerFilter, ledgerPurposeFilter]);
 
     // Handle Quota Decision (Approve / Reject)
     const handleQuotaDecision = async (e) => {
@@ -759,6 +921,22 @@ export default function SuperAdminTokenOps() {
                     <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-slate-100 dark:bg-slate-700 font-mono">
                         {organizations.length}
                     </span>
+                </button>
+                <button
+                    onClick={() => setActiveTab('ledger')}
+                    className={`px-4 py-2.5 text-xs sm:text-sm font-semibold flex items-center gap-2 border-b-2 transition cursor-pointer ${
+                        activeTab === 'ledger'
+                            ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400 dark:border-indigo-400'
+                            : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+                    }`}
+                >
+                    <FileText className="w-4 h-4" />
+                    <span>Financial Ledger</span>
+                    {allLedgerTotal > 0 && (
+                        <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-slate-100 dark:bg-slate-700 font-mono">
+                            {allLedgerTotal}
+                        </span>
+                    )}
                 </button>
                 <button
                     onClick={() => setActiveTab('pricing')}
@@ -1585,6 +1763,17 @@ export default function SuperAdminTokenOps() {
                                                 </td>
                                                 <td className="px-4 py-3 text-right text-xs whitespace-nowrap">
                                                     <div className="flex items-center justify-end gap-1.5">
+                                                        <button
+                                                            onClick={() => {
+                                                                setLedgerOrgFilter(org.organization_name);
+                                                                setActiveTab('ledger');
+                                                            }}
+                                                            className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-slate-700 dark:hover:bg-slate-600 dark:text-slate-200 rounded-lg text-xs font-semibold inline-flex items-center gap-1 transition shadow-xs shrink-0 cursor-pointer"
+                                                            title={`View Financial Ledger for ${org.organization_name}`}
+                                                        >
+                                                            <FileText className="w-3.5 h-3.5 text-indigo-500" />
+                                                            <span>Ledger</span>
+                                                        </button>
                                                         {org.payg_enabled ? (
                                                             <button
                                                                 onClick={() => setLimitsModal({
@@ -1632,6 +1821,666 @@ export default function SuperAdminTokenOps() {
                     </div>
                 </div>
             )}
+
+            {/* TAB: Financial Ledger */}
+            {activeTab === 'ledger' && (() => {
+                const handleFilterChange = (filterId) => {
+                    setLedgerFilter(filterId);
+                    setLedgerPage(1);
+                    fetchSuperAdminLedgerData(1, ledgerPageSize, ledgerOrgFilter, filterId, ledgerPurposeFilter, ledgerSearch);
+                };
+
+                const handleOrgFilterChange = (orgName) => {
+                    setLedgerOrgFilter(orgName);
+                    setLedgerPage(1);
+                    fetchSuperAdminLedgerData(1, ledgerPageSize, orgName, ledgerFilter, ledgerPurposeFilter, ledgerSearch);
+                };
+
+                const handlePurposeFilterChange = (purposeId) => {
+                    setLedgerPurposeFilter(purposeId);
+                    setLedgerPage(1);
+                    fetchSuperAdminLedgerData(1, ledgerPageSize, ledgerOrgFilter, ledgerFilter, purposeId, ledgerSearch);
+                };
+
+                const handlePageChange = (newPage) => {
+                    if (newPage < 1 || newPage === ledgerPage) return;
+                    setLedgerPage(newPage);
+                    fetchSuperAdminLedgerData(newPage, ledgerPageSize, ledgerOrgFilter, ledgerFilter, ledgerPurposeFilter, ledgerSearch);
+                };
+
+                const handlePageSizeChange = (newSize) => {
+                    setLedgerPageSize(newSize);
+                    setLedgerPage(1);
+                    fetchSuperAdminLedgerData(1, newSize, ledgerOrgFilter, ledgerFilter, ledgerPurposeFilter, ledgerSearch);
+                };
+
+                const handleLedgerSort = (key) => {
+                    if (ledgerSortKey === key) {
+                        setLedgerSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
+                    } else {
+                        setLedgerSortKey(key);
+                        setLedgerSortOrder('desc');
+                    }
+                };
+
+                const sortedLedger = [...ledger].sort((a, b) => {
+                    let valA = a[ledgerSortKey];
+                    let valB = b[ledgerSortKey];
+                    if (ledgerSortKey === 'created_at') {
+                        valA = new Date(a.created_at || 0).getTime();
+                        valB = new Date(b.created_at || 0).getTime();
+                    } else if (ledgerSortKey === 'transaction_id' || ledgerSortKey === 'token_delta' || ledgerSortKey === 'balance_after') {
+                        valA = Number(valA || 0);
+                        valB = Number(valB || 0);
+                    }
+                    if (valA < valB) return ledgerSortOrder === 'asc' ? -1 : 1;
+                    if (valA > valB) return ledgerSortOrder === 'asc' ? 1 : -1;
+                    return 0;
+                });
+
+                const totalPages = Math.max(1, Math.ceil(ledgerTotal / ledgerPageSize));
+
+                const ledgerFilterOptions = [
+                    { id: 'ALL', label: 'All Types' },
+                    { id: 'AI_CONSUMPTION', label: 'AI Consumption' },
+                    { id: 'ALLOCATION', label: 'Allocations / Top-ups' },
+                    { id: 'REVOCATION', label: 'Revocations' },
+                    { id: 'INFLOW', label: 'Inflow (Credits)' },
+                    { id: 'OUTFLOW', label: 'Outflow (Debits)' }
+                ];
+                const currentFilter = ledgerFilterOptions.find(f => f.id === ledgerFilter) || ledgerFilterOptions[0];
+
+                const ledgerPurposeOptions = [
+                    { id: 'ALL', label: 'All Circumstances' },
+                    { id: 'Screening', label: 'Requirement Screening' },
+                    { id: 'Analysis', label: 'BRD Analysis & Architecture' },
+                    { id: 'Gap', label: 'Codebase Gap Analysis' },
+                    { id: 'Test', label: 'Test Case Generation' },
+                    { id: 'Agent', label: 'Autonomous Coding Agent' },
+                    { id: 'PR', label: 'PR Review & Description' },
+                    { id: 'Ingestion', label: 'Document Ingestion & OCR' },
+                    { id: 'Chat', label: 'Chat & Copilot Assistant' },
+                    { id: 'Allocation', label: 'Quota Allocation' },
+                    { id: 'Purchase', label: 'Token Pack Purchase' },
+                    { id: 'Revocation', label: 'Quota Revocation' },
+                    { id: 'Manual', label: 'Manual Balance Adjustment' }
+                ];
+                const currentPurpose = ledgerPurposeOptions.find(p => p.id === ledgerPurposeFilter) || { id: ledgerPurposeFilter, label: ledgerPurposeFilter };
+
+                return (
+                    <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200/80 dark:border-slate-700 shadow-sm">
+                        {/* Header & Controls Toolbar */}
+                        <div className="p-3.5 sm:p-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 flex flex-col xl:flex-row xl:items-center justify-between gap-3">
+                            <div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                                        <FileText className="w-4 h-4 text-indigo-500" /> Platform Financial Ledger
+                                    </h3>
+                                    {ledgerLoading && <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-500" />}
+                                    
+                                    <span className="px-2 py-0.5 rounded-full text-[11px] font-mono font-bold bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
+                                        {Number(ledgerTotal).toLocaleString()} transactions
+                                    </span>
+
+                                    {/* Active Org Filter Badge */}
+                                    {ledgerOrgFilter !== 'ALL' && (
+                                        <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 text-[11px] font-semibold">
+                                            <Building2 className="w-3 h-3" />
+                                            <span>{ledgerOrgFilter}</span>
+                                            <button
+                                                type="button"
+                                                onClick={() => handleOrgFilterChange('ALL')}
+                                                className="hover:text-rose-600 dark:hover:text-rose-400 p-0.5 cursor-pointer ml-0.5"
+                                                title="Clear organization filter (show all)"
+                                            >
+                                                <X className="w-3 h-3" />
+                                            </button>
+                                        </div>
+                                    )}
+
+                                    {/* Active Purpose Filter Badge */}
+                                    {ledgerPurposeFilter !== 'ALL' && (
+                                        <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 text-[11px] font-semibold">
+                                            <Zap className="w-3 h-3 text-amber-500" />
+                                            <span>{currentPurpose.label}</span>
+                                            <button
+                                                type="button"
+                                                onClick={() => handlePurposeFilterChange('ALL')}
+                                                className="hover:text-rose-600 dark:hover:text-rose-400 p-0.5 cursor-pointer ml-0.5"
+                                                title="Clear circumstance/purpose filter"
+                                            >
+                                                <X className="w-3 h-3" />
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                                    Audited immutable ledger of token debits, allocations, and consumption across organizations.
+                                </p>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 shrink-0">
+                                {/* 1. Organization Dropdown Selector (left-aligned to prevent screen cutoff) */}
+                                <div className="relative shrink-0">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setLedgerOrgDropdownOpen(prev => !prev);
+                                            setLedgerFilterDropdownOpen(false);
+                                            setLedgerPurposeDropdownOpen(false);
+                                        }}
+                                        className="h-8.5 px-3 rounded-lg bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700 text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer whitespace-nowrap"
+                                        title="Filter by Organization"
+                                    >
+                                        <Building2 className="w-3.5 h-3.5 text-indigo-500" />
+                                        <span>{ledgerOrgFilter === 'ALL' ? 'All Organizations' : ledgerOrgFilter}</span>
+                                        <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-150 ${ledgerOrgDropdownOpen ? 'rotate-180' : ''}`} />
+                                    </button>
+
+                                    {ledgerOrgDropdownOpen && (
+                                        <>
+                                            <div 
+                                                className="fixed inset-0 z-40" 
+                                                onClick={() => setLedgerOrgDropdownOpen(false)} 
+                                            />
+                                            <div className="absolute left-0 mt-1.5 w-64 max-h-72 overflow-y-auto p-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl z-50 animate-in fade-in-50 zoom-in-95 space-y-0.5 custom-scrollbar">
+                                                <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                                    Select Organization
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        handleOrgFilterChange('ALL');
+                                                        setLedgerOrgDropdownOpen(false);
+                                                    }}
+                                                    className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium text-left transition-colors cursor-pointer ${
+                                                        ledgerOrgFilter === 'ALL'
+                                                            ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-semibold'
+                                                            : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                                                    }`}
+                                                >
+                                                    <div className="flex items-center gap-1.5 truncate">
+                                                        <Building2 className="w-3.5 h-3.5 text-slate-400" />
+                                                        <span>All Organizations ({organizations.length})</span>
+                                                    </div>
+                                                    {ledgerOrgFilter === 'ALL' && <Check className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />}
+                                                </button>
+                                                {organizations.map(org => {
+                                                    const isSelected = ledgerOrgFilter === org.organization_name;
+                                                    return (
+                                                        <button
+                                                            key={org.organization_name}
+                                                            type="button"
+                                                            onClick={() => {
+                                                                handleOrgFilterChange(org.organization_name);
+                                                                setLedgerOrgDropdownOpen(false);
+                                                            }}
+                                                            className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium text-left transition-colors cursor-pointer ${
+                                                                isSelected
+                                                                    ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-semibold'
+                                                                    : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                                                            }`}
+                                                        >
+                                                            <div className="flex items-center gap-1.5 truncate">
+                                                                <Building2 className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                                                                <span className="truncate">{org.organization_name}</span>
+                                                            </div>
+                                                            {isSelected && <Check className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />}
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        </>
+                                    )}
+                                </div>
+
+                                {/* 2. Transaction Type Dropdown Filter */}
+                                <div className="relative shrink-0">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setLedgerFilterDropdownOpen(prev => !prev);
+                                            setLedgerOrgDropdownOpen(false);
+                                            setLedgerPurposeDropdownOpen(false);
+                                        }}
+                                        className="h-8.5 px-3 rounded-lg bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700 text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer whitespace-nowrap"
+                                        title="Filter by Transaction Type"
+                                    >
+                                        <Filter className="w-3.5 h-3.5 text-slate-400" />
+                                        <span>{currentFilter.label}</span>
+                                        <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-150 ${ledgerFilterDropdownOpen ? 'rotate-180' : ''}`} />
+                                    </button>
+
+                                    {ledgerFilterDropdownOpen && (
+                                        <>
+                                            <div 
+                                                className="fixed inset-0 z-40" 
+                                                onClick={() => setLedgerFilterDropdownOpen(false)} 
+                                            />
+                                            <div className="absolute left-0 sm:left-auto sm:right-0 mt-1.5 w-52 p-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl z-50 animate-in fade-in-50 zoom-in-95 space-y-0.5">
+                                                <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                                    Filter Transaction Type
+                                                </div>
+                                                {ledgerFilterOptions.map(f => {
+                                                    const isSelected = ledgerFilter === f.id;
+                                                    return (
+                                                        <button
+                                                            key={f.id}
+                                                            type="button"
+                                                            onClick={() => {
+                                                                handleFilterChange(f.id);
+                                                                setLedgerFilterDropdownOpen(false);
+                                                            }}
+                                                            className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium text-left transition-colors cursor-pointer ${
+                                                                isSelected
+                                                                    ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-semibold'
+                                                                    : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                                                            }`}
+                                                        >
+                                                            <span>{f.label}</span>
+                                                            {isSelected && <Check className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />}
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        </>
+                                    )}
+                                </div>
+
+                                {/* 3. Circumstance / Purpose Dropdown Filter */}
+                                <div className="relative shrink-0">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setLedgerPurposeDropdownOpen(prev => !prev);
+                                            setLedgerFilterDropdownOpen(false);
+                                            setLedgerOrgDropdownOpen(false);
+                                        }}
+                                        className="h-8.5 px-3 rounded-lg bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700 text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer whitespace-nowrap"
+                                        title="Filter by Circumstance / Purpose"
+                                    >
+                                        <Zap className="w-3.5 h-3.5 text-amber-500" />
+                                        <span className="max-w-[130px] truncate">{currentPurpose.label === 'All Circumstances' ? 'All Purposes' : currentPurpose.label}</span>
+                                        <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-150 ${ledgerPurposeDropdownOpen ? 'rotate-180' : ''}`} />
+                                    </button>
+
+                                    {ledgerPurposeDropdownOpen && (
+                                        <>
+                                            <div 
+                                                className="fixed inset-0 z-40" 
+                                                onClick={() => setLedgerPurposeDropdownOpen(false)} 
+                                            />
+                                            <div className="absolute left-0 sm:left-auto sm:right-0 mt-1.5 w-64 max-h-72 overflow-y-auto p-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl z-50 animate-in fade-in-50 zoom-in-95 space-y-0.5 custom-scrollbar">
+                                                <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                                    Filter Circumstance / Purpose
+                                                </div>
+                                                {ledgerPurposeOptions.map(p => {
+                                                    const isSelected = ledgerPurposeFilter === p.id;
+                                                    return (
+                                                        <button
+                                                            key={p.id}
+                                                            type="button"
+                                                            onClick={() => {
+                                                                handlePurposeFilterChange(p.id);
+                                                                setLedgerPurposeDropdownOpen(false);
+                                                            }}
+                                                            className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium text-left transition-colors cursor-pointer ${
+                                                                isSelected
+                                                                    ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-semibold'
+                                                                    : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                                                            }`}
+                                                        >
+                                                            <span className="truncate">{p.label}</span>
+                                                            {isSelected && <Check className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0 ml-1.5" />}
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        </>
+                                    )}
+                                </div>
+
+                                {/* 4. Search Input */}
+                                <div className="relative shrink-0">
+                                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                                    <input
+                                        type="text"
+                                        value={ledgerSearch}
+                                        onChange={(e) => setLedgerSearch(e.target.value)}
+                                        placeholder="Search user, ref, remarks..."
+                                        className="pl-8 pr-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 focus:outline-hidden focus:ring-1 focus:ring-indigo-500 w-40 sm:w-48 h-8.5"
+                                    />
+                                    {ledgerSearch && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setLedgerSearch('')}
+                                            className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                                        >
+                                            <X className="w-3 h-3" />
+                                        </button>
+                                    )}
+                                </div>
+
+                                {/* 5. Quick Refresh Button */}
+                                <button
+                                    type="button"
+                                    onClick={() => fetchSuperAdminLedgerData(ledgerPage, ledgerPageSize, ledgerOrgFilter, ledgerFilter, ledgerPurposeFilter, ledgerSearch)}
+                                    className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-600 hover:text-indigo-600 dark:text-slate-300 dark:hover:text-indigo-400 transition cursor-pointer"
+                                    title="Refresh ledger data"
+                                >
+                                    <RefreshCw className={`w-3.5 h-3.5 ${ledgerLoading ? 'animate-spin' : ''}`} />
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Transactions Table */}
+                        <div className="overflow-x-auto custom-scrollbar">
+                            <table className="w-full text-sm border-collapse">
+                                <thead className="bg-slate-50/80 dark:bg-slate-800/80 text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-700 text-[11px] font-bold uppercase tracking-wider">
+                                    <tr>
+                                        <th 
+                                            onClick={() => handleLedgerSort('transaction_id')} 
+                                            className="px-4 py-3 text-center align-middle font-bold cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700/50 transition-colors select-none group"
+                                            title="Click to sort by Transaction ID"
+                                        >
+                                            <div className="inline-flex items-center justify-center gap-1">
+                                                <span>Tx #</span>
+                                                {ledgerSortKey === 'transaction_id' ? (
+                                                    ledgerSortOrder === 'asc' ? <ChevronUp className="w-3.5 h-3.5 text-indigo-500" /> : <ChevronDown className="w-3.5 h-3.5 text-indigo-500" />
+                                                ) : (
+                                                    <ArrowUpDown className="w-3 h-3 text-slate-400 opacity-40 group-hover:opacity-100 transition-opacity" />
+                                                )}
+                                            </div>
+                                        </th>
+                                        <th className="px-4 py-3 text-left align-middle font-bold">Organization</th>
+                                        <th className="px-4 py-3 text-center align-middle font-bold">Type</th>
+                                        <th className="px-4 py-3 text-left align-middle font-bold">User</th>
+                                        <th className="px-4 py-3 text-left align-middle font-bold">Circumstance / Purpose</th>
+                                        <th 
+                                            onClick={() => handleLedgerSort('token_delta')} 
+                                            className="px-4 py-3 text-center align-middle font-bold cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700/50 transition-colors select-none group"
+                                            title="Click to sort by Token Delta"
+                                        >
+                                            <div className="inline-flex items-center justify-center gap-1">
+                                                <span>Token Delta</span>
+                                                {ledgerSortKey === 'token_delta' ? (
+                                                    ledgerSortOrder === 'asc' ? <ChevronUp className="w-3.5 h-3.5 text-indigo-500" /> : <ChevronDown className="w-3.5 h-3.5 text-indigo-500" />
+                                                ) : (
+                                                    <ArrowUpDown className="w-3 h-3 text-slate-400 opacity-40 group-hover:opacity-100 transition-opacity" />
+                                                )}
+                                            </div>
+                                        </th>
+                                        <th 
+                                            onClick={() => handleLedgerSort('balance_after')} 
+                                            className="px-4 py-3 text-center align-middle font-bold cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700/50 transition-colors select-none group"
+                                            title="Click to sort by Balance After"
+                                        >
+                                            <div className="inline-flex items-center justify-center gap-1">
+                                                <span>Balance After</span>
+                                                {ledgerSortKey === 'balance_after' ? (
+                                                    ledgerSortOrder === 'asc' ? <ChevronUp className="w-3.5 h-3.5 text-indigo-500" /> : <ChevronDown className="w-3.5 h-3.5 text-indigo-500" />
+                                                ) : (
+                                                    <ArrowUpDown className="w-3 h-3 text-slate-400 opacity-40 group-hover:opacity-100 transition-opacity" />
+                                                )}
+                                            </div>
+                                        </th>
+                                        <th className="px-4 py-3 text-center align-middle font-bold whitespace-nowrap">PAYG Cost (USD)</th>
+                                        <th className="px-4 py-3 text-left align-middle font-bold">Remarks / Ref</th>
+                                        <th 
+                                            onClick={() => handleLedgerSort('created_at')} 
+                                            className="px-4 py-3 text-center align-middle font-bold cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700/50 transition-colors select-none group whitespace-nowrap"
+                                            title="Click to sort by Timestamp"
+                                        >
+                                            <div className="inline-flex items-center justify-center gap-1">
+                                                <span>Timestamp {localTimezone ? `(${localTimezone})` : ''}</span>
+                                                {ledgerSortKey === 'created_at' ? (
+                                                    ledgerSortOrder === 'asc' ? <ChevronUp className="w-3.5 h-3.5 text-indigo-500" /> : <ChevronDown className="w-3.5 h-3.5 text-indigo-500" />
+                                                ) : (
+                                                    <ArrowUpDown className="w-3 h-3 text-slate-400 opacity-40 group-hover:opacity-100 transition-opacity" />
+                                                )}
+                                            </div>
+                                        </th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-200 dark:divide-slate-700 text-slate-800 dark:text-slate-200 text-xs">
+                                    {sortedLedger.length === 0 ? (
+                                        <tr>
+                                            <td colSpan="10" className="px-4 py-12 text-center text-slate-400 align-middle">
+                                                {ledgerLoading ? (
+                                                    <div className="flex flex-col items-center justify-center gap-2 py-4">
+                                                        <RefreshCw className="w-6 h-6 animate-spin text-indigo-500" />
+                                                        <span className="font-semibold">Loading audited transaction entries...</span>
+                                                    </div>
+                                                ) : (
+                                                    <div className="flex flex-col items-center justify-center gap-2 py-4">
+                                                        <FileText className="w-8 h-8 text-slate-300 dark:text-slate-600" />
+                                                        <p className="font-semibold text-slate-600 dark:text-slate-300">
+                                                            {ledgerTotal === 0 ? 'No transaction entries recorded yet.' : 'No transactions match your current filters.'}
+                                                        </p>
+                                                        {(ledgerOrgFilter !== 'ALL' || ledgerFilter !== 'ALL' || ledgerPurposeFilter !== 'ALL' || ledgerSearch) && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    setLedgerOrgFilter('ALL');
+                                                                    setLedgerFilter('ALL');
+                                                                    setLedgerPurposeFilter('ALL');
+                                                                    setLedgerSearch('');
+                                                                    setLedgerPage(1);
+                                                                    fetchSuperAdminLedgerData(1, ledgerPageSize, 'ALL', 'ALL', 'ALL', '');
+                                                                }}
+                                                                className="mt-1 px-3 py-1.5 text-xs font-semibold bg-indigo-50 hover:bg-indigo-100 text-indigo-600 dark:bg-indigo-950/60 dark:text-indigo-400 rounded-lg transition cursor-pointer"
+                                                            >
+                                                                Reset Filters
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </td>
+                                        </tr>
+                                    ) : (
+                                        sortedLedger.map((tx) => (
+                                            <tr key={tx.global_transaction_id || tx.transaction_id} className="hover:bg-slate-50/70 dark:hover:bg-slate-750/50 transition-colors">
+                                                {/* Tx # */}
+                                                <td className="px-4 py-3 text-center align-middle font-mono text-xs text-slate-500">
+                                                    <span 
+                                                        className="font-semibold text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700"
+                                                        title={tx.global_transaction_id ? `Platform Audit Ref: #${tx.global_transaction_id}` : undefined}
+                                                    >
+                                                        #{tx.transaction_id}
+                                                    </span>
+                                                </td>
+
+                                                {/* Organization */}
+                                                <td className="px-4 py-3 text-left align-middle">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleOrgFilterChange(tx.organization_name)}
+                                                        className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-indigo-50/80 hover:bg-indigo-100 dark:bg-indigo-950/50 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 font-semibold text-xs border border-indigo-200/60 dark:border-indigo-800/40 transition cursor-pointer"
+                                                        title={`Filter ledger exclusively for ${tx.organization_name}`}
+                                                    >
+                                                        <Building2 className="w-3 h-3 text-indigo-500 shrink-0" />
+                                                        <span>{tx.organization_name || 'System / Platform'}</span>
+                                                    </button>
+                                                </td>
+
+                                                {/* Transaction Type */}
+                                                <td className="px-4 py-3 text-center align-middle">
+                                                    <span className="inline-flex items-center px-2 py-0.5 text-[10px] font-bold rounded-md bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 uppercase tracking-wider">
+                                                        {tx.transaction_type}
+                                                    </span>
+                                                </td>
+
+                                                {/* User */}
+                                                <td className="px-4 py-3 text-left align-middle">
+                                                    {tx.user_name ? (
+                                                        <div>
+                                                            <div className="font-semibold text-slate-800 dark:text-slate-200">{tx.user_name}</div>
+                                                            {tx.user_email && <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono mt-0.5">{tx.user_email}</div>}
+                                                        </div>
+                                                    ) : (
+                                                        <span className="text-slate-500 dark:text-slate-400 italic">
+                                                            {tx.user_id ? `User #${tx.user_id}` : 'Organization / Admin'}
+                                                        </span>
+                                                    )}
+                                                </td>
+
+                                                {/* Circumstance / Purpose */}
+                                                <td className="px-4 py-3 text-left align-middle">
+                                                    <div className="flex flex-col items-start gap-1">
+                                                        {renderPurposeBadge(tx.purpose, tx.transaction_type)}
+                                                        {tx.project_name && (
+                                                            <div 
+                                                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 max-w-[200px] truncate" 
+                                                                title={`Project: ${tx.project_name}`}
+                                                            >
+                                                                <Folder className="w-3 h-3 text-indigo-500 shrink-0" />
+                                                                <span className="truncate">{tx.project_name}</span>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </td>
+
+                                                {/* Token Delta */}
+                                                <td className={`px-4 py-3 text-center align-middle font-bold ${tx.token_delta >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                                                    <div className="font-semibold font-mono text-xs">
+                                                        {tx.token_delta >= 0 ? '+' : ''}
+                                                        {Number(tx.token_delta).toLocaleString()} tokens
+                                                    </div>
+                                                    <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                                                        {tx.token_delta >= 0 ? '+' : ''}
+                                                        {formatLedgerCurrency(tx.token_delta, 0.000007)}
+                                                    </div>
+                                                </td>
+
+                                                {/* Balance After */}
+                                                <td className="px-4 py-3 text-center align-middle font-mono text-xs text-slate-800 dark:text-slate-200 font-semibold">
+                                                    {tx.balance_after !== null && tx.balance_after !== undefined
+                                                        ? `${Number(tx.balance_after).toLocaleString()} tokens`
+                                                        : '—'}
+                                                </td>
+
+                                                {/* PAYG Cost (USD) */}
+                                                <td className="px-4 py-3 text-center align-middle font-mono text-xs text-emerald-600 dark:text-emerald-400 font-semibold">
+                                                    {tx.payg_cost_usd !== null && tx.payg_cost_usd !== undefined
+                                                        ? `$${Number(tx.payg_cost_usd).toFixed(4)}`
+                                                        : '—'}
+                                                </td>
+
+                                                {/* Remarks / Ref */}
+                                                <td className="px-4 py-3 text-left align-middle text-xs text-slate-500 dark:text-slate-400 truncate max-w-xs" title={tx.remarks || tx.reference_id || ''}>
+                                                    {tx.remarks || tx.reference_id || '—'}
+                                                </td>
+
+                                                {/* Timestamp */}
+                                                <td className="px-4 py-3 text-center align-middle text-xs text-slate-500 dark:text-slate-400 font-mono whitespace-nowrap">
+                                                    {formatTimestamp(tx.created_at)}
+                                                </td>
+                                            </tr>
+                                        ))
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        {/* Pagination Footer */}
+                        <div className="p-3.5 sm:p-4 border-t border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                            <div className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400">
+                                <span>Showing</span>
+                                <span className="font-bold text-slate-800 dark:text-slate-100 font-mono">
+                                    {ledgerTotal === 0 ? 0 : (ledgerPage - 1) * ledgerPageSize + 1}
+                                </span>
+                                <span>to</span>
+                                <span className="font-bold text-slate-800 dark:text-slate-100 font-mono">
+                                    {Math.min(ledgerPage * ledgerPageSize, ledgerTotal)}
+                                </span>
+                                <span>of</span>
+                                <span className="font-bold text-slate-800 dark:text-slate-100 font-mono">
+                                    {Number(ledgerTotal).toLocaleString()}
+                                </span>
+                                <span>entries</span>
+                                {ledgerLoading && (
+                                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-500 ml-2" />
+                                )}
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-3">
+                                {/* Rows Per Page */}
+                                <div className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400">
+                                    <span className="whitespace-nowrap">Rows per page:</span>
+                                    <select
+                                        value={ledgerPageSize}
+                                        onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+                                        className="px-2 py-1 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-semibold text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                                    >
+                                        <option value={10}>10</option>
+                                        <option value={25}>25</option>
+                                        <option value={50}>50</option>
+                                        <option value={100}>100</option>
+                                    </select>
+                                </div>
+
+                                {/* Navigation Buttons */}
+                                <div className="inline-flex items-center gap-1">
+                                    <button
+                                        type="button"
+                                        disabled={ledgerPage <= 1 || ledgerLoading}
+                                        onClick={() => handlePageChange(ledgerPage - 1)}
+                                        className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium flex items-center gap-1 cursor-pointer"
+                                        title="Previous Page"
+                                    >
+                                        <ChevronLeft className="w-3.5 h-3.5" />
+                                        <span>Prev</span>
+                                    </button>
+
+                                    {/* Numbered Page Buttons */}
+                                    {(() => {
+                                        const pages = [];
+                                        for (let p = 1; p <= totalPages; p++) {
+                                            if (p === 1 || p === totalPages || (p >= ledgerPage - 1 && p <= ledgerPage + 1)) {
+                                                pages.push(p);
+                                            } else if (pages[pages.length - 1] !== '...') {
+                                                pages.push('...');
+                                            }
+                                        }
+                                        return pages.map((p, idx) => {
+                                            if (p === '...') {
+                                                return <span key={`ellipsis-${idx}`} className="px-1 text-slate-400 select-none">...</span>;
+                                            }
+                                            const isCurrent = p === ledgerPage;
+                                            return (
+                                                <button
+                                                    key={p}
+                                                    type="button"
+                                                    disabled={ledgerLoading}
+                                                    onClick={() => handlePageChange(p)}
+                                                    className={`min-w-[28px] h-7 px-2 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                                                        isCurrent
+                                                            ? 'bg-indigo-600 text-white shadow-xs'
+                                                            : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900'
+                                                    }`}
+                                                >
+                                                    {p}
+                                                </button>
+                                            );
+                                        });
+                                    })()}
+
+                                    <button
+                                        type="button"
+                                        disabled={ledgerPage >= totalPages || ledgerLoading}
+                                        onClick={() => handlePageChange(ledgerPage + 1)}
+                                        className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium flex items-center gap-1 cursor-pointer"
+                                        title="Next Page"
+                                    >
+                                        <span>Next</span>
+                                        <ChevronRight className="w-3.5 h-3.5" />
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
 
             {/* TAB 2: Model Pricing Configuration */}
             {activeTab === 'pricing' && (
@@ -2372,6 +3221,18 @@ export default function SuperAdminTokenOps() {
                         ) : null}
 
                         <div className="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-700">
+                            <button
+                                onClick={() => {
+                                    const targetOrg = selectedOrgModal;
+                                    setSelectedOrgModal(null);
+                                    setLedgerOrgFilter(targetOrg);
+                                    setActiveTab('ledger');
+                                }}
+                                className="px-3.5 py-2 text-xs font-semibold bg-indigo-50 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 dark:hover:bg-indigo-900/60 rounded-xl transition cursor-pointer flex items-center gap-1.5"
+                            >
+                                <FileText className="w-3.5 h-3.5" />
+                                <span>View Ledger</span>
+                            </button>
                             <button
                                 onClick={() => {
                                     const targetOrg = selectedOrgModal;
