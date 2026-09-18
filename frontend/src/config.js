@@ -201,6 +201,7 @@ export const API_ENDPOINTS = {
     TOKENOPS_ADMIN_ANALYTICS_TOP_ORGS: (limit = 10) => `${API_BASE_URL}/api/tokenops/admin/analytics/top-organizations?limit=${limit}`,
     TOKENOPS_ADMIN_ANALYTICS_ALERTS: `${API_BASE_URL}/api/tokenops/admin/analytics/alerts`,
     TOKENOPS_ADMIN_ANALYTICS_ORG: (orgName) => `${API_BASE_URL}/api/tokenops/admin/analytics/organization/${encodeURIComponent(orgName)}`,
+    TOKENOPS_ADMIN_LEDGER: `${API_BASE_URL}/api/tokenops/admin/analytics/ledger`,
     TOKENOPS_ADMIN_GRACE_PERIOD: `${API_BASE_URL}/api/tokenops/admin/wallet/grace-period`,
     TOKENOPS_ADMIN_GRACE_PERIOD_BULK: `${API_BASE_URL}/api/tokenops/admin/wallet/grace-period/bulk`,
 

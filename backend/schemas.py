@@ -555,6 +555,8 @@ class TicketResponse(BaseModel):
     unread: bool = False
     message_count: int = 0
     messages: list[TicketMessageResponse] = Field(default_factory=list)
+    can_change_status: bool = False
+    can_resolve: bool = False
     created_at: datetime
     updated_at: datetime
 

@@ -32,7 +32,7 @@ const STATUSES = [
   { id: 'CLOSED', label: 'Closed', color: 'bg-slate-100 text-slate-700 border-slate-300 dark:bg-slate-500/20 dark:text-slate-400 dark:border-slate-500/30' },
 ];
 
-export default function SupportTickets() {
+export default function SupportTickets({ user }) {
   const [tickets, setTickets] = useState([]);
   const [stats, setStats] = useState({ total: 0, open: 0, in_progress: 0, awaiting_info: 0, resolved: 0, closed: 0, urgent: 0 });
   const [selectedTicket, setSelectedTicket] = useState(null);
@@ -112,9 +112,25 @@ export default function SupportTickets() {
       .catch(() => {});
   }, [token]);
 
-  const isSuperAdmin = Boolean(currentUser?.is_super_admin);
-  const isOrgAdmin = Boolean(currentUser?.is_org_admin);
+  const isSuperAdmin = Boolean(currentUser?.is_super_admin || user?.is_super_admin);
+  const isOrgAdmin = Boolean(currentUser?.is_org_admin || user?.is_org_admin);
   const isAdmin = isSuperAdmin || isOrgAdmin;
+
+  // RBAC Permission checks for selected ticket:
+  const creatorIsOrgAdmin = Boolean(selectedTicket?.created_by?.is_org_admin);
+  const creatorIsSuperAdmin = Boolean(selectedTicket?.created_by?.is_super_admin);
+  const creatorIsAdmin = creatorIsOrgAdmin || creatorIsSuperAdmin;
+
+  // Super Admin can manage all tickets.
+  // Org Admin can manage regular user tickets, but CANNOT manage tickets raised by Org Admins.
+  // Regular users can NEVER change status or resolve tickets.
+  const canManageTicket = selectedTicket?.can_change_status !== undefined
+    ? Boolean(selectedTicket.can_change_status)
+    : Boolean(isSuperAdmin || (isOrgAdmin && !creatorIsAdmin));
+
+  const canResolve = selectedTicket?.can_resolve !== undefined
+    ? Boolean(selectedTicket.can_resolve)
+    : Boolean(canManageTicket && selectedTicket?.status !== 'RESOLVED' && selectedTicket?.status !== 'CLOSED');
 
   const knownMessagesRef = useRef(new Set());
   const initialLoadDoneRef = useRef(false);
@@ -274,16 +290,33 @@ export default function SupportTickets() {
 
           } else if (payload.type === 'TICKET_CREATED') {
             const newTicket = payload.ticket;
-            setTickets(prev => {
-              if (prev.some(t => t.id === newTicket.id)) return prev;
-              return [newTicket, ...prev];
-            });
-            setStats(prev => ({
-              ...prev,
-              total: (prev.total || 0) + 1,
-              open: (prev.open || 0) + 1
-            }));
-            window.dispatchEvent(new CustomEvent('dsuite-ticket-unread-sync'));
+            const ticketCreatorIsAdmin = Boolean(newTicket.created_by?.is_org_admin || newTicket.created_by?.is_super_admin);
+            const isMine = newTicket.created_by_user_id === currentUser?.id;
+            const matchesOrg = currentUser?.organization_name && newTicket.organization_name && 
+              newTicket.organization_name.toLowerCase() === currentUser.organization_name.toLowerCase();
+
+            // Client-side permission guard for incoming tickets:
+            let isAllowed = false;
+            if (isSuperAdmin) {
+              isAllowed = true;
+            } else if (isMine) {
+              isAllowed = true;
+            } else if (isOrgAdmin && matchesOrg && !ticketCreatorIsAdmin) {
+              isAllowed = true;
+            }
+
+            if (isAllowed) {
+              setTickets(prev => {
+                if (prev.some(t => t.id === newTicket.id)) return prev;
+                return [newTicket, ...prev];
+              });
+              setStats(prev => ({
+                ...prev,
+                total: (prev.total || 0) + 1,
+                open: (prev.open || 0) + 1
+              }));
+              window.dispatchEvent(new CustomEvent('dsuite-ticket-unread-sync'));
+            }
 
           } else if (payload.type === 'TICKET_RESOLVED') {
             const { ticket_id, resolution_summary } = payload;
@@ -561,7 +594,7 @@ export default function SupportTickets() {
 
   // Change status
   const handleStatusChange = async (newStatus) => {
-    if (!selectedTicket || selectedTicket.status === newStatus) return;
+    if (!selectedTicket || selectedTicket.status === newStatus || !canManageTicket) return;
 
     if (newStatus === 'RESOLVED') {
       setShowResolveModal(true);
@@ -593,7 +626,7 @@ export default function SupportTickets() {
 
   // Change priority (Admin only)
   const handlePriorityChange = async (newPriorityVal) => {
-    if (!selectedTicket || selectedTicket.priority === newPriorityVal || !isAdmin) return;
+    if (!selectedTicket || selectedTicket.priority === newPriorityVal || !canManageTicket) return;
     try {
       const res = await fetch(`${API_ENDPOINTS.SUPPORT_TICKETS}/${selectedTicket.id}`, {
         method: 'PATCH',
@@ -620,7 +653,7 @@ export default function SupportTickets() {
   // Submit official resolution
   const handleResolveSubmit = async (e) => {
     e.preventDefault();
-    if (!selectedTicket || resolvingTicket) return;
+    if (!selectedTicket || resolvingTicket || !canManageTicket) return;
 
     setResolvingTicket(true);
     try {
@@ -835,13 +868,15 @@ export default function SupportTickets() {
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
           </button>
 
-          <button
-            onClick={() => setShowCreateModal(true)}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-[11px] font-bold shadow-xs transition-all cursor-pointer active:scale-95 shrink-0"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Raise Ticket</span>
-          </button>
+          {!isSuperAdmin && (
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-[11px] font-bold shadow-xs transition-all cursor-pointer active:scale-95 shrink-0"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Raise Ticket</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -903,7 +938,9 @@ export default function SupportTickets() {
                 </div>
                 <div>
                   <p className="font-semibold text-slate-700 dark:text-slate-300">No support tickets found</p>
-                  <p className="text-[11px] text-slate-500 mt-1">Raise a new ticket or adjust your filters.</p>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    {isSuperAdmin ? 'Adjust your filters or await incoming tickets from organizations.' : 'Raise a new ticket or adjust your filters.'}
+                  </p>
                 </div>
               </div>
             ) : (
@@ -1029,38 +1066,57 @@ export default function SupportTickets() {
                   </div>
                 </div>
 
-                {/* Right: Status & Resolution Controls in one tight row */}
+                {/* Right: Status & Resolution Controls with strict RBAC */}
                 <div className="flex items-center gap-1.5 shrink-0">
-                  {isAdmin && (
-                    <select
-                      value={selectedTicket.priority}
-                      onChange={(e) => handlePriorityChange(e.target.value)}
-                      className="px-2 py-1 text-[11px] bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200 focus:outline-none focus:border-purple-500 font-medium shadow-2xs cursor-pointer"
-                    >
-                      {PRIORITIES.map(p => (
-                        <option key={p.id} value={p.id}>{p.label}</option>
-                      ))}
-                    </select>
-                  )}
+                  {canManageTicket ? (
+                    <>
+                      {isAdmin && (
+                        <select
+                          value={selectedTicket.priority}
+                          onChange={(e) => handlePriorityChange(e.target.value)}
+                          className="px-2 py-1 text-[11px] bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200 focus:outline-none focus:border-purple-500 font-medium shadow-2xs cursor-pointer"
+                          title="Change priority"
+                        >
+                          {PRIORITIES.map(p => (
+                            <option key={p.id} value={p.id}>{p.label}</option>
+                          ))}
+                        </select>
+                      )}
 
-                  <select
-                    value={selectedTicket.status}
-                    onChange={(e) => handleStatusChange(e.target.value)}
-                    className="px-2 py-1 text-[11px] bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200 focus:outline-none focus:border-purple-500 font-medium shadow-2xs cursor-pointer"
-                  >
-                    {STATUSES.map(s => (
-                      <option key={s.id} value={s.id}>{s.label}</option>
-                    ))}
-                  </select>
+                      <select
+                        value={selectedTicket.status}
+                        onChange={(e) => handleStatusChange(e.target.value)}
+                        className="px-2 py-1 text-[11px] bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-800 dark:text-slate-200 focus:outline-none focus:border-purple-500 font-medium shadow-2xs cursor-pointer"
+                        title="Change status"
+                      >
+                        {STATUSES.map(s => (
+                          <option key={s.id} value={s.id}>{s.label}</option>
+                        ))}
+                      </select>
 
-                  {selectedTicket.status !== 'RESOLVED' && selectedTicket.status !== 'CLOSED' && (
-                    <button
-                      onClick={() => setShowResolveModal(true)}
-                      className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow-xs transition-all cursor-pointer shrink-0 active:scale-95"
-                    >
-                      <CheckCircle className="w-3 h-3" />
-                      <span>Resolve</span>
-                    </button>
+                      {canResolve && (
+                        <button
+                          onClick={() => setShowResolveModal(true)}
+                          className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow-xs transition-all cursor-pointer shrink-0 active:scale-95"
+                          title="Resolve Ticket"
+                        >
+                          <CheckCircle className="w-3 h-3" />
+                          <span>Resolve</span>
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <div className="flex items-center gap-1.5">
+                      <span className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border ${STATUSES.find(s => s.id === selectedTicket.status)?.color || 'bg-slate-100 text-slate-700 border-slate-300'}`}>
+                        {STATUSES.find(s => s.id === selectedTicket.status)?.label || selectedTicket.status}
+                      </span>
+                      {isOrgAdmin && creatorIsAdmin && (
+                        <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800" title="This ticket was raised to Super Admin and can only be resolved by Super Admin">
+                          <Shield className="w-2.5 h-2.5" />
+                          <span>Super Admin Action</span>
+                        </span>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
@@ -1264,22 +1320,26 @@ export default function SupportTickets() {
               </div>
               <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200">No Ticket Selected</h3>
               <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm">
-                Select a ticket from the left panel to inspect conversation history, chat in real-time, or raise a new support request.
+                {isSuperAdmin
+                  ? 'Select a ticket from the left queue to review conversation history, post administrative notes, or resolve issues.'
+                  : 'Select a ticket from the left panel to inspect conversation history, chat in real-time, or raise a new support request.'}
               </p>
-              <button
-                onClick={() => setShowCreateModal(true)}
-                className="mt-2 inline-flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold shadow-sm transition-all cursor-pointer"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Raise Support Ticket</span>
-              </button>
+              {!isSuperAdmin && (
+                <button
+                  onClick={() => setShowCreateModal(true)}
+                  className="mt-2 inline-flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold shadow-sm transition-all cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Raise Support Ticket</span>
+                </button>
+              )}
             </div>
           )}
         </div>
       </div>
 
       {/* ── Modal: Raise Support Ticket ── */}
-      {showCreateModal && (
+      {showCreateModal && !isSuperAdmin && (
         <div 
           className="fixed inset-0 z-[9999] flex items-center justify-center p-3 sm:p-4 bg-slate-950/70 backdrop-blur-sm animate-in fade-in duration-200"
           onClick={(e) => {
@@ -1440,7 +1500,7 @@ export default function SupportTickets() {
       )}
 
       {/* ── Modal: Mark Ticket as Resolved ── */}
-      {showResolveModal && (
+      {showResolveModal && canManageTicket && (
         <div 
           className="fixed inset-0 z-[9999] flex items-center justify-center p-3 sm:p-4 bg-slate-950/70 backdrop-blur-sm animate-in fade-in duration-200"
           onClick={(e) => {

@@ -86,3 +86,28 @@ def get_organization_analytics(
         return BaseAPIResponse(success=True, data=data)
     except Exception as e:
         return BaseAPIResponse(success=False, error={"code": "UNKNOWN_ERROR", "message": str(e)})
+
+@router.get("/ledger", response_model=BaseAPIResponse)
+def get_superadmin_financial_ledger(
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100),
+    organization_name: Optional[str] = Query(None),
+    transaction_type: Optional[str] = Query(None),
+    purpose: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    current_user: User = Depends(verify_super_admin),
+    analytics_service: AdminAnalyticsService = Depends(get_admin_analytics_service)
+):
+    try:
+        data = analytics_service.get_ledger(
+            organization_name=organization_name,
+            page=page,
+            size=size,
+            transaction_type=transaction_type,
+            purpose=purpose,
+            search=search
+        )
+        return BaseAPIResponse(success=True, data=data)
+    except Exception as e:
+        return BaseAPIResponse(success=False, error={"code": "UNKNOWN_ERROR", "message": str(e)})
+
