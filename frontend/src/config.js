@@ -2,6 +2,7 @@
 // Uses environment variables with fallback defaults
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+export const WS_BASE_URL = API_BASE_URL.replace(/^http/, 'ws');
 export const VIBE_WORKSPACE_URL = import.meta.env.VITE_VIBE_WORKSPACE_URL || 'http://localhost:5174/vibecoding';
 
 // API Endpoints
@@ -46,6 +47,16 @@ export const API_ENDPOINTS = {
     AGENT_PROJECT_REQUEST_REJECT: (id) => `${API_BASE_URL}/api/agent/project-requests/${id}/reject`,
     AGENT_PROJECT_REQUEST_ESCALATE: (id) => `${API_BASE_URL}/api/agent/project-requests/${id}/escalate`,
     AGENT_CAPACITY_INCREASE_REQUEST: `${API_BASE_URL}/api/agent/capacity-increase-request`,
+    
+    // Support Tickets
+    SUPPORT_TICKETS: `${API_BASE_URL}/api/tickets`,
+    SUPPORT_TICKET_STATS: `${API_BASE_URL}/api/tickets/stats`,
+    SUPPORT_TICKET_UNREAD: `${API_BASE_URL}/api/tickets/unread-count`,
+    SUPPORT_TICKET_DETAIL: (id) => `${API_BASE_URL}/api/tickets/${id}`,
+    SUPPORT_TICKET_RESOLVE: (id) => `${API_BASE_URL}/api/tickets/${id}/resolve`,
+    SUPPORT_TICKET_MESSAGES: (id) => `${API_BASE_URL}/api/tickets/${id}/messages`,
+    SUPPORT_TICKET_WS: (id, token) => `${WS_BASE_URL}/api/tickets/ws/${id}?token=${encodeURIComponent(token)}`,
+    SUPPORT_TICKET_HUB_WS: (token) => `${WS_BASE_URL}/api/tickets/ws/hub?token=${encodeURIComponent(token)}`,
 
     // Documents
     DOCUMENTS_UPLOAD: `${API_BASE_URL}/documents/upload`,

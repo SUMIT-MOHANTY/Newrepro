@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
-import { X, Plus, FileCheck, History, Activity, Settings, User, LogOut, Trash2, Users, ShieldCheck, Globe, Check, Share2, CreditCard, Coins } from 'lucide-react';
+import { X, Plus, FileCheck, History, Activity, Settings, User, LogOut, Trash2, Users, ShieldCheck, Globe, Check, Share2, CreditCard, Coins, LifeBuoy } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
 import { API_ENDPOINTS } from '../config';
 import NewProjectModal from './NewProjectModal';
@@ -30,6 +30,9 @@ export default function Sidebar({
     const location = useLocation();
     const [searchParams, setSearchParams] = useSearchParams();
     const [navExpanded, setNavExpanded] = useState(true);
+    // Support tickets unread state
+    const [unreadTicketsCount, setUnreadTicketsCount] = useState(0);
+
     // Agents state
     const [agents, setAgents] = useState([]);
     const [agentsLoading, setAgentsLoading] = useState(false);
@@ -38,6 +41,34 @@ export default function Sidebar({
 
     const [showNewProjectModal, setShowNewProjectModal] = useState(false);
     const [showShareDocumentModal, setShowShareDocumentModal] = useState(false);
+
+    useEffect(() => {
+        const token = localStorage.getItem('token');
+        if (!token) return;
+
+        const fetchUnread = async () => {
+            try {
+                const res = await fetch(API_ENDPOINTS.SUPPORT_TICKET_UNREAD, {
+                    headers: { Authorization: `Bearer ${token}` }
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    setUnreadTicketsCount(data.unread_count || 0);
+                }
+            } catch {
+                // silent
+            }
+        };
+
+        fetchUnread();
+        const handleUnreadSync = () => fetchUnread();
+        window.addEventListener('dsuite-ticket-unread-sync', handleUnreadSync);
+        const interval = setInterval(fetchUnread, 120000); // Relaxed background check
+        return () => {
+            clearInterval(interval);
+            window.removeEventListener('dsuite-ticket-unread-sync', handleUnreadSync);
+        };
+    }, [location.pathname]);
 
     useEffect(() => {
         if (isShareMode && searchParams.get('create') === 'true') {
@@ -92,6 +123,7 @@ export default function Sidebar({
         if (!path) return true;
         if (isSuperAdmin) return true;
         if (rbac?.is_org_admin) return true;
+        if (path === '/tickets' || path.startsWith('/tickets') || path === '/superadmin/tickets' || path === '/docs') return true;
         const allowed = Array.isArray(rbac?.allowed_paths) ? rbac.allowed_paths : null;
         if (!allowed) return true; // if RBAC not loaded, don't block UI
 
@@ -212,157 +244,178 @@ export default function Sidebar({
                             )}
                         </div>
                     </div>
-                </div>
 
-                <div className="border-t border-white/10 bg-app-sidebar-bg shrink-0">
-                    <button
-                        type="button"
-                        onClick={() => setNavExpanded((v) => !v)}
-                        className="flex items-center justify-between w-full px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider hover:text-white transition-colors cursor-pointer"
-                    >
-                        <span>Navigation</span>
-                        <svg
-                            className={`w-3 h-3 transition-transform duration-200 ${navExpanded ? 'rotate-180' : ''}`}
-                            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+                    {/* Navigation Section */}
+                    <div className="border-t border-white/10 pt-4 mt-6">
+                        <button
+                            type="button"
+                            onClick={() => setNavExpanded((v) => !v)}
+                            className="flex items-center justify-between w-full px-2 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wider hover:text-white transition-colors cursor-pointer rounded-lg hover:bg-white/5"
                         >
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                        </svg>
-                    </button>
-                    <div className={`overflow-hidden transition-all duration-300 ease-in-out ${navExpanded ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0'}`}>
-                        <div className="px-4 pb-4">
-                            {canAccess('/status-dashboard') && (
-                                <button
-                                    onClick={() => setCurrentView('statusDashboard')}
-                                    className={`flex items-center w-full px-3.5 py-2 text-sm font-medium rounded-lg transition-all mb-2 cursor-pointer ${currentView === 'statusDashboard'
-                                        ? 'bg-blue-600/25 text-blue-200 border border-blue-500/50 shadow-sm'
-                                        : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
-                                >
-                                    <Activity className="w-4 h-4 mr-3 text-blue-400" />
-                                    Status Dashboard
-                                </button>
-                            )}
+                            <span>Navigation</span>
+                            <svg
+                                className={`w-3 h-3 transition-transform duration-200 ${navExpanded ? 'rotate-180' : ''}`}
+                                fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+                            >
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                            </svg>
+                        </button>
+                        <div className={`transition-all duration-300 ease-in-out ${navExpanded ? 'block opacity-100 mt-2' : 'hidden opacity-0'}`}>
+                            <div className="space-y-1">
+                                {canAccess('/status-dashboard') && (
+                                    <button
+                                        onClick={() => setCurrentView('statusDashboard')}
+                                        className={`flex items-center w-full px-3.5 py-2 text-sm font-medium rounded-lg transition-all mb-1 cursor-pointer ${currentView === 'statusDashboard'
+                                            ? 'bg-blue-600/25 text-blue-200 border border-blue-500/50 shadow-sm'
+                                            : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
+                                    >
+                                        <Activity className="w-4 h-4 mr-3 text-blue-400" />
+                                        Status Dashboard
+                                    </button>
+                                )}
 
-                            {user?.is_org_admin && canAccess('/organization-admin') && (
-                                <button
-                                    onClick={() => {
-                                        setCurrentView('organizationAdmin');
-                                    }}
-                                    className={`flex items-center w-full px-3.5 py-2 text-sm font-medium rounded-lg transition-all mb-2 cursor-pointer ${currentView === 'organizationAdmin'
-                                        ? 'bg-blue-600/25 text-blue-200 border border-blue-500/50 shadow-sm'
-                                        : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
-                                >
-                                    <ShieldCheck className="w-4 h-4 mr-3 text-emerald-400" />
-                                    Organization Admin
-                                </button>
-                            )}
+                                {user?.is_org_admin && canAccess('/organization-admin') && (
+                                    <button
+                                        onClick={() => {
+                                            setCurrentView('organizationAdmin');
+                                        }}
+                                        className={`flex items-center w-full px-3.5 py-2 text-sm font-medium rounded-lg transition-all mb-1 cursor-pointer ${currentView === 'organizationAdmin'
+                                            ? 'bg-blue-600/25 text-blue-200 border border-blue-500/50 shadow-sm'
+                                            : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
+                                    >
+                                        <ShieldCheck className="w-4 h-4 mr-3 text-emerald-400" />
+                                        Organization Admin
+                                    </button>
+                                )}
 
-                            {/* Super Admin Nav Section */}
-                            {isSuperAdmin && (
-                                <div className="my-3 pt-3 border-t border-purple-500/20">
-                                    <p className="px-2 mb-2 text-[10px] font-bold text-purple-400 uppercase tracking-wider">Super Admin</p>
+                                {/* Super Admin Nav Section */}
+                                {isSuperAdmin && (
+                                    <div className="my-3 pt-3 border-t border-purple-500/20">
+                                        <p className="px-2 mb-2 text-[10px] font-bold text-purple-400 uppercase tracking-wider">Super Admin</p>
+                                        <button
+                                            onClick={() => navigate('/superadmin/dashboard')}
+                                            className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-1.5 ${location.pathname === '/superadmin/dashboard' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-purple-300 hover:bg-purple-900/30'}`}
+                                        >
+                                            <ShieldCheck className="w-4 h-4 mr-3 text-purple-400" />
+                                            Dashboard
+                                        </button>
+                                        <button
+                                            onClick={() => navigate('/superadmin/requests')}
+                                            className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-1.5 ${location.pathname === '/superadmin/requests' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-purple-300 hover:bg-purple-900/30'}`}
+                                        >
+                                            <FileCheck className="w-4 h-4 mr-3 text-purple-400" />
+                                            Agent Capacity Requests
+                                        </button>
+                                        <button
+                                            onClick={() => navigate('/superadmin/organizations')}
+                                            className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-1.5 ${location.pathname === '/superadmin/organizations' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-purple-300 hover:bg-purple-900/30'}`}
+                                        >
+                                            <Users className="w-4 h-4 mr-3 text-purple-400" />
+                                            Organizations
+                                        </button>
+                                        <button
+                                            onClick={() => navigate('/superadmin/global-billing')}
+                                            className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-1.5 ${location.pathname === '/superadmin/global-billing' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-purple-300 hover:bg-purple-900/30'}`}
+                                        >
+                                            <CreditCard className="w-4 h-4 mr-3 text-purple-400" />
+                                            Global Billing Dashboard
+                                        </button>
+                                        <button
+                                            onClick={() => navigate('/superadmin/tokenops')}
+                                            className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-1.5 ${location.pathname === '/superadmin/tokenops' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-purple-300 hover:bg-purple-900/30'}`}
+                                        >
+                                            <Coins className="w-4 h-4 mr-3 text-purple-400" />
+                                            TokenOps Hub
+                                        </button>
+                                        <button
+                                            onClick={() => navigate('/superadmin/roles')}
+                                            className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-1.5 ${location.pathname === '/superadmin/roles' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-purple-300 hover:bg-purple-900/30'}`}
+                                        >
+                                            <ShieldCheck className="w-4 h-4 mr-3 text-purple-400" />
+                                            Roles & Permissions
+                                        </button>
+                                        <button
+                                            onClick={() => navigate('/superadmin/logs')}
+                                            className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-1.5 ${location.pathname === '/superadmin/logs' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-purple-300 hover:bg-purple-900/30'}`}
+                                        >
+                                            <Activity className="w-4 h-4 mr-3 text-purple-400" />
+                                            Audit Logs
+                                        </button>
+                                    </div>
+                                )}
+                                {(user?.is_org_admin || canAccess('/billing')) && (
                                     <button
-                                        onClick={() => navigate('/superadmin/dashboard')}
-                                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-1.5 ${location.pathname === '/superadmin/dashboard' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-purple-300 hover:bg-purple-900/30'}`}
+                                        onClick={() => {
+                                            navigate('/billing');
+                                        }}
+                                        className={`flex items-center w-full px-3.5 py-2 text-sm font-medium rounded-lg transition-all mb-1 cursor-pointer ${location.pathname === '/billing'
+                                            ? 'bg-blue-600/25 text-blue-200 border border-blue-500/50 shadow-sm'
+                                            : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
                                     >
-                                        <ShieldCheck className="w-4 h-4 mr-3 text-purple-400" />
-                                        Dashboard
+                                        <CreditCard className="w-4 h-4 mr-3 text-amber-400" />
+                                        Billing & Activity
                                     </button>
+                                )}
+                                {canAccess('/governance-management') && (
                                     <button
-                                        onClick={() => navigate('/superadmin/requests')}
-                                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-1.5 ${location.pathname === '/superadmin/requests' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-purple-300 hover:bg-purple-900/30'}`}
+                                        onClick={() => {
+                                            navigate('/governance-management');
+                                        }}
+                                        className={`flex items-center w-full px-3.5 py-2 text-sm font-medium rounded-lg transition-all mb-1 cursor-pointer ${location.pathname === '/governance-management'
+                                            ? 'bg-blue-600/25 text-blue-200 border border-blue-500/50 shadow-sm'
+                                            : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
                                     >
-                                        <FileCheck className="w-4 h-4 mr-3 text-purple-400" />
-                                        Agent Capacity Requests
+                                        <FileCheck className="w-4 h-4 mr-3 text-indigo-400" />
+                                        Governance
                                     </button>
+                                )}
+                                {canAccess('/agents') && (
                                     <button
-                                        onClick={() => navigate('/superadmin/organizations')}
-                                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-1.5 ${location.pathname === '/superadmin/organizations' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-purple-300 hover:bg-purple-900/30'}`}
+                                        onClick={() => {
+                                            navigate('/agents');
+                                        }}
+                                        className={`flex items-center w-full px-3.5 py-2 text-sm font-medium rounded-lg transition-all mb-1 cursor-pointer ${location.pathname.startsWith('/agents')
+                                            ? 'bg-blue-600/25 text-blue-200 border border-blue-500/50 shadow-sm'
+                                            : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
                                     >
-                                        <Users className="w-4 h-4 mr-3 text-purple-400" />
-                                        Organizations
+                                        <Users className="w-4 h-4 mr-3 text-sky-400" />
+                                        Agents
                                     </button>
+                                )}
+                                {canAccess('/plugins') && (
                                     <button
-                                        onClick={() => navigate('/superadmin/global-billing')}
-                                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-1.5 ${location.pathname === '/superadmin/global-billing' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-purple-300 hover:bg-purple-900/30'}`}
+                                        onClick={() => {
+                                            navigate('/plugins');
+                                        }}
+                                        className={`flex items-center w-full px-3.5 py-2 text-sm font-medium rounded-lg transition-all mb-1 cursor-pointer ${location.pathname.startsWith('/plugins')
+                                            ? 'bg-blue-600/25 text-blue-200 border border-blue-500/50 shadow-sm'
+                                            : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
                                     >
-                                        <CreditCard className="w-4 h-4 mr-3 text-purple-400" />
-                                        Global Billing Dashboard
+                                        <Globe className="w-4 h-4 mr-3 text-purple-400" />
+                                        Plugins
                                     </button>
-                                    <button
-                                        onClick={() => navigate('/superadmin/tokenops')}
-                                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-1.5 ${location.pathname === '/superadmin/tokenops' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-purple-300 hover:bg-purple-900/30'}`}
-                                    >
-                                        <Coins className="w-4 h-4 mr-3 text-purple-400" />
-                                        TokenOps Hub
-                                    </button>
-                                    <button
-                                        onClick={() => navigate('/superadmin/roles')}
-                                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-1.5 ${location.pathname === '/superadmin/roles' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-purple-300 hover:bg-purple-900/30'}`}
-                                    >
-                                        <ShieldCheck className="w-4 h-4 mr-3 text-purple-400" />
-                                        Roles & Permissions
-                                    </button>
-                                    <button
-                                        onClick={() => navigate('/superadmin/logs')}
-                                        className={`flex items-center w-full px-4 py-2 text-sm font-medium rounded-md transition-colors mb-1.5 ${location.pathname === '/superadmin/logs' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40' : 'text-purple-300 hover:bg-purple-900/30'}`}
-                                    >
-                                        <Activity className="w-4 h-4 mr-3 text-purple-400" />
-                                        Audit Logs
-                                    </button>
-                                </div>
-                            )}
-                            {(user?.is_org_admin || canAccess('/billing')) && (
+                                )}
+
+                                {/* Support Tickets - Cleanly positioned as the last navigation item */}
                                 <button
                                     onClick={() => {
-                                        navigate('/billing');
+                                        navigate('/tickets');
                                     }}
-                                    className={`flex items-center w-full px-3.5 py-2 text-sm font-medium rounded-lg transition-all mb-2 cursor-pointer ${location.pathname === '/billing'
-                                        ? 'bg-blue-600/25 text-blue-200 border border-blue-500/50 shadow-sm'
+                                    className={`flex items-center justify-between w-full px-3.5 py-2 text-sm font-medium rounded-lg transition-all mb-1 cursor-pointer ${location.pathname === '/tickets' || location.pathname === '/superadmin/tickets'
+                                        ? 'bg-purple-600/25 text-purple-200 border border-purple-500/50 shadow-sm'
                                         : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
                                 >
-                                    <CreditCard className="w-4 h-4 mr-3 text-amber-400" />
-                                    Billing & Activity
+                                    <div className="flex items-center min-w-0">
+                                        <LifeBuoy className="w-4 h-4 mr-3 text-pink-400 flex-shrink-0" />
+                                        <span className="truncate">Support Tickets</span>
+                                    </div>
+                                    {unreadTicketsCount > 0 && (
+                                        <span className="px-1.5 py-0.5 text-[10px] font-extrabold rounded-full bg-rose-500 text-white shadow-sm shadow-rose-500/50 animate-pulse">
+                                            {unreadTicketsCount}
+                                        </span>
+                                    )}
                                 </button>
-                            )}
-                            {canAccess('/governance-management') && (
-                                <button
-                                    onClick={() => {
-                                        navigate('/governance-management');
-                                    }}
-                                    className={`flex items-center w-full px-3.5 py-2 text-sm font-medium rounded-lg transition-all mb-2 cursor-pointer ${location.pathname === '/governance-management'
-                                        ? 'bg-blue-600/25 text-blue-200 border border-blue-500/50 shadow-sm'
-                                        : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
-                                >
-                                    <FileCheck className="w-4 h-4 mr-3 text-indigo-400" />
-                                    Governance
-                                </button>
-                            )}
-                            {canAccess('/agents') && (
-                                <button
-                                    onClick={() => {
-                                        navigate('/agents');
-                                    }}
-                                    className={`flex items-center w-full px-3.5 py-2 text-sm font-medium rounded-lg transition-all mb-2 cursor-pointer ${location.pathname.startsWith('/agents')
-                                        ? 'bg-blue-600/25 text-blue-200 border border-blue-500/50 shadow-sm'
-                                        : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
-                                >
-                                    <Users className="w-4 h-4 mr-3 text-sky-400" />
-                                    Agents
-                                </button>
-                            )}
-                            {canAccess('/plugins') && (
-                                <button
-                                    onClick={() => {
-                                        navigate('/plugins');
-                                    }}
-                                    className={`flex items-center w-full px-3.5 py-2 text-sm font-medium rounded-lg transition-all mb-2 cursor-pointer ${location.pathname.startsWith('/plugins')
-                                        ? 'bg-blue-600/25 text-blue-200 border border-blue-500/50 shadow-sm'
-                                        : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
-                                >
-                                    <Globe className="w-4 h-4 mr-3 text-purple-400" />
-                                    Plugins
-                                </button>
-                            )}
+                            </div>
                         </div>
                     </div>
                 </div>

@@ -963,4 +963,60 @@ class DailyBillingEmailLog(Base):
     cc_recipients = Column(Text, nullable=True)  # Comma-separated list of CC'd emails
 
 
+class SupportTicket(Base):
+    """
+    Support ticket raised by an End User or Org Admin for technical assistance,
+    capacity allocation, billing, or platform support.
+    """
+    __tablename__ = "support_tickets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticket_code = Column(String(50), unique=True, index=True, nullable=False)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=False)
+    category = Column(String(100), nullable=False, index=True)  # e.g. "Agent Allocation", "Technical Issue", etc.
+    priority = Column(String(50), nullable=False, default="MEDIUM", index=True)  # "LOW", "MEDIUM", "HIGH", "URGENT"
+    status = Column(String(50), nullable=False, default="OPEN", index=True)      # "OPEN", "IN_PROGRESS", "AWAITING_INFO", "RESOLVED", "CLOSED"
+    
+    organization_name = Column(String, index=True, nullable=True)
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    assigned_to_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    
+    resolution_summary = Column(Text, nullable=True)
+    resolved_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    
+    last_message_at = Column(DateTime, default=datetime.utcnow, index=True)
+    unread_by_admin = Column(Boolean, default=True)
+    unread_by_user = Column(Boolean, default=False)
+    
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    created_by = relationship("User", foreign_keys=[created_by_user_id])
+    assigned_to = relationship("User", foreign_keys=[assigned_to_user_id])
+    resolved_by = relationship("User", foreign_keys=[resolved_by_user_id])
+    messages = relationship("TicketMessage", back_populates="ticket", cascade="all, delete-orphan", order_by="TicketMessage.created_at.asc()")
+
+
+class TicketMessage(Base):
+    """
+    Discussion message or admin internal note within a SupportTicket thread.
+    """
+    __tablename__ = "ticket_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticket_id = Column(Integer, ForeignKey("support_tickets.id", ondelete="CASCADE"), nullable=False, index=True)
+    sender_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    
+    message = Column(Text, nullable=False)
+    is_internal_note = Column(Boolean, default=False)
+    attachments = Column(JSON, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    ticket = relationship("SupportTicket", back_populates="messages")
+    sender = relationship("User", foreign_keys=[sender_user_id])
+
+
 
