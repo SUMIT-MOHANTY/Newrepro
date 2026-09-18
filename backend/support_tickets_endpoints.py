@@ -15,7 +15,7 @@ from fastapi import (
     WebSocketDisconnect,
     status,
 )
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 import auth
@@ -35,7 +35,9 @@ class TicketConnectionManager:
 
     def __init__(self):
         self.active_connections: Dict[int, List[WebSocket]] = {}
-        self.hub_connections: List[WebSocket] = []
+        # Map websocket to user metadata dict for scoped hub broadcasting:
+        # {websocket: {"user_id": int, "email": str, "is_super_admin": bool, "is_org_admin": bool, "organization_name": Optional[str]}}
+        self.hub_connections: Dict[WebSocket, dict] = {}
 
     async def connect(self, websocket: WebSocket, ticket_id: int):
         await websocket.accept()
@@ -52,14 +54,14 @@ class TicketConnectionManager:
                 del self.active_connections[ticket_id]
         logger.info(f"[TicketWS] Disconnected from ticket #{ticket_id}")
 
-    async def connect_hub(self, websocket: WebSocket):
+    async def connect_hub(self, websocket: WebSocket, user_meta: dict):
         await websocket.accept()
-        self.hub_connections.append(websocket)
-        logger.info(f"[TicketWS] Connected to Hub WS. Total listeners: {len(self.hub_connections)}")
+        self.hub_connections[websocket] = user_meta
+        logger.info(f"[TicketWS] Connected to Hub WS (user={user_meta.get('email')}). Total listeners: {len(self.hub_connections)}")
 
     def disconnect_hub(self, websocket: WebSocket):
         if websocket in self.hub_connections:
-            self.hub_connections.remove(websocket)
+            del self.hub_connections[websocket]
         logger.info(f"[TicketWS] Disconnected from Hub WS. Remaining: {len(self.hub_connections)}")
 
     async def broadcast_to_ticket(self, ticket_id: int, message_payload: dict):
@@ -76,15 +78,48 @@ class TicketConnectionManager:
         for dead in dead_connections:
             self.disconnect(dead, ticket_id)
 
-    async def broadcast_hub(self, event_payload: dict):
-        """Broadcasts event payload to all hub clients."""
+    async def broadcast_hub(self, event_payload: dict, ticket_meta: Optional[dict] = None):
+        """
+        Broadcasts event payload to authorized hub clients based on RBAC rules:
+        - If ticket_meta is provided:
+          - Super Admin receives all events.
+          - Creator of ticket always receives events for their ticket.
+          - If ticket was raised by Org Admin: Only Super Admin and creator receive it (no other users/org admins).
+          - If ticket was raised by Regular User: Org Admins of that org and Super Admin receive it (no other users).
+        """
         dead_connections = []
-        for connection in list(self.hub_connections):
+        for connection, user_meta in list(self.hub_connections.items()):
+            if ticket_meta:
+                can_see = False
+                is_super = user_meta.get("is_super_admin", False)
+                user_id = user_meta.get("user_id")
+                is_org_adm = user_meta.get("is_org_admin", False)
+                user_org = (user_meta.get("organization_name") or "").strip().lower()
+
+                creator_id = ticket_meta.get("created_by_user_id")
+                creator_is_admin = ticket_meta.get("creator_is_admin", False)
+                ticket_org = (ticket_meta.get("organization_name") or "").strip().lower()
+
+                if is_super or user_id == creator_id:
+                    can_see = True
+                elif creator_is_admin:
+                    # Raised by Org Admin: Confidential between creator and Super Admin
+                    can_see = False
+                elif is_org_adm and user_org and user_org == ticket_org:
+                    # Raised by regular user: Org Admin of the same organization can see
+                    can_see = True
+                else:
+                    can_see = False
+
+                if not can_see:
+                    continue
+
             try:
                 await connection.send_json(event_payload)
             except Exception as e:
                 logger.warning(f"[TicketWS] Error broadcasting to hub: {e}")
                 dead_connections.append(connection)
+
         for dead in dead_connections:
             self.disconnect_hub(dead)
 
@@ -129,22 +164,85 @@ def _user_to_sender_info(user: Optional[models.User]) -> Optional[schemas.Ticket
     )
 
 
-def _check_ticket_access(ticket: models.SupportTicket, current_user: models.User) -> None:
-    """Ensures caller has permission to view/interact with the ticket."""
+def _can_user_resolve_or_change_status(ticket: models.SupportTicket, current_user: models.User) -> bool:
+    """
+    Returns True if current_user has permission to resolve ticket or change its status/priority:
+    1. Super Admin: Can resolve and change status for all tickets.
+    2. Regular User: CANNOT resolve or change status (access limited to Org Admin & Super Admin).
+    3. Org Admin:
+       - If the ticket was raised by an Org Admin (or Super Admin), ONLY Super Admin can resolve or change status.
+         Org Admin CANNOT resolve or change status.
+       - If the ticket was raised by a regular user in the same organization, Org Admin CAN resolve or change status.
+    """
     if getattr(current_user, "is_super_admin", False):
-        return
+        return True
+
+    if not getattr(current_user, "is_org_admin", False):
+        return False
+
+    # Current user is an Org Admin. Check if ticket was created by an Org Admin or Super Admin:
+    creator = ticket.created_by
+    creator_is_admin = False
+    if creator:
+        creator_is_admin = bool(getattr(creator, "is_org_admin", False) or getattr(creator, "is_super_admin", False))
+    elif ticket.created_by_user_id == current_user.id:
+        creator_is_admin = True
+
+    if creator_is_admin:
+        # Ticket was raised by an Org Admin. Only Super Admin can resolve or change status.
+        return False
+
+    # Ticket was raised by a regular user. Org Admin can resolve/change status if same org.
     user_org = (getattr(current_user, "organization_name", None) or "").strip().lower()
     ticket_org = (ticket.organization_name or "").strip().lower()
+    return bool(user_org and user_org == ticket_org)
 
-    if getattr(current_user, "is_org_admin", False):
-        if user_org and user_org == ticket_org:
-            return
-        if ticket.created_by_user_id == current_user.id:
-            return
-        raise HTTPException(status_code=403, detail="Not authorized to access tickets from another organization")
 
-    if ticket.created_by_user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to access this ticket")
+def _check_ticket_access(ticket: models.SupportTicket, current_user: models.User) -> None:
+    """
+    Ensures caller has permission to view/interact with the ticket:
+    - Super Admin: Full access to all tickets.
+    - Ticket Creator: Can access their own tickets.
+    - If raised by Org Admin: Visible ONLY to Super Admin and the Org Admin creator. Others cannot see.
+    - If raised by Regular User: Visible ONLY to Super Admin, the user creator, and Org Admins of that organization.
+      Other users cannot see.
+    """
+    if getattr(current_user, "is_super_admin", False):
+        return
+
+    # Creator can always view their own ticket
+    if ticket.created_by_user_id == current_user.id:
+        return
+
+    # Non-creator user trying to access
+    creator = ticket.created_by
+    creator_is_admin = False
+    if creator:
+        creator_is_admin = bool(getattr(creator, "is_org_admin", False) or getattr(creator, "is_super_admin", False))
+
+    if creator_is_admin:
+        # Ticket raised by Org Admin: Confidential between creator and Super Admin
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access this ticket. Tickets raised by Organization Admins are confidential to Super Admins."
+        )
+
+    # Ticket raised by a regular user.
+    # Regular users cannot view other regular users' tickets
+    if not getattr(current_user, "is_org_admin", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access this ticket."
+        )
+
+    # Org Admin can only view regular users' tickets in their own organization
+    user_org = (getattr(current_user, "organization_name", None) or "").strip().lower()
+    ticket_org = (ticket.organization_name or "").strip().lower()
+    if not user_org or user_org != ticket_org:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access tickets from another organization."
+        )
 
 
 def _build_ticket_response(
@@ -154,11 +252,13 @@ def _build_ticket_response(
 ) -> schemas.TicketResponse:
     is_admin = bool(getattr(current_user, "is_super_admin", False) or getattr(current_user, "is_org_admin", False))
 
-    # Unread computation
-    if is_admin:
-        unread = bool(ticket.unread_by_admin)
-    else:
+    # Unread computation:
+    # If current user is the creator of the ticket, they care about unread_by_user (messages from support).
+    # If current user is an admin viewing someone else's ticket, they care about unread_by_admin (messages from requester).
+    if current_user.id == ticket.created_by_user_id:
         unread = bool(ticket.unread_by_user)
+    else:
+        unread = bool(ticket.unread_by_admin)
 
     msg_responses = []
     if include_messages and ticket.messages:
@@ -178,6 +278,9 @@ def _build_ticket_response(
                     created_at=m.created_at
                 )
             )
+
+    can_change = _can_user_resolve_or_change_status(ticket, current_user)
+    can_res = can_change and (ticket.status or "").upper() not in ("RESOLVED", "CLOSED")
 
     return schemas.TicketResponse(
         id=ticket.id,
@@ -200,6 +303,8 @@ def _build_ticket_response(
         unread=unread,
         message_count=len(msg_responses),
         messages=msg_responses,
+        can_change_status=can_change,
+        can_resolve=can_res,
         created_at=ticket.created_at,
         updated_at=ticket.updated_at
     )
@@ -233,13 +338,21 @@ def get_tickets(
         if organization:
             query = query.filter(func.lower(models.SupportTicket.organization_name) == organization.strip().lower())
     elif is_org_adm and user_org:
-        query = query.filter(
+        # Org Admin sees:
+        # 1. Tickets they themselves created
+        # 2. Tickets created by regular users in their org (not tickets created by other org admins or super admins)
+        query = query.join(models.User, models.SupportTicket.created_by_user_id == models.User.id).filter(
             or_(
-                func.lower(models.SupportTicket.organization_name) == user_org.lower(),
-                models.SupportTicket.created_by_user_id == current_user.id
+                models.SupportTicket.created_by_user_id == current_user.id,
+                and_(
+                    func.lower(models.SupportTicket.organization_name) == user_org.lower(),
+                    models.User.is_org_admin.is_(False),
+                    models.User.is_super_admin.is_(False)
+                )
             )
         )
     else:
+        # Regular user sees only their own tickets
         query = query.filter(models.SupportTicket.created_by_user_id == current_user.id)
 
     # Filters
@@ -281,10 +394,14 @@ def get_ticket_stats(
     if is_super:
         pass
     elif is_org_adm and user_org:
-        query = query.filter(
+        query = query.join(models.User, models.SupportTicket.created_by_user_id == models.User.id).filter(
             or_(
-                func.lower(models.SupportTicket.organization_name) == user_org.lower(),
-                models.SupportTicket.created_by_user_id == current_user.id
+                models.SupportTicket.created_by_user_id == current_user.id,
+                and_(
+                    func.lower(models.SupportTicket.organization_name) == user_org.lower(),
+                    models.User.is_org_admin.is_(False),
+                    models.User.is_super_admin.is_(False)
+                )
             )
         )
     else:
@@ -310,11 +427,11 @@ def get_ticket_stats(
         if (t.priority or "").upper() == "URGENT" and st not in ("RESOLVED", "CLOSED"):
             stats.urgent += 1
 
-        if is_super or is_org_adm:
-            if t.unread_by_admin:
+        if current_user.id == t.created_by_user_id:
+            if t.unread_by_user:
                 stats.unread_messages += 1
         else:
-            if t.unread_by_user:
+            if t.unread_by_admin:
                 stats.unread_messages += 1
 
     return stats
@@ -334,19 +451,31 @@ def get_unread_tickets_count(
     if is_super:
         pass
     elif is_org_adm and user_org:
-        query = query.filter(
+        query = query.join(models.User, models.SupportTicket.created_by_user_id == models.User.id).filter(
             or_(
-                func.lower(models.SupportTicket.organization_name) == user_org.lower(),
-                models.SupportTicket.created_by_user_id == current_user.id
+                models.SupportTicket.created_by_user_id == current_user.id,
+                and_(
+                    func.lower(models.SupportTicket.organization_name) == user_org.lower(),
+                    models.User.is_org_admin.is_(False),
+                    models.User.is_super_admin.is_(False)
+                )
             )
         )
     else:
         query = query.filter(models.SupportTicket.created_by_user_id == current_user.id)
 
-    if is_super or is_org_adm:
-        query = query.filter(models.SupportTicket.unread_by_admin == True)
-    else:
-        query = query.filter(models.SupportTicket.unread_by_user == True)
+    query = query.filter(
+        or_(
+            and_(
+                models.SupportTicket.created_by_user_id == current_user.id,
+                models.SupportTicket.unread_by_user.is_(True)
+            ),
+            and_(
+                models.SupportTicket.created_by_user_id != current_user.id,
+                models.SupportTicket.unread_by_admin.is_(True)
+            )
+        )
+    )
 
     count = query.count()
     return {"unread_count": count}
@@ -359,6 +488,12 @@ async def create_ticket(
     db: Session = Depends(get_db)
 ):
     """Raises a new support ticket and creates the initial opening message in the conversation thread."""
+    if getattr(current_user, "is_super_admin", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Super Administrators oversee and resolve tickets; they cannot raise tickets."
+        )
+
     user_org = (getattr(current_user, "organization_name", None) or "").strip() or None
     ticket_code = _generate_ticket_code(db)
 
@@ -391,10 +526,17 @@ async def create_ticket(
     db.refresh(ticket)
 
     resp = _build_ticket_response(ticket, current_user, include_messages=True)
+    creator_is_admin = bool(getattr(current_user, "is_org_admin", False) or getattr(current_user, "is_super_admin", False))
+    ticket_meta = {
+        "ticket_id": ticket.id,
+        "created_by_user_id": ticket.created_by_user_id,
+        "creator_is_admin": creator_is_admin,
+        "organization_name": ticket.organization_name
+    }
     await ticket_ws_manager.broadcast_hub({
         "type": "TICKET_CREATED",
         "ticket": resp.model_dump(mode="json")
-    })
+    }, ticket_meta=ticket_meta)
 
     return resp
 
@@ -413,11 +555,10 @@ def get_ticket_detail(
     _check_ticket_access(ticket, current_user)
 
     # Mark as read
-    is_admin = bool(getattr(current_user, "is_super_admin", False) or getattr(current_user, "is_org_admin", False))
-    if is_admin:
-        ticket.unread_by_admin = False
-    else:
+    if current_user.id == ticket.created_by_user_id:
         ticket.unread_by_user = False
+    else:
+        ticket.unread_by_admin = False
     db.commit()
     db.refresh(ticket)
 
@@ -431,34 +572,39 @@ async def update_ticket(
     current_user: Annotated[models.User, Depends(auth.get_current_user)],
     db: Session = Depends(get_db)
 ):
-    """Updates status, priority, or assignee for the ticket."""
+    """Updates status, priority, or assignee for the ticket with RBAC verification."""
     ticket = db.query(models.SupportTicket).filter(models.SupportTicket.id == ticket_id).first()
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
 
     _check_ticket_access(ticket, current_user)
 
-    is_admin = bool(getattr(current_user, "is_super_admin", False) or getattr(current_user, "is_org_admin", False))
-
-    if payload.status:
+    if payload.status is not None:
+        if not _can_user_resolve_or_change_status(ticket, current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to change the status of this ticket. If raised by an Organization Admin, only Super Admin can change status."
+            )
         target_status = payload.status.strip().upper()
-        # Non-admins can only resolve/close their own tickets or re-open them
-        if not is_admin:
-            if target_status not in ("RESOLVED", "CLOSED", "OPEN"):
-                raise HTTPException(status_code=403, detail="Users can only mark tickets as Resolved, Closed, or Open")
         ticket.status = target_status
         if target_status in ("RESOLVED", "CLOSED") and not ticket.resolved_at:
             ticket.resolved_at = datetime.utcnow()
             ticket.resolved_by_user_id = current_user.id
 
-    if payload.priority:
-        if not is_admin:
-            raise HTTPException(status_code=403, detail="Only administrators can adjust ticket priority")
+    if payload.priority is not None:
+        if not _can_user_resolve_or_change_status(ticket, current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to adjust ticket priority."
+            )
         ticket.priority = payload.priority.strip().upper()
 
     if payload.assigned_to_user_id is not None:
-        if not is_admin:
-            raise HTTPException(status_code=403, detail="Only administrators can assign tickets")
+        if not _can_user_resolve_or_change_status(ticket, current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to assign tickets."
+            )
         ticket.assigned_to_user_id = payload.assigned_to_user_id or None
 
     ticket.updated_at = datetime.utcnow()
@@ -489,6 +635,12 @@ async def resolve_ticket(
 
     _check_ticket_access(ticket, current_user)
 
+    if not _can_user_resolve_or_change_status(ticket, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to resolve this ticket. If raised by an Organization Admin, only Super Admin can resolve it."
+        )
+
     summary = (payload.resolution_summary or "").strip() or "Issue marked as resolved."
 
     ticket.status = "RESOLVED"
@@ -515,6 +667,22 @@ async def resolve_ticket(
         "ticket": resp.model_dump(mode="json"),
         "resolution_summary": summary
     })
+
+    creator = ticket.created_by
+    creator_is_admin = bool(
+        creator and (getattr(creator, "is_org_admin", False) or getattr(creator, "is_super_admin", False))
+    )
+    ticket_meta = {
+        "ticket_id": ticket.id,
+        "created_by_user_id": ticket.created_by_user_id,
+        "creator_is_admin": creator_is_admin,
+        "organization_name": ticket.organization_name
+    }
+    await ticket_ws_manager.broadcast_hub({
+        "type": "TICKET_RESOLVED",
+        "ticket_id": ticket.id,
+        "resolution_summary": summary
+    }, ticket_meta=ticket_meta)
 
     return resp
 
@@ -550,12 +718,12 @@ async def post_ticket_message(
     ticket.last_message_at = datetime.utcnow()
     ticket.updated_at = datetime.utcnow()
 
-    if is_admin:
-        ticket.unread_by_user = True
-    else:
+    if current_user.id == ticket.created_by_user_id:
         if ticket.status == "AWAITING_INFO":
             ticket.status = "IN_PROGRESS"
         ticket.unread_by_admin = True
+    else:
+        ticket.unread_by_user = True
 
     db.commit()
     db.refresh(new_msg)
@@ -579,13 +747,23 @@ async def post_ticket_message(
     })
 
     # Broadcast to Hub listeners for instant cross-ticket notification
+    creator = ticket.created_by
+    creator_is_admin = bool(
+        creator and (getattr(creator, "is_org_admin", False) or getattr(creator, "is_super_admin", False))
+    )
+    ticket_meta = {
+        "ticket_id": ticket.id,
+        "created_by_user_id": ticket.created_by_user_id,
+        "creator_is_admin": creator_is_admin,
+        "organization_name": ticket.organization_name
+    }
     await ticket_ws_manager.broadcast_hub({
         "type": "NEW_MESSAGE",
         "ticket_id": ticket_id,
         "ticket_code": ticket.ticket_code,
         "ticket_title": ticket.title,
         "message": msg_resp.model_dump(mode="json")
-    })
+    }, ticket_meta=ticket_meta)
 
     return msg_resp
 
@@ -621,7 +799,14 @@ async def hub_websocket(
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
-    await ticket_ws_manager.connect_hub(websocket)
+    user_meta = {
+        "user_id": user.id,
+        "email": user.email,
+        "is_super_admin": bool(getattr(user, "is_super_admin", False)),
+        "is_org_admin": bool(getattr(user, "is_org_admin", False)),
+        "organization_name": user.organization_name
+    }
+    await ticket_ws_manager.connect_hub(websocket, user_meta)
 
     try:
         await websocket.send_json({
