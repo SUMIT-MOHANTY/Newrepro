@@ -147,50 +147,6 @@ def get_ticket_stats(
     return stats
 
 
-@router.get("/unread-count")
-def get_unread_tickets_count(
-    current_user: Annotated[models.User, Depends(get_current_user)],
-    db: Session = Depends(get_db),
-):
-    """Fast endpoint for sidebar navigation badge."""
-    is_super = bool(getattr(current_user, "is_super_admin", False))
-    is_org_adm = bool(getattr(current_user, "is_org_admin", False))
-    user_org = (getattr(current_user, "organization_name", None) or "").strip()
-
-    query = db.query(SupportTicket)
-    if is_super:
-        pass
-    elif is_org_adm and user_org:
-        query = query.join(models.User, SupportTicket.created_by_user_id == models.User.id).filter(
-            or_(
-                SupportTicket.created_by_user_id == current_user.id,
-                and_(
-                    func.lower(SupportTicket.organization_name) == user_org.lower(),
-                    models.User.is_org_admin.is_(False),
-                    models.User.is_super_admin.is_(False),
-                ),
-            )
-        )
-    else:
-        query = query.filter(SupportTicket.created_by_user_id == current_user.id)
-
-    query = query.filter(
-        or_(
-            and_(
-                SupportTicket.created_by_user_id == current_user.id,
-                SupportTicket.unread_by_user.is_(True),
-            ),
-            and_(
-                SupportTicket.created_by_user_id != current_user.id,
-                SupportTicket.unread_by_admin.is_(True),
-            ),
-        )
-    )
-
-    count = query.count()
-    return {"unread_count": count}
-
-
 @router.get("", response_model=List[TicketResponse])
 def get_tickets(
     current_user: Annotated[models.User, Depends(get_current_user)],
@@ -238,6 +194,117 @@ async def create_ticket(
     return resp
 
 
+def _check_ticket_access(ticket: SupportTicket, current_user: models.User) -> None:
+    """
+    Ensures caller has permission to view/interact with the ticket:
+    - Super Admin: Full access to all tickets.
+    - Ticket Creator: Can access their own tickets.
+    - If raised by Org Admin: Visible ONLY to Super Admin and the Org Admin creator.
+    - If raised by Regular User: Visible ONLY to Super Admin, the creator, and Org Admins of that organization.
+    """
+    if getattr(current_user, "is_super_admin", False):
+        return
+
+    if ticket.created_by_user_id == current_user.id:
+        return
+
+    creator = ticket.created_by
+    creator_is_admin = False
+    if creator:
+        creator_is_admin = bool(getattr(creator, "is_org_admin", False) or getattr(creator, "is_super_admin", False))
+
+    if creator_is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access this ticket. Tickets raised by Organization Admins are confidential to Super Admins.",
+        )
+
+    if not getattr(current_user, "is_org_admin", False):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+
+    user_org = (getattr(current_user, "organization_name", None) or "").strip().lower()
+    ticket_org = (ticket.organization_name or "").strip().lower()
+    if not user_org or user_org != ticket_org:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access tickets from another organization.",
+        )
+
+
+def _can_user_resolve_or_change_status(ticket: SupportTicket, current_user: models.User) -> bool:
+    """
+    Determines whether caller can resolve or alter ticket status/priority:
+    - Super Admin can change anything.
+    - If raised by Org Admin, only Super Admin can resolve or modify status.
+    - If raised by regular user, Org Admin in same org can resolve/modify.
+    - Creator user can close/resolve their own ticket.
+    """
+    if getattr(current_user, "is_super_admin", False):
+        return True
+
+    creator = ticket.created_by
+    creator_is_admin = False
+    if creator:
+        creator_is_admin = bool(getattr(creator, "is_org_admin", False) or getattr(creator, "is_super_admin", False))
+    elif ticket.created_by_user_id == current_user.id:
+        creator_is_admin = bool(getattr(current_user, "is_org_admin", False))
+
+    if creator_is_admin:
+        # Org Admin raised tickets can only be resolved/modified by Super Admin
+        return False
+
+    if getattr(current_user, "is_org_admin", False):
+        user_org = (getattr(current_user, "organization_name", None) or "").strip().lower()
+        ticket_org = (ticket.organization_name or "").strip().lower()
+        return bool(user_org and user_org == ticket_org)
+
+    return ticket.created_by_user_id == current_user.id
+
+
+@router.get("/unread-count")
+def get_unread_tickets_count(
+    current_user: Annotated[models.User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+):
+    """Fast endpoint for sidebar navigation badge."""
+    is_super = bool(getattr(current_user, "is_super_admin", False))
+    is_org_adm = bool(getattr(current_user, "is_org_admin", False))
+    user_org = (getattr(current_user, "organization_name", None) or "").strip()
+
+    query = db.query(models.SupportTicket)
+    if is_super:
+        pass
+    elif is_org_adm and user_org:
+        query = query.join(models.User, models.SupportTicket.created_by_user_id == models.User.id).filter(
+            or_(
+                models.SupportTicket.created_by_user_id == current_user.id,
+                and_(
+                    func.lower(models.SupportTicket.organization_name) == user_org.lower(),
+                    models.User.is_org_admin.is_(False),
+                    models.User.is_super_admin.is_(False),
+                ),
+            )
+        )
+    else:
+        query = query.filter(models.SupportTicket.created_by_user_id == current_user.id)
+
+    query = query.filter(
+        or_(
+            and_(
+                models.SupportTicket.created_by_user_id == current_user.id,
+                models.SupportTicket.unread_by_user.is_(True),
+            ),
+            and_(
+                models.SupportTicket.created_by_user_id != current_user.id,
+                models.SupportTicket.unread_by_admin.is_(True),
+            ),
+        )
+    )
+
+    count = query.count()
+    return {"unread_count": count}
+
+
 @router.get("/{ticket_id}", response_model=TicketResponse)
 def get_ticket(
     ticket_id: int,
@@ -248,20 +315,10 @@ def get_ticket(
     if not ticket:
         raise HTTPException(status_code=404, detail="Support ticket not found.")
 
+    _check_ticket_access(ticket, current_user)
+
     is_super = bool(getattr(current_user, "is_super_admin", False))
     is_org_adm = bool(getattr(current_user, "is_org_admin", False))
-    user_org = (getattr(current_user, "organization_name", None) or "").strip().lower()
-    ticket_org = (ticket.organization_name or "").strip().lower()
-
-    if not is_super:
-        if is_org_adm:
-            creator_is_admin = bool(getattr(ticket.created_by, "is_super_admin", False)) or bool(getattr(ticket.created_by, "is_org_admin", False))
-            if creator_is_admin and ticket.created_by_user_id != current_user.id:
-                raise HTTPException(status_code=403, detail="Access denied.")
-            if not user_org or user_org != ticket_org:
-                raise HTTPException(status_code=403, detail="Access denied.")
-        elif ticket.created_by_user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="Access denied.")
 
     # Mark unread flag as read
     if is_super or is_org_adm:
@@ -271,6 +328,72 @@ def get_ticket(
     db.commit()
 
     return ticket_service.build_ticket_response(ticket, current_user, include_messages=True)
+
+
+@router.patch("/{ticket_id}", response_model=TicketResponse)
+async def update_ticket(
+    ticket_id: int,
+    payload: TicketUpdate,
+    current_user: Annotated[models.User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+):
+    """Updates status, priority, or assignee for the ticket with RBAC verification."""
+    ticket = ticket_repository.get_with_relations(db, ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Support ticket not found.")
+
+    _check_ticket_access(ticket, current_user)
+
+    if payload.status is not None:
+        if not _can_user_resolve_or_change_status(ticket, current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to change the status of this ticket. If raised by an Organization Admin, only Super Admin can change status.",
+            )
+        target_status = payload.status.strip().upper()
+        ticket.status = target_status
+        if target_status in ("RESOLVED", "CLOSED") and not ticket.resolved_at:
+            ticket.resolved_at = datetime.utcnow()
+            ticket.resolved_by_user_id = current_user.id
+
+    if payload.priority is not None:
+        if not _can_user_resolve_or_change_status(ticket, current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to adjust ticket priority.",
+            )
+        ticket.priority = payload.priority.strip().upper()
+
+    if payload.assigned_to_user_id is not None:
+        if not _can_user_resolve_or_change_status(ticket, current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to assign tickets.",
+            )
+        ticket.assigned_to_user_id = payload.assigned_to_user_id or None
+
+    ticket.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(ticket)
+
+    resp = ticket_service.build_ticket_response(ticket, current_user, include_messages=True)
+    await ticket_ws_manager.broadcast_to_ticket(
+        ticket_id,
+        {
+            "event": "TICKET_UPDATED",
+            "type": "TICKET_UPDATED",
+            "ticket": resp.model_dump(mode="json"),
+        },
+    )
+    await ticket_ws_manager.broadcast_hub(
+        {
+            "event": "TICKET_UPDATED",
+            "type": "TICKET_UPDATED",
+            "ticket": resp.model_dump(mode="json"),
+            "sender_name": current_user.email.split("@")[0],
+        }
+    )
+    return resp
 
 
 @router.post("/{ticket_id}/resolve", response_model=TicketResponse)
@@ -374,6 +497,7 @@ async def ticket_websocket(websocket: WebSocket, ticket_id: int):
         ticket_ws_manager.disconnect(websocket, ticket_id)
 
 
+@router.websocket("/ws/hub")
 @router.websocket("/ws-hub")
 async def ticket_hub_websocket(websocket: WebSocket):
     token = websocket.query_params.get("token")
