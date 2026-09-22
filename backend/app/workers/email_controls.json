@@ -1,0 +1,63 @@
+{
+    "system": {
+        "enabled": true,
+        "utc_hour": 1,
+        "utc_minute": 0,
+        "send_delay_seconds": 1.0,
+        "frequency": "daily",
+        "weekly_run_day": 0,
+        "max_retries": 3,
+        "retry_delay_seconds": 60
+    },
+    "branding": {
+        "company_name": "Bourntec Solutions Inc.",
+        "support_email": "support.dsuite@bourntec.com",
+        "theme": {
+            "primary_color": "#3b82f6",
+            "accent_color": "#10b981",
+            "bg_dark": "#0f1117",
+            "bg_card": "#16181f",
+            "text_main": "#e2e8f0",
+            "text_muted": "#94a3b8"
+        }
+    },
+    "routing": {
+        "cc_rules": {
+            "org_rules": {},
+            "user_rules": {}
+        },
+        "bcc_rules": {
+            "org_rules": {},
+            "user_rules": {}
+        },
+        "global_cc": [],
+        "global_bcc": []
+    },
+    "filters": {
+        "block_list": [],
+        "allow_list": [],
+        "block_domains": [],
+        "allow_domains": [],
+        "min_cost_threshold": 0.0001,
+        "min_tokens_threshold": 10,
+        "skip_zero_usage_users": true,
+        "skip_inactive_users": true
+    },
+    "profiles": {
+        "send_to_end_users": true,
+        "send_to_org_admins": true,
+        "include_model_breakdown": true,
+        "include_team_breakdown": true,
+        "admin_view_user_emails": true
+    },
+    "gateways": {
+        "override_gateway": "default",
+        "sender_display_name": "",
+        "reply_to": ""
+    },
+    "templates": {
+        "end_user": "templates/end_user_report.html",
+        "org_admin": "templates/org_admin_report.html"
+    },
+    "last_run_dates": []
+}
