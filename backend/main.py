@@ -161,4 +161,14 @@ def health_check():
         "architecture": "8-Layer Clean Architecture",
     }
 
-# Reload trigger
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "main:app",
+        host=settings.host,
+        port=settings.port,
+        reload=False,
+        timeout_keep_alive=900,  # 15 minutes to support long-running AI analysis
+    )
