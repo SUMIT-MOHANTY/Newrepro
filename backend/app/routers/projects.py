@@ -43,8 +43,16 @@ import schemas
 from config import settings
 from database import SessionLocal, engine, get_db
 
+import agent_service
+from app.integrations.vcs import azure_devops_service, github_service
 from app.core.middleware import resolve_project_token
 from local_task_preview_service import build_local_task_plan_preview, _normalize_project_dates, _format_date
+from app.routers.helpers import (
+    _ensure_org_agent_mapping,
+    _normalized_text,
+    _update_project_tags,
+    parse_markdown_techniques,
+)
 
 
 logger = logging.getLogger(__name__)

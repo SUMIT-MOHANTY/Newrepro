@@ -43,10 +43,21 @@ import schemas
 from config import settings
 from database import SessionLocal, engine, get_db
 
+import subprocess
 import knowledge_graph_service as kg_service
 import context_manager
 import master_task_manager
 import master_coordination_service
+import agent_service
+import llm_gateway
+import rag_service
+import rsa_utils
+from app.routers.helpers import (
+    _normalize_project_token,
+    _require_organization,
+    _preview_log_store,
+    _preview_ws_connections,
+)
 from coordination_api import router as _legacy_coord_router
 
 

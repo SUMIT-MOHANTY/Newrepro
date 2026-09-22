@@ -42,6 +42,8 @@ import models
 import schemas
 from config import settings
 from database import SessionLocal, engine, get_db
+import email_service
+from app.routers.helpers import _normalize_agent_kind, _normalize_project_token
 
 
 

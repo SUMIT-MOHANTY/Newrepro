@@ -13,6 +13,7 @@ from fastapi import (
     WebSocketDisconnect,
     status,
 )
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db
@@ -144,6 +145,50 @@ def get_ticket_stats(
         unread_messages=sum(1 for t in tickets if (t.unread_by_admin if is_admin else t.unread_by_user)),
     )
     return stats
+
+
+@router.get("/unread-count")
+def get_unread_tickets_count(
+    current_user: Annotated[models.User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+):
+    """Fast endpoint for sidebar navigation badge."""
+    is_super = bool(getattr(current_user, "is_super_admin", False))
+    is_org_adm = bool(getattr(current_user, "is_org_admin", False))
+    user_org = (getattr(current_user, "organization_name", None) or "").strip()
+
+    query = db.query(SupportTicket)
+    if is_super:
+        pass
+    elif is_org_adm and user_org:
+        query = query.join(models.User, SupportTicket.created_by_user_id == models.User.id).filter(
+            or_(
+                SupportTicket.created_by_user_id == current_user.id,
+                and_(
+                    func.lower(SupportTicket.organization_name) == user_org.lower(),
+                    models.User.is_org_admin.is_(False),
+                    models.User.is_super_admin.is_(False),
+                ),
+            )
+        )
+    else:
+        query = query.filter(SupportTicket.created_by_user_id == current_user.id)
+
+    query = query.filter(
+        or_(
+            and_(
+                SupportTicket.created_by_user_id == current_user.id,
+                SupportTicket.unread_by_user.is_(True),
+            ),
+            and_(
+                SupportTicket.created_by_user_id != current_user.id,
+                SupportTicket.unread_by_admin.is_(True),
+            ),
+        )
+    )
+
+    count = query.count()
+    return {"unread_count": count}
 
 
 @router.get("", response_model=List[TicketResponse])

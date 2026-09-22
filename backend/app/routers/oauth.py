@@ -42,6 +42,7 @@ import models
 import schemas
 from config import settings
 from database import SessionLocal, engine, get_db
+from app.routers.helpers import _normalized_text
 
 
 

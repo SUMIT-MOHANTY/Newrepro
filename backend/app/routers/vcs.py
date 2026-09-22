@@ -46,6 +46,7 @@ from database import SessionLocal, engine, get_db
 import github_service
 import azure_devops_service
 import azure_devops_oauth_service
+from app.routers.helpers import _resolve_project_global_credential
 
 
 logger = logging.getLogger(__name__)

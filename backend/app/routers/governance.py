@@ -44,6 +44,17 @@ from config import settings
 from database import SessionLocal, engine, get_db
 
 import governance_scoring
+from app.routers.helpers import (
+    _can_manage_governance,
+    _get_user_allowed_paths,
+    _governance_query_for_user,
+    _is_document_linked_to_governance,
+    _normalize_project_token,
+    _normalized_text,
+    _org_user_ids_subquery,
+)
+from app.services.agents import agent_service, context_manager, task_service
+from app.services.ai import rag_service
 
 
 logger = logging.getLogger(__name__)

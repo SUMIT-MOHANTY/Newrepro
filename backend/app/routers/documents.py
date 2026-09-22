@@ -45,6 +45,8 @@ from database import SessionLocal, engine, get_db
 
 import ingestion
 from app.core.middleware import is_major_action
+from app.routers.helpers import _normalized_text, _org_user_ids_subquery
+from app.services.ai import ai_service, ai_service_chunked
 
 
 logger = logging.getLogger(__name__)

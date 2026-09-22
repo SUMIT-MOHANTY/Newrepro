@@ -497,16 +497,14 @@ export default function AppLayout({ children }) {
         }
     }, [isShareMode, user, fetchShareProjects]);
 
-    const { data: generatedProjects = [], isLoading: isProjectsLoading, isError: isProjectsError, error: projectsError } = useProjects();
+    const { data: generatedProjects, isLoading: isProjectsLoading, isError: isProjectsError, error: projectsError } = useProjects();
 
     useEffect(() => {
-        setTimeout(() => {
-            if (isProjectsError && projectsError?.message === 'Unauthorized') {
-                handleLogout();
-            } else if (generatedProjects) {
-                setProjects(generatedProjects);
-            }
-        }, 0);
+        if (isProjectsError && projectsError?.message === 'Unauthorized') {
+            handleLogout();
+        } else if (Array.isArray(generatedProjects)) {
+            setProjects(generatedProjects);
+        }
     }, [generatedProjects, isProjectsError, projectsError, handleLogout]);
 
     useEffect(() => {

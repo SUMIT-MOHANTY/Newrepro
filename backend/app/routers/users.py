@@ -42,6 +42,8 @@ import models
 import schemas
 from config import settings
 from database import SessionLocal, engine, get_db
+import email_service
+from app.routers.helpers import ORG_MANAGED_PAGES, _generate_registration_password
 
 
 

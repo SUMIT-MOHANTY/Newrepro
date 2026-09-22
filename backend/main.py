@@ -160,3 +160,5 @@ def health_check():
         "version": "2.0.0",
         "architecture": "8-Layer Clean Architecture",
     }
+
+# Reload trigger
