@@ -129,17 +129,62 @@ ticket_ws_manager = TicketConnectionManager()
 
 # ── Helper Functions ────────────────────────────────────────────────────────
 
-def _generate_ticket_code(db: Session) -> str:
-    """Generates unique human-readable ticket code, e.g. TCK-2026-84920."""
-    year = datetime.utcnow().year
-    for _ in range(20):
-        random_digits = "".join(random.choices(string.digits, k=5))
-        code = f"TCK-{year}-{random_digits}"
-        exists = db.query(models.SupportTicket).filter(models.SupportTicket.ticket_code == code).first()
+def _get_servicenow_prefix(category_or_type: Optional[str]) -> str:
+    """Maps user-friendly category to ServiceNow prefix: REQ, INC, INQ, CHG, PRB."""
+    if not category_or_type:
+        return "REQ"
+    norm = str(category_or_type).strip().upper()
+    
+    # Direct prefix match
+    if norm in ("REQ", "INC", "INQ", "CHG", "PRB"):
+        return norm
+        
+    # User-friendly Intent & Category matching
+    if any(k in norm for k in ("TOKEN", "CAPACITY", "QUOTA", "ACCESS", "SERVICE REQUEST", "ALLOCATION", "BILLING", "FEATURE REQUEST")):
+        return "REQ"
+    if any(k in norm for k in ("ISSUE", "ERROR", "BUG", "TECHNICAL", "INCIDENT", "OUTAGE", "FAIL", "BROKEN")):
+        return "INC"
+    if any(k in norm for k in ("QUESTION", "INQUIRY", "HELP", "HOW", "GUIDE", "GENERAL")):
+        return "INQ"
+    if any(k in norm for k in ("CHANGE", "CONFIG", "MODEL", "INTEGRATION", "ENV")):
+        return "CHG"
+    if "PROBLEM" in norm:
+        return "PRB"
+        
+    return "REQ"
+
+
+def _generate_ticket_code(db: Session, category_or_type: Optional[str] = None) -> str:
+    """
+    Generates unique ServiceNow-style ticket code:
+    {PREFIX}{7-digit sequential number}, e.g. REQ0010001, INC0010001, INQ0010001, CHG0010001.
+    """
+    prefix = _get_servicenow_prefix(category_or_type)
+    
+    # Query all existing ticket codes starting with this prefix
+    existing_codes = db.query(models.SupportTicket.ticket_code).filter(
+        models.SupportTicket.ticket_code.like(f"{prefix}%")
+    ).all()
+    
+    max_num = 0  # Starts from the beginning: first ticket becomes 0000001
+    for row in existing_codes:
+        raw_code = (row[0] or "").strip()
+        num_part = raw_code[len(prefix):].lstrip("-")
+        if num_part.isdigit():
+            val = int(num_part)
+            if val > max_num:
+                max_num = val
+                
+    # Increment sequence and guarantee uniqueness
+    next_num = max_num + 1
+    while True:
+        candidate_code = f"{prefix}{next_num:07d}"
+        exists = db.query(models.SupportTicket).filter(
+            models.SupportTicket.ticket_code == candidate_code
+        ).first()
         if not exists:
-            return code
-    # Fallback with timestamp
-    return f"TCK-{year}-{int(datetime.utcnow().timestamp()) % 100000}"
+            return candidate_code
+        next_num += 1
 
 
 def _user_to_sender_info(user: Optional[models.User]) -> Optional[schemas.TicketSenderInfo]:
@@ -363,7 +408,13 @@ def get_tickets(
         query = query.filter(func.upper(models.SupportTicket.priority) == priority.upper())
 
     if category and category.upper() != "ALL":
-        query = query.filter(func.lower(models.SupportTicket.category) == category.lower())
+        cat_prefix = _get_servicenow_prefix(category)
+        query = query.filter(
+            or_(
+                func.lower(models.SupportTicket.category) == category.lower(),
+                models.SupportTicket.ticket_code.like(f"{cat_prefix}%")
+            )
+        )
 
     if search and search.strip():
         term = f"%{search.strip()}%"
@@ -495,7 +546,7 @@ async def create_ticket(
         )
 
     user_org = (getattr(current_user, "organization_name", None) or "").strip() or None
-    ticket_code = _generate_ticket_code(db)
+    ticket_code = _generate_ticket_code(db, payload.category.strip() if payload.category else None)
 
     ticket = models.SupportTicket(
         ticket_code=ticket_code,

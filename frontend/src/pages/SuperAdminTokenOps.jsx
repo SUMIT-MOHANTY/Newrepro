@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
     Coins, Building2, Shield, DollarSign, Activity, RefreshCw, 
     AlertCircle, CheckCircle2, Plus, Edit, Ban, Check, UserCheck, XCircle, Search,
@@ -103,6 +103,27 @@ export default function SuperAdminTokenOps() {
     const [ledgerFilterDropdownOpen, setLedgerFilterDropdownOpen] = useState(false);
     const [ledgerOrgDropdownOpen, setLedgerOrgDropdownOpen] = useState(false);
     const [ledgerPurposeDropdownOpen, setLedgerPurposeDropdownOpen] = useState(false);
+
+    const ledgerOrgDropdownRef = useRef(null);
+    const ledgerFilterDropdownRef = useRef(null);
+    const ledgerPurposeDropdownRef = useRef(null);
+
+    // Close ledger dropdowns on outside click without full-screen backdrops that block scrolling
+    useEffect(() => {
+        const handleClickOutside = (e) => {
+            if (ledgerOrgDropdownRef.current && !ledgerOrgDropdownRef.current.contains(e.target)) {
+                setLedgerOrgDropdownOpen(false);
+            }
+            if (ledgerFilterDropdownRef.current && !ledgerFilterDropdownRef.current.contains(e.target)) {
+                setLedgerFilterDropdownOpen(false);
+            }
+            if (ledgerPurposeDropdownRef.current && !ledgerPurposeDropdownRef.current.contains(e.target)) {
+                setLedgerPurposeDropdownOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, []);
 
     const localTimezone = (() => {
         try {
@@ -1961,7 +1982,7 @@ export default function SuperAdminTokenOps() {
 
                             <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 shrink-0">
                                 {/* 1. Organization Dropdown Selector (left-aligned to prevent screen cutoff) */}
-                                <div className="relative shrink-0">
+                                <div ref={ledgerOrgDropdownRef} className="relative shrink-0">
                                     <button
                                         type="button"
                                         onClick={() => {
@@ -1978,64 +1999,58 @@ export default function SuperAdminTokenOps() {
                                     </button>
 
                                     {ledgerOrgDropdownOpen && (
-                                        <>
-                                            <div 
-                                                className="fixed inset-0 z-40" 
-                                                onClick={() => setLedgerOrgDropdownOpen(false)} 
-                                            />
-                                            <div className="absolute left-0 mt-1.5 w-64 max-h-72 overflow-y-auto p-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl z-50 animate-in fade-in-50 zoom-in-95 space-y-0.5 custom-scrollbar">
-                                                <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                                                    Select Organization
-                                                </div>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        handleOrgFilterChange('ALL');
-                                                        setLedgerOrgDropdownOpen(false);
-                                                    }}
-                                                    className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium text-left transition-colors cursor-pointer ${
-                                                        ledgerOrgFilter === 'ALL'
-                                                            ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-semibold'
-                                                            : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
-                                                    }`}
-                                                >
-                                                    <div className="flex items-center gap-1.5 truncate">
-                                                        <Building2 className="w-3.5 h-3.5 text-slate-400" />
-                                                        <span>All Organizations ({organizations.length})</span>
-                                                    </div>
-                                                    {ledgerOrgFilter === 'ALL' && <Check className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />}
-                                                </button>
-                                                {organizations.map(org => {
-                                                    const isSelected = ledgerOrgFilter === org.organization_name;
-                                                    return (
-                                                        <button
-                                                            key={org.organization_name}
-                                                            type="button"
-                                                            onClick={() => {
-                                                                handleOrgFilterChange(org.organization_name);
-                                                                setLedgerOrgDropdownOpen(false);
-                                                            }}
-                                                            className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium text-left transition-colors cursor-pointer ${
-                                                                isSelected
-                                                                    ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-semibold'
-                                                                    : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
-                                                            }`}
-                                                        >
-                                                            <div className="flex items-center gap-1.5 truncate">
-                                                                <Building2 className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
-                                                                <span className="truncate">{org.organization_name}</span>
-                                                            </div>
-                                                            {isSelected && <Check className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />}
-                                                        </button>
-                                                    );
-                                                })}
+                                        <div className="absolute left-0 mt-1.5 w-64 max-h-72 overflow-y-auto p-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl z-50 animate-in fade-in-50 zoom-in-95 space-y-0.5 custom-scrollbar">
+                                            <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                                Select Organization
                                             </div>
-                                        </>
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    handleOrgFilterChange('ALL');
+                                                    setLedgerOrgDropdownOpen(false);
+                                                }}
+                                                className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium text-left transition-colors cursor-pointer ${
+                                                    ledgerOrgFilter === 'ALL'
+                                                        ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-semibold'
+                                                        : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                                                }`}
+                                            >
+                                                <div className="flex items-center gap-1.5 truncate">
+                                                    <Building2 className="w-3.5 h-3.5 text-slate-400" />
+                                                    <span>All Organizations ({organizations.length})</span>
+                                                </div>
+                                                {ledgerOrgFilter === 'ALL' && <Check className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />}
+                                            </button>
+                                            {organizations.map(org => {
+                                                const isSelected = ledgerOrgFilter === org.organization_name;
+                                                return (
+                                                    <button
+                                                        key={org.organization_name}
+                                                        type="button"
+                                                        onClick={() => {
+                                                            handleOrgFilterChange(org.organization_name);
+                                                            setLedgerOrgDropdownOpen(false);
+                                                        }}
+                                                        className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium text-left transition-colors cursor-pointer ${
+                                                            isSelected
+                                                                ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-semibold'
+                                                                : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                                                        }`}
+                                                    >
+                                                        <div className="flex items-center gap-1.5 truncate">
+                                                            <Building2 className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                                                            <span className="truncate">{org.organization_name}</span>
+                                                        </div>
+                                                        {isSelected && <Check className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
                                     )}
                                 </div>
 
                                 {/* 2. Transaction Type Dropdown Filter */}
-                                <div className="relative shrink-0">
+                                <div ref={ledgerFilterDropdownRef} className="relative shrink-0">
                                     <button
                                         type="button"
                                         onClick={() => {
@@ -2052,43 +2067,37 @@ export default function SuperAdminTokenOps() {
                                     </button>
 
                                     {ledgerFilterDropdownOpen && (
-                                        <>
-                                            <div 
-                                                className="fixed inset-0 z-40" 
-                                                onClick={() => setLedgerFilterDropdownOpen(false)} 
-                                            />
-                                            <div className="absolute left-0 sm:left-auto sm:right-0 mt-1.5 w-52 p-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl z-50 animate-in fade-in-50 zoom-in-95 space-y-0.5">
-                                                <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                                                    Filter Transaction Type
-                                                </div>
-                                                {ledgerFilterOptions.map(f => {
-                                                    const isSelected = ledgerFilter === f.id;
-                                                    return (
-                                                        <button
-                                                            key={f.id}
-                                                            type="button"
-                                                            onClick={() => {
-                                                                handleFilterChange(f.id);
-                                                                setLedgerFilterDropdownOpen(false);
-                                                            }}
-                                                            className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium text-left transition-colors cursor-pointer ${
-                                                                isSelected
-                                                                    ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-semibold'
-                                                                    : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
-                                                            }`}
-                                                        >
-                                                            <span>{f.label}</span>
-                                                            {isSelected && <Check className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />}
-                                                        </button>
-                                                    );
-                                                })}
+                                        <div className="absolute left-0 sm:left-auto sm:right-0 mt-1.5 w-52 p-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl z-50 animate-in fade-in-50 zoom-in-95 space-y-0.5">
+                                            <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                                Filter Transaction Type
                                             </div>
-                                        </>
+                                            {ledgerFilterOptions.map(f => {
+                                                const isSelected = ledgerFilter === f.id;
+                                                return (
+                                                    <button
+                                                        key={f.id}
+                                                        type="button"
+                                                        onClick={() => {
+                                                            handleFilterChange(f.id);
+                                                            setLedgerFilterDropdownOpen(false);
+                                                        }}
+                                                        className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium text-left transition-colors cursor-pointer ${
+                                                            isSelected
+                                                                ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-semibold'
+                                                                : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                                                        }`}
+                                                    >
+                                                        <span>{f.label}</span>
+                                                        {isSelected && <Check className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
                                     )}
                                 </div>
 
                                 {/* 3. Circumstance / Purpose Dropdown Filter */}
-                                <div className="relative shrink-0">
+                                <div ref={ledgerPurposeDropdownRef} className="relative shrink-0">
                                     <button
                                         type="button"
                                         onClick={() => {
@@ -2105,38 +2114,32 @@ export default function SuperAdminTokenOps() {
                                     </button>
 
                                     {ledgerPurposeDropdownOpen && (
-                                        <>
-                                            <div 
-                                                className="fixed inset-0 z-40" 
-                                                onClick={() => setLedgerPurposeDropdownOpen(false)} 
-                                            />
-                                            <div className="absolute left-0 sm:left-auto sm:right-0 mt-1.5 w-64 max-h-72 overflow-y-auto p-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl z-50 animate-in fade-in-50 zoom-in-95 space-y-0.5 custom-scrollbar">
-                                                <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                                                    Filter Circumstance / Purpose
-                                                </div>
-                                                {ledgerPurposeOptions.map(p => {
-                                                    const isSelected = ledgerPurposeFilter === p.id;
-                                                    return (
-                                                        <button
-                                                            key={p.id}
-                                                            type="button"
-                                                            onClick={() => {
-                                                                handlePurposeFilterChange(p.id);
-                                                                setLedgerPurposeDropdownOpen(false);
-                                                            }}
-                                                            className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium text-left transition-colors cursor-pointer ${
-                                                                isSelected
-                                                                    ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-semibold'
-                                                                    : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
-                                                            }`}
-                                                        >
-                                                            <span className="truncate">{p.label}</span>
-                                                            {isSelected && <Check className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0 ml-1.5" />}
-                                                        </button>
-                                                    );
-                                                })}
+                                        <div className="absolute left-0 sm:left-auto sm:right-0 mt-1.5 w-64 max-h-72 overflow-y-auto p-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl z-50 animate-in fade-in-50 zoom-in-95 space-y-0.5 custom-scrollbar">
+                                            <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                                Filter Circumstance / Purpose
                                             </div>
-                                        </>
+                                            {ledgerPurposeOptions.map(p => {
+                                                const isSelected = ledgerPurposeFilter === p.id;
+                                                return (
+                                                    <button
+                                                        key={p.id}
+                                                        type="button"
+                                                        onClick={() => {
+                                                            handlePurposeFilterChange(p.id);
+                                                            setLedgerPurposeDropdownOpen(false);
+                                                        }}
+                                                        className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium text-left transition-colors cursor-pointer ${
+                                                            isSelected
+                                                                ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-semibold'
+                                                                : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                                                        }`}
+                                                    >
+                                                        <span className="truncate">{p.label}</span>
+                                                        {isSelected && <Check className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0 ml-1.5" />}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
                                     )}
                                 </div>
 
