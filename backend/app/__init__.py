@@ -8,11 +8,15 @@ import sys
 
 _backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
-# Compatibility paths for legacy direct module imports (e.g. llm_gateway)
+# Compatibility paths for legacy direct module imports
 _compat_paths = [
-    os.path.join(_backend_dir, "app", "integrations", "llm"),
+    os.path.join(_backend_dir, "app", "services"),
+    os.path.join(_backend_dir, "app", "services", "ai"),
     os.path.join(_backend_dir, "app", "services", "agents"),
     os.path.join(_backend_dir, "app", "workers"),
+    os.path.join(_backend_dir, "app", "integrations", "llm"),
+    os.path.join(_backend_dir, "app", "integrations", "vcs"),
+    os.path.join(_backend_dir, "app", "routers"),
     os.path.join(_backend_dir, "scripts"),
 ]
 

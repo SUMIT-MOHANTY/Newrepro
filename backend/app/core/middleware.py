@@ -16,13 +16,22 @@ from jose import jwt
 import models
 from database import SessionLocal
 from config import settings
-from llm_gateway import (
-    current_project_name_var,
-    current_project_token_var,
-    current_purpose_var,
-    current_user_id_var,
-    current_user_org_var,
-)
+try:
+    from app.integrations.llm.llm_gateway import (
+        current_project_name_var,
+        current_project_token_var,
+        current_purpose_var,
+        current_user_id_var,
+        current_user_org_var,
+    )
+except ImportError:
+    from llm_gateway import (
+        current_project_name_var,
+        current_project_token_var,
+        current_purpose_var,
+        current_user_id_var,
+        current_user_org_var,
+    )
 
 logger = logging.getLogger(__name__)
 

@@ -13,7 +13,10 @@ backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-import llm_gateway as raw_gateway
+try:
+    from app.integrations.llm import llm_gateway as raw_gateway
+except ImportError:
+    import llm_gateway as raw_gateway
 
 logger = logging.getLogger(__name__)
 
@@ -113,4 +116,5 @@ class LLMGatewayClient:
                     yield chunk
 
 
-llm_gateway = LLMGatewayClient()
+llm_gateway_client = LLMGatewayClient()
+llm_client = llm_gateway_client
