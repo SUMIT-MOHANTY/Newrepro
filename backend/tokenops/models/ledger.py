@@ -39,7 +39,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 
-from database import Base
+from app.core.database import Base
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +216,7 @@ def validate_ledger_entry_project_token(mapper, connection, target):
             is_invalid = True
 
         if is_invalid:
-            from database import SessionLocal
+            from app.core.database import SessionLocal
             from tokenops.services.project_token_resolver import resolve_or_ensure_project_token
             s = SessionLocal()
             try:

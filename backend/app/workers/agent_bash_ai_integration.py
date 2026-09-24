@@ -9,7 +9,7 @@ import logging
 from typing import Dict, Any, List, Optional
 
 from agent_bash_executor import AgentBashExecutor, BashExecutionResult, create_bash_executor
-import llm_gateway
+from app.integrations.llm import llm_gateway
 
 logger = logging.getLogger(__name__)
 

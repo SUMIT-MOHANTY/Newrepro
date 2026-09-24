@@ -20,7 +20,7 @@ import re
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Set
 
-from database import SessionLocal
+from app.core.database import SessionLocal
 import models
 
 logger = logging.getLogger(__name__)

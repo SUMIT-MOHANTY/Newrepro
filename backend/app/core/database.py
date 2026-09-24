@@ -1,27 +1,122 @@
-import importlib.util
 import os
-import sys
+from sqlalchemy import create_engine, text, event
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 
-backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if backend_dir not in sys.path:
-    sys.path.insert(0, backend_dir)
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+DEFAULT_DB_PATH = os.path.join(BASE_DIR, "sql_app.db").replace("\\", "/")
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DEFAULT_DB_PATH}")
 
-# Ensure 'database' always resolves to the root backend/database.py, never to app/core/database.py
-if "database" in sys.modules and hasattr(sys.modules["database"], "Base"):
-    _root_db = sys.modules["database"]
-else:
-    db_path = os.path.join(backend_dir, "database.py")
-    spec = importlib.util.spec_from_file_location("database", db_path)
-    _root_db = importlib.util.module_from_spec(spec)
-    sys.modules["database"] = _root_db
-    spec.loader.exec_module(_root_db)
+engine_kwargs = {
+    "pool_size": 30,
+    "max_overflow": 60,
+    "pool_timeout": 60.0,
+    "pool_recycle": 1800,
+    "pool_pre_ping": True,
+}
 
-Base = _root_db.Base
-engine = _root_db.engine
-SessionLocal = _root_db.SessionLocal
-get_db = _root_db.get_db
-SQLALCHEMY_DATABASE_URL = _root_db.SQLALCHEMY_DATABASE_URL
-DEFAULT_DB_PATH = _root_db.DEFAULT_DB_PATH
+if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
+    engine_kwargs["connect_args"] = {
+        "check_same_thread": False,
+        "timeout": 60,
+        "isolation_level": None  # Autocommit mode for better cross-session visibility
+    }
+
+engine = create_engine(SQLALCHEMY_DATABASE_URL, **engine_kwargs)
+
+if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=60000")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.close()
+
+# Enable WAL mode for better concurrent access and run migrations
+with engine.connect() as conn:
+    if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
+        conn.execute(text("PRAGMA journal_mode=WAL"))
+        conn.execute(text("PRAGMA busy_timeout=60000"))
+        
+        # Check if is_super_admin exists in users table
+        try:
+            u_cursor = conn.execute(text("PRAGMA table_info(users)"))
+            u_columns = [row[1] for row in u_cursor.fetchall()]
+            if u_columns and "is_super_admin" not in u_columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN is_super_admin BOOLEAN DEFAULT 0"))
+                conn.commit()
+        except Exception as e:
+            pass
+
+        # Check if project_type and repo columns exist in governance_responses table
+        try:
+            cursor = conn.execute(text("PRAGMA table_info(governance_responses)"))
+            columns = [row[1] for row in cursor.fetchall()]
+            if columns:
+                if "project_type" not in columns:
+                    conn.execute(text("ALTER TABLE governance_responses ADD COLUMN project_type VARCHAR DEFAULT 'greenfield'"))
+                if "source_repo_url" not in columns:
+                    conn.execute(text("ALTER TABLE governance_responses ADD COLUMN source_repo_url VARCHAR"))
+                if "source_repo_token" not in columns:
+                    conn.execute(text("ALTER TABLE governance_responses ADD COLUMN source_repo_token VARCHAR"))
+                if "dest_repo_url" not in columns:
+                    conn.execute(text("ALTER TABLE governance_responses ADD COLUMN dest_repo_url VARCHAR"))
+                if "dest_repo_token" not in columns:
+                    conn.execute(text("ALTER TABLE governance_responses ADD COLUMN dest_repo_token VARCHAR"))
+                if "is_archived" not in columns:
+                    conn.execute(text("ALTER TABLE governance_responses ADD COLUMN is_archived BOOLEAN DEFAULT 0"))
+            
+            sp_cursor = conn.execute(text("PRAGMA table_info(share_projects)"))
+            sp_columns = [row[1] for row in sp_cursor.fetchall()]
+            if sp_columns:
+                if "is_archived" not in sp_columns:
+                    conn.execute(text("ALTER TABLE share_projects ADD COLUMN is_archived BOOLEAN DEFAULT 0"))
+
+            # Ensure ai_usage_logs has organization_name and usage_status columns
+            ai_cursor = conn.execute(text("PRAGMA table_info(ai_usage_logs)"))
+            ai_columns = [row[1] for row in ai_cursor.fetchall()]
+            if ai_columns:
+                if "organization_name" not in ai_columns:
+                    conn.execute(text("ALTER TABLE ai_usage_logs ADD COLUMN organization_name VARCHAR"))
+                if "organization_id" not in ai_columns:
+                    conn.execute(text("ALTER TABLE ai_usage_logs ADD COLUMN organization_id VARCHAR(36)"))
+                if "usage_status" not in ai_columns:
+                    conn.execute(text("ALTER TABLE ai_usage_logs ADD COLUMN usage_status VARCHAR NOT NULL DEFAULT 'COMPLETED'"))
+
+            # Ensure organization_wallet has payg_grace_period_months and other required columns
+            ow_cursor = conn.execute(text("PRAGMA table_info(organization_wallet)"))
+            ow_columns = [row[1] for row in ow_cursor.fetchall()]
+            if ow_columns:
+                if "payg_grace_period_months" not in ow_columns:
+                    conn.execute(text("ALTER TABLE organization_wallet ADD COLUMN payg_grace_period_months INTEGER NOT NULL DEFAULT 3"))
+                if "payg_reserved_spend_usd" not in ow_columns:
+                    conn.execute(text("ALTER TABLE organization_wallet ADD COLUMN payg_reserved_spend_usd NUMERIC(20, 8) NOT NULL DEFAULT 0.0"))
+                if "payg_billing_email" not in ow_columns:
+                    conn.execute(text("ALTER TABLE organization_wallet ADD COLUMN payg_billing_email VARCHAR"))
+                if "payg_soft_limit_usd" not in ow_columns:
+                    conn.execute(text("ALTER TABLE organization_wallet ADD COLUMN payg_soft_limit_usd NUMERIC(10, 2)"))
+                if "payg_hard_limit_usd" not in ow_columns:
+                    conn.execute(text("ALTER TABLE organization_wallet ADD COLUMN payg_hard_limit_usd NUMERIC(10, 2)"))
+                if "payg_current_spend_usd" not in ow_columns:
+                    conn.execute(text("ALTER TABLE organization_wallet ADD COLUMN payg_current_spend_usd NUMERIC(20, 8) NOT NULL DEFAULT 0.0"))
+                if "organization_id" not in ow_columns:
+                    conn.execute(text("ALTER TABLE organization_wallet ADD COLUMN organization_id VARCHAR(36)"))
+        except Exception as e:
+            pass
+            
+        conn.commit()
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+Base = declarative_base()
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 __all__ = [
     "Base",

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 import sqlite3
-from email_service import _send_email_message
+from app.services.email_service import _send_email_message
 from email.message import EmailMessage
 
 # Database path - synced with database.py

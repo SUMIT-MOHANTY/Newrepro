@@ -47,7 +47,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 
-from database import Base
+from app.core.database import Base
 
 
 class OrganizationUsageSummary(Base):

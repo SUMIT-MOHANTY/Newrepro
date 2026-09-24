@@ -8,7 +8,7 @@ from typing import Dict, Any, List, Optional
 
 from container_pool_manager import pool_manager
 from fast_playground_executor import fast_executor
-import llm_gateway
+from app.integrations.llm import llm_gateway
 from agent_communication_hooks import broadcast_task_started, broadcast_task_completed, broadcast_task_failed
 
 logger = logging.getLogger("master_governance_orchestrator")

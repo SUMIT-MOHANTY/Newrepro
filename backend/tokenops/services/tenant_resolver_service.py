@@ -67,7 +67,7 @@ class TenantResolverService:
             payload = _decode_jwt_unverified_payload(cleaned)
             candidate_org = None
             try:
-                import llm_gateway
+                from app.integrations.llm import llm_gateway
                 candidate_org = llm_gateway.current_user_org_var.get()
                 if candidate_org and _is_jwt(candidate_org):
                     candidate_org = None
@@ -76,7 +76,7 @@ class TenantResolverService:
 
             if not candidate_org:
                 try:
-                    import llm_gateway
+                    from app.integrations.llm import llm_gateway
                     uid = llm_gateway.current_user_id_var.get()
                     if uid:
                         from models import User
@@ -161,7 +161,7 @@ class TenantResolverService:
 
             if not proj_org_name:
                 try:
-                    import llm_gateway
+                    from app.integrations.llm import llm_gateway
                     active_org = llm_gateway.current_user_org_var.get()
                     if active_org and not _is_jwt(active_org):
                         proj_org_name = active_org

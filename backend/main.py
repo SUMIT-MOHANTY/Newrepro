@@ -35,7 +35,7 @@ from app.core.config import settings
 from app.core.exceptions import register_exception_handlers
 from app.core.middleware import activity_logging_middleware
 from app.routers import api_router
-from database import engine
+from app.core.database import engine
 import models
 from scripts.run_all_migrations import run_migrations
 

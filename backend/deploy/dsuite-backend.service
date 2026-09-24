@@ -1,0 +1,31 @@
+[Unit]
+Description=DSuite BRD Analyzer Backend Service
+After=network.target
+
+[Service]
+Type=simple
+User=ec2-user
+Group=ec2-user
+
+# Adjust working directory to the target repo path on your instance
+WorkingDirectory=/home/ec2-user/BRD_Analyzer_Stage/BRD_Analyzer/backend
+
+# Path to python/uvicorn inside virtualenv
+ExecStart=/home/ec2-user/BRD_Analyzer/backend/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8006
+
+# Automatic recovery with backoff
+Restart=always
+RestartSec=5s
+StartLimitIntervalSec=60s
+StartLimitBurst=10
+
+# Load environment configuration
+EnvironmentFile=-/home/ec2-user/BRD_Analyzer_Stage/BRD_Analyzer/backend/.env
+Environment=PYTHONUNBUFFERED=1
+
+# Output logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -53,7 +53,7 @@ from enhanced_context_service import (
 
 import agent_contract_store as contract_store
 
-from database import SessionLocal
+from app.core.database import SessionLocal
 
 logger = logging.getLogger(__name__)
 

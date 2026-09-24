@@ -30,7 +30,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 
-from database import Base
+from app.core.database import Base
 
 # Default price — identical to the currently hardcoded value in llm_gateway.py
 # so that the system is neutral at first deployment.

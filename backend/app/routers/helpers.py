@@ -954,7 +954,7 @@ def _delete_agent_record(db: Session, agent_id: str, project_token: Optional[str
 
 def _runtime_agent_records(records: List[models.Agent], project_token: Optional[str]) -> List[Dict[str, Any]]:
     project_token = _normalize_project_token(project_token)
-    from database import SessionLocal
+    from app.core.database import SessionLocal
     db = SessionLocal()
     try:
         mapping_rows = db.query(

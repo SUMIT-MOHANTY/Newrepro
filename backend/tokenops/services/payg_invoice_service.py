@@ -23,7 +23,7 @@ from tokenops.models.token_wallet import OrganizationWallet, UserOrganization
 from models import AIUsageLog, User, UserOrganizationRole, OrganizationRole
 from tokenops.services.tenant_resolver_service import TenantResolverService
 from tokenops.services.pricing_service import PricingService
-import email_service
+from app.services import email_service
 
 logger = logging.getLogger(__name__)
 

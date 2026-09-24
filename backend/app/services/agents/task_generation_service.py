@@ -10,7 +10,7 @@ from typing import List, Dict, Any, Optional, Set
 from sqlalchemy.orm import Session
 from models import Task, Document, GovernanceResponse, User
 from sqlalchemy import func
-import llm_gateway
+from app.integrations.llm import llm_gateway
 
 logger = logging.getLogger(__name__)
 
@@ -2832,7 +2832,7 @@ async def _audit_brd_task_coverage(
         f"Return as JSON array of short strings. Return [] if fully covered."
     )
 
-    import llm_gateway
+    from app.integrations.llm import llm_gateway
     if not llm_gateway.check_api_key(api_key):
         logger.warning(f"[{project_token}] Skipping BRD coverage audit — no API key")
         return []

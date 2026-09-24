@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import ForbiddenException, NotFoundException, ValidationException
-from app.integrations.llm.gateway import llm_gateway
+from app.integrations.llm import llm_gateway
 from app.models.agent import Agent, AgentNote, ProjectAgentRequest, OrganizationAgentQuota, CapacityIncreaseRequest
 from app.repositories.agent_repository import agent_repository
 from app.schemas.agent import (
@@ -23,7 +23,7 @@ from app.workers.container_pool import container_pool_worker
 from app.workers.job_manager import analysis_job_worker
 
 try:
-    from agent_coordination_service import coordination_service
+    from app.workers.agent_coordination_service import coordination_service
 except ImportError:
     coordination_service = None
 

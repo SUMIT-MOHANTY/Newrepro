@@ -6,7 +6,7 @@ their status, failures, and completions.
 """
 import logging
 from typing import Optional, Dict, Any
-from database import SessionLocal
+from app.core.database import SessionLocal
 import agent_communication_service as comm
 
 logger = logging.getLogger(__name__)

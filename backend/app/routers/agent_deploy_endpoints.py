@@ -10,8 +10,6 @@ import logging
 import asyncio
 from datetime import datetime
 
-from agent_deploy_service import agent_deploy_service
-
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/agent", tags=["agent-deploy"])

@@ -4,11 +4,11 @@ import json
 from datetime import datetime
 from typing import Optional, Dict, Any
 
-from database import SessionLocal
+from app.core.database import SessionLocal
 import models
-from task_service import task_service
+from app.services.agents.task_service import task_service
 # Import get_project_task_token to resolve task tokens from memory state if possible
-from agent_service import get_project_task_token
+from app.services.agents.agent_service import get_project_task_token
 
 logger = logging.getLogger(__name__)
 

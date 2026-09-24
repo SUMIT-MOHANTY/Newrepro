@@ -1,34 +1,95 @@
-import importlib.util
 import os
-import sys
+from pydantic_settings import BaseSettings
+from functools import lru_cache
+from typing import Optional
 
-backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if backend_dir not in sys.path:
-    sys.path.insert(0, backend_dir)
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+ENV_PATH = os.path.join(BASE_DIR, ".env")
 
-# Ensure 'config' always resolves to the root backend/config.py, never to app/core/config.py
-if "config" in sys.modules and hasattr(sys.modules["config"], "settings"):
-    _root_config = sys.modules["config"]
-else:
-    config_path = os.path.join(backend_dir, "config.py")
-    if os.path.isfile(config_path):
-        spec = importlib.util.spec_from_file_location("config", config_path)
-        _root_config = importlib.util.module_from_spec(spec)
-        sys.modules["config"] = _root_config
-        spec.loader.exec_module(_root_config)
-    else:
-        _root_config = None
+class Settings(BaseSettings):
+    # Server
+    host: str = "0.0.0.0"
+    port: int = 8000
+    
+    # Frontend URL (for CORS)
+    frontend_url: str = "http://localhost:5173"
 
-if _root_config and hasattr(_root_config, "settings"):
-    settings = _root_config.settings
-    Settings = _root_config.Settings
-else:
-    from pydantic_settings import BaseSettings
+    # SMTP / email delivery
+    smtp_host: Optional[str] = None
+    smtp_port: int = 587
+    smtp_username: Optional[str] = None
+    smtp_password: Optional[str] = None
+    smtp_from_email: Optional[str] = None
+    smtp_from_name: str = "DSuite"
+    smtp_use_tls: bool = True
+    smtp_use_ssl: bool = False
+    smtp_timeout_seconds: int = 20
+    daily_billing_email_enabled: bool = True
+    daily_billing_email_hour: int = 1
+    
+    # Microsoft OAuth for SMTP
+    microsoft_tenant_id: Optional[str] = None
+    microsoft_client_id: Optional[str] = None
+    microsoft_client_secret: Optional[str] = None
 
-    class Settings(BaseSettings):
-        host: str = "0.0.0.0"
-        port: int = 8000
+    # Database
+    database_url: str = "sqlite:///./app.db"
+    
+    # JWT
+    secret_key: str = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
+    algorithm: str = "HS256"
+    access_token_expire_minutes: int = 480  # 8 hours - increased from 30 minutes to reduce unexpected logouts
+    
+    # AI API Settings (OpenAI-compatible)
+    ai_api_url: str = "https://integrate.api.nvidia.com/v1/chat/completions"
+    ai_api_key: Optional[str] = None
+    ai_model: str = "minimaxai/minimax-m2.5"
+    use_brn_llama: bool = False
+    brn_llama_url: str = "https://brn-llama.bourntec.com/api/process"
+    brn_model: str = "BournAI"
+    brn_agent_id: str = "uhli23jn3oiuhgo847yyjvdhtrdy3tgfe8gfgoe87rugekuuyjommjferhjgo5go49uoi3uyrp938ry"
+    brn_platform_id: str = "DSuite"
+    brn_temperature: float = 0.7
+    use_chunked_analysis: bool = True
+    use_direct_ai_ingestion: bool = True
 
-    settings = Settings()
+    # GitHub OAuth
+    github_client_id: Optional[str] = None
+    github_client_secret: Optional[str] = None
+    # Azure DevOps OAuth
+    azure_devops_client_id: Optional[str] = None
+    azure_devops_client_secret: Optional[str] = None
 
-__all__ = ["settings", "Settings"]
+    # DSuite OAuth Provider (for plugin apps)
+    oauth_issuer: str = "dsuite"
+    oauth_nxdune_client_id: str = "nxdune"
+    oauth_nxdune_client_secret: str = "nxdune_local_change_me"
+    oauth_nxdune_redirect_uri: str = "https://stg-nxdune.bourntec.com/auth/dsuite/callback"
+    oauth_nxdune_login_url: str = "https://stg-nxdune.bourntec.com/login"
+    oauth_kaktox_client_id: str = "kaktox"
+    oauth_kaktox_client_secret: str = "kaktox_local_change_me"
+    oauth_kaktox_redirect_uri: str = "http://localhost:9002/auth/dsuite/callback"
+    oauth_kaktox_login_url: str = "http://localhost:9002/login"
+    oauth_cloudspx_client_id: str = "cloudspx"
+    oauth_cloudspx_client_secret: str = "cloudspx_local_change_me"
+    oauth_cloudspx_redirect_uri: str = "http://localhost:9003/auth/dsuite/callback"
+    oauth_cloudspx_login_url: str = "http://localhost:9003/login"
+    nxdune_org_create_url: str = "https://stg-nxdune.bourntec.com/api/organizations/create/"
+    nxdune_org_create_auth_token: Optional[str] = None
+    nxdune_org_create_timeout_seconds: int = 20
+    task_api_base_url: Optional[str] = "https://stg-nxdune.bourntec.com/api"
+    task_api_client_id: Optional[str] = None
+    task_api_client_secret: Optional[str] = None
+
+    class Config:
+        env_file = ENV_PATH if os.path.exists(ENV_PATH) else ".env"
+        env_file_encoding = "utf-8"
+        extra = "allow"
+
+@lru_cache()
+def get_settings() -> Settings:
+    return Settings()
+
+settings = get_settings()
+
+__all__ = ["Settings", "get_settings", "settings"]

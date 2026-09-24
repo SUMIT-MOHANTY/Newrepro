@@ -8,8 +8,7 @@ import subprocess
 import re
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
-
-import llm_gateway
+from app.integrations.llm import llm_gateway
 
 logger = logging.getLogger(__name__)
 

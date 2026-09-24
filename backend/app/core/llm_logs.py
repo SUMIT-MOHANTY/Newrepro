@@ -286,7 +286,7 @@ def log_ai_tracker(messages, response_data):
             # Try extracting content
             # Try importing dynamically to avoid circular import issues
             try:
-                from llm_gateway import extract_content_from_response
+                from app.integrations.llm.llm_gateway import extract_content_from_response
                 content_text = extract_content_from_response(response_data)
             except Exception:
                 # Fallback if import fails

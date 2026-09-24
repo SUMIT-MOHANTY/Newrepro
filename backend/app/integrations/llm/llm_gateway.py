@@ -19,7 +19,7 @@ import contextvars
 from contextlib import contextmanager
 from typing import Optional, Dict, Any, AsyncGenerator
 
-from config import settings
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -293,7 +293,7 @@ def check_ai_allowance(
     """
     reserved_cost = 0.0
     from fastapi import HTTPException
-    from database import SessionLocal
+    from app.core.database import SessionLocal
     from tokenops.services.tokenops_orchestrator import TokenOpsOrchestrator
     from tokenops.services.tenant_resolver_service import TenantResolverService
 
@@ -396,7 +396,7 @@ def log_ai_usage(
     If token count is not provided by the API, computes from input messages and generated response text.
     """
     try:
-        from database import SessionLocal
+        from app.core.database import SessionLocal
         from tokenops.services.tokenops_orchestrator import TokenOpsOrchestrator
 
         # Get values from ContextVars if not explicitly provided
@@ -589,7 +589,7 @@ async def call_llm(
         if last_err:
             if reserved_cost and reserved_cost > 0:
                 try:
-                    from database import SessionLocal
+                    from app.core.database import SessionLocal
                     from tokenops.services.tokenops_orchestrator import TokenOpsOrchestrator
                     from tokenops.services.tenant_resolver_service import TenantResolverService
                     tok_or_org = project_token or current_project_token_var.get() or current_user_org_var.get()

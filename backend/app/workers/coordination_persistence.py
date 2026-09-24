@@ -23,7 +23,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
-from database import SessionLocal, engine
+from app.core.database import SessionLocal, engine
 from sqlalchemy import text, inspect
 
 logger = logging.getLogger(__name__)

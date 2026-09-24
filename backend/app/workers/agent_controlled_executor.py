@@ -1499,7 +1499,7 @@ class ControlledExecutor:
                 # ── Call LLM (reuse existing infrastructure) ─────────────────
                 # We use _call_ai_for_code but with a modified prompt that asks
                 # for file content instead of a bash script
-                from agent_service import _call_ai_for_code
+                from app.services.agents.agent_service import _call_ai_for_code
                 code_response, thought = await _call_ai_for_code(
                     task_description=prompt,
                     agent_type="validator",
@@ -1997,7 +1997,7 @@ async def call_ai_for_code_with_controlled(
         logger.warning(f"[CE] Controlled execution attempt failed, falling back: {e}")
 
     # Fall back to original bash approach (lazy import to avoid circular dependency)
-    from agent_service import _call_ai_for_code
+    from app.services.agents.agent_service import _call_ai_for_code
     return await _call_ai_for_code(
         task_description, agent_type,
         code_context=code_context,

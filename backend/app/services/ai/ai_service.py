@@ -5,13 +5,12 @@ Supports OpenAI-compatible APIs (OpenAI, NVIDIA, Azure, local LLMs, etc.)
 import httpx
 import json
 from typing import Optional, List
-from config import settings
+from app.core.config import settings
 import logging
 import re
 from datetime import datetime, timedelta
-
-import llm_gateway
-from llm_logs import log_llm_interaction_ai_service
+from app.integrations.llm import llm_gateway
+from app.core.llm_logs import log_llm_interaction_ai_service
 
 logger = logging.getLogger(__name__)
 

@@ -9,7 +9,7 @@ Extended with:
 """
 from datetime import datetime
 from typing import Optional, Dict, Any
-from database import SessionLocal
+from app.core.database import SessionLocal
 from models_bootstrap_state import BootstrapState
 import logging
 
@@ -205,7 +205,7 @@ def is_bootstrap_pushed(project_token: str) -> bool:
     """
     return True
     try:
-        from database import SessionLocal
+        from app.core.database import SessionLocal
         import models
         db_session = SessionLocal()
         try:

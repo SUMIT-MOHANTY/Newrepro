@@ -428,7 +428,7 @@ class BackgroundHealMonitor:
         """Main healing loop."""
         while self._running:
             try:
-                import agent_service
+                from app.services.agents import agent_service
                 state = agent_service._ensure_project_state(self.project_token)
 
                 coordination_state = None
@@ -466,7 +466,7 @@ async def run_heal_cycle(project_token: str) -> Dict[str, Any]:
     """
     monitor = SelfHealingMonitor(project_token)
 
-    import agent_service
+    from app.services.agents import agent_service
     state = agent_service._ensure_project_state(project_token)
 
     coordination_state = None

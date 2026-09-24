@@ -3,8 +3,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional, Set
 from datetime import datetime
-
-import llm_gateway
+from app.integrations.llm import llm_gateway
 
 logger = logging.getLogger(__name__)
 

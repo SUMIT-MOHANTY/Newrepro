@@ -12,10 +12,10 @@ import asyncio
 import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
-from database import SessionLocal
+from app.core.database import SessionLocal
 from models import AgentMessage
 import agent_communication_service as comm
-import llm_gateway
+from app.integrations.llm import llm_gateway
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +104,7 @@ class CoordinationMonitor:
         logger.info(f"[CoordinationMonitor] Creating bootstrap fix task")
         
         try:
-            import agent_service
+            from app.services.agents import agent_service
             
             # Use AI to analyze bootstrap failure and create fix
             analysis_prompt = f"""
@@ -181,7 +181,7 @@ Return a JSON object with:
             
             # Reset bootstrap state to pending so it can be retried
             from bootstrap_persistence import get_bootstrap_state
-            from database import SessionLocal
+            from app.core.database import SessionLocal
             from models_bootstrap_state import BootstrapState
             
             db_session = SessionLocal()
@@ -204,7 +204,7 @@ Return a JSON object with:
         """Use AI to analyze the failure and create a fix task"""
         try:
             # Get the original task details
-            import agent_service
+            from app.services.agents import agent_service
             state = agent_service._ensure_project_state(self.project_token)
             tasks = state.get("tasks", [])
             

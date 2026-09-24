@@ -37,24 +37,24 @@ from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_, text
 from sqlalchemy.orm import Session
 
-import auth
+from app.core import security as auth
 import models
 import schemas
-from config import settings
-from database import SessionLocal, engine, get_db
+from app.core.config import settings
+from app.core.database import SessionLocal, engine, get_db
 import time as _time
 import json as json_stdlib
 import analysis_job_manager
-import ai_service
+from app.services.ai import ai_service
 import ai_service_chunked
-import llm_gateway
-import rag_service
+from app.integrations.llm import llm_gateway
+from app.services.ai import rag_service
 from app.routers.helpers import (
     ALL_SKIPPED_ANALYZE_BLOCK_MESSAGE,
     _all_answers_skipped_from_governance_context,
     _normalized_text,
 )
-from llm_gateway import (
+from app.integrations.llm.llm_gateway import (
     current_user_id_var, current_project_token_var, current_project_name_var,
     current_user_org_var, current_purpose_var
 )

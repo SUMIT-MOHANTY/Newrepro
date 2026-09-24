@@ -30,7 +30,7 @@ from app.schemas.ticket import (
     TicketUpdate,
 )
 from app.services.ticket_service import ticket_service
-import database
+import app.core.database as database
 import models
 
 logger = logging.getLogger(__name__)

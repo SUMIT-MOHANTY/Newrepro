@@ -37,11 +37,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_, text
 from sqlalchemy.orm import Session
 
-import auth
+from app.core import security as auth
 import models
 import schemas
-from config import settings
-from database import SessionLocal, engine, get_db
+from app.core.config import settings
+from app.core.database import SessionLocal, engine, get_db
 from app.routers.helpers import _normalized_text
 
 

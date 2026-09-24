@@ -584,7 +584,7 @@ class AgentCoordinationService:
     async def _send_to_agent(self, project_token: str, agent_id: str, message: Dict[str, Any]):
         """Send message to specific agent - BUG FIX 3: Now actually sends messages instead of just logging"""
         import agent_communication_service
-        from database import SessionLocal
+        from app.core.database import SessionLocal
         
         db = SessionLocal()
         try:

@@ -10,7 +10,7 @@ from tokenops.schemas.superadmin import OrganizationWalletView, PaginatedOrganiz
 
 from tokenops.models.organization import Organization
 from tokenops.utils.retry import retry_on_lock
-from config import settings
+from app.core.config import settings
 
 class AdminWalletService:
     def __init__(

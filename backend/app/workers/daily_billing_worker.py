@@ -8,14 +8,7 @@ from typing import Any, Dict, Optional
 import os
 import sys
 
-backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if backend_dir not in sys.path:
-    sys.path.insert(0, backend_dir)
-
-try:
-    import daily_billing_email_service as raw_billing_worker
-except ImportError:
-    raw_billing_worker = None
+from app.workers import daily_billing_email_service as raw_billing_worker
 
 logger = logging.getLogger(__name__)
 

@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Any, Set
 from datetime import datetime
 import json
 
-from database import SessionLocal
+from app.core.database import SessionLocal
 import models
 
 logger = logging.getLogger(__name__)
@@ -505,7 +505,7 @@ class MasterTaskManager:
 
         # 2. Hard Lane Check: filter candidates
         try:
-            from agent_service import _classify_task_assignment_lane, _infer_agent_assignment_lanes
+            from app.services.agents.agent_service import _classify_task_assignment_lane, _infer_agent_assignment_lanes
             task_lane = _classify_task_assignment_lane(task)
             
             filtered_agents = []
@@ -541,7 +541,7 @@ class MasterTaskManager:
 
         # 3. Call AI to choose the best agent among the filtered candidates
         try:
-            from llm_gateway import llm_gateway
+            from app.integrations.llm.llm_gateway import llm_gateway
             import json
             
             candidate_profiles = []

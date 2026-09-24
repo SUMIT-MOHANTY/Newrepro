@@ -9,14 +9,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 import os
 import sys
 
-backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-if backend_dir not in sys.path:
-    sys.path.insert(0, backend_dir)
-
-try:
-    from app.integrations.llm import llm_gateway as raw_gateway
-except ImportError:
-    import llm_gateway as raw_gateway
+from app.integrations.llm import llm_gateway as raw_gateway
 
 logger = logging.getLogger(__name__)
 

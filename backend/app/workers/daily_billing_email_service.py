@@ -6,9 +6,9 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 
-from config import settings
+from app.core.config import settings
 import models
-import email_service
+from app.services import email_service
 from email.message import EmailMessage
 
 logger = logging.getLogger("daily_billing_emails")
@@ -986,7 +986,7 @@ async def daily_billing_email_scheduler() -> None:
     logger.info("Initializing daily utilization email background scheduler loop.")
     await asyncio.sleep(60)
     
-    from database import SessionLocal
+    from app.core.database import SessionLocal
     
     while True:
         try:

@@ -9,7 +9,7 @@ import httpx
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
-from config import settings
+from app.core.config import settings
 
 
 AZDO_OAUTH_AUTHORIZE_URL = "https://app.vssps.visualstudio.com/oauth2/authorize"

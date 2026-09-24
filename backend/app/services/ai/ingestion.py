@@ -28,7 +28,7 @@ async def process_document_with_ai(file_path: str) -> dict:
     import base64
     import zipfile
     import re
-    import llm_gateway
+    from app.integrations.llm import llm_gateway
 
     images_dir = os.path.join(os.path.dirname(file_path), "images")
     os.makedirs(images_dir, exist_ok=True)

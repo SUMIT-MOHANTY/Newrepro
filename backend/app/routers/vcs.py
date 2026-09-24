@@ -37,11 +37,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_, text
 from sqlalchemy.orm import Session
 
-import auth
+from app.core import security as auth
 import models
 import schemas
-from config import settings
-from database import SessionLocal, engine, get_db
+from app.core.config import settings
+from app.core.database import SessionLocal, engine, get_db
 
 import github_service
 import azure_devops_service
@@ -884,7 +884,7 @@ async def get_pr_status(
     current_user: models.User = Depends(auth.get_current_user),
 ):
     """Get the status of merged branches and created PRs."""
-    from agent_service import _ensure_project_state
+    from app.services.agents.agent_service import _ensure_project_state
     state = _ensure_project_state(project_token)
     return {
         "project_token": project_token,

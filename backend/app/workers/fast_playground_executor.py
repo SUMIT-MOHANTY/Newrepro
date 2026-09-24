@@ -7,7 +7,7 @@ import asyncio
 from typing import Dict, Any, List, Optional
 
 from container_pool_manager import pool_manager
-import llm_gateway
+from app.integrations.llm import llm_gateway
 
 logger = logging.getLogger("fast_playground_executor")
 

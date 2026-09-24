@@ -5,7 +5,7 @@ from tokenops.services.org_admin.org_audit_service import OrgAuditService
 from tokenops.repositories.organization_wallet import OrganizationWalletRepository
 from tokenops.repositories.user_wallet import UserWalletRepository
 from tokenops.services.pricing_service import PricingService
-from config import settings
+from app.core.config import settings
 from tokenops.models.token_wallet import UserTokenWallet, OrganizationWallet
 from tokenops.schemas.orgadmin import (
     UserWalletView, PaginatedUserWalletResponse, ReserveWalletView

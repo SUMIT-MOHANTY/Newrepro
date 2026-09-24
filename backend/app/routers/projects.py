@@ -37,16 +37,16 @@ from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_, text
 from sqlalchemy.orm import Session
 
-import auth
+from app.core import security as auth
 import models
 import schemas
-from config import settings
-from database import SessionLocal, engine, get_db
+from app.core.config import settings
+from app.core.database import SessionLocal, engine, get_db
 
-import agent_service
+from app.services.agents import agent_service
 from app.integrations.vcs import azure_devops_service, github_service
 from app.core.middleware import resolve_project_token
-from local_task_preview_service import build_local_task_plan_preview, _normalize_project_dates, _format_date
+from app.services.agents.local_task_preview_service import build_local_task_plan_preview, _normalize_project_dates, _format_date
 from app.routers.helpers import (
     _ensure_org_agent_mapping,
     _normalized_text,
@@ -320,13 +320,13 @@ async def get_elicitation_techniques(
     """
     import re
     import json
-    import llm_gateway
+    from app.integrations.llm import llm_gateway
     # Bind context variables explicitly
     llm_gateway.current_user_id_var.set(current_user.id)
     llm_gateway.current_project_token_var.set(project_token)
     llm_gateway.current_user_org_var.set(getattr(current_user, "organization_name", None))
 
-    from config import settings
+    from app.core.config import settings
 
     # 1. Fetch project/governance
     query = db.query(models.GovernanceResponse).filter(
@@ -752,7 +752,7 @@ def _public_agent_id(agent_id: str, project_token: Optional[str]) -> str:
 
 def _runtime_agent_records(records: List[models.Agent], project_token: Optional[str]) -> List[Dict[str, Any]]:
     project_token = _normalize_project_token(project_token)
-    from database import SessionLocal
+    from app.core.database import SessionLocal
     db = SessionLocal()
     try:
         # Query mappings to find counts

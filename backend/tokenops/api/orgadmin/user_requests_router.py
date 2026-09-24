@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 from sqlalchemy.orm import Session
 
-from database import get_db
+from app.core.database import get_db
 from models import User
 from tokenops.schemas.superadmin import BaseAPIResponse
 from tokenops.services.user.user_quota_service import UserQuotaService

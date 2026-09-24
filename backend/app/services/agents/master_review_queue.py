@@ -1,4 +1,4 @@
-import llm_gateway
+from app.integrations.llm import llm_gateway
 import subprocess
 import asyncio
 import json

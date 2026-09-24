@@ -13,8 +13,8 @@ from typing import Dict, Any, Optional, List
 
 import numpy as np
 
-from config import settings
-import llm_gateway
+from app.core.config import settings
+from app.integrations.llm import llm_gateway
 
 logger = logging.getLogger(__name__)
 

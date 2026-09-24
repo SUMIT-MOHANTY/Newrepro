@@ -37,11 +37,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_, text
 from sqlalchemy.orm import Session
 
-import auth
+from app.core import security as auth
 import models
 import schemas
-from config import settings
-from database import SessionLocal, engine, get_db
+from app.core.config import settings
+from app.core.database import SessionLocal, engine, get_db
 
 import ingestion
 from app.core.middleware import is_major_action
@@ -340,7 +340,7 @@ async def download_document_file(
     """
     import os
     from jose import jwt
-    from config import settings
+    from app.core.config import settings
     from fastapi.responses import FileResponse
     
     # 1. Resolve token
@@ -383,7 +383,7 @@ async def download_document_file(
     # Step 2: Database lookup candidate check by file_path or filename
     doc_match = None
     try:
-        from database import SessionLocal
+        from app.core.database import SessionLocal
         import models
         from sqlalchemy import or_
         db_session = SessionLocal()

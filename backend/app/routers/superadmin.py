@@ -37,14 +37,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_, text
 from sqlalchemy.orm import Session
 
-import auth
+from app.core import security as auth
 import models
 import schemas
-from config import settings
-from database import SessionLocal, engine, get_db
-
-import email_service
-import agent_service
+from app.core.config import settings
+from app.core.database import SessionLocal, engine, get_db
+from app.services import email_service
+from app.services.agents import agent_service
 from app.routers.helpers import (
     _normalize_agent_kind,
     _normalize_project_token,
@@ -1969,7 +1968,7 @@ async def trigger_billing_emails(
     if not current_user.is_org_admin:
         raise HTTPException(status_code=403, detail="Forbidden. Org admin rights required.")
         
-    from daily_billing_email_service import send_daily_billing_emails, send_super_user_billing_report
+    from app.workers.daily_billing_email_service import send_daily_billing_emails, send_super_user_billing_report
     import datetime
     
     if super_user_only:
@@ -2015,7 +2014,7 @@ def get_billing_emails_controls(
     if not current_user.is_org_admin:
         raise HTTPException(status_code=403, detail="Forbidden. Org admin rights required.")
         
-    from daily_billing_email_service import load_email_controls
+    from app.workers.daily_billing_email_service import load_email_controls
     return load_email_controls()
 
 
@@ -2030,7 +2029,7 @@ def update_billing_emails_controls(
     if not current_user.is_org_admin:
         raise HTTPException(status_code=403, detail="Forbidden. Org admin rights required.")
         
-    from daily_billing_email_service import load_email_controls, save_email_controls
+    from app.workers.daily_billing_email_service import load_email_controls, save_email_controls
     
     controls = load_email_controls()
     

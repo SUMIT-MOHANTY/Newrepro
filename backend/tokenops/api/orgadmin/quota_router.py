@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from typing import Optional
 from sqlalchemy.orm import Session
-from database import get_db
+from app.core.database import get_db
 from models import User
 from tokenops.models.quota_request import TokenQuotaRequest, QuotaRequestType, QuotaRequestStatus
 from tokenops.services.tenant_resolver_service import TenantResolverService

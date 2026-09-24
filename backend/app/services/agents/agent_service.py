@@ -20,7 +20,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
-from config import settings
+from app.core.config import settings
 import httpx
 from bootstrap_persistence import (
     is_bootstrap_pushed, set_bootstrap_success, get_bootstrap_branch, set_bootstrap_branch,
@@ -29,9 +29,9 @@ from bootstrap_persistence import (
 from agent_communication_hooks import broadcast_task_started, broadcast_task_completed, broadcast_task_failed, broadcast_bootstrap_waiting
 from agent_controlled_executor import call_ai_for_code_with_controlled
 import logging
-import llm_gateway
+from app.integrations.llm import llm_gateway
 from agent_bash_ai_integration import get_ai_bash_interface, cleanup_bash_executor
-from llm_logs import log_llm_interaction
+from app.core.llm_logs import log_llm_interaction
 
 from container_pool_manager import pool_manager
 from fast_playground_executor import fast_executor
@@ -588,7 +588,7 @@ def build_external_agent_username(agent_id: Optional[str], fallback_name: Option
 
     # 1. Query the database to resolve sequential "agentX" based on project agents list
     try:
-        from database import SessionLocal
+        from app.core.database import SessionLocal
         import models as db_models
         db = SessionLocal()
         try:
@@ -2305,7 +2305,7 @@ Do NOT use vague descriptions like "appropriate fields" — name every field exp
         try:
             import context_manager as ctx_mgr
             if ctx_mgr.is_project_indexed(project_token):
-                import rag_service
+                from app.services.ai import rag_service
                 await rag_service.incremental_insert(
                     project_token=project_token,
                     text_chunks=[f"TECHNICAL SPECIFICATION (Canonical)\n\n{spec_text}"],
@@ -2346,7 +2346,7 @@ def refresh_brd_analysis_from_db(project_token: str, user_id: Optional[int] = No
     Returns the loaded BRD analysis or empty dict if not found.
     """
     try:
-        from database import SessionLocal
+        from app.core.database import SessionLocal
         import models as db_models
         
         db = SessionLocal()
@@ -2429,7 +2429,7 @@ def _build_file_ownership_block(
     # 2. Read from DB for cross-restart resilience
     if project_token:
         try:
-            from database import SessionLocal
+            from app.core.database import SessionLocal
             import models as _models
             db = SessionLocal()
             try:
@@ -3032,7 +3032,7 @@ async def _kg_aware_error_analysis(
 
         # Query the KG for the correct definitions
         query = f"Find the correct definitions, imports, and file locations for: {', '.join(error_keywords)}"
-        import rag_service
+        from app.services.ai import rag_service
         result = await rag_service.query_codebase(project_token, query, mode="hybrid", top_k=5)
 
         if result.get("context"):
@@ -3669,7 +3669,7 @@ async def _call_ai_for_code_chunked(
     
     # Log successful chunked generation to ai_calls_tracker
     try:
-        from llm_logs import log_ai_tracker
+        from app.core.llm_logs import log_ai_tracker
         log_ai_tracker(messages, {
             "model": model_name,
             "choices": [{"message": {"content": f"Chunked execution complete. Total chunks: {len(checklist)}"}}]
@@ -5496,7 +5496,7 @@ REMEMBER: The script must ACTUALLY MODIFY FILES on disk, not just report what sh
                 else:
                     logger.warning(f"✗ CHECK {check_num} FAILED (iteration {iteration + 1}, exit code: {exec_result.exit_code})")
                     # Log the failure details
-                    from llm_logs import log_self_review_failure
+                    from app.core.llm_logs import log_self_review_failure
                     log_self_review_failure(
                         check_number=check_num,
                         check_name=check_name,
@@ -6573,7 +6573,7 @@ async def _coordinate_repo_bootstrap(
         })
         # Broadcast bootstrap start
         try:
-            from database import SessionLocal
+            from app.core.database import SessionLocal
             import agent_communication_service as _comm
             _db = SessionLocal()
             try:
@@ -6602,7 +6602,7 @@ async def _coordinate_repo_bootstrap(
     })
     # Broadcast waiting status
     try:
-        from database import SessionLocal
+        from app.core.database import SessionLocal
         import agent_communication_service as _comm
         _db = SessionLocal()
         try:
@@ -7420,7 +7420,7 @@ async def _create_merge_fix_task(
     preferred_agent_id: Optional[str] = None,
     fix_depth: int = 1,
 ) -> Optional[str]:
-    from task_service import task_service
+    from app.services.agents.task_service import task_service
 
     effective_token = task_token or get_project_task_token(project_token)
     startdate = datetime.utcnow().strftime("%Y-%m-%d")
@@ -10165,7 +10165,7 @@ def _setup_git_in_container(container_name: str, repo_url: str, token: str, bran
         
         if project_token:
             try:
-                from database import SessionLocal
+                from app.core.database import SessionLocal
                 import models
                 from brownfield_agent_service import is_brownfield_project
                 
@@ -11318,7 +11318,7 @@ async def _master_assign_task_to_agent(
         username = build_external_agent_username(agent_id, agent_name)
 
         # ── LOCAL-FIRST TASK ASSIGNMENT IN DB ──
-        from database import SessionLocal
+        from app.core.database import SessionLocal
         import models
         db = SessionLocal()
         try:
@@ -11415,7 +11415,7 @@ async def _fetch_external_tasks(
     if not project_token:
         return []
 
-    from database import SessionLocal
+    from app.core.database import SessionLocal
     import models
 
     db = SessionLocal()
@@ -11598,7 +11598,7 @@ async def _mark_checklist_item(task_id, checklist_items: list, item_index: int, 
                 "text": item.get("text", ""),
                 "completed": True if i <= item_index else item.get("completed", False),
             })
-        from task_service import task_service
+        from app.services.agents.task_service import task_service
         task_token = task_token or get_project_task_token(project_token)
         await task_service.add_checklist_to_task(int(task_id), updated, task_token=task_token)
     except Exception as e:
@@ -18241,7 +18241,7 @@ async def _claim_initial_task_assignments(
 
         nxdune_opt_in_ok = False
         try:
-            from task_service import task_service
+            from app.services.agents.task_service import task_service
             await task_service.opt_in_task(
                 {"task_id": int(tid), "username": agent_username},
                 task_token=effective_token,
@@ -18414,7 +18414,7 @@ def _extract_date_yyyy_mm_dd(value: Any) -> Optional[str]:
 
 
 async def _resolve_project_deadline(project_token: Optional[str] = None, task_token: Optional[str] = None) -> str:
-    from task_service import task_service
+    from app.services.agents.task_service import task_service
 
     resolved_project = project_token
     effective_token = task_token or get_project_task_token(resolved_project)
@@ -18454,7 +18454,7 @@ async def _update_project_status(
     task_token: Optional[str] = None,
     force: bool = False,
 ) -> bool:
-    from task_service import task_service
+    from app.services.agents.task_service import task_service
 
     resolved_project = project_token
     state = _ensure_project_state(resolved_project)
@@ -18512,7 +18512,7 @@ async def _sync_rollup_status_for_completed_task(
     project_token: Optional[str] = None,
     task_token: Optional[str] = None,
 ) -> Dict[str, bool]:
-    from task_service import task_service
+    from app.services.agents.task_service import task_service
 
     resolved_project = project_token or (task.get("_project_token") if isinstance(task, dict) else None)
     state = _ensure_project_state(resolved_project)
@@ -19238,7 +19238,7 @@ async def _pick_next_task(agent_id: str, project_token: Optional[str] = None,
             # Attempt NXDune opt-in first (provides upstream coordination)
             nxdune_opt_in_ok = False
             try:
-                from task_service import task_service
+                from app.services.agents.task_service import task_service
                 effective_token = task_token or get_project_task_token(project_token)
                 await task_service.opt_in_task(
                     {"task_id": int(tid), "username": agent_username},
@@ -20219,7 +20219,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     
                     # Broadcast waiting status
                     try:
-                        from database import SessionLocal
+                        from app.core.database import SessionLocal
                         import agent_communication_service as _comm
                         _db = SessionLocal()
                         try:
@@ -20260,7 +20260,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                     
                     # Broadcast ready status
                     try:
-                        from database import SessionLocal
+                        from app.core.database import SessionLocal
                         import agent_communication_service as _comm
                         _db = SessionLocal()
                         try:
@@ -20471,7 +20471,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
 
             # ── BROADCAST: Task started ────────────────────────────────
             try:
-                from database import SessionLocal
+                from app.core.database import SessionLocal
                 import agent_communication_service as _comm
                 _db = SessionLocal()
                 try:
@@ -20597,7 +20597,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             # For Migration projects, clone legacy source repo to /legacy in the container
             if project_token:
                 try:
-                    from database import SessionLocal
+                    from app.core.database import SessionLocal
                     import models
                     db_session = SessionLocal()
                     gov = db_session.query(models.GovernanceResponse).filter(
@@ -20775,7 +20775,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
                         })
                         try:
                             # Import database models and session
-                            from database import SessionLocal
+                            from app.core.database import SessionLocal
                             import models as db_models
                             
                             db = SessionLocal()
@@ -20909,7 +20909,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             # Fetch Task message/comment context for additional history
             task_messages_text = ""
             try:
-                from task_service import task_service
+                from app.services.agents.task_service import task_service
                 tid = str(_normalize_task_id(task) or task.get("external_id") or task.get("id") or "")
                 if tid:
                     msg_resp = await task_service.get_task_messages(tid, task_token=task_token)
@@ -21088,7 +21088,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             skills_context = ""
             try:
                 import skill_matcher_service
-                from database import SessionLocal
+                from app.core.database import SessionLocal
                 
                 _db = SessionLocal()
                 try:
@@ -21199,7 +21199,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
             # Prepend legacy codebase migration instructions for Migration projects
             if project_token:
                 try:
-                    from database import SessionLocal
+                    from app.core.database import SessionLocal
                     import models
                     db_session = SessionLocal()
                     gov = db_session.query(models.GovernanceResponse).filter(
@@ -21233,7 +21233,7 @@ async def _run_agent_once(agent_id: str, git_repo_url: str = None, git_token: st
 
             # Broadcast building status
             try:
-                from database import SessionLocal
+                from app.core.database import SessionLocal
                 import agent_communication_service as _comm
                 _db = SessionLocal()
                 try:
@@ -21916,7 +21916,7 @@ Agent {agent_id} will proceed to next available task.
                                 
                                 # Broadcast to master agent for coordination
                                 try:
-                                    from database import SessionLocal
+                                    from app.core.database import SessionLocal
                                     import agent_communication_service as _comm
                                     _db = SessionLocal()
                                     try:
@@ -22135,7 +22135,7 @@ Agent {agent_id} will proceed to next available task.
 
                     # OPT-IN to linked task first
                     try:
-                        from task_service import task_service
+                        from app.services.agents.task_service import task_service
                         effective_token = task_token or get_project_task_token(project_token)
                         lt_task_id_for_optin = _normalize_task_id(linked_task)
                         lt_username = build_external_agent_username(agent_id, agent.get("name"))
@@ -22526,7 +22526,7 @@ Agent {agent_id} will proceed to next available task.
                         })
                         # Broadcast READY so blocked agents know this work is available
                         try:
-                            from database import SessionLocal
+                            from app.core.database import SessionLocal
                             import agent_communication_service as _comm
                             _db = SessionLocal()
                             try:
@@ -23093,7 +23093,7 @@ Be extremely specific. Every field name must be exact. This is the single source
                 
                 # Broadcast completion
                 try:
-                    from database import SessionLocal
+                    from app.core.database import SessionLocal
                     import agent_communication_service as _comm
                     _db = SessionLocal()
                     try:
@@ -23178,7 +23178,7 @@ Be extremely specific. Every field name must be exact. This is the single source
                     claimed_task_ids.discard(task_id_for_claim)
                     # Also mark the task as blocked in external system so master supervisor knows
                     try:
-                        from task_service import task_service
+                        from app.services.agents.task_service import task_service
                         await task_service.update_task_tags({
                             "task_id": int(task_id_for_claim),
                             "tags": ["blocked"]
@@ -24600,7 +24600,7 @@ async def repair_preview(
 
             # Formalize as a system task (BUG) for visibility
             try:
-                from task_service import task_service
+                from app.services.agents.task_service import task_service
                 effective_token = get_project_task_token(project_token)
                 deadline = await _resolve_project_deadline(project_token, task_token=effective_token)
                 
@@ -25414,7 +25414,7 @@ async def _master_notify_agent_failure(
             # Explicitly mark the task as blocked using the new tag API
             task_id = _normalize_task_id(task)
             if task_id:
-                from task_service import task_service
+                from app.services.agents.task_service import task_service
                 await task_service.update_task_tags({
                     "task_id": int(task_id),
                     "tags": ["blocked"]
@@ -25740,7 +25740,7 @@ async def _initialize_task_checklist(task: Dict[str, Any], project_token: Option
             ]
     
     try:
-        from database import SessionLocal
+        from app.core.database import SessionLocal
         import models
         db = SessionLocal()
         try:
@@ -25788,7 +25788,7 @@ async def _master_quality_and_duplicate_check(
     }
     
     try:
-        from database import SessionLocal
+        from app.core.database import SessionLocal
         import models
         db = SessionLocal()
         try:
@@ -26014,7 +26014,7 @@ async def _master_supervisor_loop(
             # ═══ HANDOVER MESSAGE HANDLING ═══
             # Check for HANDOVER messages from agents that failed self-review
             try:
-                from database import SessionLocal
+                from app.core.database import SessionLocal
                 import agent_communication_service as _comm
                 _db = SessionLocal()
                 try:
@@ -26177,7 +26177,7 @@ Follow the specific instructions to avoid repeating the same failures.
                                     # Update task description via API
                                     task_id = _normalize_task_id(handover_task)
                                     if task_id:
-                                        from task_service import task_service
+                                        from app.services.agents.task_service import task_service
                                         await task_service.update_task({
                                             "task_id": int(task_id),
                                             "description": updated_description
@@ -26201,7 +26201,7 @@ Follow the specific instructions to avoid repeating the same failures.
                                     # Check if task is currently assigned
                                     current_assignee = handover_task.get("assignee")
                                     if current_assignee:
-                                        from task_service import task_service
+                                        from app.services.agents.task_service import task_service
                                         await task_service.unassign_task({
                                             "task_id": int(task_id),
                                             "username": current_assignee
@@ -26289,7 +26289,7 @@ Follow the specific instructions to avoid repeating the same failures.
                                 task_id = str(_normalize_task_id(current_task) or current_task.get("external_id") or current_task.get("id") or "")
                                 if task_id:
                                     username = build_external_agent_username(agent_id, agent.get("name"))
-                                    from task_service import task_service
+                                    from app.services.agents.task_service import task_service
                                     await task_service.unassign_task({
                                         "task_id": int(task_id),
                                         "username": username
@@ -26335,7 +26335,7 @@ Follow the specific instructions to avoid repeating the same failures.
                             task_id = str(_normalize_task_id(current_task) or current_task.get("external_id") or current_task.get("id") or "")
                             if task_id:
                                 # Mark task as blocked in external system
-                                from task_service import task_service
+                                from app.services.agents.task_service import task_service
                                 await task_service.update_task_tags({
                                     "task_id": int(task_id),
                                     "tags": ["blocked"]
@@ -26450,7 +26450,7 @@ Follow the specific instructions to avoid repeating the same failures.
                     # ORPHAN DETECTED — release claim and unblock for reassignment
                     claimed_task_ids.discard(task_tid)
                     try:
-                        from task_service import task_service
+                        from app.services.agents.task_service import task_service
                         await task_service.update_task_tags({
                             "task_id": int(task_tid),
                             "tags": ["unblocked"]
@@ -27391,7 +27391,7 @@ async def _wait_for_peer_and_pull(
     5. Return True if resolved, False if timed out/crashed/deadlocked
     """
     try:
-        from database import SessionLocal
+        from app.core.database import SessionLocal
         import agent_communication_service as _comm
         import agent_contract_store as _cs
 

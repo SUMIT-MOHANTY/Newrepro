@@ -8,7 +8,7 @@ import json
 from agent_coordination_service import coordination_service
 from coordinated_agent_wrapper import run_coordinated_agents_langgraph
 import agent_communication_service as comm
-from database import get_db
+from app.core.database import get_db
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/coordination", tags=["Agent Coordination"])

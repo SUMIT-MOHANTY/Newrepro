@@ -18,10 +18,10 @@ from fastapi import (
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
-import auth
+from app.core import security as auth
 import models
 import schemas
-from database import get_db
+from app.core.database import get_db
 
 logger = logging.getLogger(__name__)
 

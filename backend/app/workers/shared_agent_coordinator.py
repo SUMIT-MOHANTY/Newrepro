@@ -307,7 +307,7 @@ class SharedAgentCoordinator:
         
         if acquired:
             # Trigger agent execution (call agent_service.run_agent)
-            import agent_service
+            from app.services.agents import agent_service
             asyncio.create_task(
                 agent_service.run_agent(
                     agent_id=agent_id,

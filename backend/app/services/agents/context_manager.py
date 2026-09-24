@@ -18,8 +18,7 @@ import time
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Set
 from dataclasses import dataclass, field
-
-import rag_service
+from app.services.ai import rag_service
 import knowledge_graph_service as kg_service
 
 logger = logging.getLogger(__name__)
@@ -1314,7 +1313,7 @@ class ProjectLiveMemory:
         if not file_paths or not self._project_token:
             return
         try:
-            from database import SessionLocal
+            from app.core.database import SessionLocal
             import models as _models
             db = SessionLocal()
             try:
@@ -1354,7 +1353,7 @@ class ProjectLiveMemory:
         if not self._project_token:
             return
         try:
-            from database import SessionLocal
+            from app.core.database import SessionLocal
             import models as _models
             db = SessionLocal()
             try:
@@ -1484,7 +1483,7 @@ class ProjectLiveMemory:
         # 2. Read from local DB
         if self._project_token:
             try:
-                from database import SessionLocal
+                from app.core.database import SessionLocal
                 import models as _models
                 db = SessionLocal()
                 try:
@@ -1994,7 +1993,7 @@ async def get_agent_notes_context(
             return str(cached_entry.get("value") or "")
 
     try:
-        from task_service import task_service
+        from app.services.agents.task_service import task_service
     except Exception:
         return ""
 

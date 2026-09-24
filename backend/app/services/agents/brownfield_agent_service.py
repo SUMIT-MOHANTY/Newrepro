@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 def _get_agent_service_utils():
     """Lazily import shared utilities from agent_service to avoid circular imports."""
-    import agent_service as _as
+    from app.services.agents import agent_service as _as
     return {
         "build_git_auth_url": _as._build_git_auth_url,
         "get_git_auth_config": _as._get_git_auth_config,
@@ -752,7 +752,7 @@ async def run_brownfield_agent(
 
         # ── 6. Call the canonical run_agent() with the pre-set container ─────
         # Import lazily to avoid circular imports at module load time
-        import agent_service as _as
+        from app.services.agents import agent_service as _as
 
         _log(f"Handing off to agent_service.run_agent() on branch '{feature_branch}'")
 

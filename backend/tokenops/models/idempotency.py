@@ -8,7 +8,7 @@ Table:
 from datetime import datetime
 
 from sqlalchemy import Column, DateTime, String
-from database import Base
+from app.core.database import Base
 
 class IdempotencyKey(Base):
     """

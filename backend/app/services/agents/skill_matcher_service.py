@@ -223,7 +223,7 @@ async def inject_context_for_task(
         Dictionary with 'claude_context' and 'skills_context' keys
     """
     try:
-        from database import SessionLocal
+        from app.core.database import SessionLocal
         import models
         
         # Get governance response for this project

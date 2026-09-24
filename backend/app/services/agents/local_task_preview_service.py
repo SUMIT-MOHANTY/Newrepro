@@ -4,9 +4,8 @@ import re
 from html import escape
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
-
-import ai_service
-from agent_service import MASTER_AGENT_ID
+from app.services.ai import ai_service
+from app.services.agents.agent_service import MASTER_AGENT_ID
 
 logger = logging.getLogger(__name__)
 

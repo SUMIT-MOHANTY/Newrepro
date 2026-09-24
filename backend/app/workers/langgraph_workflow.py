@@ -222,7 +222,7 @@ def _route_after_master_note(state: AgentWorkflowState) -> str:
 
 
 async def _plan_assignments(state: AgentWorkflowState) -> Dict[str, Any]:
-    import agent_service
+    from app.services.agents import agent_service
 
     try:
         claimed = await agent_service._claim_initial_task_assignments(
@@ -252,7 +252,7 @@ def _route_after_planning(state: AgentWorkflowState) -> str:
 
 
 async def _run_parallel_agents(state: AgentWorkflowState) -> Dict[str, Any]:
-    import agent_service
+    from app.services.agents import agent_service
     from coordinated_agent_wrapper import run_coordinated_agent
     from agent_coordination_service import initialize_project_coordination
     from coordination_monitor import start_coordination_monitor, stop_coordination_monitor
@@ -345,7 +345,7 @@ async def _run_parallel_agents(state: AgentWorkflowState) -> Dict[str, Any]:
 
 
 async def _await_merge_completion(state: AgentWorkflowState) -> Dict[str, Any]:
-    import agent_service
+    from app.services.agents import agent_service
 
     drained = await agent_service.wait_for_git_merge_drain(
         project_token=state.get("project_token"),

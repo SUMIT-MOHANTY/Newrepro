@@ -58,7 +58,7 @@ _CHECKPOINTER = InMemorySaver()
 
 async def _initialize_coordination_state(state: SynchronizedAgentState) -> Dict[str, Any]:
     """Initialize shared coordination state for all agents"""
-    import agent_service
+    from app.services.agents import agent_service
     
     # Get project context and task dependencies
     project_token = state.get("project_token")
@@ -111,7 +111,7 @@ async def _initialize_coordination_state(state: SynchronizedAgentState) -> Dict[
 
 async def _publish_master_workspace_note(state: SynchronizedAgentState) -> Dict[str, Any]:
     """Enhanced master note with coordination context"""
-    import agent_service
+    from app.services.agents import agent_service
 
     agent_service.prime_project_git_credentials(
         state.get("agents_config"),
@@ -156,7 +156,7 @@ async def _publish_master_workspace_note(state: SynchronizedAgentState) -> Dict[
 
 async def _plan_synchronized_assignments(state: SynchronizedAgentState) -> Dict[str, Any]:
     """Enhanced planning with dependency awareness and synchronization points"""
-    import agent_service
+    from app.services.agents import agent_service
 
     try:
         claimed = await agent_service._claim_initial_task_assignments(
@@ -217,7 +217,7 @@ async def _plan_synchronized_assignments(state: SynchronizedAgentState) -> Dict[
 
 async def _run_coordinated_agents(state: SynchronizedAgentState) -> Dict[str, Any]:
     """Run agents with real-time coordination and synchronization"""
-    import agent_service
+    from app.services.agents import agent_service
     
     assignments = state.get("assignments") or []
     if not assignments:
@@ -324,7 +324,7 @@ async def _run_agent_with_coordination(
     state: SynchronizedAgentState
 ) -> Dict[str, Any]:
     """Run agent with coordination hooks and shared state awareness"""
-    import agent_service
+    from app.services.agents import agent_service
     
     # Pre-execution coordination
     await _pre_execution_coordination(agent_id, assigned_task, state)
@@ -455,7 +455,7 @@ async def _pre_execution_coordination(agent_id: str, task: Dict[str, Any], state
         from agent_coordination_service import coordination_service
 
         # 1. Check task dependencies via agent_service task_ledger
-        import agent_service
+        from app.services.agents import agent_service
         state_data = agent_service._ensure_project_state(project_token)
         ledger = state_data.get("task_ledger", {})
         dag = state_data.get("task_dag", {})
@@ -680,7 +680,7 @@ async def _update_shared_context(state: SynchronizedAgentState):
 
     try:
         # Get latest from agent_service in-memory state
-        import agent_service
+        from app.services.agents import agent_service
         state_data = agent_service._ensure_project_state(project_token)
 
         shared_context = state.get("shared_context", {})
@@ -735,7 +735,7 @@ async def _resolve_blocked_agents(state: SynchronizedAgentState):
         return
 
     try:
-        import agent_service
+        from app.services.agents import agent_service
         state_data = agent_service._ensure_project_state(project_token)
         ledger = state_data.get("task_ledger", {})
         dag = state_data.get("task_dag", {})
@@ -993,7 +993,7 @@ def _build_synchronized_workflow():
 
 # Reuse some functions from original workflow
 async def _await_merge_completion(state: SynchronizedAgentState) -> Dict[str, Any]:
-    import agent_service
+    from app.services.agents import agent_service
     
     drained = await agent_service.wait_for_git_merge_drain(
         project_token=state.get("project_token"),

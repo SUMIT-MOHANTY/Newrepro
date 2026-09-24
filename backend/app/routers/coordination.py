@@ -37,21 +37,21 @@ from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_, text
 from sqlalchemy.orm import Session
 
-import auth
+from app.core import security as auth
 import models
 import schemas
-from config import settings
-from database import SessionLocal, engine, get_db
+from app.core.config import settings
+from app.core.database import SessionLocal, engine, get_db
 
 import subprocess
 import knowledge_graph_service as kg_service
 import context_manager
 import master_task_manager
 import master_coordination_service
-import agent_service
-import llm_gateway
-import rag_service
-import rsa_utils
+from app.services.agents import agent_service
+from app.integrations.llm import llm_gateway
+from app.services.ai import rag_service
+from app.core import rsa_utils
 from app.routers.helpers import (
     _normalize_project_token,
     _require_organization,
@@ -295,7 +295,7 @@ async def get_tech_spec(
     current_user: models.User = Depends(auth.get_current_user),
 ):
     """Get the generated Technical Spec (Layer 1: Architect Agent)."""
-    from agent_service import get_technical_spec, _project_tech_specs
+    from app.services.agents.agent_service import get_technical_spec, _project_tech_specs
     spec = get_technical_spec(project_token)
     record = _project_tech_specs.get(project_token, {})
     return {
@@ -313,7 +313,7 @@ async def generate_tech_spec(
     current_user: models.User = Depends(auth.get_current_user),
 ):
     """Manually trigger Technical Spec generation (Layer 1: Architect Agent)."""
-    from agent_service import _generate_technical_spec
+    from app.services.agents.agent_service import _generate_technical_spec
 
     # Get KG context if available
     kg_context = ""
@@ -721,7 +721,7 @@ async def fetch_task_token(
     """Fetch task token dynamically from the task management API"""
     try:
         import httpx
-        from config import settings
+        from app.core.config import settings
         token_url = f"{settings.task_api_base_url.rstrip('/')}/api/token/task/"
         async with httpx.AsyncClient() as client:
             response = await client.post(token_url, json=payload.dict(), timeout=10.0)

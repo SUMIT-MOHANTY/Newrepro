@@ -8,9 +8,8 @@ import re
 from typing import Dict, Any, Optional, List, Tuple  # Added Tuple for type hinting
 from datetime import datetime
 import logging
-
-import llm_gateway
-from llm_logs import log_llm_interaction_ai_service
+from app.integrations.llm import llm_gateway
+from app.core.llm_logs import log_llm_interaction_ai_service
 
 logger = logging.getLogger(__name__)
 

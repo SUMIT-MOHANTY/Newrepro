@@ -13,7 +13,7 @@ import asyncio
 import logging
 from typing import Dict, List, Optional, Any
 from master_task_manager import master_task_manager
-import agent_service
+from app.services.agents import agent_service
 
 # Integration with all 6 coordination systems
 from integrated_agent_coordinator import coordinator as integrated_coordinator

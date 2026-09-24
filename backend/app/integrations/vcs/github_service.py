@@ -10,7 +10,7 @@ import re
 import zipfile
 import httpx
 from typing import Optional, Dict, Any, List, Tuple
-from config import settings
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 

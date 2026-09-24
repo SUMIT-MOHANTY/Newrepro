@@ -1,8 +1,8 @@
 # Optimized AI Service with Multi-Stage Analysis
 import asyncio
 from typing import Dict, Any, Optional, List
-import llm_gateway
-from llm_logs import log_llm_interaction_ai_service
+from app.integrations.llm import llm_gateway
+from app.core.llm_logs import log_llm_interaction_ai_service
 
 # Smaller, focused prompts for each stage
 STAGE_1_UNDERSTANDING_PROMPT = """# ROLE

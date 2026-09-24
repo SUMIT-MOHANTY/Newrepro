@@ -37,15 +37,15 @@ from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_, text
 from sqlalchemy.orm import Session
 
-import auth
+from app.core import security as auth
 import models
 import schemas
-from config import settings
-from database import SessionLocal, engine, get_db
+from app.core.config import settings
+from app.core.database import SessionLocal, engine, get_db
 
-import agent_service
-import ai_service
-import llm_gateway
+from app.services.agents import agent_service
+from app.services.ai import ai_service
+from app.integrations.llm import llm_gateway
 from app.services.agents.local_task_preview_service import (
     build_local_task_plan_preview,
     _normalize_project_dates,
@@ -335,7 +335,7 @@ async def brd_chat(
     """
     Conversational chat endpoint for project BRD and analysis.
     """
-    import llm_gateway
+    from app.integrations.llm import llm_gateway
     # Bind context variables explicitly inside the handler
     llm_gateway.current_user_id_var.set(current_user.id)
     llm_gateway.current_project_token_var.set(payload.project_token)
@@ -343,7 +343,7 @@ async def brd_chat(
     llm_gateway.current_purpose_var.set("BRD Refinement Chat")
 
     import json
-    from config import settings
+    from app.core.config import settings
     # Look up GovernanceResponse for project context
     gov = None
     if str(payload.project_token).isdigit():
@@ -1276,11 +1276,11 @@ async def _bg_run_agent(
     Otherwise, routes to the legacy agent_service.run_agent loop.
     """
     try:
-        from database import SessionLocal
+        from app.core.database import SessionLocal
         import models
         from brownfield_agent_service import is_brownfield_project, run_brownfield_agent
         from bootstrap_persistence import get_bootstrap_branch
-        import agent_service
+        from app.services.agents import agent_service
 
         # Notify IntegratedCoordinator that agent is starting
         try:
@@ -2741,7 +2741,7 @@ async def remove_agent(
 
 # ─────────────────────────────── Task Management Integration ──────────────────────────
 
-from task_service import (
+from app.services.agents.task_service import (
     task_service,
     TaskServiceError,
     TaskServiceTimeoutError,
@@ -4228,7 +4228,7 @@ async def upsert_agent_note(
         )
         
         # Get note ID locally to pass back
-        from database import SessionLocal
+        from app.core.database import SessionLocal
         db = SessionLocal()
         try:
             note = db.query(models.AgentNote).filter(
@@ -4303,7 +4303,7 @@ async def get_agent_note_detail(
     x_task_token: Optional[str] = Header(None),
 ):
     """Fetch one agent note from the local database by local ID or synced NXDune ID."""
-    from database import SessionLocal
+    from app.core.database import SessionLocal
     db = SessionLocal()
     try:
         note = db.query(models.AgentNote).filter(
@@ -6246,7 +6246,7 @@ async def put_agent_project_config(
             (base_dir / saved_input_filename).write_bytes(content)
     try:
         if x_task_token:
-            from task_service import task_service
+            from app.services.agents.task_service import task_service
             await task_service.update_project_config(config_payload, task_token=x_task_token)
     except Exception as e:
         logger.warning("Failed to sync project config to upstream: %s", e)
