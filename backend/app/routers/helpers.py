@@ -276,6 +276,58 @@ def _governance_query_for_user(db: Session, user: models.User):
     )
 
 
+def check_project_name_exists_in_org(
+    db: Session,
+    project_name: str,
+    user: models.User,
+    exclude_token: Optional[str] = None,
+) -> Optional[models.GovernanceResponse]:
+    """
+    Check if an active project with the given name already exists within the user's organization/tenant.
+    Comparison is case-insensitive and trims whitespace.
+    
+    Returns the conflicting GovernanceResponse if found, otherwise None.
+    """
+    name = (project_name or "").strip()
+    if not name:
+        return None
+
+    org_name = _normalized_text(getattr(user, "organization_name", None))
+    not_archived = or_(
+        models.GovernanceResponse.is_archived.is_(None),
+        models.GovernanceResponse.is_archived.is_(False),
+    )
+
+    query = db.query(models.GovernanceResponse).filter(
+        func.lower(func.trim(models.GovernanceResponse.project_name)) == name.lower(),
+        not_archived,
+    )
+
+    if exclude_token:
+        norm_token = _normalize_project_token(exclude_token)
+        if norm_token:
+            query = query.filter(models.GovernanceResponse.project_token != norm_token)
+
+    if org_name:
+        org_user_ids = _org_user_ids_subquery(db, org_name)
+        if org_user_ids is not None:
+            query = query.filter(
+                or_(
+                    func.lower(func.trim(models.GovernanceResponse.organization_name)) == org_name.lower(),
+                    models.GovernanceResponse.owner_id.in_(org_user_ids),
+                )
+            )
+        else:
+            query = query.filter(
+                func.lower(func.trim(models.GovernanceResponse.organization_name)) == org_name.lower()
+            )
+    else:
+        # If user has no organization set, scope to the user's own projects
+        query = query.filter(models.GovernanceResponse.owner_id == user.id)
+
+    return query.first()
+
+
 ORG_MANAGED_PAGES: list[schemas.OrganizationPage] = [
     schemas.OrganizationPage(path="/status-dashboard", label="Status Dashboard"),
     schemas.OrganizationPage(path="/dashboard", label="Requirements Analyzer"),

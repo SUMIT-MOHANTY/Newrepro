@@ -843,9 +843,21 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     };
 
 
+    const isDuplicateProjectName = useMemo(() => {
+        const trimmed = (newProjectName || '').trim().toLowerCase();
+        if (!trimmed) return false;
+        return (projects || []).some(p => {
+            const pName = String(p.name || p.project_name || '').trim().toLowerCase();
+            return pName === trimmed;
+        });
+    }, [newProjectName, projects]);
+
     const handleCreateProject = () => {
-        if (!newProjectName.trim()) return;
-        navigate(`/new-project?projectName=${encodeURIComponent(newProjectName.trim())}`);
+        const trimmed = (newProjectName || '').trim();
+        if (!trimmed || isDuplicateProjectName) return;
+        setShowModal(false);
+        setNewProjectName('');
+        navigate(`/new-project?projectName=${encodeURIComponent(trimmed)}&new=true`);
     };
 
     // ── Run All Agents ────────────────────────────────────────────────
@@ -3322,10 +3334,28 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                             <div className="p-6">
                                 <p className="text-sm text-app-text-muted mb-4 font-medium">Step 1 of Requirement Screening Track: Give your project a descriptive name to get started.</p>
                                 <label className="block text-[11px] font-bold text-app-text-muted mb-2 uppercase tracking-widest">Project Name <span className="text-red-400">*</span></label>
-                                <input type="text" value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} autoFocus onKeyDown={(e) => e.key === 'Enter' && handleCreateProject()} placeholder="e.g. Customer Analytics Platform" className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-blue-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium mb-6" />
+                                <input
+                                    type="text"
+                                    value={newProjectName}
+                                    onChange={(e) => setNewProjectName(e.target.value)}
+                                    autoFocus
+                                    onKeyDown={(e) => e.key === 'Enter' && handleCreateProject()}
+                                    placeholder="e.g. Customer Analytics Platform"
+                                    className={`w-full px-4 py-3 border-2 rounded-xl focus:ring-4 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium ${
+                                        isDuplicateProjectName
+                                            ? 'border-red-400 focus:border-red-500 focus:ring-red-400/20 mb-2'
+                                            : 'border-app-border focus:ring-app-primary-light focus:border-blue-400 mb-6'
+                                    }`}
+                                />
+                                {isDuplicateProjectName && (
+                                    <div className="flex items-center gap-1.5 text-xs text-red-500 font-medium mb-4 animate-in fade-in">
+                                        <AlertTriangle className="w-3.5 h-3.5 text-red-500 shrink-0" />
+                                        <span>A project named &quot;{newProjectName.trim()}&quot; already exists in your organization.</span>
+                                    </div>
+                                )}
                                 <div className="flex items-center gap-3">
-                                    <button type="button" onClick={() => setShowModal(false)} className="flex-1 py-3 px-4 font-bold text-app-text-label bg-app-bg-page hover:bg-app-bg-muted border border-app-border rounded-xl transition-colors">Cancel</button>
-                                    <button type="button" onClick={handleCreateProject} disabled={!newProjectName.trim()} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-app-primary to-app-primary hover:from-app-primary-hover hover:to-app-primary-hover rounded-xl transition-colors shadow-lg shadow-app-primary/30 hover:shadow-app-primary/50 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 group">
+                                    <button type="button" onClick={() => { setShowModal(false); setNewProjectName(''); }} className="flex-1 py-3 px-4 font-bold text-app-text-label bg-app-bg-page hover:bg-app-bg-muted border border-app-border rounded-xl transition-colors">Cancel</button>
+                                    <button type="button" onClick={handleCreateProject} disabled={!newProjectName.trim() || isDuplicateProjectName} className="flex-1 py-3 px-4 font-bold text-white bg-gradient-to-r from-app-primary to-app-primary hover:from-app-primary-hover hover:to-app-primary-hover rounded-xl transition-colors shadow-lg shadow-app-primary/30 hover:shadow-app-primary/50 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2 group">
                                         Start track <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
                                     </button>
                                 </div>

@@ -924,9 +924,21 @@ const GovernanceForm = ({
     const [isCreatingProject, setIsCreatingProject] = useState(false);
     const skipOption = { label: 'Skip', score: 0 };
 
-    // Step state: 0 = Project Name page, 1…N = dimension steps, N+1 = review
     const [currentStep, setCurrentStep] = useState(0);
     const lastHydratedProjectKeyRef = useRef(null);
+
+    const isDuplicateProjectName = useMemo(() => {
+        if (isGovernanceQuestionsPage) return false;
+        const trimmed = (projectName || '').trim().toLowerCase();
+        if (!trimmed) return false;
+        return (projects || []).some((p) => {
+            const pToken = p.projectToken || p.key;
+            const isSame = selectedProjectKey && pToken === selectedProjectKey;
+            if (isSame) return false;
+            const pName = String(p.name || p.project_name || '').trim().toLowerCase();
+            return pName === trimmed;
+        });
+    }, [projectName, projects, selectedProjectKey, isGovernanceQuestionsPage]);
 
     /* ── build dimension list ── */
     const questionsByDimension = useMemo(() => {
@@ -1129,12 +1141,26 @@ const GovernanceForm = ({
         };
 
         const hydrateData = async () => {
-            if (isNew) {
+            if (isNew && nameFromUrl) {
+                const decoded = decodeURIComponent(nameFromUrl);
+                setProjectName(decoded);
+                setProjectTags([]);
+                setAnswers({});
+                setCurrentStep(0);
+                setResult(null);
+                setSelectedProjectKey?.('');
+                sessionStorage.removeItem('governance_wizard_step_new');
+                sessionStorage.setItem('governanceContext', JSON.stringify({ project_name: decoded }));
+                navigate(initiationPath, { replace: true });
+                setIsHydrated(true);
+                return;
+            } else if (isNew) {
                 setProjectName('');
                 setProjectTags([]);
                 setAnswers({});
                 setCurrentStep(0);
                 setResult(null);
+                setSelectedProjectKey?.('');
                 sessionStorage.removeItem('governance_wizard_step_new');
                 navigate(initiationPath, { replace: true });
                 setIsHydrated(true);
@@ -1148,10 +1174,12 @@ const GovernanceForm = ({
 
             if (!backendLoaded) {
                 if (nameFromUrl) {
-                    setProjectName(decodeURIComponent(nameFromUrl));
+                    const decoded = decodeURIComponent(nameFromUrl);
+                    setProjectName(decoded);
                     setCurrentStep(0);
+                    setSelectedProjectKey?.('');
                     // Also store it so it persists on reload
-                    sessionStorage.setItem('governanceContext', JSON.stringify({ project_name: decodeURIComponent(nameFromUrl) }));
+                    sessionStorage.setItem('governanceContext', JSON.stringify({ project_name: decoded }));
                     // Clean up the URL
                     navigate(location.pathname, { replace: true });
                 }
@@ -1407,7 +1435,7 @@ const GovernanceForm = ({
 
 
     const canProceed = () => {
-        if (!isGovernanceQuestionsPage) return projectName.trim().length > 0;
+        if (!isGovernanceQuestionsPage) return projectName.trim().length > 0 && !isDuplicateProjectName;
         if (isDimensionStep) {
             if (activeDimension === 'Modernization Scoring') return true;
             return activeQuestions.every((q) => answers[q.id] !== undefined);
@@ -1428,11 +1456,15 @@ const GovernanceForm = ({
                 return;
             }
 
-            // Synchronize project with backend BEFORE navigation.
-            // The backend creates a GovernanceResponse row (project_initiated, governance_pending)
-            // so the project is persisted in the DB and survives browser clear / server restart.
-            
-            const projectKeyToUse = selectedProject?.projectToken || selectedProjectKey || undefined;
+            if (isDuplicateProjectName) {
+                setError(`A project named '${trimmedName}' already exists in your organization. Please choose a different name.`);
+                setIsCreatingProject(false);
+                return;
+            }
+
+            // Only reuse selectedProjectKey if it matches an existing project name (i.e. editing existing draft)
+            const isInitiatingNew = !selectedProjectKey || (selectedProject?.name && selectedProject.name.toLowerCase() !== trimmedName.toLowerCase());
+            const projectKeyToUse = isInitiatingNew ? undefined : (selectedProject?.projectToken || selectedProjectKey || undefined);
 
             // Call backend to create or ensure project exists
             const response = await fetch(API_ENDPOINTS.PROJECT_ENSURE, {
@@ -1444,6 +1476,7 @@ const GovernanceForm = ({
                 body: JSON.stringify({
                     project_token: projectKeyToUse,
                     project_name: trimmedName,
+                    is_new: isInitiatingNew,
                     tags: projectTags.map(t => t.name),
                 })
             });
@@ -1511,8 +1544,13 @@ const GovernanceForm = ({
 
     const goNext = () => {
         if (!canProceed()) {
-            if (!isGovernanceQuestionsPage || currentStep === 0) setError('Please enter a project name before continuing.');
-            else setError('Please answer all questions in this section before continuing.');
+            if (!isGovernanceQuestionsPage && isDuplicateProjectName) {
+                setError(`A project named '${projectName.trim()}' already exists in your organization. Please choose a different name.`);
+            } else if (!isGovernanceQuestionsPage || currentStep === 0) {
+                setError('Please enter a project name before continuing.');
+            } else {
+                setError('Please answer all questions in this section before continuing.');
+            }
             return;
         }
         setError('');
@@ -1652,15 +1690,26 @@ const GovernanceForm = ({
                                                         setError('');
                                                     }
                                                 }}
-                                                onKeyDown={(e) => e.key === 'Enter' && goNext()}
+                                                onKeyDown={(e) => e.key === 'Enter' && canProceed() && goNext()}
                                                 placeholder="e.g. Customer Analytics Platform"
-                                                className="w-full px-4 py-3 border-2 border-app-border rounded-xl focus:ring-4 focus:ring-app-primary-light focus:border-blue-400 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border hover:border-app-border font-medium"
+                                                className={`w-full px-4 py-3 border-2 rounded-xl focus:ring-4 text-sm bg-app-bg-page/50 text-app-text-main transition-all duration-200 placeholder:text-app-border font-medium ${
+                                                    isDuplicateProjectName
+                                                        ? 'border-red-400 focus:border-red-500 focus:ring-red-400/20'
+                                                        : 'border-app-border focus:ring-app-primary-light focus:border-blue-400 hover:border-app-border'
+                                                }`}
                                             />
                                             <div className="absolute inset-y-0 right-3 flex items-center pointer-events-none opacity-0 group-focus-within:opacity-100 transition-opacity">
-                                                <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+                                                <div className={`w-2 h-2 rounded-full ${isDuplicateProjectName ? 'bg-red-400' : 'bg-blue-400'} animate-pulse`} />
                                             </div>
                                         </div>
-                                        <p className="text-[11px] text-app-text-light mt-2 ml-1">This name will be used to identify your screening assessment.</p>
+                                        {isDuplicateProjectName ? (
+                                            <div className="flex items-center gap-1.5 text-xs text-red-500 font-medium mt-2 ml-1 animate-in fade-in">
+                                                <AlertTriangle className="w-3.5 h-3.5 text-red-500 shrink-0" />
+                                                <span>A project named &quot;{projectName.trim()}&quot; already exists in your organization.</span>
+                                            </div>
+                                        ) : (
+                                            <p className="text-[11px] text-app-text-light mt-2 ml-1">This name will be used to identify your screening assessment.</p>
+                                        )}
 
                                         {/* Tags Editor */}
                                         <div className="mt-6 space-y-3">

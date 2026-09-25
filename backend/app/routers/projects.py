@@ -50,7 +50,9 @@ from app.services.agents.local_task_preview_service import build_local_task_plan
 from app.routers.helpers import (
     _ensure_org_agent_mapping,
     _normalized_text,
+    _org_user_ids_subquery,
     _update_project_tags,
+    check_project_name_exists_in_org,
     parse_markdown_techniques,
 )
 
@@ -60,6 +62,32 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Projects"])
 
 # --- Extracted Block (Lines 8149-8351) ---
+@router.get("/api/projects/check-name")
+async def check_project_name_available(
+    name: str = Query(..., min_length=1),
+    exclude_token: Optional[str] = Query(None),
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Check if a project name is available in the current user's organization.
+    """
+    conflict = check_project_name_exists_in_org(
+        db=db,
+        project_name=name,
+        user=current_user,
+        exclude_token=exclude_token,
+    )
+    return {
+        "available": conflict is None,
+        "project_name": name.strip(),
+        "conflicting_project": {
+            "token": conflict.project_token,
+            "name": conflict.project_name
+        } if conflict else None
+    }
+
+
 @router.post("/api/projects/ensure")
 async def ensure_project_exists(
     request: dict,
@@ -69,10 +97,10 @@ async def ensure_project_exists(
     """
     Ensure a project exists in the backend database.
     Prevents duplicate project creation by:
-    - Returning existing project if token matches
+    - Returning existing project if token matches and belongs to this organization
     - Creating new project with provided token if it doesn't exist
     - Generating new token only if none provided
-    - CRITICAL: Prevents duplicate project names for the same user
+    - CRITICAL: Strictly prevents duplicate project names within the organization/tenant
     
     This is called during project initiation to synchronize frontend draft projects with backend.
     """
@@ -80,6 +108,7 @@ async def ensure_project_exists(
     project_name = request.get('project_name', 'Untitled Project').strip()
     client_id = request.get('client_id')
     client_secret = request.get('client_secret')
+    is_new = request.get('is_new', False)
     
     # Validate project name
     if not project_name or project_name.lower() == 'untitled project':
@@ -88,56 +117,50 @@ async def ensure_project_exists(
             detail="Please provide a valid project name"
         )
     
-    # CRITICAL: Check if a project with this name already exists for this organization
-    org_name = current_user.organization_name or "Default Organization"
-    existing_by_name = db.query(models.GovernanceResponse).filter(
-        func.lower(models.GovernanceResponse.organization_name) == org_name.lower(),
-        func.lower(models.GovernanceResponse.project_name) == project_name.lower()
-    ).first()
+    org_name = _normalized_text(current_user.organization_name) or "Default Organization"
+    
+    # CRITICAL: Prevent duplicate project names within the organization/tenant
+    token_to_exclude = None if is_new else project_token
+    existing_by_name = check_project_name_exists_in_org(
+        db=db,
+        project_name=project_name,
+        user=current_user,
+        exclude_token=token_to_exclude,
+    )
     
     if existing_by_name:
-        # If project_token matches, return the existing project (user is continuing)
-        if project_token and existing_by_name.project_token == project_token:
-            logger.info(f"Returning existing project: {project_token} for organization {org_name}")
-            # Update credentials if provided
-            if not existing_by_name.organization_name:
-                existing_by_name.organization_name = org_name
-            if client_id:
-                existing_by_name.client_id = client_id
-            if client_secret:
-                existing_by_name.client_secret = client_secret
-            
-            if 'tags' in request:
-                _update_project_tags(db, existing_by_name, request['tags'])
-                
-            db.commit()
-            db.refresh(existing_by_name)
-            
-            return {
-                'project_token': existing_by_name.project_token,
-                'project_name': existing_by_name.project_name,
-                'client_id': existing_by_name.client_id,
-                'client_secret': existing_by_name.client_secret,
-                'owner_id': existing_by_name.owner_id,
-                'exists': True,
-                'tags': [{'id': t.id, 'name': t.name} for t in existing_by_name.tags]
-            }
-        else:
-            # Different token or no token - this is a duplicate name attempt
-            raise HTTPException(
-                status_code=409,
-                detail=f"A project named '{project_name}' already exists in your organization. Please choose a different name or continue with the existing project."
-            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A project named '{project_name}' already exists in your organization. Please choose a different name."
+        )
     
-    if project_token:
+    if project_token and not is_new:
         # Check if project exists for this token and organization
-        existing = db.query(models.GovernanceResponse).filter(
-            models.GovernanceResponse.project_token == project_token,
-            func.lower(models.GovernanceResponse.organization_name) == org_name.lower()
-        ).first()
+        org_user_ids = _org_user_ids_subquery(db, org_name)
+        token_query = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.project_token == project_token
+        )
+        if org_user_ids is not None:
+            token_query = token_query.filter(
+                or_(
+                    func.lower(models.GovernanceResponse.organization_name) == org_name.lower(),
+                    models.GovernanceResponse.owner_id.in_(org_user_ids),
+                )
+            )
+        else:
+            token_query = token_query.filter(
+                or_(
+                    models.GovernanceResponse.owner_id == current_user.id,
+                    func.lower(models.GovernanceResponse.organization_name) == org_name.lower(),
+                )
+            )
+        existing = token_query.first()
         
         if existing:
-            # Project exists - return it (update credentials if provided)
+            # Update credentials & project_name if provided
+            existing.project_name = project_name
+            if not existing.organization_name:
+                existing.organization_name = org_name
             if client_id:
                 existing.client_id = client_id
             if client_secret:
@@ -160,7 +183,7 @@ async def ensure_project_exists(
             }
     
     # Project doesn't exist - create it with provided or new token
-    new_token = project_token or str(uuid.uuid4())
+    new_token = (project_token if not is_new else None) or str(uuid.uuid4())
     
     # Verify token is unique
     while db.query(models.GovernanceResponse).filter(

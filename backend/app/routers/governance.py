@@ -52,6 +52,7 @@ from app.routers.helpers import (
     _normalize_project_token,
     _normalized_text,
     _org_user_ids_subquery,
+    check_project_name_exists_in_org,
 )
 from app.services.agents import agent_service, context_manager, task_service
 from app.services.ai import rag_service
@@ -336,6 +337,20 @@ async def submit_governance_response(
                     models.GovernanceResponse.project_token == project_token
                 ).first():
                     project_token = str(uuid.uuid4())
+
+    # CRITICAL: Prevent duplicate project names within the organization/tenant
+    exclude_token = db_response.project_token if db_response else None
+    conflict = check_project_name_exists_in_org(
+        db=db,
+        project_name=request.project_name,
+        user=current_user,
+        exclude_token=exclude_token,
+    )
+    if conflict:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A project named '{request.project_name.strip()}' already exists in your organization. Please choose a different name."
+        )
 
     if db_response:
         db_response.project_name = request.project_name
