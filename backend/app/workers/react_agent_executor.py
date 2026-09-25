@@ -327,7 +327,12 @@ class ReActAgentExecutor:
         temp_messages = self.conversation_history + [{"role": "user", "content": summary_prompt}]
         
         try:
-            summary_text = await llm_gateway.call_llm_and_extract(messages=temp_messages, max_tokens=300)
+            summary_text = await llm_gateway.call_llm_and_extract(
+                messages=temp_messages,
+                max_tokens=300,
+                purpose="Autonomous Coding Agent: History Compression",
+                project_token=self.project_token,
+            )
         except Exception as err:
             logger.warning(f"Failed to generate history summary: {err}")
             summary_text = f"Working on task '{task_title}' under persona '{self.agent_persona}'."
@@ -419,7 +424,12 @@ OUTPUT JSON EXACTLY IN THIS FORMAT:
         # Append to conversational history
         self.conversation_history.append({"role": "user", "content": user_prompt})
         
-        response = await llm_gateway.call_llm_and_extract(messages=self.conversation_history, max_tokens=2000)
+        response = await llm_gateway.call_llm_and_extract(
+            messages=self.conversation_history,
+            max_tokens=2000,
+            purpose="Autonomous Coding Agent: Task Planning",
+            project_token=self.project_token,
+        )
         self.conversation_history.append({"role": "assistant", "content": response})
         
         clean_json = self._extract_code_block(response, "json")
@@ -488,7 +498,18 @@ Tech Stack:
 Output ONLY the raw file content. No markdown fences, no explanations. It must be valid code."""
 
         messages = [{"role": "user", "content": prompt}]
-        response = await llm_gateway.call_llm_and_extract(messages=messages, max_tokens=4000)
+        file_name = os.path.basename(file_plan.path) if (file_plan and file_plan.path) else "Code"
+        step_purpose = (
+            f"Autonomous Coding Agent: Error Correction ({file_name})"
+            if previous_error
+            else f"Autonomous Coding Agent: Code Gen ({file_name})"
+        )
+        response = await llm_gateway.call_llm_and_extract(
+            messages=messages,
+            max_tokens=4000,
+            purpose=step_purpose,
+            project_token=self.project_token,
+        )
         
         return self._extract_code_block(response)
 
@@ -577,9 +598,12 @@ Output ONLY the raw file content. No markdown fences, no explanations. It must b
             f"No markdown fences, no explanations."
         )
         try:
+            file_name = os.path.basename(file_path) if file_path else "file"
             response = await llm_gateway.call_llm_and_extract(
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=60
+                max_tokens=60,
+                purpose=f"Autonomous Coding Agent: Syntax Validation ({file_name})",
+                project_token=self.project_token,
             )
             clean_cmd = self._extract_code_block(response).strip()
             return clean_cmd if clean_cmd else f"test -s {file_path}"

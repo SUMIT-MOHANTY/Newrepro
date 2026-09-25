@@ -137,7 +137,8 @@ Context:
                 ],
                 model=llm_gateway.resolve_model(),
                 temperature=0.3,
-                max_tokens=1000
+                max_tokens=1000,
+                purpose="Autonomous Coding Agent: Terminal Command",
             )
             
             content = response.get("content", "").strip()
@@ -216,7 +217,8 @@ Please interpret these results and provide insights."""
                 ],
                 model=llm_gateway.resolve_model(),
                 temperature=0.5,
-                max_tokens=800
+                max_tokens=800,
+                purpose="Autonomous Coding Agent: Terminal Output Analysis",
             )
             
             return response.get("content", "").strip()

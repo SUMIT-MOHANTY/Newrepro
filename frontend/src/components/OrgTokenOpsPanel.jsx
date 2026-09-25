@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
     Coins, Users, ShieldAlert, ArrowRightLeft, PlusCircle, MinusCircle, 
     RefreshCw, AlertCircle, CheckCircle2, DollarSign, Activity, FileText, Ban, Check, MoreVertical, Info,
-    Folder, Sparkles, Bot, Search, Scale, GitPullRequest, MessageSquare, Compass, CreditCard, RotateCcw, Sliders, CheckSquare, Zap, ArrowUpDown, ChevronUp, ChevronDown, ChevronLeft, ChevronRight
+    Folder, Sparkles, Bot, Search, Scale, GitPullRequest, MessageSquare, Compass, CreditCard, RotateCcw, Sliders, CheckSquare, Zap, ArrowUpDown, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Cpu
 } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 
@@ -84,8 +84,14 @@ export default function OrgTokenOpsPanel({ user }) {
         return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val);
     };
 
+    const extractModelFromRemarks = (remarks) => {
+        if (!remarks) return null;
+        const match = remarks.match(/Model:\s*([^\s,(]+)/i);
+        return match ? match[1] : null;
+    };
+
     const renderPurposeBadge = (purpose, type) => {
-        const p = purpose || (
+        const fullPurpose = purpose || (
             type === 'ALLOCATION' ? 'Admin Quota Allocation' : 
             type === 'PURCHASE' ? 'Token Pack Purchase' : 
             type === 'REALLOCATION' ? 'User Wallet Reallocation' : 
@@ -93,56 +99,80 @@ export default function OrgTokenOpsPanel({ user }) {
             type === 'MANUAL_ADJUSTMENT' ? 'Manual Balance Adjustment' : 
             'AI Consumption'
         );
+
+        let mainCategory = fullPurpose;
+        let subAction = null;
+        if (fullPurpose.includes(':')) {
+            const parts = fullPurpose.split(':');
+            mainCategory = parts[0].trim();
+            subAction = parts.slice(1).join(':').trim();
+        } else if (mainCategory === 'Autonomous Coding Agent') {
+            subAction = 'On-Flight Execution';
+        }
         
         let badgeStyle = "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700";
         let iconElement = <Zap className="w-3 h-3 text-amber-500 shrink-0" />;
 
-        if (p.includes('Screening')) {
+        if (mainCategory.includes('Screening')) {
             badgeStyle = "bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800/60";
             iconElement = <CheckSquare className="w-3 h-3 text-purple-500 shrink-0" />;
-        } else if (p.includes('Analysis') || p.includes('Architecture')) {
+        } else if (mainCategory.includes('Analysis') || mainCategory.includes('Architecture')) {
             badgeStyle = "bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800/60";
             iconElement = <Search className="w-3 h-3 text-indigo-500 shrink-0" />;
-        } else if (p.includes('Gap')) {
+        } else if (mainCategory.includes('Gap')) {
             badgeStyle = "bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800/60";
             iconElement = <Scale className="w-3 h-3 text-amber-500 shrink-0" />;
-        } else if (p.includes('Test')) {
+        } else if (mainCategory.includes('Test')) {
             badgeStyle = "bg-cyan-50 dark:bg-cyan-950/40 text-cyan-700 dark:text-cyan-300 border-cyan-200 dark:border-cyan-800/60";
             iconElement = <Sparkles className="w-3 h-3 text-cyan-500 shrink-0" />;
-        } else if (p.includes('Agent') || p.includes('Coding') || p.includes('Playground')) {
+        } else if (mainCategory.includes('Agent') || mainCategory.includes('Coding') || mainCategory.includes('Playground')) {
             badgeStyle = "bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/60";
             iconElement = <Bot className="w-3 h-3 text-rose-500 shrink-0" />;
-        } else if (p.includes('PR') || p.includes('Commit')) {
+        } else if (mainCategory.includes('PR') || mainCategory.includes('Commit')) {
             badgeStyle = "bg-teal-50 dark:bg-teal-950/40 text-teal-700 dark:text-teal-300 border-teal-200 dark:border-teal-800/60";
             iconElement = <GitPullRequest className="w-3 h-3 text-teal-500 shrink-0" />;
-        } else if (p.includes('Ingestion') || p.includes('OCR')) {
+        } else if (mainCategory.includes('Ingestion') || mainCategory.includes('OCR')) {
             badgeStyle = "bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-800/60";
             iconElement = <FileText className="w-3 h-3 text-sky-500 shrink-0" />;
-        } else if (p.includes('Chat') || p.includes('Copilot') || p.includes('Assistant')) {
+        } else if (mainCategory.includes('Chat') || mainCategory.includes('Copilot') || mainCategory.includes('Assistant')) {
             badgeStyle = "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/60";
             iconElement = <MessageSquare className="w-3 h-3 text-emerald-500 shrink-0" />;
-        } else if (p.includes('Decomposition') || p.includes('Checklist') || p.includes('Planning')) {
+        } else if (mainCategory.includes('Decomposition') || mainCategory.includes('Checklist') || mainCategory.includes('Planning')) {
             badgeStyle = "bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800/60";
             iconElement = <Compass className="w-3 h-3 text-blue-500 shrink-0" />;
-        } else if (p.includes('Revocation')) {
+        } else if (mainCategory.includes('Revocation')) {
             badgeStyle = "bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/60";
             iconElement = <RotateCcw className="w-3 h-3 text-rose-500 shrink-0" />;
-        } else if (p.includes('Reallocation')) {
+        } else if (mainCategory.includes('Reallocation')) {
             badgeStyle = "bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-800/60";
             iconElement = <ArrowRightLeft className="w-3 h-3 text-sky-500 shrink-0" />;
-        } else if (p.includes('Allocation') || p.includes('Purchase')) {
+        } else if (mainCategory.includes('Allocation') || mainCategory.includes('Purchase')) {
             badgeStyle = "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/60";
             iconElement = <CreditCard className="w-3 h-3 text-emerald-500 shrink-0" />;
-        } else if (p.includes('Manual')) {
+        } else if (mainCategory.includes('Manual')) {
             badgeStyle = "bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800/60";
             iconElement = <Sliders className="w-3 h-3 text-amber-500 shrink-0" />;
         }
 
         return (
-            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold border ${badgeStyle}`}>
-                {iconElement}
-                <span className="font-medium whitespace-nowrap">{p}</span>
-            </span>
+            <div className="flex flex-col items-start gap-1">
+                <span 
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold border ${badgeStyle}`}
+                    title={subAction ? `${mainCategory} — ${subAction}` : mainCategory}
+                >
+                    {iconElement}
+                    <span className="font-medium whitespace-nowrap">{mainCategory}</span>
+                </span>
+                {subAction && (
+                    <span 
+                        className="inline-flex items-center gap-1 text-[10px] font-semibold text-rose-600 dark:text-rose-400 pl-0.5"
+                        title={`Action executed by agent: ${subAction}`}
+                    >
+                        <span className="w-1.5 h-1.5 rounded-full bg-rose-400 shrink-0"></span>
+                        <span className="truncate max-w-[210px]">{subAction}</span>
+                    </span>
+                )}
+            </div>
         );
     };
 
@@ -1626,17 +1656,28 @@ export default function OrgTokenOpsPanel({ user }) {
                                                     )}
                                                 </td>
                                                 <td className="px-4 py-3 text-left align-middle">
-                                                    <div className="flex flex-col items-start gap-1">
+                                                    <div className="flex flex-col items-start gap-1.5">
                                                         {renderPurposeBadge(tx.purpose, tx.transaction_type)}
-                                                        {tx.project_name && (
-                                                            <div 
-                                                                className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-medium bg-app-bg-muted text-app-text-muted border border-app-border max-w-[200px] truncate" 
-                                                                title={`Project: ${tx.project_name}`}
-                                                            >
-                                                                <Folder className="w-3 h-3 text-indigo-500 shrink-0" />
-                                                                <span className="truncate">{tx.project_name}</span>
-                                                            </div>
-                                                        )}
+                                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                                            {tx.project_name && (
+                                                                <div 
+                                                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-app-bg-muted text-app-text-muted border border-app-border max-w-[180px] truncate" 
+                                                                    title={`Project: ${tx.project_name}`}
+                                                                >
+                                                                    <Folder className="w-3 h-3 text-indigo-500 shrink-0" />
+                                                                    <span className="truncate">{tx.project_name}</span>
+                                                                </div>
+                                                            )}
+                                                            {extractModelFromRemarks(tx.remarks) && (
+                                                                <div
+                                                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-medium bg-indigo-50/70 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 border border-indigo-200/50 dark:border-indigo-800/40"
+                                                                    title={`AI Model: ${extractModelFromRemarks(tx.remarks)}`}
+                                                                >
+                                                                    <Cpu className="w-2.5 h-2.5 text-indigo-500 shrink-0" />
+                                                                    <span>{extractModelFromRemarks(tx.remarks)}</span>
+                                                                </div>
+                                                            )}
+                                                        </div>
                                                     </div>
                                                 </td>
                                                 <td className={`px-4 py-3 text-center align-middle font-bold ${tx.token_delta >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>

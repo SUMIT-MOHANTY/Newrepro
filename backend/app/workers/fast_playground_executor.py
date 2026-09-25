@@ -123,7 +123,11 @@ Provide a JSON object containing the exact corrected files to fix the error trac
 ```
 """
         try:
-            raw_response = await llm_gateway.call_llm_and_extract([{"role": "user", "content": prompt}], max_tokens=4000)
+            raw_response = await llm_gateway.call_llm_and_extract(
+                [{"role": "user", "content": prompt}],
+                max_tokens=4000,
+                purpose="Autonomous Coding Agent: Playground Repair",
+            )
             json_str = self._extract_json(raw_response)
             if not json_str:
                 return False
@@ -217,7 +221,11 @@ Return a clean JSON object containing all required code files to complete this t
 }}
 ```
 """
-            raw_response = await llm_gateway.call_llm_and_extract([{"role": "user", "content": prompt}], max_tokens=4000)
+            raw_response = await llm_gateway.call_llm_and_extract(
+                [{"role": "user", "content": prompt}],
+                max_tokens=4000,
+                purpose="Autonomous Coding Agent: Playground Code Gen",
+            )
             json_str = self._extract_json(raw_response)
 
             if not json_str:

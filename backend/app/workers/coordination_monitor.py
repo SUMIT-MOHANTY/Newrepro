@@ -133,7 +133,8 @@ Return a JSON object with:
                     "role": "user",
                     "content": analysis_prompt
                 }],
-                temperature=0.3
+                temperature=0.3,
+                purpose="Autonomous Coding Agent: Bootstrap Recovery",
             )
             
             import json
@@ -245,7 +246,8 @@ Return a JSON object with:
                     "role": "user",
                     "content": analysis_prompt
                 }],
-                temperature=0.3
+                temperature=0.3,
+                purpose="Autonomous Coding Agent: Workspace Analysis",
             )
             
             # Parse the AI response
