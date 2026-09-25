@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Mail, User, Loader2, ArrowRight, Lock, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Mail, User, Loader2, ArrowRight, Lock, AlertCircle, CheckCircle2, ShieldCheck } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
+import { clearTenantScopedState } from '../utils/auth';
 import logo from '../assets/logo.png';
 import bourntecLogo from '../assets/bourntec_logo.png';
 
@@ -19,6 +20,8 @@ export default function InviteSignup() {
     const [token, setToken] = useState('');
     const [invitePreview, setInvitePreview] = useState(null);
     const [previewLoading, setPreviewLoading] = useState(false);
+    const [isExistingUser, setIsExistingUser] = useState(false);
+    const [checkingUser, setCheckingUser] = useState(false);
     const [firstName, setFirstName] = useState('');
     const [lastName, setLastName] = useState('');
     const [email, setEmail] = useState('');
@@ -47,6 +50,11 @@ export default function InviteSignup() {
                 if (restrictedEmail) {
                     setEmail(restrictedEmail);
                 }
+                if (data?.user_exists) {
+                    setIsExistingUser(true);
+                    if (data.first_name) setFirstName(data.first_name);
+                    if (data.last_name) setLastName(data.last_name);
+                }
                 if (data?.accepted_at) {
                     setError('This invite link was already used.');
                 } else if (data?.expires_at && new Date(data.expires_at).getTime() < Date.now()) {
@@ -59,6 +67,29 @@ export default function InviteSignup() {
             })
             .finally(() => setPreviewLoading(false));
     }, [token]);
+
+    const checkExistingUser = async (emailVal) => {
+        const clean = (emailVal || '').trim().toLowerCase();
+        if (!clean || !clean.includes('@')) return;
+        try {
+            setCheckingUser(true);
+            const res = await fetch(`${API_ENDPOINTS.ORG_INVITE_CHECK_USER}?email=${encodeURIComponent(clean)}`);
+            if (res.ok) {
+                const d = await res.json();
+                if (d?.exists) {
+                    setIsExistingUser(true);
+                    if (d.first_name) setFirstName(d.first_name);
+                    if (d.last_name) setLastName(d.last_name);
+                } else {
+                    setIsExistingUser(false);
+                }
+            }
+        } catch (err) {
+            console.debug('Failed to check user:', err);
+        } finally {
+            setCheckingUser(false);
+        }
+    };
 
     const canSubmit = useMemo(() => {
         return Boolean(token && email.trim() && password);
@@ -89,10 +120,14 @@ export default function InviteSignup() {
             if (!data.access_token) {
                 throw new Error('Invite accepted, but login token was not returned.');
             }
+            clearTenantScopedState();
             localStorage.setItem('token', data.access_token);
+            if (data.organization_name) {
+                localStorage.setItem('active_org', data.organization_name);
+            }
             setSuccess(`Welcome! You joined ${data.organization_name || 'the organization'} as ${data.role_name || 'a member'}.`);
-            // Redirect invited users to new project page to start their first project
-            setTimeout(() => navigate('/new-project'), 250);
+            // Redirect to dashboard of the newly joined organization
+            setTimeout(() => navigate('/status-dashboard'), 350);
         } catch (err) {
             setError(err.message || 'Unable to join organization.');
         } finally {
@@ -139,15 +174,32 @@ export default function InviteSignup() {
                             </div>
                         )}
 
+                        {isExistingUser && (
+                            <div className="mb-6 p-3.5 bg-blue-50/80 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 rounded-xl flex items-start space-x-3 text-xs text-blue-800 dark:text-blue-300">
+                                <ShieldCheck className="w-5 h-5 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
+                                <div className="space-y-0.5">
+                                    <p className="font-semibold text-blue-900 dark:text-blue-200">Existing DSuite Profile Found</p>
+                                    <p className="leading-relaxed text-blue-700 dark:text-blue-300">
+                                        Your name has been prefilled from your account and cannot be modified. Enter your existing password to join this workspace.
+                                    </p>
+                                </div>
+                            </div>
+                        )}
+
                         <form onSubmit={handleSubmit} className="space-y-5">
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                 <div className="space-y-1">
-                                    <label className="block text-sm font-semibold text-app-text-label ml-1" htmlFor="firstName">
-                                        First Name
-                                    </label>
+                                    <div className="flex items-center justify-between ml-1">
+                                        <label className="block text-sm font-semibold text-app-text-label" htmlFor="firstName">
+                                            First Name
+                                        </label>
+                                        {isExistingUser && (
+                                            <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500">Locked</span>
+                                        )}
+                                    </div>
                                     <div className="relative group">
                                         <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                            <User className="h-5 w-5 text-app-text-light group-focus-within:text-app-primary transition-colors" />
+                                            <User className={`h-5 w-5 ${isExistingUser ? 'text-slate-400' : 'text-app-text-light group-focus-within:text-app-primary'} transition-colors`} />
                                         </div>
                                         <input
                                             id="firstName"
@@ -155,17 +207,28 @@ export default function InviteSignup() {
                                             placeholder="John"
                                             value={firstName}
                                             onChange={(e) => setFirstName(e.target.value)}
-                                            className="block w-full pl-10 pr-3 py-3 border border-app-border rounded-xl leading-5 bg-app-bg-page placeholder-slate-400 focus:outline-none focus:bg-app-bg-card focus:ring-2 focus:ring-app-primary/20 focus:border-app-primary transition-all duration-200 sm:text-sm"
+                                            disabled={isExistingUser}
+                                            readOnly={isExistingUser}
+                                            className={`block w-full pl-10 pr-3 py-3 border border-app-border rounded-xl leading-5 sm:text-sm transition-all duration-200 ${
+                                                isExistingUser
+                                                    ? 'bg-slate-100 dark:bg-slate-800/60 text-slate-600 dark:text-slate-400 cursor-not-allowed select-none font-medium'
+                                                    : 'bg-app-bg-page placeholder-slate-400 focus:outline-none focus:bg-app-bg-card focus:ring-2 focus:ring-app-primary/20 focus:border-app-primary'
+                                            }`}
                                         />
                                     </div>
                                 </div>
                                 <div className="space-y-1">
-                                    <label className="block text-sm font-semibold text-app-text-label ml-1" htmlFor="lastName">
-                                        Last Name
-                                    </label>
+                                    <div className="flex items-center justify-between ml-1">
+                                        <label className="block text-sm font-semibold text-app-text-label" htmlFor="lastName">
+                                            Last Name
+                                        </label>
+                                        {isExistingUser && (
+                                            <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500">Locked</span>
+                                        )}
+                                    </div>
                                     <div className="relative group">
                                         <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                            <User className="h-5 w-5 text-app-text-light group-focus-within:text-app-primary transition-colors" />
+                                            <User className={`h-5 w-5 ${isExistingUser ? 'text-slate-400' : 'text-app-text-light group-focus-within:text-app-primary'} transition-colors`} />
                                         </div>
                                         <input
                                             id="lastName"
@@ -173,7 +236,13 @@ export default function InviteSignup() {
                                             placeholder="Doe"
                                             value={lastName}
                                             onChange={(e) => setLastName(e.target.value)}
-                                            className="block w-full pl-10 pr-3 py-3 border border-app-border rounded-xl leading-5 bg-app-bg-page placeholder-slate-400 focus:outline-none focus:bg-app-bg-card focus:ring-2 focus:ring-app-primary/20 focus:border-app-primary transition-all duration-200 sm:text-sm"
+                                            disabled={isExistingUser}
+                                            readOnly={isExistingUser}
+                                            className={`block w-full pl-10 pr-3 py-3 border border-app-border rounded-xl leading-5 sm:text-sm transition-all duration-200 ${
+                                                isExistingUser
+                                                    ? 'bg-slate-100 dark:bg-slate-800/60 text-slate-600 dark:text-slate-400 cursor-not-allowed select-none font-medium'
+                                                    : 'bg-app-bg-page placeholder-slate-400 focus:outline-none focus:bg-app-bg-card focus:ring-2 focus:ring-app-primary/20 focus:border-app-primary'
+                                            }`}
                                         />
                                     </div>
                                 </div>
@@ -193,10 +262,20 @@ export default function InviteSignup() {
                                         placeholder="you@company.com"
                                         value={email}
                                         onChange={(e) => setEmail(e.target.value)}
+                                        onBlur={(e) => {
+                                            if (!invitePreview?.email) {
+                                                checkExistingUser(e.target.value);
+                                            }
+                                        }}
                                         disabled={Boolean(invitePreview?.email)}
                                         className="block w-full pl-10 pr-3 py-3 border border-app-border rounded-xl leading-5 bg-app-bg-page placeholder-slate-400 focus:outline-none focus:bg-app-bg-card focus:ring-2 focus:ring-app-primary/20 focus:border-app-primary transition-all duration-200 sm:text-sm"
                                         required
                                     />
+                                    {checkingUser && (
+                                        <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
+                                            <Loader2 className="h-4 w-4 text-app-primary animate-spin" />
+                                        </div>
+                                    )}
                                 </div>
                                 {invitePreview?.email && (
                                     <p className="text-[11px] text-app-text-muted mt-1 ml-1">
@@ -207,7 +286,7 @@ export default function InviteSignup() {
 
                             <div className="space-y-1">
                                 <label className="block text-sm font-semibold text-app-text-label ml-1" htmlFor="password">
-                                    Password
+                                    {isExistingUser ? 'Account Password' : 'Password'}
                                 </label>
                                 <div className="relative group">
                                     <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -216,13 +295,18 @@ export default function InviteSignup() {
                                     <input
                                         id="password"
                                         type="password"
-                                        placeholder="••••••••"
+                                        placeholder={isExistingUser ? 'Enter your existing account password' : '••••••••'}
                                         value={password}
                                         onChange={(e) => setPassword(e.target.value)}
                                         className="block w-full pl-10 pr-3 py-3 border border-app-border rounded-xl leading-5 bg-app-bg-page placeholder-slate-400 focus:outline-none focus:bg-app-bg-card focus:ring-2 focus:ring-app-primary/20 focus:border-app-primary transition-all duration-200 sm:text-sm"
                                         required
                                     />
                                 </div>
+                                <p className="text-[11px] text-app-text-muted mt-1 ml-1">
+                                    {isExistingUser
+                                        ? 'Enter your current account password to verify your credentials and join this workspace.'
+                                        : 'Create a secure password for your new account.'}
+                                </p>
                             </div>
 
                             <button
@@ -237,7 +321,7 @@ export default function InviteSignup() {
                                     </>
                                 ) : (
                                     <>
-                                        Accept Invite
+                                        {isExistingUser ? 'Join Organization' : 'Accept Invite'}
                                         <ArrowRight className="ml-2 h-4 w-4" />
                                     </>
                                 )}
@@ -258,4 +342,5 @@ export default function InviteSignup() {
         </div>
     );
 }
+
 

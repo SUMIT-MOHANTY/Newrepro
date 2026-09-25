@@ -31,7 +31,7 @@ from fastapi import (
     Request, Response, UploadFile, WebSocket, WebSocketDisconnect, status
 )
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
-from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_, text
@@ -83,7 +83,7 @@ async def login_for_access_token(
     if len(orgs) > 1:
         # Create a temporary token for organization selection (sub only, no org)
         temp_token = auth.create_access_token(
-            data={"sub": user.email}, expires_delta=timedelta(minutes=5)
+            data={"sub": user.email.strip().lower()}, expires_delta=timedelta(minutes=60)
         )
         return {
             "access_token": temp_token,
@@ -109,28 +109,87 @@ async def login_for_access_token(
         "organizations": [active_org]
     }
 
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="token", auto_error=False)
+
 @router.post("/auth/select-organization", response_model=schemas.Token)
 async def select_organization(
     payload: schemas.SelectOrganizationRequest,
-    current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
+    token_from_header: Optional[str] = Depends(oauth2_scheme_optional),
 ):
+    token = token_from_header or payload.temp_token
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        user_payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+        email = user_payload.get("sub")
+        if not email:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not validate credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    except JWTError as e:
+        logger.warning(f"select-organization JWT error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    current_user = db.query(models.User).filter(
+        func.lower(func.trim(models.User.email)) == email.strip().lower()
+    ).first()
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     org_name = payload.organization_name.strip()
     
     org_mappings = db.query(models.UserOrganizationRole).filter(
         models.UserOrganizationRole.user_id == current_user.id
     ).all()
-    orgs = list(set([m.organization_name for m in org_mappings if m.organization_name]))
-    if current_user.organization_name and current_user.organization_name not in orgs:
-        orgs.append(current_user.organization_name)
+    orgs = list(set([m.organization_name.strip() for m in org_mappings if m.organization_name and m.organization_name.strip()]))
+    if current_user.organization_name and current_user.organization_name.strip() not in orgs:
+        orgs.append(current_user.organization_name.strip())
         
-    matching_org = next((o for o in orgs if o.lower() == org_name.lower()), None)
+    matching_org = next((o for o in orgs if o.strip().lower() == org_name.lower()), None)
     if not matching_org:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You are not a member of this organization."
         )
         
+    # Update active organization in database for this user
+    current_user.organization_name = matching_org
+    current_user.last_login = datetime.now(timezone.utc)
+    
+    # Update is_org_admin based on role in the selected organization
+    role_mapping = db.query(models.UserOrganizationRole).filter(
+        models.UserOrganizationRole.user_id == current_user.id,
+        func.lower(func.trim(models.UserOrganizationRole.organization_name)) == matching_org.lower()
+    ).first()
+    if role_mapping:
+        role = db.query(models.OrganizationRole).filter(models.OrganizationRole.id == role_mapping.role_id).first()
+        if role and "admin" in role.name.lower():
+            current_user.is_org_admin = True
+        else:
+            current_user.is_org_admin = False
+    elif getattr(current_user, "is_super_admin", False):
+        current_user.is_org_admin = True
+
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+
     access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
     access_token = auth.create_access_token(
         data={"sub": current_user.email, "org": matching_org},
@@ -1088,13 +1147,53 @@ def preview_org_invite(
     role = db.query(models.OrganizationRole).filter(models.OrganizationRole.id == invite.role_id).first()
     role_name = role.name if role else "Unknown"
 
+    user_exists = False
+    first_name = ""
+    last_name = ""
+    if invite.email:
+        existing_user = db.query(models.User).filter(
+            func.lower(func.trim(models.User.email)) == invite.email.strip().lower()
+        ).first()
+        if existing_user:
+            user_exists = True
+            first_name = existing_user.first_name or ""
+            last_name = existing_user.last_name or ""
+
     return schemas.OrganizationInvitePreviewResponse(
         organization_name=invite.organization_name,
         email=invite.email,
         role_name=role_name,
         expires_at=invite.expires_at,
         accepted_at=invite.accepted_at,
+        user_exists=user_exists,
+        first_name=first_name,
+        last_name=last_name,
     )
+
+
+@router.get("/organization/invites/check-user")
+def check_invite_user(
+    email: str = Query(..., min_length=1),
+    db: Session = Depends(get_db),
+):
+    """
+    Check if a user exists by email to prefetch their name for invite acceptance.
+    """
+    normalized = email.strip().lower()
+    user = db.query(models.User).filter(
+        func.lower(func.trim(models.User.email)) == normalized
+    ).first()
+    if user:
+        return {
+            "exists": True,
+            "first_name": user.first_name or "",
+            "last_name": user.last_name or "",
+        }
+    return {
+        "exists": False,
+        "first_name": "",
+        "last_name": "",
+    }
 
 @router.post("/organization/invites", response_model=schemas.OrganizationInviteResponse)
 def create_org_invite(
@@ -1111,6 +1210,17 @@ def create_org_invite(
     if not role:
         raise HTTPException(status_code=404, detail="Role not found for this organization.")
 
+    target_email = _normalized_text(str(payload.email or "")).lower()
+    if target_email:
+        existing_u = db.query(models.User).filter(func.lower(func.trim(models.User.email)) == target_email).first()
+        if existing_u:
+            existing_m = db.query(models.UserOrganizationRole).filter(
+                models.UserOrganizationRole.user_id == existing_u.id,
+                func.lower(func.trim(models.UserOrganizationRole.organization_name)) == organization_name.lower()
+            ).first()
+            if existing_m or (existing_u.organization_name and existing_u.organization_name.lower() == organization_name.lower()):
+                raise HTTPException(status_code=400, detail="This user is already a member of your organization.")
+
     expires_days = payload.expires_in_days if isinstance(payload.expires_in_days, int) else 7
     expires_days = max(1, min(30, expires_days))
     expires_at = datetime.utcnow() + timedelta(days=expires_days)
@@ -1119,7 +1229,7 @@ def create_org_invite(
     token_hash = _hash_invite_token(token)
     invite = models.OrganizationInvite(
         organization_name=organization_name,
-        email=_normalized_text(str(payload.email or "")).lower() or None,
+        email=target_email or None,
         role_id=role.id,
         token_hash=token_hash,
         expires_at=expires_at,
@@ -1187,17 +1297,19 @@ def accept_org_invite(
     if invite.email and invite.email.strip().lower() != requested_email:
         raise HTTPException(status_code=400, detail="This invite link is restricted to a different email address.")
 
-    existing_user = db.query(models.User).filter(func.lower(models.User.email) == requested_email).first()
+    existing_user = db.query(models.User).filter(func.lower(func.trim(models.User.email)) == requested_email).first()
     
     role = db.query(models.OrganizationRole).filter(models.OrganizationRole.id == invite.role_id).first()
     if not role:
         raise HTTPException(status_code=400, detail="Invite role is no longer available.")
 
+    is_admin_role = bool(role and role.name and "admin" in role.name.strip().lower())
+
     if existing_user:
         # Check if user already has a mapping in this organization
         existing_mapping = db.query(models.UserOrganizationRole).filter(
             models.UserOrganizationRole.user_id == existing_user.id,
-            func.lower(models.UserOrganizationRole.organization_name) == invite.organization_name.lower()
+            func.lower(func.trim(models.UserOrganizationRole.organization_name)) == invite.organization_name.lower()
         ).first()
         if existing_mapping:
             raise HTTPException(status_code=400, detail="You are already a member of this organization.")
@@ -1208,15 +1320,15 @@ def accept_org_invite(
 
         user = existing_user
         user.last_login = datetime.utcnow()
-        if not user.organization_name:
-            user.organization_name = invite.organization_name
+        # CRITICAL: Switch the active organization in DB to the newly joined organization!
+        user.organization_name = invite.organization_name
+        user.is_org_admin = is_admin_role
         db.add(user)
         db.commit()
         db.refresh(user)
     else:
         raw_password = payload.password
         hashed_password = auth.get_password_hash(raw_password)
-        is_admin_role = bool(role and role.name and role.name.strip().lower() in ("admin", "organization admin"))
         user = models.User(
             email=requested_email,
             hashed_password=hashed_password,
@@ -1242,7 +1354,10 @@ def accept_org_invite(
     db.commit()
 
     access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
-    access_token = auth.create_access_token(data={"sub": user.email}, expires_delta=access_token_expires)
+    access_token = auth.create_access_token(
+        data={"sub": user.email, "org": invite.organization_name},
+        expires_delta=access_token_expires
+    )
     role_name, allowed_paths = _get_user_allowed_paths(db, user)
     return schemas.OrganizationInviteAcceptResponse(
         access_token=access_token,

@@ -153,6 +153,8 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
             // Check if organization selection is required
             if (data.requires_selection) {
                 setTempToken(data.access_token);
+                sessionStorage.setItem('temp_token', data.access_token);
+                localStorage.setItem('temp_token', data.access_token);
                 setOrgs(data.organizations || []);
                 setRequiresSelection(true);
                 return;
@@ -172,8 +174,10 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
         return (
             <OrganizationSelect
                 organizations={orgs}
-                tempToken={tempToken}
+                tempToken={tempToken || sessionStorage.getItem('temp_token') || localStorage.getItem('temp_token') || ''}
                 onSelectComplete={async (finalToken) => {
+                    sessionStorage.removeItem('temp_token');
+                    localStorage.removeItem('temp_token');
                     clearTenantScopedState();
                     localStorage.setItem('token', finalToken);
                     setRequiresSelection(false);

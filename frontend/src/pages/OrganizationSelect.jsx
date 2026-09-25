@@ -14,21 +14,29 @@ const OrganizationSelect = ({ organizations, tempToken, onSelectComplete }) => {
         setError('');
         setIsLoading(true);
 
+        const tokenToUse = tempToken || sessionStorage.getItem('temp_token') || localStorage.getItem('temp_token') || '';
+
         try {
             const response = await fetch(`${API_BASE_URL}/auth/select-organization`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${tempToken}`,
+                    'Authorization': tokenToUse ? `Bearer ${tokenToUse}` : '',
                 },
-                body: JSON.stringify({ organization_name: orgName }),
+                body: JSON.stringify({ 
+                    organization_name: orgName,
+                    temp_token: tokenToUse || undefined,
+                }),
             });
 
             if (!response.ok) {
-                throw new Error('Failed to select organization. Please try again.');
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.detail || 'Failed to select organization. Please try again.');
             }
 
             const data = await response.json();
+            sessionStorage.removeItem('temp_token');
+            localStorage.removeItem('temp_token');
             onSelectComplete(data.access_token);
         } catch (err) {
             setError(err.message || 'An error occurred during selection.');
@@ -105,9 +113,22 @@ const OrganizationSelect = ({ organizations, tempToken, onSelectComplete }) => {
                     })}
                 </div>
 
-                <div className="mt-8 pt-6 border-t border-app-border-light text-center text-xs text-app-text-muted flex items-center justify-center">
-                    <ShieldCheck className="h-4 w-4 mr-1.5 text-app-status-success" />
-                    Secure organization login session powered by DSuite RBAC.
+                <div className="mt-8 pt-6 border-t border-app-border-light flex flex-col items-center gap-3">
+                    <div className="text-center text-xs text-app-text-muted flex items-center justify-center">
+                        <ShieldCheck className="h-4 w-4 mr-1.5 text-app-status-success" />
+                        Secure organization login session powered by DSuite RBAC.
+                    </div>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            sessionStorage.removeItem('temp_token');
+                            localStorage.removeItem('temp_token');
+                            window.location.assign('/login');
+                        }}
+                        className="text-xs font-semibold text-app-primary hover:underline hover:text-app-primary-hover transition-colors"
+                    >
+                        ← Back to Sign In
+                    </button>
                 </div>
             </div>
         </div>

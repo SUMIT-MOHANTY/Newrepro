@@ -208,6 +208,9 @@ class OrganizationInvitePreviewResponse(BaseModel):
     role_name: str
     expires_at: datetime
     accepted_at: Optional[datetime] = None
+    user_exists: bool = False
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
 
 class OrganizationInviteAcceptRequest(BaseModel):
     token: str
@@ -231,6 +234,7 @@ class OrganizationRbacMeResponse(BaseModel):
 
 class SelectOrganizationRequest(BaseModel):
     organization_name: str
+    temp_token: Optional[str] = None
 
 class OrganizationUserResponse(BaseModel):
     id: int

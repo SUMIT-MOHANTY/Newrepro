@@ -26,6 +26,7 @@ export const API_ENDPOINTS = {
     ORG_USERS: `${API_BASE_URL}/organization/users`,
     ORG_INVITE_PREVIEW: `${API_BASE_URL}/organization/invites/preview`,
     ORG_INVITE_ACCEPT: `${API_BASE_URL}/organization/invites/accept`,
+    ORG_INVITE_CHECK_USER: `${API_BASE_URL}/organization/invites/check-user`,
     ORG_AGENT_QUOTA: `${API_BASE_URL}/organization/agent-quota`,
     ORG_AGENT_QUOTA_INCREASE: `${API_BASE_URL}/organization/agent-quota/increase`,
     FORGOT_PASSWORD: `${API_BASE_URL}/auth/forgot-password`,
