@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { customAlert } from '../utils/modalHelpers';
-import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight, Bot, Shield, Cpu, Play, RefreshCw, Eye, ListTodo, AlertCircle, ChevronRight, Users, Calendar, Wallet, Tag, AlertTriangle, CheckCircle2, Loader2, Terminal, Pencil, GitBranch, Globe, ExternalLink, StopCircle, Rocket, Zap } from 'lucide-react';
+import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight, Bot, Shield, Cpu, Play, RefreshCw, Eye, ListTodo, AlertCircle, ChevronRight, Users, User, Calendar, Wallet, Tag, AlertTriangle, CheckCircle2, Loader2, Terminal, Pencil, GitBranch, Globe, ExternalLink, StopCircle, Rocket, Zap } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import Skeleton, { SkeletonTheme } from 'react-loading-skeleton';
 import 'react-loading-skeleton/dist/skeleton.css';
@@ -148,17 +148,27 @@ function getTaskSprintLabel(task) {
 
 function safeGetAssignees(assignedTo) {
     if (!assignedTo) return [];
-    if (Array.isArray(assignedTo)) return assignedTo;
+    if (Array.isArray(assignedTo)) {
+        return assignedTo.map(item => {
+            if (typeof item === 'object' && item !== null) {
+                return item.name || item.username || item.id || item.agent_id || JSON.stringify(item);
+            }
+            return String(item);
+        }).filter(Boolean);
+    }
     if (typeof assignedTo === 'string') {
         let current = assignedTo.trim();
         if (current === '[]' || current === '""' || current === '"[]"') return [];
         try {
             const parsed = JSON.parse(current);
-            if (Array.isArray(parsed)) return parsed;
+            if (Array.isArray(parsed)) return safeGetAssignees(parsed);
             if (typeof parsed === 'string') {
                 return safeGetAssignees(parsed);
             }
-            return [parsed];
+            if (typeof parsed === 'object' && parsed !== null) {
+                return [parsed.name || parsed.username || parsed.id || JSON.stringify(parsed)];
+            }
+            return [String(parsed)];
         } catch (e) {
             if (current.includes(',')) {
                 return current.split(',').map(s => s.trim()).filter(Boolean);
@@ -167,6 +177,42 @@ function safeGetAssignees(assignedTo) {
         }
     }
     return [];
+}
+
+function resolveAssigneeName(assignee, agents = []) {
+    if (!assignee) return { displayName: 'Unassigned', fullName: 'Unassigned', isAgent: false };
+    const raw = String(assignee).trim();
+    // Search in agents list by id, display_id, or name
+    const matched = (agents || []).find(a => 
+        (a.id && String(a.id) === raw) ||
+        (a.display_id && String(a.display_id) === raw) ||
+        (a.name && a.name.toLowerCase() === raw.toLowerCase())
+    );
+    if (matched) {
+        return {
+            displayName: matched.name || raw,
+            fullName: `${matched.name || raw} (${matched.display_id || matched.id})`,
+            role: matched.role || matched.agent_kind || 'Agent',
+            isAgent: true
+        };
+    }
+    // If it looks like an agent display id: e.g. "agt_ef247..."
+    if (raw.startsWith('agt_')) {
+        const cleanId = raw.replace(/^agt_/, '');
+        const shortId = cleanId.length > 7 ? cleanId.slice(0, 7) : cleanId;
+        return {
+            displayName: `Agent #${shortId}`,
+            fullName: raw,
+            role: 'Agent',
+            isAgent: true
+        };
+    }
+    return {
+        displayName: raw,
+        fullName: raw,
+        role: 'Assignee',
+        isAgent: false
+    };
 }
 
 function toNumber(value) {
@@ -1670,7 +1716,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                         </div>
                     </div>
 
-                    <div className="divide-y divide-app-bg-page p-4 md:p-0">
+                    <div className="divide-y divide-app-border-light/60 p-4 md:p-0">
                         {[0, 1, 2, 3, 4, 5].map((row) => (
                             <div key={row} className="px-6 py-3">
                                 <div className="hidden md:grid" style={{ gridTemplateColumns: '40px 1fr 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
@@ -3001,10 +3047,10 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
 
                                 <div className="overflow-x-auto scrollbar-thin">
-                                    <div className="min-w-0 md:min-w-[1080px] max-h-[600px] overflow-y-auto scrollbar-thin relative">
+                                    <div className="min-w-0 md:min-w-[960px] max-h-[600px] overflow-y-auto scrollbar-thin relative">
                                         <div className="hidden md:block sticky top-0 bg-app-bg-card border-b border-app-border-light px-6 py-2.5 z-10">
-                                            <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr 120px 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
-                                                <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider w-10 truncate">#</div>
+                                            <div style={{ display: 'grid', gridTemplateColumns: '36px minmax(200px, 1fr) 115px 105px 85px 75px 135px 55px 110px', gap: '8px', alignItems: 'center' }}>
+                                                <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider pl-1 truncate">#</div>
                                                 <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider min-w-0 truncate">Task Information</div>
                                                 <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider">Sprint</div>
                                                 <div className="text-[10px] font-bold text-app-text-light uppercase tracking-wider text-center">Completion</div>
@@ -3020,7 +3066,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                             {isLoadingTasks && taskList.length === 0 && (
                                                 <div className="p-6 space-y-4">
                                                     {[0, 1, 2, 3].map((row) => (
-                                                        <div key={row} className="grid grid-cols-1 md:grid-cols-[40px_1fr_120px_140px_90px_80px_120px_60px_130px] gap-2 items-center">
+                                                        <div key={row} className="grid grid-cols-1 md:grid-cols-[36px_1fr_115px_105px_85px_75px_135px_55px_110px] gap-2 items-center">
                                                             <Skeleton height={10} width={18} />
                                                             <div>
                                                                 <Skeleton height={13} width="52%" />
@@ -3068,8 +3114,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
                                                         return (
                                                             <div key={task.id || index} className="px-6 py-3 hover:bg-app-bg-page/70 transition-colors group">
-                                                                <div className="hidden md:grid" style={{ gridTemplateColumns: '40px 1fr 120px 140px 90px 80px 120px 60px 130px', gap: '8px', alignItems: 'center' }}>
-                                                                    <div className="flex items-center gap-1.5 w-10 overflow-hidden">
+                                                                <div className="hidden md:grid" style={{ gridTemplateColumns: '36px minmax(200px, 1fr) 115px 105px 85px 75px 135px 55px 110px', gap: '8px', alignItems: 'center' }}>
+                                                                    <div className="flex items-center gap-1 w-9 overflow-hidden pl-1">
                                                                         <span className="text-[10px] font-bold text-app-text-light flex-shrink-0">{(index + 1).toString().padStart(2, '0')}</span>
                                                                         {task.is_flaged && <Flag className="w-3 h-3 text-orange-400 fill-orange-400 flex-shrink-0" />}
                                                                     </div>
@@ -3107,18 +3153,18 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                                     </div>
 
                                                                     {/* Sprint */}
-                                                                    <div>
-                                                                        <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-app-primary-light text-app-primary-hover border border-app-primary-ring">
+                                                                    <div className="flex items-center overflow-hidden">
+                                                                        <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-app-primary-light text-app-primary-hover border border-app-primary-ring truncate max-w-[110px]" title={sprintLabel}>
                                                                             {sprintLabel}
                                                                         </span>
                                                                     </div>
 
                                                                     {/* Progress */}
-                                                                    <div className="flex items-center gap-3 justify-center">
-                                                                        <div className="flex-1 bg-app-bg-muted rounded-full h-1.5 overflow-hidden max-w-[80px]">
+                                                                    <div className="flex items-center gap-2 justify-center">
+                                                                        <div className="flex-1 bg-app-bg-muted rounded-full h-1.5 overflow-hidden max-w-[65px]">
                                                                             <div className={`${progressColor} h-1.5 rounded-full transition-all duration-500`} style={{ width: `${Math.min(progress, 100)}%` }}></div>
                                                                         </div>
-                                                                        <span className="text-[10px] font-bold text-app-text-label w-6">{progress}%</span>
+                                                                        <span className="text-[10px] font-bold text-app-text-label w-7 text-right">{progress}%</span>
                                                                     </div>
 
                                                                     {/* Status */}
@@ -3132,14 +3178,52 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                                     </div>
 
                                                                     {/* Assignees */}
-                                                                    <div className="flex items-center justify-center gap-1 overflow-hidden">
-                                                                        <Users className="w-3 h-3 text-app-border flex-shrink-0" />
-                                                                        <div className="flex flex-wrap justify-center gap-0.5 max-h-8 overflow-hidden">
-                                                                            {assignees.slice(0, 2).map((name, i) => (
-                                                                                <span key={i} className="inline-flex items-center px-1.5 py-0.5 bg-app-primary-light text-app-primary-hover rounded text-[9px] font-bold truncate max-w-[45px]">{name}</span>
-                                                                            ))}
-                                                                            {assignees.length > 2 && <span className="text-[9px] font-bold text-app-text-light">+{assignees.length - 2}</span>}
-                                                                        </div>
+                                                                    <div className="flex items-center justify-center">
+                                                                        {assignees.length === 0 ? (
+                                                                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium text-app-text-light/50 bg-app-bg-muted/30 border border-dashed border-app-border/40" title="No agent or user assigned">
+                                                                                <User className="w-2.5 h-2.5 opacity-40 flex-shrink-0" />
+                                                                                <span>Unassigned</span>
+                                                                            </span>
+                                                                        ) : assignees.length === 1 ? (
+                                                                            (() => {
+                                                                                const info = resolveAssigneeName(assignees[0], agents);
+                                                                                return (
+                                                                                    <span
+                                                                                        className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-indigo-50/90 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border border-indigo-200/60 dark:border-indigo-800/50 rounded-full text-[10px] font-semibold max-w-[125px] shadow-xs cursor-default hover:bg-indigo-100/70 transition-colors"
+                                                                                        title={info.fullName}
+                                                                                    >
+                                                                                        <span className="w-3.5 h-3.5 rounded-full bg-indigo-200/80 dark:bg-indigo-800/80 flex items-center justify-center text-indigo-700 dark:text-indigo-200 flex-shrink-0">
+                                                                                            {info.isAgent ? <Bot className="w-2.5 h-2.5" /> : <User className="w-2.5 h-2.5" />}
+                                                                                        </span>
+                                                                                        <span className="truncate">{info.displayName}</span>
+                                                                                    </span>
+                                                                                );
+                                                                            })()
+                                                                        ) : (
+                                                                            (() => {
+                                                                                const firstInfo = resolveAssigneeName(assignees[0], agents);
+                                                                                const allTooltip = assignees.map(a => resolveAssigneeName(a, agents).fullName).join(', ');
+                                                                                return (
+                                                                                    <div className="flex items-center justify-center gap-1">
+                                                                                        <span
+                                                                                            className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-indigo-50/90 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border border-indigo-200/60 dark:border-indigo-800/50 rounded-full text-[10px] font-semibold max-w-[85px] cursor-default"
+                                                                                            title={firstInfo.fullName}
+                                                                                        >
+                                                                                            <span className="w-3.5 h-3.5 rounded-full bg-indigo-200/80 dark:bg-indigo-800/80 flex items-center justify-center text-indigo-700 dark:text-indigo-200 flex-shrink-0">
+                                                                                                {firstInfo.isAgent ? <Bot className="w-2.5 h-2.5" /> : <User className="w-2.5 h-2.5" />}
+                                                                                            </span>
+                                                                                            <span className="truncate">{firstInfo.displayName}</span>
+                                                                                        </span>
+                                                                                        <span
+                                                                                            className="inline-flex items-center justify-center h-4.5 px-1.5 bg-app-bg-muted border border-app-border text-[9px] font-bold text-app-text-muted rounded-full cursor-help hover:bg-app-bg-page hover:text-app-text-main transition-colors"
+                                                                                            title={allTooltip}
+                                                                                        >
+                                                                                            +{assignees.length - 1}
+                                                                                        </span>
+                                                                                    </div>
+                                                                                );
+                                                                            })()
+                                                                        )}
                                                                     </div>
 
                                                                     {/* Wallet */}
