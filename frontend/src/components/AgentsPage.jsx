@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Users, Trash2, Edit, Activity, Clock, CheckCircle, AlertCircle, RefreshCw, Filter, Server, Database, GitBranch, Bot, Globe, Plus, Upload, Code, Coffee, Zap, Triangle, Hash, Link2, Terminal, Cpu, Workflow, Shield, ShieldCheck, Layers, Building2, Send, ChevronRight, TrendingUp, PlusCircle, Wrench, Check } from 'lucide-react';
+import { Users, Trash2, Edit, Activity, Clock, CheckCircle, AlertCircle, RefreshCw, Filter, Server, Database, GitBranch, Bot, Globe, Plus, Upload, Code, Coffee, Zap, Triangle, Hash, Link2, Terminal, Cpu, Workflow, Shield, ShieldCheck, Layers, Building2, Send, ChevronRight, ChevronDown, TrendingUp, PlusCircle, Wrench, Check, Sparkles, X } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 import RequestCapacityModal from './RequestCapacityModal';
 
@@ -81,24 +81,6 @@ export const DEFAULT_TOOLS_CATALOG = [
     icon: 'Database',
     default: false,
     capabilities: ['inspect_schema', 'run_migration', 'verify_seeds']
-  },
-  {
-    id: 'mcp_jira',
-    name: 'Jira MCP Integration',
-    category: 'MCP Integrations',
-    description: 'Model Context Protocol tool to fetch tickets, transition issues, and sync sprint status.',
-    icon: 'Workflow',
-    default: false,
-    capabilities: ['jira_search', 'jira_update_ticket', 'jira_transition']
-  },
-  {
-    id: 'mcp_github',
-    name: 'GitHub MCP Integration',
-    category: 'MCP Integrations',
-    description: 'Model Context Protocol tool to open Pull Requests, conduct PR reviews, and track issues.',
-    icon: 'Github',
-    default: false,
-    capabilities: ['gh_create_pr', 'gh_review_diff', 'gh_issue_comment']
   }
 ];
 
@@ -118,11 +100,109 @@ export const getToolIcon = (iconName, className = 'w-3 h-3') => {
   }
 };
 
+export const CAPABILITY_LABELS = {
+  read_file: 'Read Files',
+  write_file: 'Write Files',
+  edit_file: 'Edit Code',
+  list_dir: 'List Directory',
+  search_files: 'Search Files',
+  git_status: 'Git Status',
+  git_commit: 'Commit Changes',
+  git_diff: 'Inspect Diffs',
+  git_branch: 'Branch Management',
+  git_checkout: 'Switch Branches',
+  execute_bash: 'Bash Terminal',
+  kill_process: 'Process Control',
+  get_process_status: 'Process Monitor',
+  npm_build: 'NPM / Vite Build',
+  pip_install: 'Pip Packages',
+  dependency_check: 'Dependency Audit',
+  verify_compilation: 'Compile Validation',
+  run_pytest: 'Pytest Suite',
+  run_jest: 'Jest / Vitest',
+  e2e_playwright: 'Playwright E2E',
+  assert_status: 'HTTP Assertions',
+  search_docs: 'Search Docs',
+  fetch_webpage: 'Fetch Webpage',
+  lookup_api_reference: 'API References',
+  capture_screenshot: 'UI Screenshots',
+  inspect_console: 'Console Logs',
+  dom_query: 'DOM Inspector',
+  inspect_schema: 'Schema Inspector',
+  run_migration: 'Database Migration',
+  verify_seeds: 'Seed Verification',
+};
+
+export const formatCapability = (cap) => {
+  if (!cap) return '';
+  const key = String(cap).trim().toLowerCase();
+  if (CAPABILITY_LABELS[key]) return CAPABILITY_LABELS[key];
+  return cap
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+};
+
+export const sanitizeModelName = (name, id) => {
+  const norm = `${id || ''} ${name || ''}`.toLowerCase();
+  if (norm.includes('claude')) return 'Claude';
+  if (norm.includes('deepseek')) return 'DeepSeek';
+  if (norm.includes('kimi')) return 'Kimi';
+  return name || 'Claude';
+};
+
+export const DEFAULT_MODELS_CATALOG = [
+  {
+    id: 'claude',
+    name: 'Claude',
+    provider: 'Anthropic',
+    description: 'Flagship reasoning, fullstack architecture, multi-file code editing, and tool calling.',
+    color: 'amber'
+  },
+  {
+    id: 'deepseek',
+    name: 'DeepSeek',
+    provider: 'DeepSeek AI',
+    description: 'Deep mathematical logic, test generation, QA verification, algorithmic optimizations.',
+    color: 'emerald'
+  },
+  {
+    id: 'kimi',
+    name: 'Kimi',
+    provider: 'Moonshot AI',
+    description: 'Ultra-fast streaming response, long context retention, API schema and docs alignment.',
+    color: 'sky'
+  }
+];
+
+export const getModelBadge = (modelId = 'claude') => {
+  const norm = (modelId || 'claude').toLowerCase();
+  if (norm.includes('deepseek')) {
+    return {
+      label: 'DeepSeek',
+      pillClass: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
+      dotClass: 'bg-emerald-400'
+    };
+  }
+  if (norm.includes('kimi')) {
+    return {
+      label: 'Kimi',
+      pillClass: 'bg-sky-500/10 text-sky-400 border-sky-500/30',
+      dotClass: 'bg-sky-400'
+    };
+  }
+  return {
+    label: 'Claude',
+    pillClass: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
+    dotClass: 'bg-amber-400'
+  };
+};
+
 const PREDEFINED_TEMPLATES = [
   {
     name: 'Frontend Developer',
     tags: 'React, Vite, CSS Modules, Tailwind CSS, Lucide Icons, UI Components',
     specialization: 'Development',
+    defaultModel: 'claude',
     defaultTools: ['filesystem', 'build_tool', 'visual_qa', 'web_search'],
     description: 'Specialized React & Vite agent. Connects page routing, implements responsive UI layouts, and styles elements using CSS tokens.',
     skills: `# Frontend Developer Agent Skill\n\n## Role\nYou are a specialized Frontend Development Agent focused on building React applications with modern tooling (Vite, React) and styling (Tailwind CSS/CSS Modules).\n\n## Tech Stack\n- Framework: React\n- Build Tool: Vite\n- Styling: Tailwind CSS & CSS Modules\n- UI Components: Lucide React (icons)\n- State Management: React Context / Hooks\n\n## Core Responsibilities\n1. Component Development: Create modular, responsive React components using hooks.\n2. Routing: Register pages/components in the main routing shell (App.jsx).\n3. API Connection: Replace mock data with real API calls using fetch or axios.\n4. Layout & Styling: Maintain consistent layout systems, sidebar navigation, and use CSS variable tokens.`,
@@ -134,6 +214,7 @@ const PREDEFINED_TEMPLATES = [
     name: 'Backend Developer',
     tags: 'FastAPI, Python, SQL Databases, SQLite, PostgreSQL, REST API',
     specialization: 'Development',
+    defaultModel: 'claude',
     defaultTools: ['filesystem', 'git', 'terminal', 'build_tool', 'database_tools'],
     description: 'Specialized FastAPI & Python agent. Sets up REST routes, SQLAlchemy models, migration scripts, and business validation.',
     skills: `# Backend Developer Agent Skill\n\n## Role\nYou are a specialized Backend Development Agent focused on building Python APIs with FastAPI, SQLAlchemy, databases, and clean routing.\n\n## Tech Stack\n- Language: Python\n- Framework: FastAPI\n- ORM: SQLAlchemy / SQLModel\n- Database: SQLite / PostgreSQL\n- API Protocol: REST / JSON\n\n## Core Responsibilities\n1. API Routing: Create clear, versioned FastAPI APIRouter endpoints.\n2. Database Schema: Implement SQLAlchemy models, migrations, and Pydantic schemas.\n3. Business Logic: Write modular services for data processing, validation, and auth.\n4. Security: Implement CORS, password hashing, and token-based auth (JWT).`,
@@ -145,6 +226,7 @@ const PREDEFINED_TEMPLATES = [
     name: 'QA & Testing Specialist',
     tags: 'Testing, Pytest, Playwright, E2E Testing, Integration Testing, Assertions',
     specialization: 'Testing',
+    defaultModel: 'deepseek',
     defaultTools: ['terminal', 'test_runner', 'visual_qa', 'filesystem'],
     description: 'Specialized Pytest & Playwright agent. Creates unit/integration test suites and browser automation to verify features.',
     skills: `# QA & Testing Specialist Agent Skill\n\n## Role\nYou are a specialized Quality Assurance and Testing Agent focused on verifying features, running backend unit tests, and executing E2E frontend flows.\n\n## Tech Stack\n- Backend Testing: Pytest, unittest\n- Frontend E2E: Playwright / Cypress\n- Assertions: standard assertions, status code checks\n- Mocking: unittest.mock, patch\n\n## Core Responsibilities\n1. Unit Tests: Create test cases in tests/ directory validating API responses, database operations, and edge cases.\n2. E2E Tests: Write automated browser scripts to simulate user login, navigation, and form submissions.\n3. Verification: Assert status codes, content fields, and UI element presence on successful/error execution.`,
@@ -158,6 +240,7 @@ const PREDEFINED_TEMPLATES = [
     tags: 'Java, Spring Boot, Maven, Hibernate, JPA, REST API, Gradle',
     specialization: 'Development',
     brownfieldOnly: true,
+    defaultModel: 'claude',
     defaultTools: ['filesystem', 'git', 'terminal', 'build_tool', 'database_tools'],
     description: 'Brownfield Java agent. Reads existing Spring Boot services, applies targeted modifications, adds endpoints, entities, and service logic without breaking existing code.',
     skills: `# Java / Spring Boot Developer Agent Skill\n\n## Role\nYou are a specialized Brownfield Java Developer Agent. You work on EXISTING Spring Boot applications — reading current code before making any changes.\n\n## Tech Stack\n- Language: Java 11/17/21\n- Framework: Spring Boot (Spring MVC, Spring Data, Spring Security)\n- Build: Maven / Gradle\n- ORM: Hibernate / JPA / Spring Data JPA\n- Testing: JUnit 5, Mockito\n- DB: PostgreSQL / MySQL / H2\n\n## Brownfield Working Rules\n1. ALWAYS read the existing class before modifying: cat /workspace/src/main/java/.../ClassName.java\n2. Make SURGICAL changes — preserve existing methods, annotations, and imports\n3. Add new endpoints in existing Controllers or create new @RestController classes\n4. New entities go in the existing entities/ or model/ package structure\n5. Register new beans, services, or repositories following the existing patterns\n6. Run: mvn test -pl . --no-transfer-progress (or ./gradlew test) after changes\n\n## Core Responsibilities\n1. Endpoint Development: Add/modify @GetMapping, @PostMapping in @RestController classes\n2. Service Layer: Add business logic in @Service classes, injecting existing repositories\n3. Entity Changes: Modify @Entity JPA classes, add @Column fields with proper constraints\n4. Repository: Add custom @Query methods to existing JpaRepository interfaces\n5. Configuration: Modify application.properties / application.yml for new settings`,
@@ -170,6 +253,7 @@ const PREDEFINED_TEMPLATES = [
     tags: 'C#, .NET, ASP.NET Core, Entity Framework, NuGet, REST API',
     specialization: 'Development',
     brownfieldOnly: true,
+    defaultModel: 'claude',
     defaultTools: ['filesystem', 'git', 'terminal', 'build_tool', 'database_tools'],
     description: 'Brownfield .NET agent. Reads existing ASP.NET Core controllers, applies targeted modifications, adds endpoints, EF migrations, and service logic.',
     skills: `# .NET / C# Developer Agent Skill\n\n## Role\nYou are a specialized Brownfield .NET Developer Agent. You work on EXISTING ASP.NET Core applications — reading current code before making any changes.\n\n## Tech Stack\n- Language: C# (.NET 6/7/8)\n- Framework: ASP.NET Core (Web API, Minimal APIs)\n- ORM: Entity Framework Core\n- Package Manager: NuGet\n- Testing: xUnit, Moq\n- DB: SQL Server / PostgreSQL / SQLite\n\n## Brownfield Working Rules\n1. ALWAYS read the existing file: cat /workspace/src/.../ClassName.cs\n2. Preserve existing namespaces, using directives, and dependency injection registrations\n3. Add new action methods to existing Controllers or create new ControllerBase-derived classes\n4. New entities go in the existing Models/ or Entities/ directory\n5. Register new services in Program.cs / Startup.cs following the existing pattern\n6. Run: dotnet test after changes\n\n## Core Responsibilities\n1. API Controllers: Add [HttpGet]/[HttpPost] actions to [ApiController] classes\n2. Service Layer: Add methods to existing interface + implementation pairs\n3. EF Migrations: Modify DbContext and generate new Add-Migration / dotnet ef migration\n4. Models/DTOs: Add new properties to existing record or class definitions\n5. Middleware: Wire new middleware in the existing app.Use() pipeline`,
@@ -182,6 +266,7 @@ const PREDEFINED_TEMPLATES = [
     tags: 'Python, Django, DRF, Celery, PostgreSQL, REST API, Migrations',
     specialization: 'Development',
     brownfieldOnly: true,
+    defaultModel: 'claude',
     defaultTools: ['filesystem', 'git', 'terminal', 'build_tool', 'database_tools'],
     description: 'Brownfield Django agent. Reads existing views, models, and URLs then applies targeted changes to add features, API endpoints, and celery tasks.',
     skills: `# Python / Django Developer Agent Skill\n\n## Role\nYou are a specialized Brownfield Python/Django Developer Agent. You work on EXISTING Django applications — reading current code before making any changes.\n\n## Tech Stack\n- Language: Python 3.9+\n- Framework: Django + Django REST Framework (DRF)\n- Task Queue: Celery + Redis\n- ORM: Django ORM\n- Testing: pytest-django, unittest\n- DB: PostgreSQL / SQLite\n\n## Brownfield Working Rules\n1. ALWAYS read the existing file: cat /workspace/app_name/views.py (or models.py, urls.py)\n2. Preserve existing URL patterns — add new patterns without removing existing ones\n3. Add new serializers in the existing serializers.py file\n4. New models go in the existing models.py of the appropriate Django app\n5. Generate and apply migrations: python manage.py makemigrations && python manage.py migrate\n6. Run tests: python manage.py test\n\n## Core Responsibilities\n1. Views/Viewsets: Add new APIView or ModelViewSet classes in existing views.py\n2. Models: Add fields or new Model classes with proper Meta and migrations\n3. Serializers: Add DRF serializers for new or modified models\n4. URL Routing: Register new routes in urls.py with router.register() or urlpatterns\n5. Celery Tasks: Add @shared_task decorated functions to existing tasks.py`,
@@ -194,6 +279,7 @@ const PREDEFINED_TEMPLATES = [
     tags: 'Node.js, Express, TypeScript, Prisma, REST API, npm, MongoDB',
     specialization: 'Development',
     brownfieldOnly: true,
+    defaultModel: 'claude',
     defaultTools: ['filesystem', 'git', 'terminal', 'build_tool', 'database_tools'],
     description: 'Brownfield Node.js agent. Reads existing Express routes and middleware, then adds endpoints, schema changes, and service logic with minimal disruption.',
     skills: `# Node.js / Express Developer Agent Skill\n\n## Role\nYou are a specialized Brownfield Node.js/Express Developer Agent. You work on EXISTING Node.js applications — reading current code before making any changes.\n\n## Tech Stack\n- Language: TypeScript / JavaScript\n- Framework: Express / NestJS / Fastify\n- ORM: Prisma / TypeORM / Mongoose\n- Package Manager: npm / yarn / pnpm\n- Testing: Jest, Supertest\n- DB: PostgreSQL / MongoDB / MySQL\n\n## Brownfield Working Rules\n1. ALWAYS read the existing file: cat /workspace/src/routes/existingRouter.ts\n2. Add new route handlers to existing Express Router files or create new modular routers\n3. Register new routers in the existing app.use() configuration in app.ts/index.ts\n4. New Prisma models: add to schema.prisma then run npx prisma migrate dev\n5. Keep existing middleware chain intact — add middleware AFTER existing ones\n6. Run: npm test after changes\n\n## Core Responsibilities\n1. Routes: Add new GET/POST/PUT/DELETE handlers in existing router files\n2. Controllers: Add new controller functions following the existing request/response pattern\n3. Services: Add business logic to existing service files\n4. Prisma Schema: Add new models or fields and generate migrations\n5. Middleware: Add authentication guards, validators following existing patterns`,
@@ -206,48 +292,13 @@ const PREDEFINED_TEMPLATES = [
     tags: 'Go, Gin, GORM, gRPC, REST API, Docker, Microservices',
     specialization: 'Development',
     brownfieldOnly: true,
+    defaultModel: 'claude',
     defaultTools: ['filesystem', 'git', 'terminal', 'build_tool'],
     description: 'Brownfield Go agent. Reads existing handlers, models, and routes, then makes targeted additions to Go microservices and REST APIs.',
     skills: `# Go Developer Agent Skill\n\n## Role\nYou are a specialized Brownfield Go Developer Agent. You work on EXISTING Go applications — reading current code before making any changes.\n\n## Tech Stack\n- Language: Go 1.19+\n- Framework: Gin / Echo / Fiber / net/http\n- ORM: GORM / sqlx\n- Package Manager: Go Modules (go.mod)\n- Testing: testing package, testify\n- Protocols: REST / gRPC\n\n## Brownfield Working Rules\n1. ALWAYS read the existing handler/struct: cat /workspace/internal/handlers/existing.go\n2. Follow the existing package structure — do NOT create new top-level packages without reason\n3. Add new route handlers as functions in existing handler files or new files in the same package\n4. Register new routes in the existing router setup (e.g., router.GET("/new", handler))\n5. New structs go in the existing models/ or types/ package\n6. Run: go test ./... after changes\n\n## Core Responsibilities\n1. Handlers: Add new HTTP handler functions following the existing (c *gin.Context) pattern\n2. Routes: Register in the existing router group setup\n3. Models/Structs: Add new GORM model structs with proper tags\n4. Services: Add business logic to existing service structs\n5. Middleware: Add new gin.HandlerFunc middleware in the existing middleware chain`,
     icon: Triangle,
     accentColor: 'from-cyan-400 to-blue-500',
     colorClass: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/20 hover:border-cyan-500/40 hover:text-cyan-300'
-  },
-  {
-    name: 'Jira MCP Agent',
-    isMcp: true,
-    tags: 'Jira, Project Management, Issue Tracking, MCP Server, Integration',
-    specialization: 'Integration',
-    defaultTools: ['mcp_jira', 'filesystem', 'web_search'],
-    description: 'MCP agent that connects to Jira via Model Context Protocol. It can view, create, and transition Jira issues directly.',
-    skills: `# Jira MCP Agent Skill\n\n## Role\nYou are an integration agent equipped with the Jira Model Context Protocol (MCP) server. You connect to Jira to view, create, update, and search for issues, epics, and sprints.\n\n## MCP Integration Link\n- Official Registry: [Jira MCP Server GitHub](https://github.com/modelcontextprotocol/servers/tree/main/src/jira)\n- Package Name: \`@modelcontextprotocol/server-jira\`\n\n## Setup Configuration\nEnsure your client configuration defines the server:\n\`\`\`json\n{\n  "mcpServers": {\n    "jira": {\n      "command": "npx",\n      "args": ["-y", "@modelcontextprotocol/server-jira"],\n      "env": {\n        "JIRA_API_TOKEN": "<YOUR_JIRA_API_TOKEN>",\n        "JIRA_EMAIL": "<YOUR_JIRA_EMAIL>",\n        "JIRA_HOST": "<YOUR_JIRA_HOST>"\n      }\n    }\n  }\n}\n\`\`\`\n\n## Core Responsibilities\n1. Search Issues: Find Jira tickets matching specific queries, assignees, or statuses.\n2. Create & Update: Initialize tickets, add comments, log work, and transition states (e.g. To Do -> In Progress -> Done).\n3. Backlog Management: Fetch backlog tasks, summarize sprint progress, and highlight blockages.`,
-    icon: Workflow,
-    accentColor: 'from-blue-500 to-cyan-500',
-    colorClass: 'text-blue-400 bg-blue-500/10 border-blue-500/20 hover:border-blue-500/40 hover:text-blue-300'
-  },
-  {
-    name: 'GitHub MCP Agent',
-    isMcp: true,
-    tags: 'GitHub, Git, PRs, Code Reviews, MCP Server, Integration',
-    specialization: 'Integration',
-    defaultTools: ['mcp_github', 'git', 'filesystem'],
-    description: 'MCP agent that connects to GitHub repository APIs via Model Context Protocol. It handles PR reviews, issue management, and file contents.',
-    skills: `# GitHub MCP Agent Skill\n\n## Role\nYou are an integration agent equipped with the GitHub Model Context Protocol (MCP) server. You connect to GitHub to manage issues, pull requests, files, and branches.\n\n## MCP Integration Link\n- Official Registry: [GitHub MCP Server GitHub](https://github.com/modelcontextprotocol/servers/tree/main/src/github)\n- Package Name: \`@modelcontextprotocol/server-github\`\n\n## Setup Configuration\nEnsure your client configuration defines the server:\n\`\`\`json\n{\n  "mcpServers": {\n    "github": {\n      "command": "npx",\n      "args": ["-y", "@modelcontextprotocol/server-github"],\n      "env": {\n        "GITHUB_PERSONAL_ACCESS_TOKEN": "<YOUR_GITHUB_TOKEN>"\n      }\n    }\n  }\n}\n\`\`\`\n\n## Core Responsibilities\n1. PR Automation: Create pull requests, list reviews, merge code, and add comments.\n2. Issue Management: File bug reports, list repository issues, and organize labels/milestones.\n3. Code Inspection: Search repository files, retrieve code contents, and check commit histories.`,
-    icon: GitBranch,
-    accentColor: 'from-slate-400 to-slate-600',
-    colorClass: 'text-slate-400 bg-slate-500/10 border-slate-500/20 hover:border-slate-500/40 hover:text-slate-300'
-  },
-  {
-    name: 'Slack MCP Agent',
-    isMcp: true,
-    tags: 'Slack, Chat, Notifications, Team Sync, MCP Server, Integration',
-    specialization: 'Integration',
-    defaultTools: ['terminal', 'filesystem', 'web_search'],
-    description: 'MCP agent that connects to Slack via Model Context Protocol. It posts notifications, reads channel history, and handles communication workflows.',
-    skills: `# Slack MCP Agent Skill\n\n## Role\nYou are an integration agent equipped with the Slack Model Context Protocol (MCP) server. You interface with Slack to coordinate team communication and notifications.\n\n## MCP Integration Link\n- Official Registry: [Slack MCP Server GitHub](https://github.com/modelcontextprotocol/servers/tree/main/src/slack)\n- Package Name: \`@modelcontextprotocol/server-slack\`\n\n## Setup Configuration\nEnsure your client configuration defines the server:\n\`\`\`json\n{\n  "mcpServers": {\n    "slack": {\n      "command": "npx",\n      "args": ["-y", "@modelcontextprotocol/server-slack"],\n      "env": {\n        "SLACK_BOT_TOKEN": "<YOUR_SLACK_BOT_TOKEN>"\n      }\n    }\n  }\n}\n\`\`\`\n\n## Core Responsibilities\n1. Post Messages: Send rich text or blocks to public/private channels or direct messages.\n2. Monitor Channels: Retrieve history, search conversations, and summarize thread contexts.\n3. Status Sync: Set active status, update profiles, and automate reminders.`,
-    icon: Cpu,
-    accentColor: 'from-pink-500 to-purple-600',
-    colorClass: 'text-pink-400 bg-pink-500/10 border-pink-500/20 hover:border-pink-500/40 hover:text-pink-300'
   }
 ];
 
@@ -424,13 +475,17 @@ export default function AgentsPage({ projects = [] }) {
   const [addAgentError, setAddAgentError] = useState('');
   const [isConfiguringTemplate, setIsConfiguringTemplate] = useState(false);
   const [editingAgentId, setEditingAgentId] = useState(null);
-  const [showMcpHelper, setShowMcpHelper] = useState(false);
+  const [skillsTab, setSkillsTab] = useState('editor');
 
   // Authorized tools state
   const [availableToolsList, setAvailableToolsList] = useState(DEFAULT_TOOLS_CATALOG);
   const [selectedTools, setSelectedTools] = useState([
     'filesystem', 'git', 'terminal', 'build_tool'
   ]);
+
+  // Attached AI Engine model state
+  const [availableModelsList, setAvailableModelsList] = useState(DEFAULT_MODELS_CATALOG);
+  const [selectedModel, setSelectedModel] = useState('claude');
 
   const fetchAvailableTools = useCallback(async () => {
     try {
@@ -453,6 +508,32 @@ export default function AgentsPage({ projects = [] }) {
   useEffect(() => {
     fetchAvailableTools();
   }, [fetchAvailableTools]);
+
+  const fetchAvailableModels = useCallback(async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const endpoint = API_ENDPOINTS.AGENT_MODELS_AVAILABLE || `${API_ENDPOINTS.AGENTS}/models/available`;
+      const res = await fetch(endpoint, {
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.models && Array.isArray(data.models) && data.models.length > 0) {
+          const cleaned = data.models.map(m => ({
+            ...m,
+            name: sanitizeModelName(m.name, m.id)
+          }));
+          setAvailableModelsList(cleaned);
+        }
+      }
+    } catch (err) {
+      console.warn('Using default model catalog fallback:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchAvailableModels();
+  }, [fetchAvailableModels]);
 
   // Skill-gap detection state (brownfield projects)
   const [skillGapData, setSkillGapData] = useState(null);
@@ -505,6 +586,7 @@ export default function AgentsPage({ projects = [] }) {
       const reader = new FileReader();
       reader.onload = (event) => {
         setSkillsContent(event.target.result);
+        setSkillsTab('editor');
       };
       reader.onerror = () => {
         setAddAgentError('Failed to read the file.');
@@ -553,8 +635,9 @@ export default function AgentsPage({ projects = [] }) {
           name: newAgentName.trim(),
           skills_content: skillsContent,
           face: newAgentFace || null,
-          tags: newAgentTags.trim() || null,
+          tags: newAgentTags.trim() || (newAgentName.trim() ? newAgentName.trim().split(/[\s/\\_-]+/).filter(Boolean).slice(0, 4).join(', ') : 'Custom Agent'),
           tools: selectedTools,
+          model_name: selectedModel || 'claude',
           project_token: projects && projects[0] ? projects[0].project_token : null
         })
       });
@@ -573,6 +656,7 @@ export default function AgentsPage({ projects = [] }) {
       setNewAgentFace('');
       setNewAgentTags('');
       setSelectedTools(['filesystem', 'git', 'terminal', 'build_tool']);
+      setSelectedModel('claude');
 
       showToast(`Agent "${newAgentName.trim()}" ${isEditing ? 'updated' : 'added'} successfully!`, 'success');
 
@@ -609,6 +693,7 @@ export default function AgentsPage({ projects = [] }) {
           face: null,
           tags: tmpl.tags,
           tools: tmpl.defaultTools || ['filesystem', 'git', 'terminal', 'build_tool'],
+          model_name: tmpl.defaultModel || 'claude',
           project_token: projects && projects[0] ? projects[0].project_token : null
         })
       });
@@ -1156,16 +1241,7 @@ export default function AgentsPage({ projects = [] }) {
                 : 'bg-app-text-label/20 text-app-text-main hover:bg-app-text-label/30'
                 }`}
             >
-              Samples ({PREDEFINED_TEMPLATES.filter(t => !t.isMcp).length})
-            </button>
-            <button
-              onClick={() => setFilter('mcp')}
-              className={`px-3 py-1 text-sm font-medium rounded-lg transition-colors ${filter === 'mcp'
-                ? 'bg-app-primary text-white'
-                : 'bg-app-text-label/20 text-app-text-main hover:bg-app-text-label/30'
-                }`}
-            >
-              MCP ({PREDEFINED_TEMPLATES.filter(t => t.isMcp).length})
+              Templates ({PREDEFINED_TEMPLATES.length})
             </button>
             <button
               onClick={() => setFilter('shared')}
@@ -1198,6 +1274,7 @@ export default function AgentsPage({ projects = [] }) {
               setNewAgentFace('');
               setNewAgentTags('');
               setSelectedTools(['filesystem', 'git', 'terminal', 'build_tool']);
+              setSelectedModel('claude');
               setAddAgentError('');
               setShowAddAgentModal(true);
             }}
@@ -1301,7 +1378,7 @@ export default function AgentsPage({ projects = [] }) {
           {!error && (filteredAgents.length > 0 || !loading) && (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {filter === 'samples' ? (
-                PREDEFINED_TEMPLATES.filter(tmpl => !tmpl.isMcp).map((tmpl) => {
+                PREDEFINED_TEMPLATES.map((tmpl) => {
                   const IconComponent = tmpl.icon;
                   return (
                     <div
@@ -1324,7 +1401,7 @@ export default function AgentsPage({ projects = [] }) {
                           </div>
 
                           <div>
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-1.5 flex-wrap">
                               <h4 className="text-xs font-bold text-app-text-main">
                                 {tmpl.name}
                               </h4>
@@ -1335,6 +1412,14 @@ export default function AgentsPage({ projects = [] }) {
                               }`}>
                                 {tmpl.specialization}
                               </span>
+                              {(() => {
+                                const mb = getModelBadge(tmpl.defaultModel || 'claude');
+                                return (
+                                  <span className={`px-1.5 py-0.5 text-[8px] font-bold rounded-full uppercase tracking-wider border ${mb.pillClass}`}>
+                                    {mb.label}
+                                  </span>
+                                );
+                              })()}
                             </div>
                             <p className="text-[9px] text-app-text-light uppercase tracking-wider font-semibold">Sample Template</p>
                           </div>
@@ -1370,92 +1455,7 @@ export default function AgentsPage({ projects = [] }) {
                             setSkillsContent(tmpl.skills);
                             setSkillsFileName(`${tmpl.name.toLowerCase().replace(/ & /g, '_').replace(/ /g, '_')}_skills.md`);
                             setSelectedTools(tmpl.defaultTools || ['filesystem', 'build_tool', 'visual_qa', 'web_search']);
-                            setIsConfiguringTemplate(true);
-                            setShowAddAgentModal(true);
-                          }}
-                          className="py-1.5 rounded-lg bg-app-bg-muted hover:bg-app-bg-hover border border-app-border-light text-xs font-bold text-app-text-main transition-all flex items-center justify-center gap-1 cursor-pointer"
-                        >
-                          <Bot className="w-3.5 h-3.5" />
-                          <span>Configure</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleQuickAddAgent(tmpl)}
-                          disabled={loading}
-                          className="py-1.5 rounded-lg bg-app-primary hover:bg-blue-600 text-white text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer shadow-sm hover:shadow"
-                        >
-                          {addingTemplateName === tmpl.name ? (
-                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                          ) : (
-                            <Plus className="w-3.5 h-3.5" />
-                          )}
-                          <span>Quick Add</span>
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })
-              ) : filter === 'mcp' ? (
-                PREDEFINED_TEMPLATES.filter(tmpl => tmpl.isMcp).map((tmpl) => {
-                  const IconComponent = tmpl.icon;
-                  return (
-                    <div
-                      key={tmpl.name}
-                      className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-3.5 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow"
-                    >
-                      {/* Top accent bar */}
-                      <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${tmpl.accentColor}`}></div>
-
-                      <div className="flex items-start justify-between mb-2">
-                        <div className="flex items-center gap-2.5">
-                          {/* Agent Icon/Logo */}
-                          <div className={`w-9 h-9 rounded-lg bg-app-bg-page border flex items-center justify-center shadow-lg text-cyan-500 dark:text-cyan-400 border-cyan-500/20 dark:border-cyan-500/30 bg-cyan-500/10 dark:bg-cyan-500/20`}>
-                            <IconComponent className="w-4 h-4 text-current font-bold" />
-                          </div>
-
-                          <div>
-                            <div className="flex items-center gap-1.5">
-                              <h4 className="text-xs font-bold text-app-text-main">
-                                {tmpl.name}
-                              </h4>
-                              <span className="px-1.5 py-0.5 text-[8px] font-bold rounded-full uppercase tracking-wider bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
-                                {tmpl.specialization}
-                              </span>
-                            </div>
-                            <p className="text-[9px] text-app-text-light uppercase tracking-wider font-semibold">MCP Server</p>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Description */}
-                      <div className="p-2 rounded-lg bg-app-bg-muted/40 border border-app-border-light/30 flex-1 flex flex-col justify-between mb-3">
-                        <div>
-                          <p className="text-[11px] leading-relaxed text-app-text-main">
-                            {tmpl.description}
-                          </p>
-                          <div className="flex flex-wrap gap-1 mt-2">
-                            {tmpl.tags.split(', ').map((tag, idx) => (
-                              <span
-                                key={idx}
-                                className="px-1 py-0.5 rounded text-[8px] font-semibold bg-app-bg-page text-app-text-muted border border-app-border-light/40"
-                              >
-                                {tag}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Action buttons */}
-                      <div className="grid grid-cols-2 gap-2 mt-auto">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setNewAgentName(tmpl.name);
-                            setNewAgentTags(tmpl.tags);
-                            setSkillsContent(tmpl.skills);
-                            setSkillsFileName(`${tmpl.name.toLowerCase().replace(/ & /g, '_').replace(/ /g, '_')}_skills.md`);
-                            setSelectedTools(tmpl.defaultTools || ['mcp_jira', 'filesystem', 'web_search']);
+                            setSelectedModel(tmpl.defaultModel || 'claude');
                             setIsConfiguringTemplate(true);
                             setShowAddAgentModal(true);
                           }}
@@ -1567,7 +1567,7 @@ export default function AgentsPage({ projects = [] }) {
                             )}
                           </div>
                           <div>
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-1.5 flex-wrap">
                               <h4 className="text-xs font-bold text-app-text-main">
                                 {agent.name || getNeutralAgentName(agent)}
                               </h4>
@@ -1580,6 +1580,19 @@ export default function AgentsPage({ projects = [] }) {
                                   {agent.specialization}
                                 </span>
                               )}
+                              {/* Attached AI Engine Model Badge */}
+                              {(() => {
+                                const mb = getModelBadge(agent.model_name || 'claude');
+                                return (
+                                  <span
+                                    title={`Attached AI Engine: ${agent.model_name || 'claude'}`}
+                                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[8px] font-bold border ${mb.pillClass}`}
+                                  >
+                                    <span className={`w-1.5 h-1.5 rounded-full ${mb.dotClass}`}></span>
+                                    <span>{mb.label}</span>
+                                  </span>
+                                );
+                              })()}
                             </div>
                             <p className="text-[9px] text-app-text-light uppercase tracking-wider font-semibold">{getNeutralAgentLabel(agent)}</p>
                           </div>
@@ -1610,6 +1623,7 @@ export default function AgentsPage({ projects = [] }) {
                                 setSelectedTools(agent.allowed_tools && Array.isArray(agent.allowed_tools) && agent.allowed_tools.length > 0
                                   ? agent.allowed_tools
                                   : ['filesystem', 'git', 'terminal', 'build_tool']);
+                                setSelectedModel(agent.model_name || 'claude');
                                 setShowAddAgentModal(true);
                               }}
                               className="p-1 rounded-lg bg-app-bg-card/50 text-app-text-muted hover:text-app-primary hover:bg-app-primary/10 transition-all cursor-pointer"
@@ -1741,420 +1755,77 @@ export default function AgentsPage({ projects = [] }) {
       {/* Add Agent Modal */}
       {showAddAgentModal && (
         <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className={`relative w-full ${isConfiguringTemplate || skillsContent ? 'max-w-4xl' : 'max-w-xl'} bg-app-bg-card border border-app-border rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[88vh] transition-all duration-300 animate-in zoom-in duration-200`}>
+          <div className="relative w-full max-w-5xl xl:max-w-6xl bg-app-bg-card border border-app-border/80 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] transition-all duration-300 animate-in zoom-in-95 duration-200">
             
-            {/* Top gradient line */}
+            {/* Top accent bar */}
             <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${
               editingAgentId
                 ? 'from-amber-400 via-orange-500 to-red-500'
                 : isConfiguringTemplate 
                   ? 'from-emerald-400 via-teal-500 to-indigo-500' 
-                  : 'from-app-primary to-blue-600'
+                  : 'from-app-primary via-blue-500 to-cyan-500'
             }`}></div>
             
             {/* Header */}
-            <div className="p-6 pb-4 flex-shrink-0 border-b border-app-border-light/40 bg-app-bg-card/50">
-              <h3 className="text-lg font-bold text-app-text-main flex items-center gap-2 mb-1">
-                {editingAgentId ? (
-                  <>
-                    <Bot className="w-5 h-5 text-amber-400 animate-pulse" />
-                    <span>Edit Custom Agent</span>
-                  </>
-                ) : isConfiguringTemplate ? (
-                  <>
-                    <Bot className="w-5 h-5 text-emerald-400" />
-                    <span>Configure Agent Template</span>
-                  </>
-                ) : (
-                  <>
-                    <Bot className="w-5 h-5 text-app-primary" />
-                    <span>Add Custom Agent</span>
-                  </>
-                )}
-              </h3>
-              <p className="text-xs text-app-text-muted">
-                {editingAgentId 
-                  ? 'Modify the custom agent name, tags, face icon, and skills file content.'
-                  : isConfiguringTemplate 
-                    ? 'Customize the pre-defined template name, tags, and skills before deploying.'
-                    : 'Create a custom dynamic agent by providing their name and uploading their skills file.'
-                }
-              </p>
-            </div>
-
-
-            {/* Form */}
-            <form onSubmit={handleAddAgentSubmit} className="flex-1 flex flex-col min-h-0">
-              {/* Scrollable Fields area */}
-              <div className="flex-1 overflow-y-auto px-6 py-4 scrollbar-thin scrollbar-thumb-app-border">
-                <div className={`grid grid-cols-1 ${isConfiguringTemplate || skillsContent ? 'md:grid-cols-2 gap-6' : 'gap-4'} pt-2`}>
-                  
-                  {/* Left Column: Metadata Inputs */}
-                  <div className="space-y-4">
-                    <div>
-                      <label className="block text-xs font-bold text-app-text-muted uppercase tracking-wider mb-1.5">
-                        Agent Name
-                      </label>
-                      <input
-                        type="text"
-                        value={newAgentName}
-                        onChange={(e) => setNewAgentName(e.target.value)}
-                        placeholder="e.g. Frontend Architect, QA Specialist"
-                        className="w-full px-3 py-2 bg-app-bg-muted/50 border border-app-border-light rounded-lg text-sm text-app-text-main focus:outline-none focus:border-app-primary placeholder:text-app-text-muted/60 transition-colors"
-                        disabled={addingAgent}
-                        required
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-app-text-muted uppercase tracking-wider mb-1.5">
-                        Agent Icon / Avatar
-                      </label>
-                      <div className="flex items-center gap-3">
-                        {newAgentFace ? (
-                          <div className="relative w-12 h-12 rounded-lg border border-app-border bg-app-bg-muted overflow-hidden shrink-0 group">
-                            <img src={newAgentFace} alt="Agent icon preview" className="w-full h-full object-cover" />
-                            <button
-                              type="button"
-                              onClick={() => setNewAgentFace('')}
-                              className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white transition-opacity duration-200"
-                            >
-                              <span className="text-[10px] font-bold">Remove</span>
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="w-12 h-12 rounded-lg border border-dashed border-app-border-light bg-app-bg-muted/30 flex items-center justify-center text-app-text-muted/40 shrink-0">
-                            <Users className="w-5 h-5" />
-                          </div>
-                        )}
-                        <div className="flex-1">
-                          <input
-                            type="file"
-                            accept="image/*"
-                            id="agent-face-upload"
-                            onChange={handleFaceChange}
-                            className="hidden"
-                            disabled={addingAgent}
-                          />
-                          <label
-                            htmlFor="agent-face-upload"
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-app-bg-muted/70 hover:bg-app-bg-muted border border-app-border-light rounded-lg text-app-text-main cursor-pointer hover:border-app-primary transition-colors"
-                          >
-                            <Upload className="w-3.5 h-3.5" />
-                            Upload Image
-                          </label>
-                          <p className="text-[10px] text-app-text-muted mt-1">PNG, JPG or SVG</p>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-app-text-muted uppercase tracking-wider mb-1.5">
-                        Specialization Tags
-                      </label>
-                      <input
-                        type="text"
-                        value={newAgentTags}
-                        onChange={(e) => setNewAgentTags(e.target.value)}
-                        placeholder="e.g. React, FastApi, PostgreSQL, Pytest (comma-separated)"
-                        className="w-full px-3 py-2 bg-app-bg-muted/50 border border-app-border-light rounded-lg text-sm text-app-text-main focus:outline-none focus:border-app-primary placeholder:text-app-text-muted/60 transition-colors"
-                        disabled={addingAgent}
-                      />
-                      <p className="text-[10px] text-app-text-muted mt-1">Used by Master Agent to match task capabilities.</p>
-                    </div>
-
-                    {/* Authorized Sandbox Tools Section */}
-                    <div className="mt-4 pt-4 border-t border-app-border-light/60">
-                      <div className="flex items-center justify-between mb-1.5">
-                        <label className="text-xs font-bold text-app-text-main flex items-center gap-1.5 uppercase tracking-wider">
-                          <Wrench className="w-3.5 h-3.5 text-app-primary" />
-                          <span>Authorized Sandbox Tools</span>
-                        </label>
-                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-app-primary/10 text-app-primary font-bold border border-app-primary/20">
-                          {selectedTools.length} enabled
-                        </span>
-                      </div>
-                      <p className="text-[10px] text-app-text-muted mb-2">
-                        Configure which container runtime tools this agent is authorized to leverage.
-                      </p>
-
-                      {/* Tool Presets */}
-                      <div className="flex flex-wrap gap-1 mb-2.5">
-                        <button
-                          type="button"
-                          onClick={() => setSelectedTools(['filesystem', 'git', 'terminal', 'build_tool', 'database_tools'])}
-                          className="px-2 py-1 rounded text-[10px] font-semibold bg-app-bg-muted hover:bg-app-bg-hover text-app-text-main border border-app-border-light transition-colors cursor-pointer"
-                        >
-                          Dev Preset
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setSelectedTools(['terminal', 'test_runner', 'visual_qa', 'filesystem'])}
-                          className="px-2 py-1 rounded text-[10px] font-semibold bg-app-bg-muted hover:bg-app-bg-hover text-app-text-main border border-app-border-light transition-colors cursor-pointer"
-                        >
-                          QA Preset
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setSelectedTools(['filesystem', 'web_search', 'mcp_jira', 'mcp_github'])}
-                          className="px-2 py-1 rounded text-[10px] font-semibold bg-app-bg-muted hover:bg-app-bg-hover text-app-text-main border border-app-border-light transition-colors cursor-pointer"
-                        >
-                          MCP Preset
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setSelectedTools((availableToolsList || DEFAULT_TOOLS_CATALOG).map(t => t.id))}
-                          className="px-2 py-1 rounded text-[10px] font-semibold bg-app-primary/10 hover:bg-app-primary/20 text-app-primary border border-app-primary/20 transition-colors cursor-pointer"
-                        >
-                          Select All
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setSelectedTools([])}
-                          className="px-2 py-1 rounded text-[10px] font-semibold bg-app-bg-muted/50 hover:bg-red-500/10 text-app-text-muted hover:text-red-400 border border-app-border-light transition-colors cursor-pointer"
-                        >
-                          Clear
-                        </button>
-                      </div>
-
-                      {/* Tool Cards Scroll Grid */}
-                      <div className="grid grid-cols-1 gap-2 max-h-52 overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-app-border">
-                        {(availableToolsList || DEFAULT_TOOLS_CATALOG).map((tool) => {
-                          const isSelected = selectedTools.includes(tool.id);
-                          return (
-                            <div
-                              key={tool.id}
-                              onClick={() => {
-                                if (isSelected) {
-                                  setSelectedTools(selectedTools.filter(id => id !== tool.id));
-                                } else {
-                                  setSelectedTools([...selectedTools, tool.id]);
-                                }
-                              }}
-                              className={`p-2 rounded-lg border transition-all cursor-pointer flex items-start gap-2.5 select-none ${
-                                isSelected
-                                  ? 'bg-app-primary/10 border-app-primary/50 shadow-sm'
-                                  : 'bg-app-bg-muted/30 border-app-border-light/60 hover:border-app-border hover:bg-app-bg-muted/60'
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={isSelected}
-                                onChange={() => {}}
-                                className="mt-0.5 rounded text-app-primary focus:ring-app-primary/20 cursor-pointer accent-blue-600"
-                              />
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center justify-between gap-1 mb-0.5">
-                                  <span className="text-xs font-bold text-app-text-main flex items-center gap-1.5 truncate">
-                                    {getToolIcon(tool.icon, 'w-3.5 h-3.5')}
-                                    <span>{tool.name}</span>
-                                  </span>
-                                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-app-bg-page text-app-text-muted border border-app-border-light/40">
-                                    {tool.category}
-                                  </span>
-                                </div>
-                                <p className="text-[10px] text-app-text-muted leading-tight">
-                                  {tool.description}
-                                </p>
-                                {tool.capabilities && (
-                                  <div className="flex flex-wrap gap-1 mt-1.5">
-                                    {tool.capabilities.slice(0, 3).map((cap, i) => (
-                                      <span key={i} className="text-[8px] font-mono px-1 py-0.5 rounded bg-black/20 text-app-text-muted">
-                                        {cap}
-                                      </span>
-                                    ))}
-                                    {tool.capabilities.length > 3 && (
-                                      <span className="text-[8px] font-mono px-1 py-0.5 rounded bg-black/20 text-app-text-muted">
-                                        +{tool.capabilities.length - 3} more
-                                      </span>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    {/* MCP Configuration Helper */}
-                    <div className="mt-4 border border-app-border-light/60 rounded-xl bg-app-bg-muted/30 overflow-hidden">
-                      <button
-                        type="button"
-                        onClick={() => setShowMcpHelper(!showMcpHelper)}
-                        className="w-full px-4 py-2.5 flex items-center justify-between text-xs font-bold text-app-text-main bg-app-bg-muted/40 hover:bg-app-bg-muted/80 transition-colors border-b border-app-border-light/40"
-                      >
-                        <span className="flex items-center gap-1.5">
-                          <Workflow className="w-3.5 h-3.5 text-cyan-400" />
-                          Model Context Protocol (MCP) Setup
-                        </span>
-                        <span className="text-[10px] text-app-text-muted font-mono">
-                          {showMcpHelper ? '[-]' : '[+]'}
-                        </span>
-                      </button>
-                      
-                      {showMcpHelper && (
-                        <div className="p-4 space-y-3 text-xs leading-relaxed animate-in fade-in duration-200">
-                          <p className="text-app-text-muted">
-                            Model Context Protocol (MCP) lets agents connect to external tools like Jira, Slack, or databases. You can define these connections in the agent's skills.
-                          </p>
-                          <div className="p-2.5 rounded bg-app-bg-page border border-app-border-light font-mono text-[10px] text-app-text-muted break-all">
-                            <span className="text-cyan-400 font-bold">Official Servers: </span>
-                            <a href="https://github.com/modelcontextprotocol/servers" target="_blank" rel="noreferrer" className="text-app-primary hover:underline flex items-center gap-1 mt-1">
-                              <Link2 className="w-3.5 h-3.5" /> github.com/modelcontextprotocol/servers
-                            </a>
-                          </div>
-                          
-                          <div className="space-y-1.5">
-                            <span className="text-[11px] font-bold text-app-text-main block">Insert MCP Skill Template:</span>
-                            <div className="grid grid-cols-2 gap-2">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setNewAgentName('Jira MCP Agent');
-                                  setNewAgentTags('Jira, Project Management, MCP Server, Integration');
-                                  setSkillsFileName('jira_mcp_skills.md');
-                                  const tmpl = PREDEFINED_TEMPLATES.find(t => t.name === 'Jira MCP Agent');
-                                  if (tmpl) setSkillsContent(tmpl.skills);
-                                }}
-                                className="px-2 py-1.5 rounded bg-app-bg-card hover:bg-app-bg-hover border border-app-border-light/60 font-semibold text-[10px] text-app-text-main text-left truncate transition-colors flex items-center gap-1 cursor-pointer"
-                              >
-                                <Workflow className="w-3 h-3 text-blue-400 shrink-0" />
-                                <span className="truncate">Jira MCP Server</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setNewAgentName('GitHub MCP Agent');
-                                  setNewAgentTags('GitHub, Git, PRs, MCP Server, Integration');
-                                  setSkillsFileName('github_mcp_skills.md');
-                                  const tmpl = PREDEFINED_TEMPLATES.find(t => t.name === 'GitHub MCP Agent');
-                                  if (tmpl) setSkillsContent(tmpl.skills);
-                                }}
-                                className="px-2 py-1.5 rounded bg-app-bg-card hover:bg-app-bg-hover border border-app-border-light/60 font-semibold text-[10px] text-app-text-main text-left truncate transition-colors flex items-center gap-1 cursor-pointer"
-                              >
-                                <GitBranch className="w-3 h-3 text-slate-400 shrink-0" />
-                                <span className="truncate">GitHub MCP Server</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setNewAgentName('Slack MCP Agent');
-                                  setNewAgentTags('Slack, Chat, MCP Server, Integration');
-                                  setSkillsFileName('slack_mcp_skills.md');
-                                  const tmpl = PREDEFINED_TEMPLATES.find(t => t.name === 'Slack MCP Agent');
-                                  if (tmpl) setSkillsContent(tmpl.skills);
-                                }}
-                                className="px-2 py-1.5 rounded bg-app-bg-card hover:bg-app-bg-hover border border-app-border-light/60 font-semibold text-[10px] text-app-text-main text-left truncate transition-colors flex items-center gap-1 cursor-pointer"
-                              >
-                                <Cpu className="w-3 h-3 text-pink-400 shrink-0" />
-                                <span className="truncate">Slack MCP Server</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setNewAgentName('Custom MCP Agent');
-                                  setNewAgentTags('MCP Server, Custom Tool, Integration');
-                                  setSkillsFileName('custom_mcp_skills.md');
-                                  setSkillsContent(`# Custom MCP Agent Skill\n\n## Role\nYou are a custom MCP integration agent.\n\n## Setup Configuration\n\`\`\`json\n{\n  "mcpServers": {\n    "custom-server": {\n      "command": "node",\n      "args": ["/path/to/server.js"],\n      "env": {}\n    }\n  }\n}\n\`\`\``);
-                                }}
-                                className="px-2 py-1.5 rounded bg-app-bg-card hover:bg-app-bg-hover border border-app-border-light/60 font-semibold text-[10px] text-app-text-main text-left truncate transition-colors flex items-center gap-1 cursor-pointer"
-                              >
-                                <Terminal className="w-3 h-3 text-yellow-400 shrink-0" />
-                                <span className="truncate">Generic Template</span>
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* If skillsContent is NOT present, show the upload box here in the single column view */}
-                    {!skillsContent && (
-                      <div>
-                        <label className="block text-xs font-bold text-app-text-muted uppercase tracking-wider mb-1.5">
-                          Upload Skills File (skills.md)
-                        </label>
-                        <div className="relative">
-                          <input
-                            type="file"
-                            accept=".md"
-                            id="skills-file-upload"
-                            onChange={handleFileChange}
-                            className="hidden"
-                            disabled={addingAgent}
-                          />
-                          <label
-                            htmlFor="skills-file-upload"
-                            className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-app-border-light rounded-lg cursor-pointer bg-app-bg-muted/20 hover:bg-app-bg-muted/40 transition-colors"
-                          >
-                            <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                              <Upload className="w-8 h-8 text-app-text-muted mb-2" />
-                              <p className="text-sm font-semibold text-app-text-main">
-                                {skillsFileName || 'Click to select skills.md'}
-                              </p>
-                              <p className="text-xs text-app-text-muted mt-1">
-                                Markdown file (.md) only
-                              </p>
-                            </div>
-                          </label>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Right Column / Conditional Editor for Skills Content */}
-                  {(isConfiguringTemplate || skillsContent) && (
-                    <div className="flex flex-col h-full space-y-2">
-                      <div className="flex items-center justify-between">
-                        <label className="block text-xs font-bold text-app-text-muted uppercase tracking-wider">
-                          Skills Markdown File Content
-                        </label>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSkillsContent('');
-                            setSkillsFileName('');
-                          }}
-                          className="text-[10px] font-bold text-red-400 hover:text-red-300 transition-colors flex items-center gap-1"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                          <span>Clear / Reset</span>
-                        </button>
-                      </div>
-                      
-                      <div className="flex-1 flex flex-col rounded-lg border border-app-border bg-app-bg-page overflow-hidden">
-                        {skillsFileName && (
-                          <div className="px-3 py-2 bg-app-bg-muted/40 border-b border-app-border-light/60 text-[10px] text-app-text-muted font-mono flex items-center justify-between">
-                            <span className="truncate max-w-[200px]" title={skillsFileName}>📄 {skillsFileName}</span>
-                            <span className="text-emerald-400 font-bold uppercase tracking-wider text-[8px] bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">Loaded</span>
-                          </div>
-                        )}
-                        <textarea
-                          value={skillsContent}
-                          onChange={(e) => setSkillsContent(e.target.value)}
-                          placeholder="# Agent Skills&#10;&#10;## Role&#10;Describe role here..."
-                          className="w-full min-h-[250px] md:flex-1 p-3 bg-app-bg-muted/10 text-xs text-app-text-main font-mono focus:outline-none placeholder:text-app-text-muted/40 resize-y md:resize-none scrollbar-thin scrollbar-thumb-app-border leading-relaxed"
-                          disabled={addingAgent}
-                          required
-                        />
-                      </div>
-                      <p className="text-[10px] text-app-text-muted mt-1 leading-normal">
-                        You can view and directly edit the instructions above. This markdown controls the agent behavior.
-                      </p>
-                    </div>
+            <div className="px-6 py-3.5 sm:py-4 flex-shrink-0 border-b border-app-border-light/50 bg-app-bg-card/70 backdrop-blur-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <h3 className="text-base sm:text-lg font-bold text-app-text-main flex items-center gap-2 mb-0.5">
+                  {editingAgentId ? (
+                    <>
+                      <Bot className="w-5 h-5 text-amber-400" />
+                      <span>Edit Custom Agent</span>
+                    </>
+                  ) : isConfiguringTemplate ? (
+                    <>
+                      <Bot className="w-5 h-5 text-emerald-400" />
+                      <span>Configure Agent Template</span>
+                    </>
+                  ) : (
+                    <>
+                      <Bot className="w-5 h-5 text-app-primary" />
+                      <span>Add Custom Agent</span>
+                    </>
                   )}
-                </div>
-
-                {addAgentError && (
-                  <div className="mt-4 p-3 text-xs rounded-lg bg-app-status-error/10 border border-app-status-error/20 text-red-400 animate-in fade-in duration-200">
-                    {addAgentError}
-                  </div>
-                )}
+                </h3>
+                <p className="text-xs text-app-text-muted">
+                  {editingAgentId 
+                    ? 'Modify the custom agent configuration, skills, attached AI model, and authorized tools.'
+                    : isConfiguringTemplate 
+                      ? 'Customize the template instructions and authorized sandbox tools before deploying.'
+                      : 'Configure a dynamic custom agent with specialized skills and container sandbox tools.'
+                  }
+                </p>
               </div>
 
-              {/* Actions Footer */}
-              <div className="p-6 pt-4 border-t border-app-border-light flex items-center justify-end gap-2 flex-shrink-0 bg-app-bg-card/50">
+              {/* Parallel to right of header: AI Engine Dropdown & Close */}
+              <div className="flex items-center gap-3 shrink-0 self-end md:self-auto">
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl border border-app-border-light bg-app-bg-page/80 shadow-2xs">
+                  <div className="flex items-center gap-1.5 text-[11px] font-semibold text-app-text-main shrink-0">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                    <span className="hidden sm:inline">AI Engine (LLM):</span>
+                    <span className="sm:hidden">AI:</span>
+                  </div>
+                  <div className="relative">
+                    <select
+                      value={selectedModel || 'claude'}
+                      onChange={(e) => setSelectedModel(e.target.value)}
+                      disabled={addingAgent}
+                      className="px-1 pr-5 py-1 bg-transparent border-0 text-xs font-semibold text-app-text-main focus:outline-none cursor-pointer appearance-none"
+                    >
+                      {(availableModelsList || DEFAULT_MODELS_CATALOG).map((model) => (
+                        <option
+                          key={model.id}
+                          value={model.id}
+                          className="bg-app-bg-card text-app-text-main py-1"
+                        >
+                          {sanitizeModelName(model.name, model.id)} ({model.provider || 'AI Engine'})
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="w-3.5 h-3.5 text-app-text-muted pointer-events-none absolute right-0.5 top-1/2 -translate-y-1/2" />
+                  </div>
+                </div>
+
                 <button
                   type="button"
                   onClick={() => {
@@ -2167,17 +1838,370 @@ export default function AgentsPage({ projects = [] }) {
                     setNewAgentFace('');
                     setNewAgentTags('');
                     setSelectedTools(['filesystem', 'git', 'terminal', 'build_tool']);
+                    setSelectedModel('claude');
+                    setAddAgentError('');
+                  }}
+                  className="p-1.5 -mr-1 rounded-xl text-app-text-muted hover:text-app-text-main hover:bg-app-bg-muted transition-colors cursor-pointer"
+                  title="Close"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Form */}
+            <form onSubmit={handleAddAgentSubmit} className="flex-1 flex flex-col min-h-0">
+              {/* Scrollable Fields area with hidden scrollbar */}
+              <div className="flex-1 overflow-y-auto p-5 sm:p-6 no-scrollbar">
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+                  
+                  {/* Left Column: Top Identity and Spacious Prompt Workspace */}
+                  <div className="lg:col-span-6 flex flex-col space-y-3.5">
+                    {/* Identity Details Card: Name & Avatar */}
+                    <div className="p-3 rounded-xl border border-app-border-light/80 bg-app-bg-card/70 backdrop-blur-sm">
+                      <div className="flex items-center gap-3">
+                        {/* Avatar */}
+                        <div className="relative group shrink-0">
+                          {newAgentFace ? (
+                            <div className="relative w-11 h-11 rounded-xl border border-app-border overflow-hidden bg-app-bg-muted shadow-xs">
+                              <img src={newAgentFace} alt="Avatar" className="w-full h-full object-cover" />
+                              <button
+                                type="button"
+                                onClick={() => setNewAgentFace('')}
+                                className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-[10px] font-bold transition-opacity"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ) : (
+                            <label
+                              htmlFor="agent-face-upload"
+                              className="w-11 h-11 rounded-xl border border-dashed border-app-border-light hover:border-app-primary bg-app-bg-muted/40 hover:bg-app-bg-muted flex flex-col items-center justify-center text-app-text-muted hover:text-app-primary cursor-pointer transition-all shadow-xs"
+                              title="Upload avatar"
+                            >
+                              <Users className="w-4 h-4 mb-0.5" />
+                              <span className="text-[8px] font-medium">+Icon</span>
+                            </label>
+                          )}
+                          <input
+                            type="file"
+                            accept="image/*"
+                            id="agent-face-upload"
+                            onChange={handleFaceChange}
+                            className="hidden"
+                            disabled={addingAgent}
+                          />
+                        </div>
+
+                        {/* Name Input */}
+                        <div className="flex-1 min-w-0">
+                          <label className="block text-[11px] font-semibold text-app-text-main mb-1">
+                            Agent Name <span className="text-red-400">*</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={newAgentName}
+                            onChange={(e) => setNewAgentName(e.target.value)}
+                            placeholder="e.g. Frontend Architect, QA Specialist"
+                            className="w-full px-3 py-2 bg-app-bg-page/80 border border-app-border-light rounded-xl text-xs font-semibold text-app-text-main focus:outline-none focus:border-app-primary focus:ring-1 focus:ring-app-primary/20 placeholder:font-normal placeholder:text-app-text-muted/50 transition-all"
+                            disabled={addingAgent}
+                            required
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Agent Skills / Prompt Editor (Spacious Workspace) */}
+                    <div className="flex-1 flex flex-col p-4 rounded-xl border border-app-border-light/80 bg-app-bg-card/70 backdrop-blur-sm min-h-[440px]">
+                      {/* Editor Toolbar Header */}
+                      <div className="flex items-center justify-between gap-2 pb-3 mb-3 border-b border-app-border-light/50 shrink-0">
+                        <div className="flex items-center gap-1 bg-app-bg-muted/50 p-0.5 rounded-lg border border-app-border-light/60">
+                          <button
+                            type="button"
+                            onClick={() => setSkillsTab('editor')}
+                            className={`px-3 py-1 rounded-md text-[11px] font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
+                              skillsTab === 'editor'
+                                ? 'bg-app-bg-card text-app-text-main shadow-xs'
+                                : 'text-app-text-muted hover:text-app-text-main'
+                            }`}
+                          >
+                            <Code className="w-3.5 h-3.5 text-app-primary" />
+                            <span>Prompt Editor</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSkillsTab('upload')}
+                            className={`px-3 py-1 rounded-md text-[11px] font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
+                              skillsTab === 'upload'
+                                ? 'bg-app-bg-card text-app-text-main shadow-xs'
+                                : 'text-app-text-muted hover:text-app-text-main'
+                            }`}
+                          >
+                            <Upload className="w-3.5 h-3.5 text-app-primary" />
+                            <span>Upload File (.md)</span>
+                          </button>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          {!skillsContent && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSkillsContent(`# ${newAgentName.trim() || 'Custom'} Agent System Prompt\n\n## Role & Objective\nYou are an autonomous agent specialized in requirements analysis, code development, and quality verification.\n\n## Working Rules\n1. Review existing code and architectural patterns before modifying\n2. Maintain backward compatibility and cleanly isolate changes\n3. Execute test suites and verify compilation after code modifications\n\n## Output Format\nProvide clear git diffs and summarize verified changes.`);
+                              }}
+                              className="px-2.5 py-1 rounded-md text-[10px] font-medium text-app-primary bg-app-primary/10 hover:bg-app-primary/20 transition-all cursor-pointer flex items-center gap-1 border border-app-primary/20"
+                              title="Insert standard agent prompt template"
+                            >
+                              <Sparkles className="w-3 h-3" />
+                              <span>Starter Template</span>
+                            </button>
+                          )}
+
+                          {skillsContent && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSkillsContent('');
+                                setSkillsFileName('');
+                              }}
+                              className="text-[10px] font-semibold text-red-400 hover:text-red-300 transition-colors flex items-center gap-1 cursor-pointer px-2 py-1 rounded-md hover:bg-red-500/10"
+                              title="Clear editor contents"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>Reset</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Editor Body */}
+                      {skillsTab === 'editor' ? (
+                        <div className="flex-1 flex flex-col min-h-0">
+                          {skillsFileName && (
+                            <div className="flex items-center justify-between px-3 py-1 mb-2 rounded-lg bg-app-bg-page border border-app-border-light/60 text-[10px] text-app-text-muted font-mono shrink-0">
+                              <span className="truncate max-w-[240px]">📄 {skillsFileName}</span>
+                              <span className="text-emerald-500 font-bold uppercase tracking-wider text-[8px] bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">Loaded</span>
+                            </div>
+                          )}
+                          <div className="flex-1 relative flex flex-col min-h-0">
+                            <textarea
+                              value={skillsContent}
+                              onChange={(e) => setSkillsContent(e.target.value)}
+                              placeholder={`# Agent Role & Instructions\n\n## Core Role\nYou are a specialized AI agent responsible for analyzing requirements, implementing features, and verifying functionality.\n\n## Guidelines\n1. Always review existing code before writing\n2. Run tests to confirm changes`}
+                              className="w-full flex-1 p-3.5 bg-app-bg-page/90 dark:bg-black/25 border border-app-border-light rounded-xl font-mono text-xs text-app-text-main leading-relaxed focus:outline-none focus:border-app-primary focus:ring-1 focus:ring-app-primary/20 transition-all resize-none no-scrollbar placeholder:text-app-text-muted/40 min-h-[340px]"
+                              disabled={addingAgent}
+                              required
+                            />
+                          </div>
+
+                          {/* Footer stats bar */}
+                          <div className="mt-2.5 flex items-center justify-between text-[10px] text-app-text-muted shrink-0 font-mono">
+                            <div className="flex items-center gap-2">
+                              <span>System Prompt</span>
+                              <span>•</span>
+                              <span className="text-app-text-main font-semibold">
+                                {skillsContent ? skillsContent.split('\n').length : 0} lines
+                              </span>
+                              <span>•</span>
+                              <span className="text-app-text-main font-semibold">
+                                {skillsContent ? skillsContent.length.toLocaleString() : 0} chars
+                              </span>
+                            </div>
+                            <span className="text-[10px] text-emerald-400 font-sans font-medium flex items-center gap-1">
+                              <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                              <span>Container Injected</span>
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex-1 flex flex-col items-center justify-center min-h-[340px] border-2 border-dashed border-app-border-light hover:border-app-primary/60 rounded-xl cursor-pointer bg-app-bg-page/40 hover:bg-app-bg-muted/20 transition-all p-6 group">
+                          <input
+                            type="file"
+                            accept=".md"
+                            id="skills-file-upload-tab"
+                            onChange={handleFileChange}
+                            className="hidden"
+                            disabled={addingAgent}
+                          />
+                          <label
+                            htmlFor="skills-file-upload-tab"
+                            className="flex flex-col items-center justify-center w-full h-full cursor-pointer text-center"
+                          >
+                            <div className="w-12 h-12 rounded-2xl bg-app-primary/10 flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+                              <Upload className="w-6 h-6 text-app-primary" />
+                            </div>
+                            <p className="text-xs font-bold text-app-text-main">
+                              Select or drop a Markdown file (.md)
+                            </p>
+                            <p className="text-[11px] text-app-text-muted mt-1 max-w-xs">
+                              Upload any existing skill prompt or role specification to immediately populate the editor.
+                            </p>
+                            <span className="mt-3 px-3 py-1.5 rounded-lg text-[10px] font-semibold bg-app-bg-card border border-app-border-light text-app-text-main group-hover:border-app-primary transition-colors">
+                              Browse Files
+                            </span>
+                          </label>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Right Column: Authorized Sandbox Tools & Capabilities */}
+                  <div className="lg:col-span-6 flex flex-col">
+                    <div className="p-4 rounded-xl border border-app-border-light/80 bg-app-bg-card/70 backdrop-blur-sm flex-1 flex flex-col">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="text-xs font-semibold text-app-text-main flex items-center gap-1.5">
+                          <Wrench className="w-3.5 h-3.5 text-app-primary" />
+                          <span>Authorized Sandbox Tools</span>
+                        </label>
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-app-primary/10 text-app-primary font-bold border border-app-primary/20 flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-app-primary animate-pulse" />
+                          <span>{selectedTools.length} of {(availableToolsList || DEFAULT_TOOLS_CATALOG).length} enabled</span>
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-app-text-muted mb-2.5">
+                        Configure which container runtime tools and APIs this agent is authorized to leverage.
+                      </p>
+
+                      {/* Tool Presets */}
+                      <div className="flex flex-wrap gap-1.5 mb-3">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedTools(['filesystem', 'git', 'terminal', 'build_tool', 'database_tools'])}
+                          className="px-2.5 py-1 rounded-lg text-[10px] font-semibold bg-app-bg-page hover:bg-app-bg-hover text-app-text-main border border-app-border-light transition-all cursor-pointer"
+                        >
+                          Dev Preset
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedTools(['terminal', 'test_runner', 'visual_qa', 'filesystem'])}
+                          className="px-2.5 py-1 rounded-lg text-[10px] font-semibold bg-app-bg-page hover:bg-app-bg-hover text-app-text-main border border-app-border-light transition-all cursor-pointer"
+                        >
+                          QA Preset
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedTools((availableToolsList || DEFAULT_TOOLS_CATALOG).map(t => t.id))}
+                          className="px-2.5 py-1 rounded-lg text-[10px] font-semibold bg-app-primary/10 hover:bg-app-primary/20 text-app-primary border border-app-primary/20 transition-all cursor-pointer"
+                        >
+                          Select All
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedTools([])}
+                          className="px-2.5 py-1 rounded-lg text-[10px] font-semibold bg-app-bg-page hover:bg-red-500/10 text-app-text-muted hover:text-red-400 border border-app-border-light transition-all cursor-pointer"
+                        >
+                          Clear
+                        </button>
+                      </div>
+
+                      {/* Tool Cards Scroll Grid with hidden scrollbar */}
+                      <div className="space-y-2.5 overflow-y-auto max-h-[460px] pr-1 no-scrollbar">
+                        {(availableToolsList || DEFAULT_TOOLS_CATALOG).map((tool) => {
+                          const isSelected = selectedTools.includes(tool.id);
+                          return (
+                            <div
+                              key={tool.id}
+                              onClick={() => {
+                                if (isSelected) {
+                                  setSelectedTools(selectedTools.filter(id => id !== tool.id));
+                                } else {
+                                  setSelectedTools([...selectedTools, tool.id]);
+                                }
+                              }}
+                              className={`p-3 rounded-xl border transition-all duration-150 cursor-pointer flex items-start gap-3 select-none ${
+                                isSelected
+                                  ? 'bg-blue-500/5 dark:bg-blue-500/10 border-blue-500/60 shadow-2xs ring-1 ring-blue-500/20'
+                                  : 'bg-app-bg-page/70 border-app-border-light/70 hover:border-app-border hover:bg-app-bg-muted/40'
+                              }`}
+                            >
+                              {/* Custom Styled Checkbox */}
+                              <div className={`w-4 h-4 rounded-md flex items-center justify-center mt-0.5 transition-all shrink-0 ${
+                                isSelected
+                                  ? 'bg-blue-500 text-white shadow-2xs'
+                                  : 'border border-app-border-light bg-app-bg-page'
+                              }`}>
+                                {isSelected && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+                              </div>
+
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center justify-between gap-1 mb-1">
+                                  <span className="text-xs font-bold text-app-text-main flex items-center gap-1.5 truncate">
+                                    <span className="p-1 rounded-lg bg-app-bg-muted border border-app-border-light/50">
+                                      {getToolIcon(tool.icon, 'w-3.5 h-3.5')}
+                                    </span>
+                                    <span>{tool.name}</span>
+                                  </span>
+                                  <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-app-bg-muted text-app-text-muted border border-app-border-light/60 shrink-0">
+                                    {tool.category}
+                                  </span>
+                                </div>
+                                <p className="text-[11px] text-app-text-muted leading-relaxed mb-2">
+                                  {tool.description}
+                                </p>
+                                {tool.capabilities && tool.capabilities.length > 0 && (
+                                  <div className="pt-2 border-t border-app-border-light/40">
+                                    <div className="text-[9px] uppercase tracking-wider font-semibold text-app-text-muted/70 mb-1.5">
+                                      Authorized Capabilities:
+                                    </div>
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {tool.capabilities.map((cap, i) => (
+                                        <span
+                                          key={i}
+                                          className={`text-[10px] font-medium px-2 py-0.5 rounded-full border transition-colors ${
+                                            isSelected
+                                              ? 'bg-app-bg-card border-app-primary/30 text-app-text-main shadow-2xs'
+                                              : 'bg-app-bg-muted/60 border-app-border-light text-app-text-muted'
+                                          }`}
+                                        >
+                                          {formatCapability(cap)}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+
+                {addAgentError && (
+                  <div className="mt-4 p-3 text-xs rounded-xl bg-app-status-error/10 border border-app-status-error/20 text-red-400 animate-in fade-in duration-200">
+                    {addAgentError}
+                  </div>
+                )}
+              </div>
+
+              {/* Actions Footer */}
+              <div className="px-6 py-4 border-t border-app-border-light/60 flex items-center justify-end gap-2.5 flex-shrink-0 bg-app-bg-card/70 backdrop-blur-sm">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAddAgentModal(false);
+                    setIsConfiguringTemplate(false);
+                    setEditingAgentId(null);
+                    setNewAgentName('');
+                    setSkillsContent('');
+                    setSkillsFileName('');
+                    setNewAgentFace('');
+                    setNewAgentTags('');
+                    setSelectedTools(['filesystem', 'git', 'terminal', 'build_tool']);
+                    setSelectedModel('claude');
                     setAddAgentError('');
                   }}
                   disabled={addingAgent}
-                  className="px-4 py-2 text-xs font-bold text-app-text-muted hover:text-app-text-main bg-app-text-label/10 hover:bg-app-text-label/20 rounded-lg transition-colors"
+                  className="px-4 py-2 text-xs font-semibold text-app-text-muted hover:text-app-text-main bg-app-bg-muted/60 hover:bg-app-bg-muted rounded-xl transition-all cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={addingAgent || !newAgentName.trim() || !skillsContent}
-                  className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-gradient-to-r from-app-primary to-blue-600 hover:from-blue-600 hover:to-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg shadow transition-all"
+                  className="flex items-center gap-1.5 px-5 py-2 text-xs font-semibold text-white bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-500 hover:to-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl shadow-sm hover:shadow transition-all cursor-pointer"
                 >
                   {addingAgent ? (
                     <>

@@ -224,11 +224,19 @@ _DDL_STATEMENTS: list[tuple[str, str]] = [
         CREATE TABLE IF NOT EXISTS payg_invoice (
             id                INTEGER NOT NULL,
             organization_name TEXT    NOT NULL,
+            organization_id   TEXT,
             billing_month     TEXT    NOT NULL,
             total_tokens      INTEGER NOT NULL DEFAULT 0,
+            prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            input_cost        REAL    NOT NULL DEFAULT 0.0,
+            output_cost       REAL    NOT NULL DEFAULT 0.0,
             total_cost        REAL    NOT NULL DEFAULT 0.0,
+            line_items        TEXT,
+            recipient_email   TEXT,
             invoice_status    TEXT    NOT NULL DEFAULT 'PENDING',
             generated_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+            paid_at           TEXT,
             PRIMARY KEY (id)
         )
         """,
@@ -437,6 +445,7 @@ _DDL_STATEMENTS: list[tuple[str, str]] = [
             organization_id   TEXT,
             request_type      TEXT    NOT NULL,
             requested_tokens  INTEGER NOT NULL DEFAULT 0,
+            requested_limit_usd REAL,
             requested_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
             status            TEXT    NOT NULL DEFAULT 'REQUESTED',
             remarks           TEXT,

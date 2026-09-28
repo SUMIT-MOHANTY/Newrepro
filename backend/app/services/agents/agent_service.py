@@ -101,30 +101,41 @@ AVAILABLE_AGENT_TOOLS: List[Dict[str, Any]] = [
         "default": False,
         "capabilities": ["inspect_schema", "run_migration", "verify_seeds"],
     },
+]
+
+
+AVAILABLE_AGENT_MODELS = [
     {
-        "id": "mcp_jira",
-        "name": "Jira MCP Integration",
-        "category": "MCP Integrations",
-        "description": "Model Context Protocol tool to fetch tickets, transition issues, and sync sprint status.",
-        "icon": "Workflow",
-        "default": False,
-        "capabilities": ["jira_search", "jira_update_ticket", "jira_transition"],
+        "id": "claude",
+        "name": "Claude",
+        "provider": "Anthropic",
+        "description": "Best for fullstack architecture, multi-file code synthesis, refactoring, and tool-use.",
+        "color": "amber",
+        "recommended_for": ["Fullstack Developer", "Backend Developer", "System Architect"]
     },
     {
-        "id": "mcp_github",
-        "name": "GitHub MCP Integration",
-        "category": "MCP Integrations",
-        "description": "Model Context Protocol tool to open Pull Requests, conduct PR reviews, and track issues.",
-        "icon": "Github",
-        "default": False,
-        "capabilities": ["gh_create_pr", "gh_review_diff", "gh_issue_comment"],
+        "id": "deepseek",
+        "name": "DeepSeek",
+        "provider": "DeepSeek",
+        "description": "State-of-the-art coding performance, algorithm formulation, and deep mathematical/logical verification.",
+        "color": "emerald",
+        "recommended_for": ["Testing & QA Agent", "Algorithm Specialist", "Database Engineer"]
     },
+    {
+        "id": "kimi",
+        "name": "Kimi",
+        "provider": "Moonshot",
+        "description": "High-throughput context processing, rapid test assertion cycles, and fast response generation.",
+        "color": "sky",
+        "recommended_for": ["Documentation Specialist", "Fast Reviewer", "Visual QA Agent"]
+    }
 ]
 
 
 class AgentService:
     """Control Plane Agent Service managing sessions, tasks, and container handoffs."""
     AVAILABLE_AGENT_TOOLS = AVAILABLE_AGENT_TOOLS
+    AVAILABLE_AGENT_MODELS = AVAILABLE_AGENT_MODELS
 
     def __init__(self, db: Optional[Session] = None):
         self.db = db

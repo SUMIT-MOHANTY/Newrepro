@@ -2,6 +2,6 @@
 
 Exports the global agent_service singleton instance and AgentService class.
 """
-from app.services.agents.agent_service import agent_service, AgentService, AVAILABLE_AGENT_TOOLS
+from app.services.agents.agent_service import agent_service, AgentService, AVAILABLE_AGENT_TOOLS, AVAILABLE_AGENT_MODELS
 
-__all__ = ["agent_service", "AgentService", "AVAILABLE_AGENT_TOOLS"]
+__all__ = ["agent_service", "AgentService", "AVAILABLE_AGENT_TOOLS", "AVAILABLE_AGENT_MODELS"]

@@ -1053,6 +1053,7 @@ def _runtime_agent_records(records: List[models.Agent], project_token: Optional[
                         "specialization": getattr(rec, "specialization", None),
                         "face": getattr(rec, "face", None),
                         "allowed_tools": getattr(rec, "allowed_tools", None) or [],
+                        "model_name": getattr(rec, "model_name", None) or "claude",
                     })
                 for j in range(1, dc + 1):
                     idx = sc + j
@@ -1068,6 +1069,7 @@ def _runtime_agent_records(records: List[models.Agent], project_token: Optional[
                         "specialization": getattr(rec, "specialization", None),
                         "face": getattr(rec, "face", None),
                         "allowed_tools": getattr(rec, "allowed_tools", None) or [],
+                        "model_name": getattr(rec, "model_name", None) or "claude",
                     })
             else:
                 agent_kind = "system" if is_default_system else (info[0] if info else "shared")
@@ -1083,6 +1085,7 @@ def _runtime_agent_records(records: List[models.Agent], project_token: Optional[
                     "specialization": getattr(rec, "specialization", None),
                     "face": getattr(rec, "face", None),
                     "allowed_tools": getattr(rec, "allowed_tools", None) or [],
+                    "model_name": getattr(rec, "model_name", None) or "claude",
                 })
         return expanded
     finally:

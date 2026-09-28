@@ -97,6 +97,7 @@ def list_quota_requests(
                 "organization_id": r.organization_id,
                 "request_type": r.request_type.value if hasattr(r.request_type, "value") else str(r.request_type),
                 "requested_tokens": r.requested_tokens,
+                "requested_limit_usd": float(r.requested_limit_usd) if getattr(r, "requested_limit_usd", None) is not None else None,
                 "requested_by": r.requested_by,
                 "requester_email": r.requester.email if r.requester else None,
                 "requester_name": f"{r.requester.first_name or ''} {r.requester.last_name or ''}".strip() or (r.requester.email.split('@')[0] if r.requester and r.requester.email else f"User #{r.requested_by}"),

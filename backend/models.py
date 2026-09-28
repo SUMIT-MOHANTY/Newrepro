@@ -272,6 +272,7 @@ class Agent(Base):
     specialization = Column(String, nullable=True)
     face = Column(Text, nullable=True)
     allowed_tools = Column(JSON, nullable=True)
+    model_name = Column(String, nullable=True, default="claude")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class OrganizationAgentQuota(Base):

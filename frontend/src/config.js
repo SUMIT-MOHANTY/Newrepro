@@ -143,6 +143,7 @@ export const API_ENDPOINTS = {
     AGENT_UPDATE: (agentId) => `${API_BASE_URL}/agents/${agentId}`,
     AGENT_REMOVE: (agentId) => `${API_BASE_URL}/agents/${agentId}`,
     AGENT_TOOLS_AVAILABLE: `${API_BASE_URL}/agents/tools/available`,
+    AGENT_MODELS_AVAILABLE: `${API_BASE_URL}/agents/models/available`,
 
     // Preview Deploy
     AGENT_PREVIEW_DEPLOY: `${API_BASE_URL}/agents/preview/deploy`,

@@ -720,6 +720,47 @@ async def get_available_agent_tools():
     }
 
 
+AVAILABLE_AGENT_MODELS = [
+    {
+        "id": "claude",
+        "name": "Claude",
+        "provider": "Anthropic",
+        "description": "Best for complex fullstack architecture, multi-file code synthesis, refactoring, and tool-use.",
+        "color": "amber",
+        "recommended_for": ["Fullstack Developer", "Backend Developer", "System Architect"]
+    },
+    {
+        "id": "deepseek",
+        "name": "DeepSeek",
+        "provider": "DeepSeek",
+        "description": "State-of-the-art coding performance, algorithm formulation, and deep mathematical/logical verification.",
+        "color": "emerald",
+        "recommended_for": ["Testing & QA Agent", "Algorithm Specialist", "Database Engineer"]
+    },
+    {
+        "id": "kimi",
+        "name": "Kimi",
+        "provider": "Moonshot",
+        "description": "High-throughput context processing, rapid test assertion cycles, and fast response generation.",
+        "color": "sky",
+        "recommended_for": ["Documentation Specialist", "Fast Reviewer", "Visual QA Agent"]
+    }
+]
+
+
+@router.get("/agents/models/available")
+@router.get("/api/agent/available-models")
+async def get_available_agent_models():
+    """Return the catalog of AI models configurable for agents (Claude, DeepSeek, Kimi)."""
+    return {
+        "success": True,
+        "models": AVAILABLE_AGENT_MODELS,
+        "default": "claude",
+        "total": len(AVAILABLE_AGENT_MODELS),
+    }
+
+
+
 @router.get("/agents")
 async def list_agents(
     current_user: models.User = Depends(auth.get_current_user),
@@ -1320,17 +1361,25 @@ async def _bg_run_agent(
             effective_repo = git_repo_url or source_repo_url
             effective_token = git_token or source_repo_token
 
-            # Dispatch to isolated Docker container runtime
+            # Query the agent to retrieve its configured model and allowed tools
+            base_agent_id = agent_id.split("#")[0] if agent_id else None
+            agent_rec = db.query(models.Agent).filter(models.Agent.id == base_agent_id).first() if base_agent_id else None
+            assigned_model = (agent_rec.model_name if agent_rec and agent_rec.model_name else "claude").lower().strip()
+            assigned_tools = agent_rec.allowed_tools if agent_rec and agent_rec.allowed_tools else None
+
+            # Dispatch to isolated Docker container runtime with assigned AI model & tools
             agent_service.submit_task(
                 db=db,
                 project_id=project_token or "default_project",
                 prompt=prompt,
                 task_type="initial_generation" if not effective_repo else "follow_up_edit",
+                model=assigned_model,
+                tools=assigned_tools,
                 repo_url=effective_repo,
                 git_token=effective_token,
                 git_branch="main",
             )
-            logger.info(f"[_bg_run_agent] Dispatched project {project_token} to agent-runtime container successfully.")
+            logger.info(f"[_bg_run_agent] Dispatched project {project_token} (model: {assigned_model}, tools: {assigned_tools}) to agent-runtime container successfully.")
         finally:
             db.close()
     except Exception as e:
@@ -1692,6 +1741,7 @@ class AddAgentSkillsRequest(BaseModel):
     face: Optional[str] = None
     tags: Optional[str] = None
     tools: Optional[List[str]] = None
+    model_name: Optional[str] = "claude"
 
 
 class OnboardAgentAssignment(BaseModel):
@@ -2046,6 +2096,10 @@ async def add_agent_with_skills(
         else:
             allowed_tools = ["filesystem", "git", "terminal", "build_tool"]
 
+    # Determine assigned AI model
+    raw_model = (request.model_name or "claude").lower().strip()
+    model_name = raw_model if raw_model in ["claude", "deepseek", "kimi"] else "claude"
+
     # Create dynamic Agent record
     new_agent = models.Agent(
         id=agent_uuid,
@@ -2059,6 +2113,7 @@ async def add_agent_with_skills(
         specialization=specialization,
         face=request.face,
         allowed_tools=allowed_tools,
+        model_name=model_name,
     )
     db.add(new_agent)
     
@@ -2092,6 +2147,7 @@ async def add_agent_with_skills(
             "specialization": specialization,
             "face": request.face,
             "allowed_tools": allowed_tools,
+            "model_name": model_name,
         }
     }
 
@@ -2103,6 +2159,7 @@ class UpdateAgentSkillsRequest(BaseModel):
     tags: Optional[str] = None
     project_token: Optional[str] = None
     tools: Optional[List[str]] = None
+    model_name: Optional[str] = None
 
 
 @router.post("/agents/skills/update/{agent_id}")
@@ -2229,6 +2286,10 @@ async def update_agent_with_skills(
         agent_rec.face = request.face
     if request.tools is not None:
         agent_rec.allowed_tools = request.tools
+    if request.model_name is not None:
+        clean_model = request.model_name.lower().strip()
+        if clean_model in ["claude", "deepseek", "kimi"]:
+            agent_rec.model_name = clean_model
 
     db.add(agent_rec)
 
@@ -2263,6 +2324,7 @@ async def update_agent_with_skills(
             "specialization": specialization,
             "face": agent_rec.face,
             "allowed_tools": agent_rec.allowed_tools or [],
+            "model_name": getattr(agent_rec, "model_name", "claude") or "claude",
         }
     }
 
