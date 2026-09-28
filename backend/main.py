@@ -85,13 +85,11 @@ async def lifespan(app: FastAPI):
         initialize_job_manager,
         shutdown_job_manager,
     )
-    from app.workers.capture_agent_logs import auto_capture_loop
     from app.workers.daily_billing_email_service import (
         daily_billing_email_scheduler,
     )
 
     await initialize_job_manager()
-    log_task = asyncio.create_task(auto_capture_loop())
     billing_email_task = asyncio.create_task(daily_billing_email_scheduler())
     logger.info("[Lifespan] Background job manager and schedulers active.")
 
@@ -99,10 +97,9 @@ async def lifespan(app: FastAPI):
 
     # 3. Graceful shutdown of background workers
     logger.info("[Lifespan] Initiating graceful shutdown...")
-    log_task.cancel()
     billing_email_task.cancel()
     try:
-        await asyncio.gather(log_task, billing_email_task, return_exceptions=True)
+        await asyncio.gather(billing_email_task, return_exceptions=True)
     except Exception:
         pass
     await shutdown_job_manager()

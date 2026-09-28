@@ -271,6 +271,7 @@ class Agent(Base):
     skills_tags = Column(JSON, nullable=True)
     specialization = Column(String, nullable=True)
     face = Column(Text, nullable=True)
+    allowed_tools = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class OrganizationAgentQuota(Base):
@@ -1017,6 +1018,63 @@ class TicketMessage(Base):
 
     ticket = relationship("SupportTicket", back_populates="messages")
     sender = relationship("User", foreign_keys=[sender_user_id])
+
+
+class AgentSession(Base):
+    """Durable record of an isolated container execution session for a project."""
+    __tablename__ = "agent_sessions"
+
+    id = Column(String(64), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String(64), nullable=True, index=True)
+    project_id = Column(String(64), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    status = Column(String(32), default="pending", nullable=False, index=True)
+    container_id = Column(String(255), nullable=True)
+    preview_url = Column(String(512), nullable=True)
+    preview_port = Column(Integer, nullable=True)
+
+    started_at = Column(DateTime, nullable=True)
+    last_activity_at = Column(DateTime, default=datetime.utcnow, nullable=True)
+    ended_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    tasks = relationship("AgentTask", back_populates="session", cascade="all, delete-orphan", order_by="AgentTask.created_at.asc()")
+    events = relationship("AgentEvent", back_populates="session", cascade="all, delete-orphan", order_by="AgentEvent.created_at.asc()")
+
+
+class AgentTask(Base):
+    """Single unit of work within an agent session."""
+    __tablename__ = "agent_tasks"
+
+    id = Column(String(64), primary_key=True, default=lambda: str(uuid.uuid4()))
+    session_id = Column(String(64), ForeignKey("agent_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    task_type = Column(String(64), default="initial_generation")
+    description = Column(Text, nullable=False)
+    status = Column(String(32), default="pending", nullable=False, index=True)
+    model_name = Column(String(128), nullable=True)
+    files_changed = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    session = relationship("AgentSession", back_populates="tasks")
+
+
+class AgentEvent(Base):
+    """Real-time lifecycle or tool execution event dispatched by agent runtime."""
+    __tablename__ = "agent_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String(64), ForeignKey("agent_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    task_id = Column(String(64), nullable=True, index=True)
+    event_type = Column(String(64), nullable=False, index=True)
+    payload = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    session = relationship("AgentSession", back_populates="events")
+
 
 
 

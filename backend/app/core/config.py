@@ -81,6 +81,14 @@ class Settings(BaseSettings):
     task_api_client_id: Optional[str] = None
     task_api_client_secret: Optional[str] = None
 
+    # Agent Runtime & Docker Sandbox Settings
+    agent_runtime_image: str = "vibecoding-agent-runtime:latest"
+    project_storage_root: str = os.path.abspath(os.path.join(BASE_DIR, "storage", "projects"))
+    agent_callback_url: str = "http://host.docker.internal:8000/api/v1"
+    agent_callback_secret: str = "dsuite-agent-callback-secret"
+    agent_container_memory_limit: str = "2g"
+    agent_container_cpu_quota: int = 200000
+
     class Config:
         env_file = ENV_PATH if os.path.exists(ENV_PATH) else ".env"
         env_file_encoding = "utf-8"

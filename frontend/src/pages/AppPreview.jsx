@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { customAlert } from '../utils/modalHelpers';
 import { Loader2, ArrowLeft, ExternalLink, RefreshCw, Maximize2, Minimize2, Globe, StopCircle, Smartphone, Monitor, Tablet } from 'lucide-react';
 import { API_ENDPOINTS, API_BASE_URL } from '../config';
+import ExecutionStream from '../components/ExecutionStream';
 
 const DEVICE_SIZES = [
     { id: 'desktop', label: 'Desktop', icon: Monitor, width: '100%', height: '100%' },
@@ -20,6 +21,8 @@ export default function AppPreview() {
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [selectedDevice, setSelectedDevice] = useState('desktop');
     const [iframeKey, setIframeKey] = useState(0);
+    const [previewSteps, setPreviewSteps] = useState([]);
+    const wsRef = useRef(null);
 
     const fetchStatus = useCallback(async () => {
         if (!token) return;
@@ -49,8 +52,95 @@ export default function AppPreview() {
         }
     }, [previewStatus.status, fetchStatus]);
 
+    // WebSocket event streaming for real-time deploy logs
+    useEffect(() => {
+        if (!projectId || (previewStatus.status !== 'deploying' && !isDeploying)) {
+            if (wsRef.current) {
+                wsRef.current.close();
+                wsRef.current = null;
+            }
+            return;
+        }
+
+        const wsUrl = API_ENDPOINTS.AGENT_PREVIEW_WS(projectId);
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                const eventType = data.event_type || data.type;
+                const msg = data.content || data.message || '';
+                const payload = data.payload || {};
+
+                if (data.metadata?.status === 'success' || eventType === 'preview_ready' || eventType === 'session_completed') {
+                    setPreviewStatus(prev => ({
+                        ...prev,
+                        status: 'running',
+                        preview_url: data.metadata?.preview_url || payload?.preview_url || `/app/${projectId}/`,
+                    }));
+                } else if (data.metadata?.status === 'error' || eventType === 'session_failed') {
+                    setPreviewStatus(prev => ({
+                        ...prev,
+                        status: 'error',
+                    }));
+                }
+
+                if (msg) {
+                    const isFile = Boolean(
+                        payload.is_file ||
+                        msg.startsWith('Writing') ||
+                        msg.startsWith('Editing') ||
+                        msg.startsWith('Reading') ||
+                        msg.startsWith('Created') ||
+                        eventType === 'tool_called'
+                    );
+                    const isThinking = eventType === 'thinking' || msg.startsWith('Thinking:');
+                    const isPreview = Boolean(eventType === 'preview_ready' || (data.metadata?.status === 'success' && data.metadata?.preview_url));
+
+                    let label = msg;
+                    if (isThinking) {
+                        label = msg.replace(/^Thinking:\s*/, '');
+                    } else if (eventType === 'git_clone_started') {
+                        label = `Cloning repository: ${payload.repo_url || ''}`;
+                    } else if (eventType === 'git_clone_completed') {
+                        label = `Repository synchronized (${payload.branch || 'main'})`;
+                    } else if (eventType === 'build_started') {
+                        label = 'Building and compiling application sandbox...';
+                    } else if (eventType === 'build_completed') {
+                        label = 'Sandbox build & dependency verification passed';
+                    }
+
+                    const stepItem = {
+                        id: `step-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+                        label: label,
+                        isFile: isFile,
+                        status: (data.metadata?.status === 'error' || eventType === 'session_failed') ? 'error' : 'done',
+                        kind: isPreview ? 'preview' : (isThinking ? 'thinking' : (isFile ? 'file' : 'log')),
+                        tool_name: payload.tool || payload.tool_name,
+                        args: payload.args,
+                        details: payload.output || payload.details || payload.result,
+                        timestamp: data.timestamp || new Date().toISOString(),
+                    };
+
+                    setPreviewSteps(prev => [...prev, stepItem]);
+                }
+            } catch (err) {
+                console.error('[Preview WS] Failed to parse message:', err);
+            }
+        };
+
+        return () => {
+            if (wsRef.current) {
+                wsRef.current.close();
+                wsRef.current = null;
+            }
+        };
+    }, [projectId, previewStatus.status, isDeploying]);
+
     const handleDeploy = async () => {
         setIsDeploying(true);
+        setPreviewSteps([]);
         try {
             const params = projectId ? `?project_token=${projectId}` : '';
             const res = await fetch(`${API_ENDPOINTS.AGENT_PREVIEW_DEPLOY}${params}`, {
@@ -219,30 +309,37 @@ export default function AppPreview() {
                     </div>
                 </div>
             ) : previewStatus.status === 'deploying' ? (
-                <div className="flex-1 flex items-center justify-center" style={{ height: 'calc(100vh - 56px)' }}>
-                    <div className="text-center space-y-4">
-                        <div className="relative">
-                            <div className="w-20 h-20 rounded-full bg-violet-500/10 border-2 border-violet-500/30 flex items-center justify-center mx-auto">
-                                <Loader2 className="w-8 h-8 text-violet-400 animate-spin" />
+                <div className="flex-1 flex flex-col items-center justify-center p-6 overflow-y-auto" style={{ minHeight: 'calc(100vh - 56px)' }}>
+                    <div className="w-full max-w-2xl space-y-6 py-8">
+                        <div className="text-center space-y-3">
+                            <div className="relative inline-block">
+                                <div className="w-16 h-16 rounded-2xl bg-violet-500/10 border-2 border-violet-500/30 flex items-center justify-center mx-auto shadow-lg shadow-violet-500/10">
+                                    <Loader2 className="w-7 h-7 text-violet-400 animate-spin" />
+                                </div>
                             </div>
-                            <div className="absolute inset-0 w-20 h-20 rounded-full border-2 border-violet-400/20 animate-ping mx-auto" />
+                            <div>
+                                <h3 className="text-lg font-bold text-app-bg-card">Deploying Application in Sandbox</h3>
+                                <p className="text-xs text-app-text-muted mt-0.5">Cloning repository, detecting tech stack, running build, and serving preview on port 80.</p>
+                            </div>
                         </div>
-                        <div>
-                            <p className="text-lg font-semibold text-app-bg-card">Deploying your application...</p>
-                            <p className="text-sm text-app-text-muted mt-1">Cloning, installing dependencies, and starting the server</p>
-                        </div>
-                        {previewStatus.logs && previewStatus.logs.length > 0 && (
-                            <div className="mt-6 max-w-md mx-auto bg-app-text-main rounded-xl border border-app-text-main p-4">
+
+                        {previewSteps.length > 0 ? (
+                            <ExecutionStream
+                                steps={previewSteps}
+                                isLive={true}
+                            />
+                        ) : previewStatus.logs && previewStatus.logs.length > 0 ? (
+                            <div className="bg-app-text-main rounded-xl border border-app-text-main p-4 shadow-xl">
                                 <div className="space-y-1 font-mono text-[11px] text-left">
-                                    {previewStatus.logs.slice(-5).map((log, i) => (
-                                        <div key={i} className="text-app-text-light">
-                                            <span className="text-violet-400 mr-1">›</span>
+                                    {previewStatus.logs.slice(-6).map((log, i) => (
+                                        <div key={i} className="text-app-text-light flex items-center gap-1.5">
+                                            <span className="text-violet-400">›</span>
                                             {log.message}
                                         </div>
                                     ))}
                                 </div>
                             </div>
-                        )}
+                        ) : null}
                     </div>
                 </div>
             ) : (

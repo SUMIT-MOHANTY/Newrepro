@@ -9,6 +9,7 @@ import 'react-loading-skeleton/dist/skeleton.css';
 import { API_ENDPOINTS, VIBE_WORKSPACE_URL } from '../config';
 import { getNeutralAgentLabel, getNeutralAgentName } from '../utils/agentNames';
 import AgentChatPanel from './AgentChatPanel';
+import ExecutionStream from './ExecutionStream';
 import kaktoxLogo from '../assets/Kaktox.png';
 import nModLogo from '../assets/N-Mod-icon.png';
 import masterLogo from '../assets/logo1.png';
@@ -343,6 +344,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const [isFixing, setIsFixing] = useState(false);
     const [showPreviewLogs, setShowPreviewLogs] = useState(false);
     const [deployLogs, setDeployLogs] = useState([]);
+    const [executionSteps, setExecutionSteps] = useState([]);
+    const [agentRunStartTime, setAgentRunStartTime] = useState(null);
+    const [agentRunCompletedTime, setAgentRunCompletedTime] = useState(null);
     const wsRef = useRef(null);
     const [processMode, setProcessMode] = useState(() => getProcessModeForProject(localStorage.getItem(PROJECT_STORAGE_KEY) || ''));
     const currentPreviewLogs = (deployLogs && deployLogs.length > 0) ? deployLogs : (previewStatus?.logs || []);
@@ -750,6 +754,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const handleRunAgent = async (agentId, repoUrl = null, repoToken = null) => {
         setRunningAgent(agentId);
         setGitModalAgent(null); // close modal if open
+        setAgentRunStartTime(new Date().toISOString());
+        setAgentRunCompletedTime(null);
+        setExecutionSteps([]);
 
         // Optimistically update UI to show it's running immediately
         setAgents(prev => prev.map(a => a.id === agentId ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' } : a));
@@ -881,6 +888,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
         setGitModalAgent(null);
         setRunningAll(true);
+        setAgentRunStartTime(new Date().toISOString());
+        setAgentRunCompletedTime(null);
+        setExecutionSteps([]);
         setAgents(prev => prev.map(a => (a.status === 'idle' && a.agent_kind !== 'system')
             ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' }
             : a));
@@ -1170,9 +1180,12 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         }
     }, [token, selectedProjectKey, fetchPreviewStatus]);
 
-    // WebSocket log streaming for Deploy Preview
+    // WebSocket log streaming for Agent Container Runtime & Deploy Preview
     useEffect(() => {
-        if (!selectedProjectKey || (previewStatus.status !== 'deploying' && previewStatus.status !== 'running')) {
+        const hasRunningAgents = runningAll || Boolean(runningAgent) || agents.some(a => a.status === 'running');
+        const shouldConnect = Boolean(selectedProjectKey && (previewStatus.status === 'deploying' || previewStatus.status === 'running' || hasRunningAgents));
+
+        if (!shouldConnect) {
             if (wsRef.current) {
                 wsRef.current.close();
                 wsRef.current = null;
@@ -1192,34 +1205,92 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         ws.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
-                if (data.type === 'deploy_log') {
-                    const newLog = {
-                        time: data.timestamp || new Date().toISOString(),
-                        message: data.content,
-                        metadata: data.metadata,
+                const eventType = data.event_type || data.type;
+                const msg = data.content || data.message || '';
+                const payload = data.payload || {};
+
+                // 1. Maintain deployLogs for terminal output
+                const newLog = {
+                    time: data.timestamp || new Date().toISOString(),
+                    message: msg,
+                    metadata: data.metadata,
+                };
+                setDeployLogs((prev) => {
+                    if (prev.some(l => l.message === newLog.message && l.time === newLog.time)) {
+                        return prev;
+                    }
+                    return [...prev, newLog];
+                });
+
+                // 2. Auto-transition preview status if agent reported success
+                if (data.metadata?.status === 'success' || eventType === 'preview_ready' || eventType === 'session_completed') {
+                    const readyUrl = data.metadata?.preview_url || payload?.preview_url || `/app/${selectedProjectKey}/`;
+                    setPreviewStatus(prev => ({
+                        ...prev,
+                        status: 'running',
+                        preview_url: readyUrl,
+                        stack: prev.stack || 'auto',
+                    }));
+                    setAgentRunCompletedTime(new Date().toISOString());
+                    refreshRoadmap();
+                    fetchAgents();
+                } else if (data.metadata?.status === 'error' || eventType === 'session_failed') {
+                    setPreviewStatus(prev => ({
+                        ...prev,
+                        status: 'error',
+                    }));
+                    setAgentRunCompletedTime(new Date().toISOString());
+                    fetchAgents();
+                }
+
+                // 3. Format structured steps for ExecutionStream
+                if (msg) {
+                    const isFile = Boolean(
+                        payload.is_file ||
+                        msg.startsWith('Writing') ||
+                        msg.startsWith('Editing') ||
+                        msg.startsWith('Reading') ||
+                        msg.startsWith('Created') ||
+                        eventType === 'tool_called'
+                    );
+                    const isThinking = eventType === 'thinking' || payload.type === 'thinking' || msg.startsWith('Thinking:');
+                    const isPreview = Boolean(eventType === 'preview_ready' || (data.metadata?.status === 'success' && data.metadata?.preview_url));
+
+                    let label = msg;
+                    if (isThinking) {
+                        label = msg.replace(/^Thinking:\s*/, '');
+                    } else if (eventType === 'planning_completed') {
+                        label = `Architecture Plan Created (${payload.steps || 1} steps)`;
+                    } else if (eventType === 'git_clone_started') {
+                        label = `Cloning repository: ${payload.repo_url || ''}`;
+                    } else if (eventType === 'git_clone_completed') {
+                        label = `Repository synchronized (${payload.branch || 'main'})`;
+                    } else if (eventType === 'build_started') {
+                        label = 'Building and compiling application sandbox...';
+                    } else if (eventType === 'build_completed') {
+                        label = 'Sandbox build & dependency verification passed';
+                    } else if (isPreview) {
+                        label = `Live preview ready: ${data.metadata?.preview_url || payload?.preview_url || `/app/${selectedProjectKey}/`}`;
+                    }
+
+                    const stepItem = {
+                        id: data.id || `step-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+                        label: label,
+                        isFile: isFile,
+                        status: (data.metadata?.status === 'error' || eventType === 'session_failed') ? 'error' : 'done',
+                        kind: isPreview ? 'preview' : (isThinking ? 'thinking' : (isFile ? 'file' : 'log')),
+                        tool_name: payload.tool || payload.tool_name,
+                        args: payload.args,
+                        details: payload.output || payload.details || payload.result,
+                        timestamp: data.timestamp || new Date().toISOString(),
                     };
-                    setDeployLogs((prev) => {
-                        if (prev.some(l => l.message === newLog.message && l.time === newLog.time)) {
+
+                    setExecutionSteps((prev) => {
+                        if (prev.length > 0 && prev[prev.length - 1].label === stepItem.label) {
                             return prev;
                         }
-                        return [...prev, newLog];
+                        return [...prev, stepItem];
                     });
-
-                    // Auto-transition preview status if agent reported success
-                    if (data.metadata?.status === 'success') {
-                        setPreviewStatus(prev => ({
-                            ...prev,
-                            status: 'running',
-                            preview_url: data.metadata.preview_url || `/app/${selectedProjectKey}/`,
-                            stack: prev.stack || 'auto',
-                        }));
-                        refreshRoadmap();
-                    } else if (data.metadata?.status === 'error') {
-                        setPreviewStatus(prev => ({
-                            ...prev,
-                            status: 'error',
-                        }));
-                    }
                 }
             } catch (err) {
                 console.error('[Preview WS] Failed to parse message:', err);
@@ -1240,11 +1311,14 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 wsRef.current = null;
             }
         };
-    }, [selectedProjectKey, previewStatus.status, refreshRoadmap]);
+    }, [selectedProjectKey, previewStatus.status, runningAll, runningAgent, agents, refreshRoadmap, fetchAgents]);
 
     const handleDeployPreview = async () => {
         setIsDeploying(true);
         setDeployLogs([]);
+        setAgentRunStartTime(new Date().toISOString());
+        setAgentRunCompletedTime(null);
+        setExecutionSteps([]);
         try {
             const params = selectedProjectKey ? `?project_token=${selectedProjectKey}` : '';
             const res = await fetch(`${API_ENDPOINTS.AGENT_PREVIEW_DEPLOY}${params}`, {
@@ -1273,6 +1347,9 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const handleFixWithAI = async () => {
         setIsFixing(true);
         setDeployLogs([]);
+        setAgentRunStartTime(new Date().toISOString());
+        setAgentRunCompletedTime(null);
+        setExecutionSteps([]);
         try {
             const params = selectedProjectKey ? `?project_token=${selectedProjectKey}` : '';
             const res = await fetch(`${API_ENDPOINTS.AGENT_PREVIEW_FIX}${params}`, {
@@ -2670,6 +2747,18 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                 </button>
                                             </div>
                                         </div>
+
+                                        {/* ── Real-Time Agent Execution & Sandbox Logs ── */}
+                                        {(executionSteps.length > 0 || runningAll || Boolean(runningAgent) || agents.some(a => a.status === 'running') || previewStatus.status === 'deploying') && (
+                                            <div className="mb-4">
+                                                <ExecutionStream
+                                                    steps={executionSteps}
+                                                    isLive={runningAll || Boolean(runningAgent) || agents.some(a => a.status === 'running') || previewStatus.status === 'deploying'}
+                                                    promptTimestamp={agentRunStartTime}
+                                                    completedAt={agentRunCompletedTime}
+                                                />
+                                            </div>
+                                        )}
 
                                         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
                                             {orderedAgents.map(agent => renderAgentCard(agent))}

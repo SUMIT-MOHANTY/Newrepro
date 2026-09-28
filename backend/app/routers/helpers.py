@@ -747,6 +747,9 @@ def _ensure_default_agents(db: Session, project_token: Optional[str] = None) -> 
                 name=agent["name"],
                 type=agent.get("type"),
                 project_token=project_token,
+                specialization=agent.get("specialization"),
+                skills_summary=agent.get("skills_summary"),
+                allowed_tools=agent.get("allowed_tools"),
             )
         )
     db.commit()
@@ -1049,6 +1052,7 @@ def _runtime_agent_records(records: List[models.Agent], project_token: Optional[
                         "skills_tags": getattr(rec, "skills_tags", None),
                         "specialization": getattr(rec, "specialization", None),
                         "face": getattr(rec, "face", None),
+                        "allowed_tools": getattr(rec, "allowed_tools", None) or [],
                     })
                 for j in range(1, dc + 1):
                     idx = sc + j
@@ -1063,6 +1067,7 @@ def _runtime_agent_records(records: List[models.Agent], project_token: Optional[
                         "skills_tags": getattr(rec, "skills_tags", None),
                         "specialization": getattr(rec, "specialization", None),
                         "face": getattr(rec, "face", None),
+                        "allowed_tools": getattr(rec, "allowed_tools", None) or [],
                     })
             else:
                 agent_kind = "system" if is_default_system else (info[0] if info else "shared")
@@ -1077,6 +1082,7 @@ def _runtime_agent_records(records: List[models.Agent], project_token: Optional[
                     "skills_tags": getattr(rec, "skills_tags", None),
                     "specialization": getattr(rec, "specialization", None),
                     "face": getattr(rec, "face", None),
+                    "allowed_tools": getattr(rec, "allowed_tools", None) or [],
                 })
         return expanded
     finally:

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Users, Trash2, Edit, Activity, Clock, CheckCircle, AlertCircle, RefreshCw, Filter, Server, Database, GitBranch, Bot, Globe, Plus, Upload, Code, Coffee, Zap, Triangle, Hash, Link2, Terminal, Cpu, Workflow, Shield, ShieldCheck, Layers, Building2, Send, ChevronRight, TrendingUp, PlusCircle } from 'lucide-react';
+import { Users, Trash2, Edit, Activity, Clock, CheckCircle, AlertCircle, RefreshCw, Filter, Server, Database, GitBranch, Bot, Globe, Plus, Upload, Code, Coffee, Zap, Triangle, Hash, Link2, Terminal, Cpu, Workflow, Shield, ShieldCheck, Layers, Building2, Send, ChevronRight, TrendingUp, PlusCircle, Wrench, Check } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 import RequestCapacityModal from './RequestCapacityModal';
 
@@ -9,11 +9,121 @@ import nModLogo from '../assets/N-Mod-icon.png';
 import masterLogo from '../assets/logo1.png';
 import cloudIcon from '../assets/cloud-icon.png';
 
+export const DEFAULT_TOOLS_CATALOG = [
+  {
+    id: 'filesystem',
+    name: 'File System & Code Editor',
+    category: 'Core Development',
+    description: 'Read, write, edit, and search source code files across the workspace.',
+    icon: 'FolderCode',
+    default: true,
+    capabilities: ['read_file', 'write_file', 'edit_file', 'list_dir', 'search_files']
+  },
+  {
+    id: 'git',
+    name: 'Git & Version Control',
+    category: 'Core Development',
+    description: 'Branching, staging, committing, inspecting diffs, and syncing code with git.',
+    icon: 'GitBranch',
+    default: true,
+    capabilities: ['git_status', 'git_commit', 'git_diff', 'git_branch', 'git_checkout']
+  },
+  {
+    id: 'terminal',
+    name: 'Terminal & Shell Execution',
+    category: 'Execution',
+    description: 'Execute bash commands and manage processes in the isolated Linux Docker container.',
+    icon: 'Terminal',
+    default: true,
+    capabilities: ['execute_bash', 'kill_process', 'get_process_status']
+  },
+  {
+    id: 'build_tool',
+    name: 'Build & Dependency Manager',
+    category: 'Execution',
+    description: 'Run npm, pip, maven, gradle builds, compile code, and verify dependency health.',
+    icon: 'Package',
+    default: true,
+    capabilities: ['npm_build', 'pip_install', 'dependency_check', 'verify_compilation']
+  },
+  {
+    id: 'test_runner',
+    name: 'Testing & QA Suite',
+    category: 'Verification',
+    description: 'Execute Pytest unit tests, Jest specs, Playwright browser flows, and test assertions.',
+    icon: 'CheckSquare',
+    default: false,
+    capabilities: ['run_pytest', 'run_jest', 'e2e_playwright', 'assert_status']
+  },
+  {
+    id: 'web_search',
+    name: 'Web Search & Documentation',
+    category: 'Research',
+    description: 'Search developer documentation, API references, library examples, and debug runtime errors.',
+    icon: 'Search',
+    default: false,
+    capabilities: ['search_docs', 'fetch_webpage', 'lookup_api_reference']
+  },
+  {
+    id: 'visual_qa',
+    name: 'Visual QA & Live Inspector',
+    category: 'Verification',
+    description: 'Capture screenshots of preview running on port 80, inspect browser console logs, and verify DOM.',
+    icon: 'Eye',
+    default: false,
+    capabilities: ['capture_screenshot', 'inspect_console', 'dom_query']
+  },
+  {
+    id: 'database_tools',
+    name: 'Database & Migration Inspector',
+    category: 'Data',
+    description: 'Inspect SQL schemas, run database migrations, verify seed data integrity.',
+    icon: 'Database',
+    default: false,
+    capabilities: ['inspect_schema', 'run_migration', 'verify_seeds']
+  },
+  {
+    id: 'mcp_jira',
+    name: 'Jira MCP Integration',
+    category: 'MCP Integrations',
+    description: 'Model Context Protocol tool to fetch tickets, transition issues, and sync sprint status.',
+    icon: 'Workflow',
+    default: false,
+    capabilities: ['jira_search', 'jira_update_ticket', 'jira_transition']
+  },
+  {
+    id: 'mcp_github',
+    name: 'GitHub MCP Integration',
+    category: 'MCP Integrations',
+    description: 'Model Context Protocol tool to open Pull Requests, conduct PR reviews, and track issues.',
+    icon: 'Github',
+    default: false,
+    capabilities: ['gh_create_pr', 'gh_review_diff', 'gh_issue_comment']
+  }
+];
+
+export const getToolIcon = (iconName, className = 'w-3 h-3') => {
+  switch (iconName) {
+    case 'FolderCode': return <Code className={`${className} text-emerald-400`} />;
+    case 'GitBranch': return <GitBranch className={`${className} text-cyan-400`} />;
+    case 'Terminal': return <Terminal className={`${className} text-amber-400`} />;
+    case 'Package': return <Layers className={`${className} text-indigo-400`} />;
+    case 'CheckSquare': return <CheckCircle className={`${className} text-purple-400`} />;
+    case 'Search': return <Globe className={`${className} text-sky-400`} />;
+    case 'Eye': return <Activity className={`${className} text-pink-400`} />;
+    case 'Database': return <Database className={`${className} text-emerald-400`} />;
+    case 'Workflow': return <Workflow className={`${className} text-blue-400`} />;
+    case 'Github': return <GitBranch className={`${className} text-slate-400`} />;
+    default: return <Wrench className={`${className} text-app-primary`} />;
+  }
+};
+
 const PREDEFINED_TEMPLATES = [
   {
     name: 'Frontend Developer',
     tags: 'React, Vite, CSS Modules, Tailwind CSS, Lucide Icons, UI Components',
     specialization: 'Development',
+    defaultTools: ['filesystem', 'build_tool', 'visual_qa', 'web_search'],
     description: 'Specialized React & Vite agent. Connects page routing, implements responsive UI layouts, and styles elements using CSS tokens.',
     skills: `# Frontend Developer Agent Skill\n\n## Role\nYou are a specialized Frontend Development Agent focused on building React applications with modern tooling (Vite, React) and styling (Tailwind CSS/CSS Modules).\n\n## Tech Stack\n- Framework: React\n- Build Tool: Vite\n- Styling: Tailwind CSS & CSS Modules\n- UI Components: Lucide React (icons)\n- State Management: React Context / Hooks\n\n## Core Responsibilities\n1. Component Development: Create modular, responsive React components using hooks.\n2. Routing: Register pages/components in the main routing shell (App.jsx).\n3. API Connection: Replace mock data with real API calls using fetch or axios.\n4. Layout & Styling: Maintain consistent layout systems, sidebar navigation, and use CSS variable tokens.`,
     icon: Globe,
@@ -24,6 +134,7 @@ const PREDEFINED_TEMPLATES = [
     name: 'Backend Developer',
     tags: 'FastAPI, Python, SQL Databases, SQLite, PostgreSQL, REST API',
     specialization: 'Development',
+    defaultTools: ['filesystem', 'git', 'terminal', 'build_tool', 'database_tools'],
     description: 'Specialized FastAPI & Python agent. Sets up REST routes, SQLAlchemy models, migration scripts, and business validation.',
     skills: `# Backend Developer Agent Skill\n\n## Role\nYou are a specialized Backend Development Agent focused on building Python APIs with FastAPI, SQLAlchemy, databases, and clean routing.\n\n## Tech Stack\n- Language: Python\n- Framework: FastAPI\n- ORM: SQLAlchemy / SQLModel\n- Database: SQLite / PostgreSQL\n- API Protocol: REST / JSON\n\n## Core Responsibilities\n1. API Routing: Create clear, versioned FastAPI APIRouter endpoints.\n2. Database Schema: Implement SQLAlchemy models, migrations, and Pydantic schemas.\n3. Business Logic: Write modular services for data processing, validation, and auth.\n4. Security: Implement CORS, password hashing, and token-based auth (JWT).`,
     icon: Server,
@@ -34,6 +145,7 @@ const PREDEFINED_TEMPLATES = [
     name: 'QA & Testing Specialist',
     tags: 'Testing, Pytest, Playwright, E2E Testing, Integration Testing, Assertions',
     specialization: 'Testing',
+    defaultTools: ['terminal', 'test_runner', 'visual_qa', 'filesystem'],
     description: 'Specialized Pytest & Playwright agent. Creates unit/integration test suites and browser automation to verify features.',
     skills: `# QA & Testing Specialist Agent Skill\n\n## Role\nYou are a specialized Quality Assurance and Testing Agent focused on verifying features, running backend unit tests, and executing E2E frontend flows.\n\n## Tech Stack\n- Backend Testing: Pytest, unittest\n- Frontend E2E: Playwright / Cypress\n- Assertions: standard assertions, status code checks\n- Mocking: unittest.mock, patch\n\n## Core Responsibilities\n1. Unit Tests: Create test cases in tests/ directory validating API responses, database operations, and edge cases.\n2. E2E Tests: Write automated browser scripts to simulate user login, navigation, and form submissions.\n3. Verification: Assert status codes, content fields, and UI element presence on successful/error execution.`,
     icon: Activity,
@@ -46,6 +158,7 @@ const PREDEFINED_TEMPLATES = [
     tags: 'Java, Spring Boot, Maven, Hibernate, JPA, REST API, Gradle',
     specialization: 'Development',
     brownfieldOnly: true,
+    defaultTools: ['filesystem', 'git', 'terminal', 'build_tool', 'database_tools'],
     description: 'Brownfield Java agent. Reads existing Spring Boot services, applies targeted modifications, adds endpoints, entities, and service logic without breaking existing code.',
     skills: `# Java / Spring Boot Developer Agent Skill\n\n## Role\nYou are a specialized Brownfield Java Developer Agent. You work on EXISTING Spring Boot applications — reading current code before making any changes.\n\n## Tech Stack\n- Language: Java 11/17/21\n- Framework: Spring Boot (Spring MVC, Spring Data, Spring Security)\n- Build: Maven / Gradle\n- ORM: Hibernate / JPA / Spring Data JPA\n- Testing: JUnit 5, Mockito\n- DB: PostgreSQL / MySQL / H2\n\n## Brownfield Working Rules\n1. ALWAYS read the existing class before modifying: cat /workspace/src/main/java/.../ClassName.java\n2. Make SURGICAL changes — preserve existing methods, annotations, and imports\n3. Add new endpoints in existing Controllers or create new @RestController classes\n4. New entities go in the existing entities/ or model/ package structure\n5. Register new beans, services, or repositories following the existing patterns\n6. Run: mvn test -pl . --no-transfer-progress (or ./gradlew test) after changes\n\n## Core Responsibilities\n1. Endpoint Development: Add/modify @GetMapping, @PostMapping in @RestController classes\n2. Service Layer: Add business logic in @Service classes, injecting existing repositories\n3. Entity Changes: Modify @Entity JPA classes, add @Column fields with proper constraints\n4. Repository: Add custom @Query methods to existing JpaRepository interfaces\n5. Configuration: Modify application.properties / application.yml for new settings`,
     icon: Coffee,
@@ -57,6 +170,7 @@ const PREDEFINED_TEMPLATES = [
     tags: 'C#, .NET, ASP.NET Core, Entity Framework, NuGet, REST API',
     specialization: 'Development',
     brownfieldOnly: true,
+    defaultTools: ['filesystem', 'git', 'terminal', 'build_tool', 'database_tools'],
     description: 'Brownfield .NET agent. Reads existing ASP.NET Core controllers, applies targeted modifications, adds endpoints, EF migrations, and service logic.',
     skills: `# .NET / C# Developer Agent Skill\n\n## Role\nYou are a specialized Brownfield .NET Developer Agent. You work on EXISTING ASP.NET Core applications — reading current code before making any changes.\n\n## Tech Stack\n- Language: C# (.NET 6/7/8)\n- Framework: ASP.NET Core (Web API, Minimal APIs)\n- ORM: Entity Framework Core\n- Package Manager: NuGet\n- Testing: xUnit, Moq\n- DB: SQL Server / PostgreSQL / SQLite\n\n## Brownfield Working Rules\n1. ALWAYS read the existing file: cat /workspace/src/.../ClassName.cs\n2. Preserve existing namespaces, using directives, and dependency injection registrations\n3. Add new action methods to existing Controllers or create new ControllerBase-derived classes\n4. New entities go in the existing Models/ or Entities/ directory\n5. Register new services in Program.cs / Startup.cs following the existing pattern\n6. Run: dotnet test after changes\n\n## Core Responsibilities\n1. API Controllers: Add [HttpGet]/[HttpPost] actions to [ApiController] classes\n2. Service Layer: Add methods to existing interface + implementation pairs\n3. EF Migrations: Modify DbContext and generate new Add-Migration / dotnet ef migration\n4. Models/DTOs: Add new properties to existing record or class definitions\n5. Middleware: Wire new middleware in the existing app.Use() pipeline`,
     icon: Hash,
@@ -68,6 +182,7 @@ const PREDEFINED_TEMPLATES = [
     tags: 'Python, Django, DRF, Celery, PostgreSQL, REST API, Migrations',
     specialization: 'Development',
     brownfieldOnly: true,
+    defaultTools: ['filesystem', 'git', 'terminal', 'build_tool', 'database_tools'],
     description: 'Brownfield Django agent. Reads existing views, models, and URLs then applies targeted changes to add features, API endpoints, and celery tasks.',
     skills: `# Python / Django Developer Agent Skill\n\n## Role\nYou are a specialized Brownfield Python/Django Developer Agent. You work on EXISTING Django applications — reading current code before making any changes.\n\n## Tech Stack\n- Language: Python 3.9+\n- Framework: Django + Django REST Framework (DRF)\n- Task Queue: Celery + Redis\n- ORM: Django ORM\n- Testing: pytest-django, unittest\n- DB: PostgreSQL / SQLite\n\n## Brownfield Working Rules\n1. ALWAYS read the existing file: cat /workspace/app_name/views.py (or models.py, urls.py)\n2. Preserve existing URL patterns — add new patterns without removing existing ones\n3. Add new serializers in the existing serializers.py file\n4. New models go in the existing models.py of the appropriate Django app\n5. Generate and apply migrations: python manage.py makemigrations && python manage.py migrate\n6. Run tests: python manage.py test\n\n## Core Responsibilities\n1. Views/Viewsets: Add new APIView or ModelViewSet classes in existing views.py\n2. Models: Add fields or new Model classes with proper Meta and migrations\n3. Serializers: Add DRF serializers for new or modified models\n4. URL Routing: Register new routes in urls.py with router.register() or urlpatterns\n5. Celery Tasks: Add @shared_task decorated functions to existing tasks.py`,
     icon: Code,
@@ -79,6 +194,7 @@ const PREDEFINED_TEMPLATES = [
     tags: 'Node.js, Express, TypeScript, Prisma, REST API, npm, MongoDB',
     specialization: 'Development',
     brownfieldOnly: true,
+    defaultTools: ['filesystem', 'git', 'terminal', 'build_tool', 'database_tools'],
     description: 'Brownfield Node.js agent. Reads existing Express routes and middleware, then adds endpoints, schema changes, and service logic with minimal disruption.',
     skills: `# Node.js / Express Developer Agent Skill\n\n## Role\nYou are a specialized Brownfield Node.js/Express Developer Agent. You work on EXISTING Node.js applications — reading current code before making any changes.\n\n## Tech Stack\n- Language: TypeScript / JavaScript\n- Framework: Express / NestJS / Fastify\n- ORM: Prisma / TypeORM / Mongoose\n- Package Manager: npm / yarn / pnpm\n- Testing: Jest, Supertest\n- DB: PostgreSQL / MongoDB / MySQL\n\n## Brownfield Working Rules\n1. ALWAYS read the existing file: cat /workspace/src/routes/existingRouter.ts\n2. Add new route handlers to existing Express Router files or create new modular routers\n3. Register new routers in the existing app.use() configuration in app.ts/index.ts\n4. New Prisma models: add to schema.prisma then run npx prisma migrate dev\n5. Keep existing middleware chain intact — add middleware AFTER existing ones\n6. Run: npm test after changes\n\n## Core Responsibilities\n1. Routes: Add new GET/POST/PUT/DELETE handlers in existing router files\n2. Controllers: Add new controller functions following the existing request/response pattern\n3. Services: Add business logic to existing service files\n4. Prisma Schema: Add new models or fields and generate migrations\n5. Middleware: Add authentication guards, validators following existing patterns`,
     icon: Zap,
@@ -90,6 +206,7 @@ const PREDEFINED_TEMPLATES = [
     tags: 'Go, Gin, GORM, gRPC, REST API, Docker, Microservices',
     specialization: 'Development',
     brownfieldOnly: true,
+    defaultTools: ['filesystem', 'git', 'terminal', 'build_tool'],
     description: 'Brownfield Go agent. Reads existing handlers, models, and routes, then makes targeted additions to Go microservices and REST APIs.',
     skills: `# Go Developer Agent Skill\n\n## Role\nYou are a specialized Brownfield Go Developer Agent. You work on EXISTING Go applications — reading current code before making any changes.\n\n## Tech Stack\n- Language: Go 1.19+\n- Framework: Gin / Echo / Fiber / net/http\n- ORM: GORM / sqlx\n- Package Manager: Go Modules (go.mod)\n- Testing: testing package, testify\n- Protocols: REST / gRPC\n\n## Brownfield Working Rules\n1. ALWAYS read the existing handler/struct: cat /workspace/internal/handlers/existing.go\n2. Follow the existing package structure — do NOT create new top-level packages without reason\n3. Add new route handlers as functions in existing handler files or new files in the same package\n4. Register new routes in the existing router setup (e.g., router.GET("/new", handler))\n5. New structs go in the existing models/ or types/ package\n6. Run: go test ./... after changes\n\n## Core Responsibilities\n1. Handlers: Add new HTTP handler functions following the existing (c *gin.Context) pattern\n2. Routes: Register in the existing router group setup\n3. Models/Structs: Add new GORM model structs with proper tags\n4. Services: Add business logic to existing service structs\n5. Middleware: Add new gin.HandlerFunc middleware in the existing middleware chain`,
     icon: Triangle,
@@ -101,6 +218,7 @@ const PREDEFINED_TEMPLATES = [
     isMcp: true,
     tags: 'Jira, Project Management, Issue Tracking, MCP Server, Integration',
     specialization: 'Integration',
+    defaultTools: ['mcp_jira', 'filesystem', 'web_search'],
     description: 'MCP agent that connects to Jira via Model Context Protocol. It can view, create, and transition Jira issues directly.',
     skills: `# Jira MCP Agent Skill\n\n## Role\nYou are an integration agent equipped with the Jira Model Context Protocol (MCP) server. You connect to Jira to view, create, update, and search for issues, epics, and sprints.\n\n## MCP Integration Link\n- Official Registry: [Jira MCP Server GitHub](https://github.com/modelcontextprotocol/servers/tree/main/src/jira)\n- Package Name: \`@modelcontextprotocol/server-jira\`\n\n## Setup Configuration\nEnsure your client configuration defines the server:\n\`\`\`json\n{\n  "mcpServers": {\n    "jira": {\n      "command": "npx",\n      "args": ["-y", "@modelcontextprotocol/server-jira"],\n      "env": {\n        "JIRA_API_TOKEN": "<YOUR_JIRA_API_TOKEN>",\n        "JIRA_EMAIL": "<YOUR_JIRA_EMAIL>",\n        "JIRA_HOST": "<YOUR_JIRA_HOST>"\n      }\n    }\n  }\n}\n\`\`\`\n\n## Core Responsibilities\n1. Search Issues: Find Jira tickets matching specific queries, assignees, or statuses.\n2. Create & Update: Initialize tickets, add comments, log work, and transition states (e.g. To Do -> In Progress -> Done).\n3. Backlog Management: Fetch backlog tasks, summarize sprint progress, and highlight blockages.`,
     icon: Workflow,
@@ -112,6 +230,7 @@ const PREDEFINED_TEMPLATES = [
     isMcp: true,
     tags: 'GitHub, Git, PRs, Code Reviews, MCP Server, Integration',
     specialization: 'Integration',
+    defaultTools: ['mcp_github', 'git', 'filesystem'],
     description: 'MCP agent that connects to GitHub repository APIs via Model Context Protocol. It handles PR reviews, issue management, and file contents.',
     skills: `# GitHub MCP Agent Skill\n\n## Role\nYou are an integration agent equipped with the GitHub Model Context Protocol (MCP) server. You connect to GitHub to manage issues, pull requests, files, and branches.\n\n## MCP Integration Link\n- Official Registry: [GitHub MCP Server GitHub](https://github.com/modelcontextprotocol/servers/tree/main/src/github)\n- Package Name: \`@modelcontextprotocol/server-github\`\n\n## Setup Configuration\nEnsure your client configuration defines the server:\n\`\`\`json\n{\n  "mcpServers": {\n    "github": {\n      "command": "npx",\n      "args": ["-y", "@modelcontextprotocol/server-github"],\n      "env": {\n        "GITHUB_PERSONAL_ACCESS_TOKEN": "<YOUR_GITHUB_TOKEN>"\n      }\n    }\n  }\n}\n\`\`\`\n\n## Core Responsibilities\n1. PR Automation: Create pull requests, list reviews, merge code, and add comments.\n2. Issue Management: File bug reports, list repository issues, and organize labels/milestones.\n3. Code Inspection: Search repository files, retrieve code contents, and check commit histories.`,
     icon: GitBranch,
@@ -123,6 +242,7 @@ const PREDEFINED_TEMPLATES = [
     isMcp: true,
     tags: 'Slack, Chat, Notifications, Team Sync, MCP Server, Integration',
     specialization: 'Integration',
+    defaultTools: ['terminal', 'filesystem', 'web_search'],
     description: 'MCP agent that connects to Slack via Model Context Protocol. It posts notifications, reads channel history, and handles communication workflows.',
     skills: `# Slack MCP Agent Skill\n\n## Role\nYou are an integration agent equipped with the Slack Model Context Protocol (MCP) server. You interface with Slack to coordinate team communication and notifications.\n\n## MCP Integration Link\n- Official Registry: [Slack MCP Server GitHub](https://github.com/modelcontextprotocol/servers/tree/main/src/slack)\n- Package Name: \`@modelcontextprotocol/server-slack\`\n\n## Setup Configuration\nEnsure your client configuration defines the server:\n\`\`\`json\n{\n  "mcpServers": {\n    "slack": {\n      "command": "npx",\n      "args": ["-y", "@modelcontextprotocol/server-slack"],\n      "env": {\n        "SLACK_BOT_TOKEN": "<YOUR_SLACK_BOT_TOKEN>"\n      }\n    }\n  }\n}\n\`\`\`\n\n## Core Responsibilities\n1. Post Messages: Send rich text or blocks to public/private channels or direct messages.\n2. Monitor Channels: Retrieve history, search conversations, and summarize thread contexts.\n3. Status Sync: Set active status, update profiles, and automate reminders.`,
     icon: Cpu,
@@ -306,6 +426,34 @@ export default function AgentsPage({ projects = [] }) {
   const [editingAgentId, setEditingAgentId] = useState(null);
   const [showMcpHelper, setShowMcpHelper] = useState(false);
 
+  // Authorized tools state
+  const [availableToolsList, setAvailableToolsList] = useState(DEFAULT_TOOLS_CATALOG);
+  const [selectedTools, setSelectedTools] = useState([
+    'filesystem', 'git', 'terminal', 'build_tool'
+  ]);
+
+  const fetchAvailableTools = useCallback(async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const endpoint = API_ENDPOINTS.AGENT_TOOLS_AVAILABLE || `${API_ENDPOINTS.AGENTS}/tools/available`;
+      const res = await fetch(endpoint, {
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.tools && Array.isArray(data.tools) && data.tools.length > 0) {
+          setAvailableToolsList(data.tools);
+        }
+      }
+    } catch (err) {
+      console.warn('Using default tool catalog fallback:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchAvailableTools();
+  }, [fetchAvailableTools]);
+
   // Skill-gap detection state (brownfield projects)
   const [skillGapData, setSkillGapData] = useState(null);
   const [skillGapLoading, setSkillGapLoading] = useState(false);
@@ -406,6 +554,7 @@ export default function AgentsPage({ projects = [] }) {
           skills_content: skillsContent,
           face: newAgentFace || null,
           tags: newAgentTags.trim() || null,
+          tools: selectedTools,
           project_token: projects && projects[0] ? projects[0].project_token : null
         })
       });
@@ -423,6 +572,7 @@ export default function AgentsPage({ projects = [] }) {
       setSkillsFileName('');
       setNewAgentFace('');
       setNewAgentTags('');
+      setSelectedTools(['filesystem', 'git', 'terminal', 'build_tool']);
 
       showToast(`Agent "${newAgentName.trim()}" ${isEditing ? 'updated' : 'added'} successfully!`, 'success');
 
@@ -457,7 +607,9 @@ export default function AgentsPage({ projects = [] }) {
           name: tmpl.name,
           skills_content: tmpl.skills,
           face: null,
-          tags: tmpl.tags
+          tags: tmpl.tags,
+          tools: tmpl.defaultTools || ['filesystem', 'git', 'terminal', 'build_tool'],
+          project_token: projects && projects[0] ? projects[0].project_token : null
         })
       });
       const data = await res.json();
@@ -1045,6 +1197,7 @@ export default function AgentsPage({ projects = [] }) {
               setSkillsFileName('');
               setNewAgentFace('');
               setNewAgentTags('');
+              setSelectedTools(['filesystem', 'git', 'terminal', 'build_tool']);
               setAddAgentError('');
               setShowAddAgentModal(true);
             }}
@@ -1216,6 +1369,7 @@ export default function AgentsPage({ projects = [] }) {
                             setNewAgentTags(tmpl.tags);
                             setSkillsContent(tmpl.skills);
                             setSkillsFileName(`${tmpl.name.toLowerCase().replace(/ & /g, '_').replace(/ /g, '_')}_skills.md`);
+                            setSelectedTools(tmpl.defaultTools || ['filesystem', 'build_tool', 'visual_qa', 'web_search']);
                             setIsConfiguringTemplate(true);
                             setShowAddAgentModal(true);
                           }}
@@ -1301,6 +1455,7 @@ export default function AgentsPage({ projects = [] }) {
                             setNewAgentTags(tmpl.tags);
                             setSkillsContent(tmpl.skills);
                             setSkillsFileName(`${tmpl.name.toLowerCase().replace(/ & /g, '_').replace(/ /g, '_')}_skills.md`);
+                            setSelectedTools(tmpl.defaultTools || ['mcp_jira', 'filesystem', 'web_search']);
                             setIsConfiguringTemplate(true);
                             setShowAddAgentModal(true);
                           }}
@@ -1452,6 +1607,9 @@ export default function AgentsPage({ projects = [] }) {
                                 setSkillsFileName(`${(agent.name || getNeutralAgentName(agent)).toLowerCase().replace(/ & /g, '_').replace(/ /g, '_')}_skills.md`);
                                 setNewAgentFace(agent.face || '');
                                 setEditingAgentId(agent.id);
+                                setSelectedTools(agent.allowed_tools && Array.isArray(agent.allowed_tools) && agent.allowed_tools.length > 0
+                                  ? agent.allowed_tools
+                                  : ['filesystem', 'git', 'terminal', 'build_tool']);
                                 setShowAddAgentModal(true);
                               }}
                               className="p-1 rounded-lg bg-app-bg-card/50 text-app-text-muted hover:text-app-primary hover:bg-app-primary/10 transition-all cursor-pointer"
@@ -1499,6 +1657,33 @@ export default function AgentsPage({ projects = [] }) {
                                   {tag}
                                 </span>
                               ))}
+                            </div>
+                          )}
+
+                          {/* Authorized Tools Badges */}
+                          {agent.allowed_tools && Array.isArray(agent.allowed_tools) && agent.allowed_tools.length > 0 && (
+                            <div className="mt-2 pt-2 border-t border-app-border-light/30">
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-[9px] font-bold text-app-text-muted uppercase tracking-wider flex items-center gap-1">
+                                  <Wrench className="w-2.5 h-2.5 text-app-primary" />
+                                  Sandbox Tools ({agent.allowed_tools.length})
+                                </span>
+                              </div>
+                              <div className="flex flex-wrap gap-1">
+                                {agent.allowed_tools.map((tId) => {
+                                  const toolDef = (availableToolsList || DEFAULT_TOOLS_CATALOG).find(t => t.id === tId) || { name: tId };
+                                  return (
+                                    <span
+                                      key={tId}
+                                      title={toolDef.description || toolDef.name}
+                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-medium bg-app-bg-muted/80 text-app-text-main border border-app-border-light/60 hover:border-app-primary/40 transition-colors"
+                                    >
+                                      {getToolIcon(toolDef.icon, 'w-2.5 h-2.5')}
+                                      <span>{toolDef.name || tId}</span>
+                                    </span>
+                                  );
+                                })}
+                              </div>
                             </div>
                           )}
                         </div>
@@ -1556,7 +1741,7 @@ export default function AgentsPage({ projects = [] }) {
       {/* Add Agent Modal */}
       {showAddAgentModal && (
         <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className={`relative w-full ${isConfiguringTemplate || skillsContent ? 'max-w-3xl' : 'max-w-md'} bg-app-bg-card border border-app-border rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] transition-all duration-300 animate-in zoom-in duration-200`}>
+          <div className={`relative w-full ${isConfiguringTemplate || skillsContent ? 'max-w-4xl' : 'max-w-xl'} bg-app-bg-card border border-app-border rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[88vh] transition-all duration-300 animate-in zoom-in duration-200`}>
             
             {/* Top gradient line */}
             <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${
@@ -1676,6 +1861,120 @@ export default function AgentsPage({ projects = [] }) {
                         disabled={addingAgent}
                       />
                       <p className="text-[10px] text-app-text-muted mt-1">Used by Master Agent to match task capabilities.</p>
+                    </div>
+
+                    {/* Authorized Sandbox Tools Section */}
+                    <div className="mt-4 pt-4 border-t border-app-border-light/60">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="text-xs font-bold text-app-text-main flex items-center gap-1.5 uppercase tracking-wider">
+                          <Wrench className="w-3.5 h-3.5 text-app-primary" />
+                          <span>Authorized Sandbox Tools</span>
+                        </label>
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-app-primary/10 text-app-primary font-bold border border-app-primary/20">
+                          {selectedTools.length} enabled
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-app-text-muted mb-2">
+                        Configure which container runtime tools this agent is authorized to leverage.
+                      </p>
+
+                      {/* Tool Presets */}
+                      <div className="flex flex-wrap gap-1 mb-2.5">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedTools(['filesystem', 'git', 'terminal', 'build_tool', 'database_tools'])}
+                          className="px-2 py-1 rounded text-[10px] font-semibold bg-app-bg-muted hover:bg-app-bg-hover text-app-text-main border border-app-border-light transition-colors cursor-pointer"
+                        >
+                          Dev Preset
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedTools(['terminal', 'test_runner', 'visual_qa', 'filesystem'])}
+                          className="px-2 py-1 rounded text-[10px] font-semibold bg-app-bg-muted hover:bg-app-bg-hover text-app-text-main border border-app-border-light transition-colors cursor-pointer"
+                        >
+                          QA Preset
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedTools(['filesystem', 'web_search', 'mcp_jira', 'mcp_github'])}
+                          className="px-2 py-1 rounded text-[10px] font-semibold bg-app-bg-muted hover:bg-app-bg-hover text-app-text-main border border-app-border-light transition-colors cursor-pointer"
+                        >
+                          MCP Preset
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedTools((availableToolsList || DEFAULT_TOOLS_CATALOG).map(t => t.id))}
+                          className="px-2 py-1 rounded text-[10px] font-semibold bg-app-primary/10 hover:bg-app-primary/20 text-app-primary border border-app-primary/20 transition-colors cursor-pointer"
+                        >
+                          Select All
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedTools([])}
+                          className="px-2 py-1 rounded text-[10px] font-semibold bg-app-bg-muted/50 hover:bg-red-500/10 text-app-text-muted hover:text-red-400 border border-app-border-light transition-colors cursor-pointer"
+                        >
+                          Clear
+                        </button>
+                      </div>
+
+                      {/* Tool Cards Scroll Grid */}
+                      <div className="grid grid-cols-1 gap-2 max-h-52 overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-app-border">
+                        {(availableToolsList || DEFAULT_TOOLS_CATALOG).map((tool) => {
+                          const isSelected = selectedTools.includes(tool.id);
+                          return (
+                            <div
+                              key={tool.id}
+                              onClick={() => {
+                                if (isSelected) {
+                                  setSelectedTools(selectedTools.filter(id => id !== tool.id));
+                                } else {
+                                  setSelectedTools([...selectedTools, tool.id]);
+                                }
+                              }}
+                              className={`p-2 rounded-lg border transition-all cursor-pointer flex items-start gap-2.5 select-none ${
+                                isSelected
+                                  ? 'bg-app-primary/10 border-app-primary/50 shadow-sm'
+                                  : 'bg-app-bg-muted/30 border-app-border-light/60 hover:border-app-border hover:bg-app-bg-muted/60'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={() => {}}
+                                className="mt-0.5 rounded text-app-primary focus:ring-app-primary/20 cursor-pointer accent-blue-600"
+                              />
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center justify-between gap-1 mb-0.5">
+                                  <span className="text-xs font-bold text-app-text-main flex items-center gap-1.5 truncate">
+                                    {getToolIcon(tool.icon, 'w-3.5 h-3.5')}
+                                    <span>{tool.name}</span>
+                                  </span>
+                                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-app-bg-page text-app-text-muted border border-app-border-light/40">
+                                    {tool.category}
+                                  </span>
+                                </div>
+                                <p className="text-[10px] text-app-text-muted leading-tight">
+                                  {tool.description}
+                                </p>
+                                {tool.capabilities && (
+                                  <div className="flex flex-wrap gap-1 mt-1.5">
+                                    {tool.capabilities.slice(0, 3).map((cap, i) => (
+                                      <span key={i} className="text-[8px] font-mono px-1 py-0.5 rounded bg-black/20 text-app-text-muted">
+                                        {cap}
+                                      </span>
+                                    ))}
+                                    {tool.capabilities.length > 3 && (
+                                      <span className="text-[8px] font-mono px-1 py-0.5 rounded bg-black/20 text-app-text-muted">
+                                        +{tool.capabilities.length - 3} more
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
 
                     {/* MCP Configuration Helper */}
@@ -1867,6 +2166,7 @@ export default function AgentsPage({ projects = [] }) {
                     setSkillsFileName('');
                     setNewAgentFace('');
                     setNewAgentTags('');
+                    setSelectedTools(['filesystem', 'git', 'terminal', 'build_tool']);
                     setAddAgentError('');
                   }}
                   disabled={addingAgent}

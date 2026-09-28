@@ -708,6 +708,18 @@ def escalate_project_request_to_superadmin(
 
 
 # --- Extracted Block (Lines 12185-12437) ---
+@router.get("/agents/tools/available")
+@router.get("/api/agent/available-tools")
+async def get_available_agent_tools():
+    """Return the catalog of container sandbox tools and capabilities configurable for agents."""
+    from app.services.agents.agent_service import AVAILABLE_AGENT_TOOLS
+    return {
+        "success": True,
+        "tools": AVAILABLE_AGENT_TOOLS,
+        "total": len(AVAILABLE_AGENT_TOOLS),
+    }
+
+
 @router.get("/agents")
 async def list_agents(
     current_user: models.User = Depends(auth.get_current_user),
@@ -869,6 +881,14 @@ async def list_agents(
         sc = row_tuple[2] if len(row_tuple) > 2 else 0
         dc = row_tuple[3] if len(row_tuple) > 3 else 0
         
+        agent_tools = sanitized_agent.get("allowed_tools")
+        if not agent_tools:
+            spec = str(sanitized_agent.get("specialization") or sub_type or "").lower()
+            if "test" in spec or "qa" in spec:
+                agent_tools = ["terminal", "test_runner", "visual_qa", "filesystem"]
+            else:
+                agent_tools = ["filesystem", "git", "terminal", "build_tool"]
+
         agents.append({
             **sanitized_agent,
             "kind": kind,
@@ -879,6 +899,7 @@ async def list_agents(
             "dedicated_count": dc,
             "is_shared": (str(kind).lower() == "shared"),
             "is_dedicated": (str(kind).lower() == "dedicated"),
+            "allowed_tools": agent_tools,
         })
     
     # Filter out legacy dev/test agents when include_defaults=False
@@ -1270,122 +1291,50 @@ async def _bg_run_agent(
     source_repo_token: Optional[str] = None,
 ):
     """
-    Background wrapper task for running agents.
-    If the project is a brownfield/migration project, executes tasks using
-    brownfield_agent_service.run_brownfield_agent.
-    Otherwise, routes to the legacy agent_service.run_agent loop.
+    Launch agent execution in the isolated Docker container runtime.
     """
     try:
         from app.core.database import SessionLocal
         import models
-        from brownfield_agent_service import is_brownfield_project, run_brownfield_agent
-        from bootstrap_persistence import get_bootstrap_branch
-        from app.services.agents import agent_service
-
-        # Notify IntegratedCoordinator that agent is starting
-        try:
-            from integrated_agent_coordinator import coordinator as _ic
-            _ic.track_agent_event(project_token or "", agent_id, "starting", f"_bg_run_agent for {project_token}")
-        except Exception:
-            pass
+        from app.services.agents.agent_service import agent_service
 
         db = SessionLocal()
-        project_type = "greenfield"
         try:
-            gov = db.query(models.GovernanceResponse).filter(
-                models.GovernanceResponse.project_token == project_token
-            ).first()
-            if gov and gov.project_type:
-                project_type = gov.project_type
+            # Fetch tasks or project requirements for this project
+            tasks = db.query(models.Task).filter(models.Task.project_token == project_token).order_by(models.Task.created_at.asc()).all()
+
+            task_summary = ""
+            if tasks:
+                task_summary = "\n\n## Project Tasks & Requirements to Build:\n"
+                for i, t in enumerate(tasks, 1):
+                    task_summary += f"{i}. **{t.title or 'Task'}**: {t.description or ''}\n"
+
+            # Check if there is BRD Analysis markdown in GovernanceResponse
+            gov = db.query(models.GovernanceResponse).filter(models.GovernanceResponse.project_token == project_token).first()
+            prompt = "Build and implement the project requirements."
+            if gov and gov.response_markdown:
+                prompt += f"\n\n## Business Requirements & Architecture:\n{gov.response_markdown[:3000]}"
+            if task_summary:
+                prompt += task_summary
+
+            effective_repo = git_repo_url or source_repo_url
+            effective_token = git_token or source_repo_token
+
+            # Dispatch to isolated Docker container runtime
+            agent_service.submit_task(
+                db=db,
+                project_id=project_token or "default_project",
+                prompt=prompt,
+                task_type="initial_generation" if not effective_repo else "follow_up_edit",
+                repo_url=effective_repo,
+                git_token=effective_token,
+                git_branch="main",
+            )
+            logger.info(f"[_bg_run_agent] Dispatched project {project_token} to agent-runtime container successfully.")
         finally:
             db.close()
-
-        if is_brownfield_project(project_type):
-            logger.info(f"[{agent_id}] Running in BROWNFIELD mode wrapper for project {project_token}")
-            base_branch = get_bootstrap_branch(project_token) or "main"
-            if base_branch == "no-git":
-                base_branch = "main"
-            
-            # Loop to pick and run tasks (continuous mode)
-            while True:
-                task = await agent_service._pick_next_task(
-                    agent_id=agent_id,
-                    project_token=project_token,
-                    task_token=x_task_token
-                )
-                if not task:
-                    if not continuous:
-                        break
-                    # Wait 30s before checking again
-                    await asyncio.sleep(30)
-                    continue
-
-                raw_seq = task.get("sequence") or task.get("seq") or task.get("task_sequence") or task.get("task_seq") or task.get("task_id") or task.get("id") or "UNKNOWN"
-                log_task_id = f"TASK-{raw_seq:02d}" if isinstance(raw_seq, int) else (f"TASK-{int(raw_seq):02d}" if str(raw_seq).isdigit() else str(raw_seq))
-                
-                logger.info(f"[{agent_id}] Found brownfield task: {log_task_id}")
-                state = agent_service._ensure_project_state(project_token)
-                agent_states = state["agent_states"]
-                agent_state = agent_states.setdefault(agent_id, {"output_log": []})
-                
-                # Update status to running
-                agent_state["status"] = "running"
-                agent_state["current_task"] = task
-                agent_state["progress"] = 0
-                agent_state["progress_message"] = f"Running brownfield task {log_task_id}..."
-                
-                result = await run_brownfield_agent(
-                    agent_id=agent_id,
-                    project_token=project_token,
-                    task_token=x_task_token,
-                    task=task,
-                    git_repo_url=source_repo_url or git_repo_url or "",
-                    git_token=source_repo_token or git_token or "",
-                    base_branch=base_branch,
-                    agent_output_log=agent_state.setdefault("output_log", []),
-                    target_repo_url=git_repo_url or "",
-                    target_repo_token=git_token or "",
-                )
-                
-                # Mark status back to idle/done after execution
-                agent_state["status"] = "idle"
-                agent_state["current_task"] = None
-                agent_state["progress"] = 100
-                agent_state["progress_message"] = "Idle"
-                
-                if not continuous:
-                    break
-            
-            # Notify coordinator that brownfield mode completed
-            try:
-                from integrated_agent_coordinator import coordinator as _ic
-                _ic.track_agent_event(project_token or "", agent_id, "completed", "Brownfield wrapper done")
-            except Exception:
-                pass
-        else:
-            logger.info(f"[{agent_id}] Running in GREENFIELD mode for project {project_token}")
-            await agent_service.run_agent(
-                agent_id,
-                git_repo_url=git_repo_url,
-                git_token=git_token,
-                continuous=continuous,
-                ignore_running_check=True,
-                project_token=project_token,
-                task_token=x_task_token,
-            )
-            # Notify coordinator that greenfield mode completed
-            try:
-                from integrated_agent_coordinator import coordinator as _ic
-                _ic.track_agent_event(project_token or "", agent_id, "completed", "Greenfield wrapper done")
-            except Exception:
-                pass
     except Exception as e:
-        logger.error(f"Wrapper agent runner failed for {agent_id}: {e}")
-        try:
-            from integrated_agent_coordinator import coordinator as _ic
-            _ic.track_agent_event(project_token or "", agent_id, "failed", f"_bg_run_agent exception: {str(e)[:200]}")
-        except Exception:
-            pass
+        logger.error(f"[_bg_run_agent] Error launching agent runtime container: {e}", exc_info=True)
 
 
 class RunAgentRequest(BaseModel):
@@ -1687,104 +1636,39 @@ async def run_all_agents(
     # Launch all idle agents using the coordinated workflow with master agent supervision
     task_token = x_task_token or agent_service.get_project_task_token(project_token)
     
-    # Check if this is a brownfield project
-    from brownfield_agent_service import is_brownfield_project
-    project_type = "greenfield"
-    source_repo_url = None
-    source_repo_token = None
+    # Check for repo credentials
     dest_repo_url = None
     dest_repo_token = None
-    
     try:
         gov = db.query(models.GovernanceResponse).filter(
             models.GovernanceResponse.project_token == project_token
         ).first()
         if gov:
-            if gov.project_type:
-                project_type = gov.project_type
-            source_repo_url = gov.source_repo_url
-            source_repo_token = gov.source_repo_token
             dest_repo_url = gov.dest_repo_url
             dest_repo_token = gov.dest_repo_token
     except Exception as e:
-        logger.error(f"Failed to check project type: {e}")
+        logger.error(f"Failed to check governance response: {e}")
 
-    # Fallbacks
-    source_repo_url = source_repo_url or (request.source_repo_url if request else None)
     git_repo_url_to_use = dest_repo_url or provided_repo
     git_token_to_use = dest_repo_token or provided_token
 
-    if is_brownfield_project(project_type):
-        logger.info(f"[{project_token}] Launching {len(available_agents)} agents in BROWNFIELD mode")
-        for agent_id in available_agents:
-            asyncio.create_task(
-                _bg_run_agent(
-                    agent_id=agent_id,
-                    git_repo_url=git_repo_url_to_use,
-                    git_token=git_token_to_use,
-                    project_token=project_token,
-                    x_task_token=task_token,
-                    continuous=True,
-                    source_repo_url=source_repo_url,
-                    source_repo_token=source_repo_token,
-                )
-            )
-        return {
-            "started": True,
-            "agents": available_agents,
-            "total_tasks": len(project_tasks),
-            "workflow_result": "Started independent brownfield agents",
-            "message": f"Launched {len(available_agents)} agent(s) in brownfield mode.",
-        }
-
-    # Build agents_config for the workflow
-    workflow_agents_config = {}
-    for agent_id in available_agents:
-        workflow_agents_config[agent_id] = {
-            "git_repo_url": provided_repo or "",
-            "git_token": provided_token or "",
-        }
-    
-    # Use the coordinated workflow which includes master agent planning
-    try:
-        result = await agent_service.run_all_agents(
-            agents_config=workflow_agents_config,
+    # Launch agent runtime container
+    asyncio.create_task(
+        _bg_run_agent(
+            agent_id=available_agents[0] if available_agents else "A_agent_01",
+            git_repo_url=git_repo_url_to_use,
+            git_token=git_token_to_use,
             project_token=project_token,
-            task_token=task_token,
-            enable_supervisor=True,
+            x_task_token=x_task_token,
         )
-        logger.info(f"🚀 Coordinated workflow completed for project {project_token}")
-        
-        return {
-            "started": True,
-            "agents": available_agents,
-            "total_tasks": len(project_tasks),
-            "workflow_result": result,
-            "message": f"Launched {len(available_agents)} agent(s) with master supervision on {len(project_tasks)} pending task(s).",
-        }
-    except Exception as workflow_err:
-        logger.error(f"Coordinated workflow failed: {workflow_err}")
-        # Fallback to individual agent launches
-        for agent_id in available_agents:
-            asyncio.create_task(
-                agent_service.run_agent(
-                    agent_id=agent_id,
-                    project_token=project_token,
-                    task_token=task_token,
-                    continuous=True,
-                    git_repo_url=provided_repo or None,
-                    git_token=provided_token or None,
-                )
-            )
-            logger.info(f"🚀 Launched {agent_id} (fallback mode) for project {project_token}")
-        
-        return {
-            "started": True,
-            "agents": available_agents,
-            "total_tasks": len(project_tasks),
-            "message": f"Launched {len(available_agents)} agent(s) in fallback mode on {len(project_tasks)} pending task(s).",
-            "warning": "Coordinated workflow unavailable, using fallback mode",
-        }
+    )
+
+    return {
+        "started": True,
+        "agents": available_agents,
+        "total_tasks": len(project_tasks) if 'project_tasks' in locals() else 1,
+        "message": f"Launched agent container runtime for project {project_token}.",
+    }
 
 
 class AddAgentRequest(BaseModel):
@@ -1807,6 +1691,7 @@ class AddAgentSkillsRequest(BaseModel):
     project_token: Optional[str] = None
     face: Optional[str] = None
     tags: Optional[str] = None
+    tools: Optional[List[str]] = None
 
 
 class OnboardAgentAssignment(BaseModel):
@@ -2152,6 +2037,15 @@ async def add_agent_with_skills(
             if mt not in tags:
                 tags.append(mt)
 
+    # Determine allowed tools for agent
+    if request.tools and isinstance(request.tools, list) and len(request.tools) > 0:
+        allowed_tools = request.tools
+    else:
+        if specialization == "Testing":
+            allowed_tools = ["terminal", "test_runner", "visual_qa", "filesystem"]
+        else:
+            allowed_tools = ["filesystem", "git", "terminal", "build_tool"]
+
     # Create dynamic Agent record
     new_agent = models.Agent(
         id=agent_uuid,
@@ -2164,6 +2058,7 @@ async def add_agent_with_skills(
         skills_tags=tags,
         specialization=specialization,
         face=request.face,
+        allowed_tools=allowed_tools,
     )
     db.add(new_agent)
     
@@ -2196,6 +2091,7 @@ async def add_agent_with_skills(
             "skills_tags": tags,
             "specialization": specialization,
             "face": request.face,
+            "allowed_tools": allowed_tools,
         }
     }
 
@@ -2206,6 +2102,7 @@ class UpdateAgentSkillsRequest(BaseModel):
     face: Optional[str] = None
     tags: Optional[str] = None
     project_token: Optional[str] = None
+    tools: Optional[List[str]] = None
 
 
 @router.post("/agents/skills/update/{agent_id}")
@@ -2330,6 +2227,8 @@ async def update_agent_with_skills(
     agent_rec.specialization = specialization
     if request.face is not None:
         agent_rec.face = request.face
+    if request.tools is not None:
+        agent_rec.allowed_tools = request.tools
 
     db.add(agent_rec)
 
@@ -2363,6 +2262,7 @@ async def update_agent_with_skills(
             "skills_tags": tags,
             "specialization": specialization,
             "face": agent_rec.face,
+            "allowed_tools": agent_rec.allowed_tools or [],
         }
     }
 

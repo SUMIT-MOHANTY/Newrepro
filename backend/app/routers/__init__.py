@@ -17,6 +17,7 @@ from app.routers.ai import router as ai_router
 from app.routers.superadmin import router as superadmin_router
 from app.routers.agents import router as agents_router
 from app.routers.coordination import router as coordination_router
+from app.routers.agent_callbacks import router as callbacks_router
 
 api_router = APIRouter()
 
@@ -33,6 +34,7 @@ api_router.include_router(ai_router)
 api_router.include_router(superadmin_router)
 api_router.include_router(agents_router)
 api_router.include_router(coordination_router)
+api_router.include_router(callbacks_router)
 
 __all__ = [
     "api_router",

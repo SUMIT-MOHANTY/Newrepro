@@ -1,0 +1,41 @@
+# Filesystem policy — §8.1 / §8.3
+# Controls what paths and file types the AI can access.
+
+allowed_roots:
+  - /workspace
+
+denied_paths:
+  - /etc
+  - /proc
+  - /sys
+  - /root
+  - /home
+  - /backend
+  - /var/log
+  - /dev
+
+max_file_size_bytes: 5000000   # 5MB
+
+max_files_in_listing: 500
+
+# Extensions the AI is allowed to write
+allowed_write_extensions:
+  - .js
+  - .jsx
+  - .ts
+  - .tsx
+  - .css
+  - .scss
+  - .html
+  - .json
+  - .md
+  - .mdx
+  - .env.example
+  - .gitignore
+  - .yml
+  - .yaml
+  - .svg
+  - .png
+  - .ico
+  - .txt
+  - .sh

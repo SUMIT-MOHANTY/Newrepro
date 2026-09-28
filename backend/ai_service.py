@@ -1,7 +1,4 @@
-"""
-DSuite BRD Analyzer - Root Shim for AI Service
-Maintains backward compatibility for legacy imports (import ai_service).
-"""
+"""Root shim for AI service (BRD analysis)."""
 import sys
 from app.services.ai.ai_service import *
 from app.services.ai import ai_service as _mod
