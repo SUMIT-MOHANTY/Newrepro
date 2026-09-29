@@ -32,6 +32,9 @@ import {
     Layers,
     Clock,
     ListTodo,
+    Link2,
+    GitBranch,
+    Bot,
     Plus,
 } from 'lucide-react';
 import { API_ENDPOINTS, API_BASE_URL } from '../config';
@@ -371,10 +374,11 @@ export default function TaskCreation({
             // Auto select all in active sprint if none selected
             handleSelectAll();
         }
-        navigate('/agents', {
+        navigate('/resource-onboarding', {
             state: {
                 projectToken: selectedProjectKey,
                 startSprint: activeSprint.name,
+                selectedTasks: tasks.filter(t => t.selected).map(t => t.task_id || t.id),
             }
         });
     };
@@ -822,6 +826,8 @@ export default function TaskCreation({
                                             <TaskCardItem
                                                 key={task.id || task.task_id}
                                                 task={task}
+                                                allTasks={tasks}
+                                                columnIndex={0}
                                                 onToggleSelect={() => handleToggleTaskSelect(task.task_id)}
                                                 isDragging={draggingTaskId === (task.task_id || task.id)}
                                                 onDragStart={(id) => setDraggingTaskId(id)}
@@ -901,6 +907,8 @@ export default function TaskCreation({
                                             <TaskCardItem
                                                 key={task.id || task.task_id}
                                                 task={task}
+                                                allTasks={tasks}
+                                                columnIndex={1}
                                                 onToggleSelect={() => handleToggleTaskSelect(task.task_id)}
                                                 isDragging={draggingTaskId === (task.task_id || task.id)}
                                                 onDragStart={(id) => setDraggingTaskId(id)}
@@ -958,6 +966,8 @@ export default function TaskCreation({
                                         <TaskCardItem
                                             key={task.id || task.task_id}
                                             task={task}
+                                            allTasks={tasks}
+                                            columnIndex={2}
                                             onToggleSelect={() => handleToggleTaskSelect(task.task_id)}
                                             isDragging={draggingTaskId === (task.task_id || task.id)}
                                             onDragStart={(id) => setDraggingTaskId(id)}
@@ -1014,6 +1024,8 @@ export default function TaskCreation({
                                         <TaskCardItem
                                             key={task.id || task.task_id}
                                             task={task}
+                                            allTasks={tasks}
+                                            columnIndex={3}
                                             onToggleSelect={() => handleToggleTaskSelect(task.task_id)}
                                             isDragging={draggingTaskId === (task.task_id || task.id)}
                                             onDragStart={(id) => setDraggingTaskId(id)}
@@ -1131,7 +1143,7 @@ export default function TaskCreation({
                             </button>
 
                             <button
-                                onClick={() => navigate('/agents', { state: { projectToken: selectedProjectKey } })}
+                                onClick={() => navigate('/resource-onboarding', { state: { projectToken: selectedProjectKey } })}
                                 className="w-full bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-semibold text-xs py-1.5 px-3 rounded-lg flex items-center justify-center gap-1.5 transition-all shadow-2xs"
                             >
                                 <ArrowRight className="w-3 h-3 text-slate-500" />
@@ -1151,19 +1163,143 @@ export default function TaskCreation({
     );
 }
 
-// ── REUSABLE TASK CARD COMPONENT (NATIVE DRAG & DROP, CLEAN CARD) ──
-function TaskCardItem({ task, onToggleSelect, isDragging, onDragStart, onDragEnd }) {
+// ── REUSABLE TASK CARD COMPONENT (NATIVE DRAG & DROP + HOVER DETAILS / DEPENDENCIES) ──
+function TaskCardItem({
+    task,
+    onToggleSelect,
+    isDragging,
+    onDragStart,
+    onDragEnd,
+    allTasks = [],
+    columnIndex = 0,
+}) {
+    const [showPopover, setShowPopover] = useState(false);
+    const [popoverPos, setPopoverPos] = useState({
+        vertical: 'top',
+        horizontal: columnIndex >= 2 ? 'left' : 'right',
+        maxHeight: 460,
+    });
+    const cardRef = useRef(null);
+    const hoverTimeoutRef = useRef(null);
+
+    const updatePopoverPosition = useCallback(() => {
+        if (!cardRef.current) return;
+        const rect = cardRef.current.getBoundingClientRect();
+        const vh = window.innerHeight || document.documentElement.clientHeight || 800;
+        const vw = window.innerWidth || document.documentElement.clientWidth || 1200;
+
+        // Space available below vs above the card
+        const spaceBelow = vh - rect.bottom;
+        const spaceAbove = rect.top;
+
+        // When space below is tight (< 350px) and there's more room above, open UPWARDS (bottom aligned)
+        const vertical = (spaceBelow < 350 && spaceAbove > spaceBelow) ? 'bottom' : 'top';
+
+        // Check horizontal clearance to avoid right-edge overflow
+        const spaceRight = vw - rect.right;
+        const spaceLeft = rect.left;
+        const horizontal = (columnIndex >= 2 || (spaceRight < 340 && spaceLeft > spaceRight)) ? 'left' : 'right';
+
+        // Constrain max height so popover is 100% within the viewport and NEVER triggers screen scrollbar/layout shifts
+        const maxAvailable = vertical === 'bottom'
+            ? Math.max(220, Math.min(480, rect.bottom - 16))
+            : Math.max(220, Math.min(480, spaceBelow - 16));
+
+        setPopoverPos({
+            vertical,
+            horizontal,
+            maxHeight: maxAvailable,
+        });
+    }, [columnIndex]);
+
+    const handleMouseEnter = () => {
+        if (isDragging) return;
+        if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+        updatePopoverPosition();
+        hoverTimeoutRef.current = setTimeout(() => {
+            setShowPopover(true);
+        }, 160);
+    };
+
+    const handleMouseLeave = () => {
+        if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+        hoverTimeoutRef.current = setTimeout(() => {
+            setShowPopover(false);
+        }, 160);
+    };
+
+    useEffect(() => {
+        if (isDragging) {
+            if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+            setShowPopover(false);
+        }
+    }, [isDragging]);
+
+    useEffect(() => {
+        if (!showPopover) return;
+        const handleScroll = () => {
+            setShowPopover(false);
+        };
+        window.addEventListener('scroll', handleScroll, { passive: true });
+        return () => window.removeEventListener('scroll', handleScroll);
+    }, [showPopover]);
+
     const type = (task.task_type || task.type || 'FEATURE').toUpperCase();
     const isFeature = type === 'FEATURE';
     const prio = String(task.priority || 'medium').toLowerCase();
     const isHigh = prio === 'high' || prio === 'urgent' || prio === 'critical';
     const isMedium = prio === 'medium';
     const dueDate = task.deadline || task.planned_start || '2026-10-02';
+    const status = (task.status || 'TODO').toUpperCase();
+
+    // 1. Linked / Dependent Tasks
+    const dependencies = useMemo(() => {
+        let raw = task.linked_tasks || task.dependencies || [];
+        if (typeof raw === 'string') {
+            try {
+                raw = JSON.parse(raw);
+            } catch {
+                raw = raw.split(',').map(s => s.trim()).filter(Boolean);
+            }
+        }
+        if (!Array.isArray(raw)) raw = [];
+
+        return raw.map(id => {
+            const cleanId = String(id).trim();
+            const found = allTasks.find(t => t.task_id === cleanId || t.id === cleanId || t.taskName === cleanId);
+            return {
+                id: cleanId,
+                name: found?.taskName || found?.title || cleanId,
+                status: found?.status || 'PENDING',
+                type: found?.task_type || 'TASK',
+            };
+        });
+    }, [task, allTasks]);
+
+    // 2. Related Tasks (same milestone or sprint)
+    const relatedTasks = useMemo(() => {
+        const myId = task.task_id || task.id;
+        const myMilestone = (task.milestone || '').toLowerCase();
+        const mySprint = (task.sprint || '').toLowerCase();
+
+        return allTasks
+            .filter(t => {
+                const tId = t.task_id || t.id;
+                if (tId === myId) return false;
+                const tm = (t.milestone || '').toLowerCase();
+                const ts = (t.sprint || '').toLowerCase();
+                return (myMilestone && tm === myMilestone) || (mySprint && ts === mySprint);
+            })
+            .slice(0, 3);
+    }, [task, allTasks]);
 
     return (
         <div
+            ref={cardRef}
             draggable={true}
             onDragStart={(e) => {
+                if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+                setShowPopover(false);
                 e.dataTransfer.setData('text/plain', task.task_id || task.id);
                 e.dataTransfer.effectAllowed = 'move';
                 onDragStart?.(task.task_id || task.id);
@@ -1171,7 +1307,11 @@ function TaskCardItem({ task, onToggleSelect, isDragging, onDragStart, onDragEnd
             onDragEnd={() => {
                 onDragEnd?.();
             }}
+            onMouseEnter={handleMouseEnter}
+            onMouseLeave={handleMouseLeave}
             className={`bg-white border rounded-lg p-2.5 shadow-2xs hover:shadow-xs transition-all relative cursor-grab active:cursor-grabbing select-none ${
+                showPopover ? 'z-40' : 'z-10'
+            } ${
                 isDragging
                     ? 'opacity-40 scale-[0.98] border-dashed border-blue-400 shadow-none'
                     : 'border-slate-200/90 hover:border-slate-300'
@@ -1229,6 +1369,150 @@ function TaskCardItem({ task, onToggleSelect, isDragging, onDragStart, onDragEnd
                     </div>
                 </div>
             </div>
+
+            {/* ── RICH HOVER PREVIEW POPOVER (DETAILS, DEPENDENCIES & RELATED TASKS) ── */}
+            {showPopover && !isDragging && (
+                <div
+                    style={{ maxHeight: `${popoverPos.maxHeight}px` }}
+                    className={`absolute w-80 bg-white rounded-xl border border-slate-200 shadow-2xl p-3.5 text-xs z-50 animate-in fade-in zoom-in-95 duration-150 pointer-events-auto select-text overflow-y-auto overflow-x-hidden flex flex-col ${
+                        popoverPos.vertical === 'bottom' ? 'bottom-0' : 'top-0'
+                    } ${
+                        popoverPos.horizontal === 'left' ? 'right-[calc(100%+8px)]' : 'left-[calc(100%+8px)]'
+                    }`}
+                    onMouseEnter={() => {
+                        if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+                        setShowPopover(true);
+                    }}
+                    onMouseLeave={handleMouseLeave}
+                >
+                    {/* Invisible hover bridge across gap to avoid mouseleave jitter */}
+                    <div
+                        className={`absolute top-0 bottom-0 w-3 pointer-events-auto ${
+                            popoverPos.horizontal === 'left' ? '-right-3' : '-left-3'
+                        }`}
+                    />
+
+                    {/* Header tags: ID, Type, Priority, Status */}
+                    <div className="flex items-center justify-between gap-1 mb-2 pb-2 border-b border-slate-100 shrink-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
+                                {task.task_id || 'TASK'}
+                            </span>
+                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
+                                isFeature ? 'bg-purple-50 text-purple-700 border border-purple-200' : 'bg-blue-50 text-blue-700 border border-blue-200'
+                            }`}>
+                                {type}
+                            </span>
+                        </div>
+
+                        <div className="flex items-center gap-1">
+                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full capitalize ${
+                                isHigh ? 'bg-rose-50 text-rose-700 border border-rose-200' : isMedium ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            }`}>
+                                {prio}
+                            </span>
+                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+                                {status === 'IN_PROGRESS' ? 'In Progress' : status === 'TODO' ? 'To Do' : status === 'BLOCKED' ? 'Blocked' : 'Done'}
+                            </span>
+                        </div>
+                    </div>
+
+                    {/* Task Title */}
+                    <h4 className="font-bold text-xs text-slate-900 leading-snug shrink-0">
+                        {task.taskName || task.task_name || task.title || 'Task'}
+                    </h4>
+
+                    {/* Description - fully readable with custom styled scroll container */}
+                    <div className="mt-1.5 bg-slate-50 p-2 rounded-lg border border-slate-100 shrink-0">
+                        <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">Description</div>
+                        <p className="text-[11px] text-slate-600 leading-relaxed max-h-24 overflow-y-auto">
+                            {task.description || 'No detailed description provided for this work item.'}
+                        </p>
+                    </div>
+
+                    {/* Meta key-values */}
+                    <div className="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-slate-100 text-[10px] shrink-0">
+                        <div>
+                            <span className="text-slate-400 font-medium block">Milestone</span>
+                            <span className="text-slate-700 font-semibold truncate block mt-0.5" title={task.milestone}>
+                                {task.milestone || 'Project Foundation'}
+                            </span>
+                        </div>
+                        <div>
+                            <span className="text-slate-400 font-medium block">Assigned Role</span>
+                            <span className="text-slate-700 font-semibold truncate block mt-0.5" title={task.assigned_agent_role}>
+                                {task.assigned_agent_role || 'Fullstack Developer'}
+                            </span>
+                        </div>
+                        <div>
+                            <span className="text-slate-400 font-medium block">Sprint</span>
+                            <span className="text-slate-700 font-semibold truncate block mt-0.5">
+                                {task.sprint || 'Sprint 1'}
+                            </span>
+                        </div>
+                        <div>
+                            <span className="text-slate-400 font-medium block">Deadline</span>
+                            <span className="text-slate-700 font-semibold truncate block mt-0.5">
+                                {dueDate}
+                            </span>
+                        </div>
+                    </div>
+
+                    {/* Dependencies Section */}
+                    <div className="mt-2 pt-2 border-t border-slate-100 shrink-0">
+                        <div className="flex items-center gap-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                            <Link2 className="w-3 h-3 text-slate-400" />
+                            <span>Dependencies &amp; Prerequisites</span>
+                        </div>
+                        {dependencies.length > 0 ? (
+                            <div className="space-y-1 max-h-24 overflow-y-auto pr-0.5">
+                                {dependencies.map((dep, i) => (
+                                    <div key={i} className="flex items-center justify-between text-[10px] bg-slate-50 px-2 py-1 rounded border border-slate-100">
+                                        <span className="font-medium text-slate-700 truncate max-w-[170px]" title={dep.name}>
+                                            {dep.id}: {dep.name}
+                                        </span>
+                                        <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-white text-slate-500 border border-slate-200">
+                                            {dep.status}
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <p className="text-[10px] text-slate-400 italic">
+                                Independent task &bull; No blocking dependencies
+                            </p>
+                        )}
+                    </div>
+
+                    {/* Related Tasks Section */}
+                    <div className="mt-2 pt-2 border-t border-slate-100 shrink-0">
+                        <div className="flex items-center gap-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                            <Layers className="w-3 h-3 text-slate-400" />
+                            <span>Related Tasks</span>
+                        </div>
+                        {relatedTasks.length > 0 ? (
+                            <div className="space-y-1 max-h-24 overflow-y-auto pr-0.5">
+                                {relatedTasks.map((rel) => (
+                                    <div key={rel.task_id || rel.id} className="flex items-center justify-between text-[10px] bg-slate-50 px-2 py-1 rounded border border-slate-100">
+                                        <span className="font-medium text-slate-700 truncate max-w-[170px]" title={rel.taskName || rel.title}>
+                                            {rel.task_id}: {rel.taskName || rel.title}
+                                        </span>
+                                        <span className={`text-[9px] font-bold px-1 py-0.2 rounded ${
+                                            (rel.status || '').toUpperCase() === 'DONE' ? 'bg-emerald-100 text-emerald-700' : (rel.status || '').toUpperCase() === 'IN_PROGRESS' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'
+                                        }`}>
+                                            {rel.status || 'TODO'}
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <p className="text-[10px] text-slate-400 italic">
+                                No other tasks in this milestone
+                            </p>
+                        )}
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
