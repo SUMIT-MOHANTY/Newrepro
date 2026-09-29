@@ -1332,40 +1332,183 @@ async def _bg_run_agent(
     source_repo_token: Optional[str] = None,
 ):
     """
-    Launch agent execution in the isolated Docker container runtime.
+    Launch agent execution in the isolated Docker container runtime with
+    persona-grounded context, subtask breakdown, and the Zero-Error Verification Gate.
     """
     try:
         from app.core.database import SessionLocal
         import models
         from app.services.agents.agent_service import agent_service
+        from app.services.agents.local_state_manager import get_agent_lanes_from_skills, is_task_in_agent_lanes
 
         db = SessionLocal()
         try:
-            # Fetch tasks or project requirements for this project
+            # Query the agent to retrieve its configured model, allowed tools, persona & specialization
+            base_agent_id = agent_id.split("#")[0] if agent_id else None
+            agent_rec = db.query(models.Agent).filter(models.Agent.id == base_agent_id).first() if base_agent_id else None
+
+            # Fall back to default agents list if not found in db
+            agent_name = agent_rec.name if agent_rec and agent_rec.name else (agent_id or "Autonomous Agent")
+            agent_role = (agent_rec.type or agent_rec.specialization or "Software Engineer") if agent_rec else "Software Engineer"
+            agent_spec = agent_rec.specialization if agent_rec and agent_rec.specialization else "General"
+            assigned_model = (agent_rec.model_name if agent_rec and agent_rec.model_name else "claude").lower().strip()
+            assigned_tools = agent_rec.allowed_tools if agent_rec and agent_rec.allowed_tools else [
+                "filesystem", "git", "terminal", "build_tool"
+            ]
+            skills_summary = agent_rec.skills_summary or (agent_rec.skills_content[:300] if agent_rec and agent_rec.skills_content else "")
+
+            # Resolve lanes for lane-based task matching
+            agent_lanes = get_agent_lanes_from_skills(
+                agent_id=base_agent_id or agent_id,
+                skills_tags=agent_rec.skills_tags if agent_rec else None,
+                specialization=agent_spec
+            )
+
+            # Fetch tasks for this project
             tasks = db.query(models.Task).filter(models.Task.project_token == project_token).order_by(models.Task.created_at.asc()).all()
 
+            assigned_tasks = []
+            other_tasks = []
+
+            for t in tasks:
+                t_title = getattr(t, 'task_name', getattr(t, 'title', 'Task'))
+                t_desc = getattr(t, 'description', '') or ''
+                t_checklist_raw = getattr(t, 'checklist', None)
+                t_subtasks = []
+                if t_checklist_raw:
+                    try:
+                        parsed_cl = json.loads(t_checklist_raw) if isinstance(t_checklist_raw, str) else t_checklist_raw
+                        if isinstance(parsed_cl, list):
+                            for item in parsed_cl:
+                                if isinstance(item, dict):
+                                    t_subtasks.append(item.get("title") or item.get("text") or item.get("name") or str(item))
+                                elif isinstance(item, str):
+                                    t_subtasks.append(item)
+                    except Exception:
+                        pass
+
+                # Check if assigned specifically to this agent
+                is_assigned = False
+                t_assigned_to = getattr(t, 'assigned_to', [])
+                if isinstance(t_assigned_to, str):
+                    try:
+                        t_assigned_to = json.loads(t_assigned_to)
+                    except Exception:
+                        t_assigned_to = [t_assigned_to]
+                if isinstance(t_assigned_to, list):
+                    if any(base_agent_id.lower() in str(a).lower() or agent_id.lower() in str(a).lower() for a in t_assigned_to):
+                        is_assigned = True
+
+                # Determine task lane
+                task_lane = (getattr(t, 'task_type', None) or "TASK").lower()
+                title_lower = t_title.lower()
+                if "front" in title_lower or "ui" in title_lower or "view" in title_lower or "screen" in title_lower:
+                    task_lane = "frontend"
+                elif "back" in title_lower or "api" in title_lower or "db" in title_lower or "server" in title_lower:
+                    task_lane = "backend"
+                elif "test" in title_lower or "qa" in title_lower or "lint" in title_lower or "validat" in title_lower:
+                    task_lane = "qa"
+
+                if not is_assigned and is_task_in_agent_lanes(task_lane, agent_lanes):
+                    is_assigned = True
+
+                task_obj = {
+                    "id": getattr(t, 'task_id', getattr(t, 'id', '')),
+                    "title": t_title,
+                    "description": t_desc,
+                    "lane": task_lane,
+                    "subtasks": t_subtasks,
+                    "type": getattr(t, 'task_type', 'TASK')
+                }
+                if is_assigned:
+                    assigned_tasks.append(task_obj)
+                else:
+                    other_tasks.append(task_obj)
+
+            # Build Task Summary
             task_summary = ""
-            if tasks:
-                task_summary = "\n\n## Project Tasks & Requirements to Build:\n"
-                for i, t in enumerate(tasks, 1):
-                    task_summary += f"{i}. **{t.title or 'Task'}**: {t.description or ''}\n"
+            if assigned_tasks:
+                task_summary += f"\n\n### Tasks Assigned to You ({agent_name} / {agent_spec}):\n"
+                for i, t in enumerate(assigned_tasks, 1):
+                    task_summary += f"{i}. **[{t['type']}] {t['title']}** (ID: {t['id']}, Lane: {t['lane']})\n"
+                    if t['description']:
+                        task_summary += f"   - Description: {t['description']}\n"
+                    if t['subtasks']:
+                        task_summary += "   - Actionable Subtasks / Checklist:\n"
+                        for st in t['subtasks']:
+                            task_summary += f"     * [ ] {st}\n"
+
+            if other_tasks:
+                task_summary += "\n\n### Other Related Project Tasks (Reference):\n"
+                for i, t in enumerate(other_tasks[:10], 1):
+                    task_summary += f"{i}. **[{t['type']}] {t['title']}** (ID: {t['id']}, Lane: {t['lane']})\n"
 
             # Check if there is BRD Analysis markdown in GovernanceResponse
             gov = db.query(models.GovernanceResponse).filter(models.GovernanceResponse.project_token == project_token).first()
-            prompt = "Build and implement the project requirements."
+            gov_context = ""
             if gov and gov.response_markdown:
-                prompt += f"\n\n## Business Requirements & Architecture:\n{gov.response_markdown[:3000]}"
-            if task_summary:
-                prompt += task_summary
+                gov_context = f"\n\n## Business Requirements & Architecture (BRD):\n{gov.response_markdown[:3000]}"
+
+            tools_list_str = ", ".join(assigned_tools) if isinstance(assigned_tools, list) else str(assigned_tools)
+            lanes_list_str = ", ".join(sorted(agent_lanes))
+
+            is_qa_agent = (
+                "qa" in agent_spec.lower()
+                or "test" in agent_spec.lower()
+                or ("test_runner" in (assigned_tools or []) and "filesystem" not in (assigned_tools or []))
+            )
+
+            phase3_instructions = (
+                """### PHASE 3: QA Execution & Test Spec Authoring (ZERO APP CODE MODIFICATION)
+- CRITICAL BOUNDARY CONTRACT: As a QA / Verification Engineer, you have read-only access to application source code via `code_inspector`. You MUST NOT edit, modify, or rewrite production application code (`src/App.jsx`, components, backend endpoints).
+- Your implementation scope is strictly confined to verification and test authoring:
+  1. Inspect application code, routes, and data models using `read_file` and `list_directory`.
+  2. Author unit test specs and assertions in test files (`tests/`, `*.test.jsx`, `*.spec.ts`).
+  3. Execute automated test suites (`npm test`, `npx vitest run`, `pytest`, `npm run lint`).
+  4. If an application bug or unhandled null is discovered, do NOT modify production code yourself. Formulate a structured Defect Report (identifying the failing component, line number, expected vs actual behavior, and failure trace) so Developer agents can address it directly."""
+                if is_qa_agent
+                else
+                """### PHASE 3: Targeted Implementation with Authorized Tools
+- Implement the planned subtasks using only your assigned container tools (`write_files`, `replace_file_content`, `run_command`).
+- Maintain high architectural quality: use clean code, proper prop contracts, defensive null guards, and avoid hardcoded dummy values.
+- Adhere strictly to project styling (Tailwind CSS in JSX, Lucide icons, HashRouter navigation)."""
+            )
+
+            prompt = f"""# Persona & Execution Assignment
+You are **{agent_name}**, serving as **{agent_role}** specialized in **{agent_spec}**.
+- Operational Lanes: {lanes_list_str}
+- Configured AI Engine: {assigned_model.upper()}
+- Authorized Container Tools: {tools_list_str}
+{f"- Skills & Focus: {skills_summary}" if skills_summary else ""}
+
+{gov_context}
+{task_summary}
+
+## ════════════════════════════════════════════════════════════════════════════
+## MANDATORY 4-PHASE AUTONOMOUS AGENT EXECUTION PROTOCOL
+## ════════════════════════════════════════════════════════════════════════════
+
+### PHASE 1: Codebase Discovery & Assessment (READ BEFORE WRITE)
+- Ground your understanding before executing tasks. Do NOT hallucinate existing file paths or imports.
+- Leverage your authorized inspection tools (`list_directory`, `read_file`, `grep_search`) to inspect the project workspace.
+- Identify existing components, routing, configuration (`package.json`), data schemas, and what has already been implemented.
+
+### PHASE 2: Execution Planning & Subtask Breakdown
+- Formulate a precise, dependency-ordered plan for your assigned tasks.
+- Break down each parent task into concrete, atomic subtasks (e.g., Data/Model -> Component/Service -> Route/Integration -> Verification).
+- Verify prerequisites before beginning implementation.
+
+{phase3_instructions}
+
+### PHASE 4: Zero-Error Verification Gate (MANDATORY GATEKEEPER)
+- You MUST verify that all your changes are completely error-free before marking any task as complete or reporting 100% progress.
+- Validate file syntax with `check_syntax` and run the build/lint suite (`npm run lint`, `npx tsc --noEmit`, or `install_and_build`).
+- Inspect compiler stderr and exit codes. If ANY lint or syntax error exists, immediately invoke self-healing repairs to fix it.
+- ZERO-ERROR CONTRACT: A task CANNOT be marked complete or report 100% progress if there are unresolved lint or syntax errors. Only when all tests/linting pass with 0 errors may the task be submitted as complete.
+"""
 
             effective_repo = git_repo_url or source_repo_url
             effective_token = git_token or source_repo_token
-
-            # Query the agent to retrieve its configured model and allowed tools
-            base_agent_id = agent_id.split("#")[0] if agent_id else None
-            agent_rec = db.query(models.Agent).filter(models.Agent.id == base_agent_id).first() if base_agent_id else None
-            assigned_model = (agent_rec.model_name if agent_rec and agent_rec.model_name else "claude").lower().strip()
-            assigned_tools = agent_rec.allowed_tools if agent_rec and agent_rec.allowed_tools else None
 
             # Dispatch to isolated Docker container runtime with assigned AI model & tools
             agent_service.submit_task(
@@ -1379,7 +1522,7 @@ async def _bg_run_agent(
                 git_token=effective_token,
                 git_branch="main",
             )
-            logger.info(f"[_bg_run_agent] Dispatched project {project_token} (model: {assigned_model}, tools: {assigned_tools}) to agent-runtime container successfully.")
+            logger.info(f"[_bg_run_agent] Dispatched project {project_token} (agent: {agent_name}, model: {assigned_model}, tools: {assigned_tools}) to agent-runtime container successfully.")
         finally:
             db.close()
     except Exception as e:
@@ -2833,9 +2976,18 @@ class TaskProgressRequest(BaseModel):
     task_id: int
     task_progress: int
     additional_info: Optional[str] = None
+    lint_passed: Optional[bool] = None
+    lint_errors: Optional[int] = 0
+    verification_output: Optional[str] = None
+    files_modified: Optional[List[str]] = None
 
 class TaskCompleteRequest(BaseModel):
     task_id: int
+    lint_passed: Optional[bool] = None
+    lint_errors: Optional[int] = 0
+    verification_output: Optional[str] = None
+    files_modified: Optional[List[str]] = None
+    subtasks_completed: Optional[List[str]] = None
 
 class TaskTimerLogRequest(BaseModel):
     task_id: int
@@ -3098,11 +3250,21 @@ async def post_agent_task_progress(
                 db.add(ow)
                 db.flush()
                 
+            # ═══ ZERO-ERROR LINT VERIFICATION GATE ═══
+            # If lint or syntax errors are detected, cap progress to 95% and prevent completion
+            _effective_progress = payload.task_progress
+            if payload.lint_passed is False or (payload.lint_errors is not None and payload.lint_errors > 0):
+                if _effective_progress >= 100:
+                    logger.warning(
+                        f"[post_agent_task_progress] 🚫 LINT VERIFICATION GATE: Task {clean_id} has "
+                        f"{payload.lint_errors} lint/syntax error(s). Capping progress from {_effective_progress}% to 95%."
+                    )
+                    _effective_progress = 95
+
             # ═══ WORK EVIDENCE GUARD ═══
             # When an agent reports 100% progress, verify there's evidence of actual work
-            # by checking checklist or task_data for completion markers.
+            # by checking checklist, files_modified in payload, or task_data for completion markers.
             # If no evidence, log warning and cap at 99% instead.
-            _effective_progress = payload.task_progress
             if _effective_progress >= 100:
                 _has_work_evidence = False
                 # Check 1: Parse checklist from task.checklist (JSON string column)
@@ -3120,9 +3282,9 @@ async def post_agent_task_progress(
                             _has_work_evidence = True
                 except Exception:
                     pass
-                # Check 2: Files written evidence from ownership record
+                # Check 2: Files written evidence from ownership record or payload
                 _existing_data = dict(ow.task_data) if ow.task_data else {}
-                if _existing_data.get("files_written") or _existing_data.get("files_created"):
+                if _existing_data.get("files_written") or _existing_data.get("files_created") or payload.files_modified:
                     _has_work_evidence = True
                 
                 if not _has_work_evidence:
@@ -3142,17 +3304,30 @@ async def post_agent_task_progress(
             task_data_dict = dict(ow.task_data) if ow.task_data else {}
             task_data_dict["task_progress"] = _effective_progress
             task_data_dict["taskStatus"] = "On Going" if _effective_progress < 100 else "Completed"
+            if payload.lint_errors is not None:
+                task_data_dict["lint_errors"] = payload.lint_errors
+            if payload.lint_passed is not None:
+                task_data_dict["lint_passed"] = payload.lint_passed
+            if payload.verification_output:
+                task_data_dict["verification_output"] = payload.verification_output
+            if payload.files_modified:
+                task_data_dict["files_modified"] = payload.files_modified
             ow.task_data = task_data_dict
             ow.updated_at = datetime.utcnow()
             
             db.commit()
-            logger.info(f"Updated task {clean_id} progress to {payload.task_progress}% locally.")
+            logger.info(f"Updated task {clean_id} progress to {_effective_progress}% locally.")
     except Exception as local_err:
         logger.error(f"Failed to update task progress locally: {local_err}")
         db.rollback()
 
     try:
-        return await task_service.update_task_progress(payload.dict(), task_token=x_task_token)
+        upstream_payload = {
+            "task_id": payload.task_id,
+            "task_progress": _effective_progress if '_effective_progress' in locals() else payload.task_progress,
+            "additional_info": payload.additional_info,
+        }
+        return await task_service.update_task_progress(upstream_payload, task_token=x_task_token)
     except Exception as e:
         logger.warning(f"Failed to sync task progress to NXDune (proceeding with local status): {e}")
         return {"status": "success", "detail": f"Updated locally; sync failed: {e}"}
@@ -3180,6 +3355,97 @@ async def post_agent_task_complete(
                 models.AgentTaskOwnership.task_id == clean_id
             ).first()
             
+            # ═══ ZERO-ERROR VERIFICATION GATE ═══
+            # Reject completion if there are unresolved lint or syntax errors
+            if payload.lint_passed is False or (payload.lint_errors is not None and payload.lint_errors > 0):
+                logger.warning(
+                    f"[post_agent_task_complete] 🚫 ZERO-ERROR VERIFICATION GATE TRIGGERED for task {clean_id}: "
+                    f"{payload.lint_errors} lint/syntax error(s) reported. Rejecting completion."
+                )
+                if not ow:
+                    ow = models.AgentTaskOwnership(
+                        project_token=resolved_token,
+                        task_id=clean_id,
+                        agent_id="system",
+                        status="in_progress",
+                        claimed_at=datetime.utcnow(),
+                        started_at=datetime.utcnow(),
+                    )
+                    db.add(ow)
+                    db.flush()
+                else:
+                    ow.status = "in_progress"
+                _td = dict(ow.task_data) if ow.task_data else {}
+                _td["lint_errors"] = payload.lint_errors
+                _td["lint_passed"] = False
+                if payload.verification_output:
+                    _td["verification_output"] = payload.verification_output
+                _td["taskStatus"] = "Verification Failed"
+                ow.task_data = _td
+                ow.updated_at = datetime.utcnow()
+                db.commit()
+                return {
+                    "status": "verification_failed",
+                    "error": f"Task completion rejected: {payload.lint_errors} lint/syntax error(s) detected. Fix all errors before completing task.",
+                    "task_id": clean_id,
+                    "lint_errors": payload.lint_errors,
+                }
+
+            # ═══ WORK EVIDENCE GUARD ═══
+            _has_work_evidence = False
+            # Check 1: Parse checklist from task.checklist
+            try:
+                _raw_checklist = getattr(task, 'checklist', None) or '[]'
+                if isinstance(_raw_checklist, str):
+                    _parsed = json.loads(_raw_checklist)
+                elif isinstance(_raw_checklist, list):
+                    _parsed = _raw_checklist
+                else:
+                    _parsed = []
+                if isinstance(_parsed, list):
+                    _completed_count = sum(1 for c in _parsed if isinstance(c, dict) and c.get("completed"))
+                    if _completed_count > 0:
+                        _has_work_evidence = True
+            except Exception:
+                pass
+
+            # Check 2: Files written evidence from ownership or payload
+            _existing_data = dict(ow.task_data) if (ow and ow.task_data) else {}
+            if _existing_data.get("files_written") or _existing_data.get("files_created") or payload.files_modified:
+                _has_work_evidence = True
+            if payload.subtasks_completed and len(payload.subtasks_completed) > 0:
+                _has_work_evidence = True
+
+            if not _has_work_evidence:
+                logger.warning(
+                    f"[post_agent_task_complete] 🚫 WORK EVIDENCE CHECK FAILED for task {clean_id}: "
+                    f"No checklist items completed and no files_written / files_modified evidence."
+                )
+                if not ow:
+                    ow = models.AgentTaskOwnership(
+                        project_token=resolved_token,
+                        task_id=clean_id,
+                        agent_id="system",
+                        status="in_progress",
+                        claimed_at=datetime.utcnow(),
+                        started_at=datetime.utcnow(),
+                    )
+                    db.add(ow)
+                    db.flush()
+                else:
+                    ow.status = "in_progress"
+                _td = dict(ow.task_data) if ow.task_data else {}
+                _td["task_progress"] = 99
+                _td["taskStatus"] = "On Going"
+                ow.task_data = _td
+                ow.updated_at = datetime.utcnow()
+                db.commit()
+                return {
+                    "status": "evidence_required",
+                    "detail": "Task completion rejected: work evidence required (checklist items or modified files). Progress set to 99%.",
+                    "task_id": clean_id,
+                }
+
             if not ow:
                 ow = models.AgentTaskOwnership(
                     project_token=resolved_token,
@@ -3199,20 +3465,30 @@ async def post_agent_task_complete(
             task_data_dict = dict(ow.task_data) if ow.task_data else {}
             task_data_dict["task_progress"] = 100
             task_data_dict["taskStatus"] = "Completed"
+            task_data_dict["lint_passed"] = True
+            task_data_dict["lint_errors"] = 0
+            if payload.verification_output:
+                task_data_dict["verification_output"] = payload.verification_output
+            if payload.files_modified:
+                task_data_dict["files_modified"] = payload.files_modified
+            if payload.subtasks_completed:
+                task_data_dict["subtasks_completed"] = payload.subtasks_completed
             ow.task_data = task_data_dict
             ow.updated_at = datetime.utcnow()
             
             db.commit()
-            logger.info(f"Marked task {clean_id} as completed locally.")
+            logger.info(f"Marked task {clean_id} as completed locally with 0 lint errors.")
     except Exception as local_err:
         logger.error(f"Failed to complete task locally: {local_err}")
         db.rollback()
 
     try:
-        return await task_service.complete_task(payload.dict(), task_token=x_task_token)
+        clean_task_token = x_task_token if isinstance(x_task_token, str) else None
+        upstream_payload = {"task_id": payload.task_id}
+        return await task_service.complete_task(upstream_payload, task_token=clean_task_token)
     except Exception as e:
         logger.warning(f"Failed to sync task completion to NXDune (proceeding with local status): {e}")
-        return {"status": "success", "detail": f"Completed locally; sync failed: {e}"}
+        return {"status": "success", "detail": f"Completed locally with 0 lint errors; sync failed: {e}"}
 
 
 @router.post("/api/agent/timer-logs/")

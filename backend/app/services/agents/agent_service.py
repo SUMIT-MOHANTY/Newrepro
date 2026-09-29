@@ -30,13 +30,22 @@ def _utc_now():
 
 AVAILABLE_AGENT_TOOLS: List[Dict[str, Any]] = [
     {
-        "id": "filesystem",
-        "name": "File System & Code Editor",
-        "category": "Core Development",
-        "description": "Read, write, create, edit, and search source code files across the workspace.",
+        "id": "code_inspector",
+        "name": "Codebase Inspector (Read-Only)",
+        "category": "Inspection & QA",
+        "description": "Safely read source files, search patterns, list directory structure, and examine exports with zero write or delete permissions. Safe for QA, Architects, and Reviewers.",
         "icon": "FolderCode",
         "default": True,
-        "capabilities": ["read_file", "write_file", "edit_file", "list_dir", "search_files"],
+        "capabilities": ["read_file", "list_dir", "search_files", "file_exists"],
+    },
+    {
+        "id": "filesystem",
+        "name": "File System & Code Editor (Write & Edit)",
+        "category": "Core Development",
+        "description": "Create, write, edit, refactor, and delete source code files across the workspace. Strictly for developer agents.",
+        "icon": "FolderCode",
+        "default": True,
+        "capabilities": ["read_file", "write_file", "edit_file", "list_dir", "search_files", "delete_file"],
     },
     {
         "id": "git",
@@ -67,12 +76,12 @@ AVAILABLE_AGENT_TOOLS: List[Dict[str, Any]] = [
     },
     {
         "id": "test_runner",
-        "name": "Testing & QA Suite",
+        "name": "Testing & QA Suite (Unit, Integration & E2E)",
         "category": "Verification",
-        "description": "Execute Pytest unit tests, Jest specs, Playwright browser flows, and test assertion validations.",
+        "description": "Execute Vitest/Jest unit tests, Pytest specs, Playwright browser journeys, linter audits, and generate structured defect reports.",
         "icon": "CheckSquare",
         "default": False,
-        "capabilities": ["run_pytest", "run_jest", "e2e_playwright", "assert_status"],
+        "capabilities": ["run_unit_tests", "run_integration_tests", "run_pytest", "e2e_playwright", "run_linter", "write_test_spec", "assert_status", "report_defect"],
     },
     {
         "id": "web_search",
@@ -293,9 +302,9 @@ class AgentService:
         if task_ident:
             t = db.query(models.AgentTask).filter(models.AgentTask.id == task_ident).first()
             if t:
-                if event_type in ("session_completed", "build_completed"):
+                if event_type == "session_completed" or (event_type == "build_completed" and payload.get("success") is True):
                     t.status = "completed"
-                elif event_type == "session_failed":
+                elif event_type in ("session_failed", "build_failed") or (event_type == "build_completed" and payload.get("success") is False):
                     t.status = "failed"
 
         db.commit()
@@ -377,7 +386,7 @@ class AgentService:
                 "progress_message": "Ready to run tests and verify UI console",
                 "colorClass": "text-purple-400 bg-purple-500/10 border-purple-500/20",
                 "skills_summary": "Testing, Pytest, Playwright, E2E Testing, Integration Testing, Assertions.",
-                "allowed_tools": ["terminal", "test_runner", "visual_qa", "filesystem"],
+                "allowed_tools": ["code_inspector", "test_runner", "terminal", "visual_qa"],
             },
         ]
 
@@ -395,7 +404,7 @@ class AgentService:
                         if not rec.get("allowed_tools"):
                             spec = str(rec.get("specialization") or "").lower()
                             if "test" in spec or "qa" in spec:
-                                rec["allowed_tools"] = ["terminal", "test_runner", "visual_qa", "filesystem"]
+                                rec["allowed_tools"] = ["code_inspector", "test_runner", "terminal", "visual_qa"]
                             else:
                                 rec["allowed_tools"] = ["filesystem", "git", "terminal", "build_tool"]
                         self._project_agents[key][agent_id] = rec
@@ -404,7 +413,7 @@ class AgentService:
                     if not tools:
                         spec = str(getattr(rec, "specialization", "") or "").lower()
                         if "test" in spec or "qa" in spec:
-                            tools = ["terminal", "test_runner", "visual_qa", "filesystem"]
+                            tools = ["code_inspector", "test_runner", "terminal", "visual_qa"]
                         else:
                             tools = ["filesystem", "git", "terminal", "build_tool"]
                     self._project_agents[key][rec.id] = {

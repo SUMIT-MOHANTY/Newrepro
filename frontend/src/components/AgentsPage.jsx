@@ -11,13 +11,22 @@ import cloudIcon from '../assets/cloud-icon.png';
 
 export const DEFAULT_TOOLS_CATALOG = [
   {
-    id: 'filesystem',
-    name: 'File System & Code Editor',
-    category: 'Core Development',
-    description: 'Read, write, edit, and search source code files across the workspace.',
+    id: 'code_inspector',
+    name: 'Codebase Inspector (Read-Only)',
+    category: 'Inspection & QA',
+    description: 'Safely read source files, search patterns, list directory structure, and examine exports with zero write or delete permissions. Safe for QA, Architects, and Reviewers.',
     icon: 'FolderCode',
     default: true,
-    capabilities: ['read_file', 'write_file', 'edit_file', 'list_dir', 'search_files']
+    capabilities: ['read_file', 'list_dir', 'search_files', 'file_exists']
+  },
+  {
+    id: 'filesystem',
+    name: 'File System & Code Editor (Write & Edit)',
+    category: 'Core Development',
+    description: 'Create, write, edit, refactor, and delete source code files across the workspace. Strictly for developer agents.',
+    icon: 'FolderCode',
+    default: true,
+    capabilities: ['read_file', 'write_file', 'edit_file', 'list_dir', 'search_files', 'delete_file']
   },
   {
     id: 'git',
@@ -48,12 +57,12 @@ export const DEFAULT_TOOLS_CATALOG = [
   },
   {
     id: 'test_runner',
-    name: 'Testing & QA Suite',
+    name: 'Testing & QA Suite (Unit, Integration & E2E)',
     category: 'Verification',
-    description: 'Execute Pytest unit tests, Jest specs, Playwright browser flows, and test assertions.',
+    description: 'Execute Vitest/Jest unit tests, Pytest specs, Playwright browser journeys, linter audits, and generate structured defect reports.',
     icon: 'CheckSquare',
     default: false,
-    capabilities: ['run_pytest', 'run_jest', 'e2e_playwright', 'assert_status']
+    capabilities: ['run_unit_tests', 'run_integration_tests', 'run_pytest', 'e2e_playwright', 'run_linter', 'write_test_spec', 'assert_status', 'report_defect']
   },
   {
     id: 'web_search',
@@ -106,6 +115,8 @@ export const CAPABILITY_LABELS = {
   edit_file: 'Edit Code',
   list_dir: 'List Directory',
   search_files: 'Search Files',
+  delete_file: 'Delete Files',
+  file_exists: 'File Exists',
   git_status: 'Git Status',
   git_commit: 'Commit Changes',
   git_diff: 'Inspect Diffs',
@@ -118,10 +129,15 @@ export const CAPABILITY_LABELS = {
   pip_install: 'Pip Packages',
   dependency_check: 'Dependency Audit',
   verify_compilation: 'Compile Validation',
+  run_unit_tests: 'Unit Tests (Vitest/Jest)',
+  run_integration_tests: 'Integration Specs',
   run_pytest: 'Pytest Suite',
-  run_jest: 'Jest / Vitest',
+  run_jest: 'Jest Runner',
   e2e_playwright: 'Playwright E2E',
+  run_linter: 'Lint & Syntax Audits',
+  write_test_spec: 'Author Test Specs',
   assert_status: 'HTTP Assertions',
+  report_defect: 'Report Defects',
   search_docs: 'Search Docs',
   fetch_webpage: 'Fetch Webpage',
   lookup_api_reference: 'API References',
@@ -2073,10 +2089,17 @@ export default function AgentsPage({ projects = [] }) {
                         </button>
                         <button
                           type="button"
-                          onClick={() => setSelectedTools(['terminal', 'test_runner', 'visual_qa', 'filesystem'])}
+                          onClick={() => setSelectedTools(['code_inspector', 'test_runner', 'terminal', 'visual_qa'])}
+                          className="px-2.5 py-1 rounded-lg text-[10px] font-semibold bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border border-purple-500/30 transition-all cursor-pointer"
+                        >
+                          QA Preset (Safe Read-Only)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedTools(['code_inspector', 'git', 'web_search', 'build_tool'])}
                           className="px-2.5 py-1 rounded-lg text-[10px] font-semibold bg-app-bg-page hover:bg-app-bg-hover text-app-text-main border border-app-border-light transition-all cursor-pointer"
                         >
-                          QA Preset
+                          Architect Preset
                         </button>
                         <button
                           type="button"
