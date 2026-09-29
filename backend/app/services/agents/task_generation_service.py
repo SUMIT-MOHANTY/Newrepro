@@ -1603,12 +1603,7 @@ def _build_project_context(
     if gov_response:
         repo_url = gov_response.source_repo_url or gov_response.dest_repo_url
         repo_token = gov_response.source_repo_token or gov_response.dest_repo_token
-        # Try to find a bootstrap branch
-        try:
-            from bootstrap_persistence import get_bootstrap_branch
-            branch = get_bootstrap_branch(project_token)
-        except Exception:
-            pass
+        branch = getattr(gov_response, "dest_repo_branch", None) or getattr(gov_response, "source_repo_branch", None) or "main"
             
     if not repo_url:
         from models import AgentCredential
@@ -1932,7 +1927,7 @@ async def generate_brownfield_tasks(
             skill_gaps: {covered, missing, suggested_templates, has_gaps, gap_summary}
             detected_tech_stack: {primary, required_skills, required_agent_templates, detected}
     """
-    from brownfield_agent_service import (
+    from app.services.agents.tech_stack_helper import (
         get_brownfield_generation_context,
         BROWNFIELD_GENERATION_PROMPT,
         detect_required_tech_stack,
@@ -2164,13 +2159,11 @@ async def generate_tasks_locally(
     elif project_type:
         context["project_type"] = project_type
 
-    from brownfield_agent_service import is_brownfield_project
+    from app.services.agents.tech_stack_helper import is_brownfield_project
     if is_brownfield_project(project_type):
         if branch:
-            from bootstrap_persistence import set_bootstrap_branch
-            set_bootstrap_branch(project_token, branch)
             context["bootstrap_branch"] = branch
-            logger.info(f"[{project_token}] Saved branch for brownfield bootstrap: {branch}")
+            logger.info(f"[{project_token}] Using branch for brownfield: {branch}")
 
     # ── BROWNFIELD / MIGRATION PATH ────────────────────────────────────────────
     # For brownfield/migration projects, use a completely different generation

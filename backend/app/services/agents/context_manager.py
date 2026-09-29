@@ -2001,7 +2001,7 @@ async def get_agent_notes_context(
     notes = []
     use_local = False
     try:
-        from local_state_manager import list_agent_notes_local
+        from app.services.agents.local_state_manager import list_agent_notes_local
         local_notes = list_agent_notes_local(project_token)
         if local_notes:
             use_local = True

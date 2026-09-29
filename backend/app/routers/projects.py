@@ -608,82 +608,58 @@ def _is_document_linked_to_governance(
 @router.get("/api/projects/{project_token}/local-task-status")
 async def get_local_task_status(
     project_token: str,
+    db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
     """
-    Local-first task status endpoint — reads from AgentTaskOwnership DB only.
-
-    Returns real-time task progress without any NXDune API calls.
-    This is the recommended endpoint for the frontend task panel as it's:
-    - Always up-to-date (updated immediately when agents claim/complete tasks)
-    - Always available (no external API dependency)
-    - Zero-latency (direct DB read)
-
-    Response shape:
-    {
-        "project_token": "...",
-        "bootstrap_completed": bool,
-        "bootstrap_branch": str | null,
-        "task_execution_order": { waves, order, summary } | null,
-        "tasks": [
-            {
-                "task_id": "...",
-                "task_title": "...",
-                "agent_id": "...",
-                "status": "claimed|in_progress|done|failed",
-                "claimed_at": ISO | null,
-                "started_at": ISO | null,
-                "completed_at": ISO | null,
-                "files_written_count": int,
-                "files_written": [...],
-                "branch_name": "...",
-                "nxdune_synced": bool,
-                "error_message": "..." | null,
-                "task_lane": "...",
-            },
-            ...
-        ],
-        "summary": {
-            "total": int,
-            "done": int,
-            "in_progress": int,
-            "claimed": int,
-            "failed": int,
-        }
-    }
+    Local-first task status endpoint — reads from Task & AgentTaskOwnership DB only.
+    Zero external dependencies, fast and real-time.
     """
-    from local_state_manager import get_local_task_statuses, get_canonical_state
-    from bootstrap_persistence import is_bootstrap_pushed, get_bootstrap_branch
+    tasks = db.query(models.Task).filter(models.Task.project_token == project_token).all()
+    ownerships = {
+        o.task_id: o for o in db.query(models.AgentTaskOwnership).filter(models.AgentTaskOwnership.project_token == project_token).all()
+    }
+    task_statuses = []
+    for t in tasks:
+        clean_id = t.task_id.replace(f"{project_token}_", "") if t.task_id else ""
+        owner_rec = ownerships.get(clean_id) or ownerships.get(t.task_id)
+        
+        status_val = t.status if hasattr(t, "status") and t.status else (owner_rec.status if owner_rec else "TODO")
+        agent_id = getattr(t, "assigned_agent_id", None) or (owner_rec.agent_id if owner_rec else None)
+        
+        task_statuses.append({
+            "task_id": clean_id or t.task_id,
+            "task_title": t.task_name,
+            "task_type": t.task_type,
+            "priority": t.priority,
+            "sprint": t.sprint,
+            "status": str(status_val).lower(),
+            "agent_id": agent_id,
+            "assigned_agent_role": getattr(t, "assigned_agent_role", None),
+            "claimed_at": owner_rec.claimed_at.isoformat() if owner_rec and owner_rec.claimed_at else None,
+            "started_at": owner_rec.started_at.isoformat() if owner_rec and owner_rec.started_at else None,
+            "completed_at": owner_rec.completed_at.isoformat() if owner_rec and owner_rec.completed_at else None,
+            "files_written_count": len(t.files_modified or []) if hasattr(t, "files_modified") and isinstance(t.files_modified, list) else 0,
+            "files_written": getattr(t, "files_modified", []) or [],
+            "error_message": getattr(t, "error_details", None),
+            "verification_status": getattr(t, "verification_status", "PENDING"),
+        })
 
-    task_statuses = get_local_task_statuses(project_token)
-
-    # Summary counts
     summary = {
         "total": len(task_statuses),
-        "done": sum(1 for t in task_statuses if t["status"] == "done"),
-        "in_progress": sum(1 for t in task_statuses if t["status"] == "in_progress"),
-        "claimed": sum(1 for t in task_statuses if t["status"] == "claimed"),
-        "failed": sum(1 for t in task_statuses if t["status"] == "failed"),
+        "done": sum(1 for t in task_statuses if t["status"] in ["done", "completed"]),
+        "in_progress": sum(1 for t in task_statuses if t["status"] in ["in_progress", "verifying", "in_review"]),
+        "claimed": sum(1 for t in task_statuses if t["status"] in ["claimed", "todo"]),
+        "failed": sum(1 for t in task_statuses if t["status"] in ["failed", "blocked"]),
     }
 
-    # Bootstrap status
-    bootstrap_completed = is_bootstrap_pushed(project_token)
-    bootstrap_branch = get_bootstrap_branch(project_token) if bootstrap_completed else None
-
-    # Task execution order (from canonical state if available)
-    task_execution_order = None
-    try:
-        cs = get_canonical_state(project_token) or {}
-        tech_stack = cs.get("tech_stack") or {}
-        task_execution_order = tech_stack.get("task_execution_order")
-    except Exception:
-        pass
+    gov = db.query(models.GovernanceResponse).filter(models.GovernanceResponse.project_token == project_token).first()
+    bootstrap_branch = getattr(gov, "dest_repo_branch", None) or getattr(gov, "source_repo_branch", None) or "main"
 
     return {
         "project_token": project_token,
-        "bootstrap_completed": bootstrap_completed,
+        "bootstrap_completed": True,
         "bootstrap_branch": bootstrap_branch,
-        "task_execution_order": task_execution_order,
         "tasks": task_statuses,
         "summary": summary,
     }

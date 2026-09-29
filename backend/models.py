@@ -495,9 +495,18 @@ class Task(Base):
     synced_to_nxdune = Column(Boolean, default=False)
     nxdune_task_id = Column(Integer, nullable=True)  # ID from NXDUNE after sync
     
+    # Modern Jira/Linear Task Lifecycle & Execution tracking
+    status = Column(String(32), default="TODO", index=True)  # BACKLOG, TODO, IN_PROGRESS, IN_REVIEW, DONE, BLOCKED, FAILED
+    assigned_agent_role = Column(String(64), nullable=True)  # Architect, Frontend Developer, Backend Developer, QA Engineer
+    assigned_agent_id = Column(String(64), nullable=True)
+    verification_status = Column(String(32), default="PENDING")  # PENDING, PASSED, FAILED
+    files_modified = Column(JSON, default=list)  # List of modified file paths
+    execution_logs = Column(Text, nullable=True)  # Terminal / Agent run logs
+    error_details = Column(Text, nullable=True)
+
     @property
     def is_selected_for_execution(self) -> bool:
-        return bool(self.selected or self.synced_to_nxdune)
+        return bool(self.selected or self.synced_to_nxdune or self.status != "BACKLOG")
     
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)

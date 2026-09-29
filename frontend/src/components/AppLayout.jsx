@@ -4,7 +4,7 @@ import { API_ENDPOINTS, API_BASE_URL } from '../config';
 import { clearAuthData, clearTenantScopedState } from '../utils/auth';
 import { customError } from '../utils/modalHelpers';
 import { useModal } from '../contexts/ModalContext';
-import { Menu, Settings, Moon, Sun, Lock, Mail, ShieldAlert, ShieldCheck, CheckCircle, BookOpen, Coins, AlertCircle, LifeBuoy } from 'lucide-react';
+import { Menu, Settings, Moon, Sun, Lock, Mail, ShieldAlert, ShieldCheck, CheckCircle, BookOpen, Coins, AlertCircle, LifeBuoy, ChevronDown, ChevronUp } from 'lucide-react';
 import Sidebar from './Sidebar';
 import RoadmapHeader from './RoadmapHeader';
 import AgentsPage from './AgentsPage';
@@ -194,6 +194,18 @@ export default function AppLayout({ children }) {
 
     const invalidateProjects = useInvalidateProjects();
     const modal = useModal();
+
+    // Roadmap Steps collapsible drawer state
+    const [isRoadmapDrawerOpen, setIsRoadmapDrawerOpen] = useState(() => {
+        return localStorage.getItem('dsuite_roadmap_drawer_open') === 'true';
+    });
+    const toggleRoadmapDrawer = () => {
+        setIsRoadmapDrawerOpen(prev => {
+            const next = !prev;
+            localStorage.setItem('dsuite_roadmap_drawer_open', String(next));
+            return next;
+        });
+    };
 
     // Track user progress automatically
     useProgressTracking(selectedProjectKey, true);
@@ -1517,16 +1529,42 @@ export default function AppLayout({ children }) {
                     roadmapDataForView && 
                     !['/agents', '/plugins', '/share-doc', '/organization-admin', '/billing', '/docs', '/tickets', '/superadmin/tickets'].includes(location.pathname) && 
                     !location.pathname.startsWith('/superadmin') && (
-                        <div className="bg-app-bg-card border-b border-app-border-light shadow-sm shrink-0 overflow-x-auto z-[240] relative">
-                            <RoadmapHeader
-                                steps={roadmapDataForView.steps || []}
-                                currentStep={roadmapDataForView.current_step || 0}
-                                stepStatuses={roadmapDataForView.step_statuses || null}
-                                failedStep={roadmapDataForView.failed_step ?? null}
-                                activeStepIndex={forcedRoadmapStepIndex}
-                                activeStepCompleted={forcedStepCompleted}
-                                selectedProjectKey={selectedProjectKey}
-                            />
+                        <div className="shrink-0 z-[240] relative">
+                            {/* Smooth drawer expansion */}
+                            <div
+                                className={`bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shadow-sm transition-all duration-300 ease-in-out overflow-x-auto ${
+                                    isRoadmapDrawerOpen ? 'max-h-36 opacity-100' : 'max-h-0 opacity-0 overflow-hidden'
+                                }`}
+                            >
+                                <RoadmapHeader
+                                    steps={roadmapDataForView.steps || []}
+                                    currentStep={roadmapDataForView.current_step || 0}
+                                    stepStatuses={roadmapDataForView.step_statuses || null}
+                                    failedStep={roadmapDataForView.failed_step ?? null}
+                                    activeStepIndex={forcedRoadmapStepIndex}
+                                    activeStepCompleted={forcedStepCompleted}
+                                    selectedProjectKey={selectedProjectKey}
+                                />
+                            </div>
+
+                            {/* Centered Tucked Handle with Blinking Arrow (peeking out from behind blue header) */}
+                            <div className="flex justify-center w-full pointer-events-none relative -mt-px">
+                                <button
+                                    type="button"
+                                    onClick={toggleRoadmapDrawer}
+                                    className="pointer-events-auto group flex items-center gap-1.5 px-3.5 py-0.5 bg-[#1c355e] hover:bg-[#25457a] dark:bg-[#0c1527] dark:hover:bg-[#16233d] text-white/90 hover:text-white rounded-b-lg shadow-md border-x border-b border-white/20 text-xs font-semibold transition-all duration-200 cursor-pointer focus:outline-none"
+                                    title={isRoadmapDrawerOpen ? "Hide Steps" : "Show All Steps"}
+                                >
+                                    <span className="text-[10px] uppercase tracking-wider font-semibold text-blue-200 group-hover:text-white">
+                                        {isRoadmapDrawerOpen ? "Hide Steps" : "All Steps"}
+                                    </span>
+                                    {isRoadmapDrawerOpen ? (
+                                        <ChevronUp className="w-3.5 h-3.5 text-blue-300 transition-transform" />
+                                    ) : (
+                                        <ChevronDown className="w-3.5 h-3.5 text-amber-300 animate-bounce" />
+                                    )}
+                                </button>
+                            </div>
                         </div>
                     )
                 }

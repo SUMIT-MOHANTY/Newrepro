@@ -155,11 +155,7 @@ async def analyze_document_with_ai(
         if gov:
             repo_url = gov.source_repo_url or gov.dest_repo_url
             repo_token = gov.source_repo_token or gov.dest_repo_token
-            try:
-                from bootstrap_persistence import get_bootstrap_branch
-                branch = get_bootstrap_branch(project_token)
-            except Exception:
-                pass
+            branch = getattr(gov, "dest_repo_branch", None) or getattr(gov, "source_repo_branch", None) or "main"
                 
         if not repo_url:
             cred_query = db.query(models.AgentCredential).filter(

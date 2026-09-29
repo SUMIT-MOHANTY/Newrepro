@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     task_api_client_secret: Optional[str] = None
 
     # Agent Runtime & Docker Sandbox Settings
-    agent_runtime_image: str = "vibecoding-agent-runtime:latest"
+    agent_runtime_image: str = "dsuite-agent-runtime:latest"
     project_storage_root: str = os.path.abspath(os.path.join(BASE_DIR, "storage", "projects"))
     agent_callback_url: str = "http://host.docker.internal:8000/api/v1"
     agent_callback_secret: str = "dsuite-agent-callback-secret"
