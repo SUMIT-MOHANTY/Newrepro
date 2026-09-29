@@ -702,7 +702,7 @@ export default function TaskCreation({
                                             />
                                         </td>
                                         <td className="py-2.5 px-3 font-mono font-bold text-slate-900 text-xs">{t.task_id}</td>
-                                        <td className="py-2.5 px-3 font-medium text-slate-800">{t.taskName || t.task_name || t.title}</td>
+                                        <td className="py-2.5 px-3 font-medium text-slate-800" title={t.description || t.taskName}>{t.taskName || t.task_name || t.title}</td>
                                         <td className="py-2.5 px-3">
                                             <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
                                                 (t.task_type || '').toUpperCase() === 'FEATURE'
@@ -792,7 +792,7 @@ export default function TaskCreation({
                             </div>
 
                             {columnsData.todo.length === 0 ? (
-                                <div className="flex-1 flex flex-col items-center justify-center text-center p-4 py-12">
+                                <div className="flex-1 flex flex-col items-center justify-start text-center p-4 pt-14 pb-12">
                                     <div className="w-10 h-10 rounded-full border border-slate-200/90 flex items-center justify-center text-slate-400 mb-2.5 bg-white shadow-2xs">
                                         <ListTodo className="w-4 h-4 text-slate-400" />
                                     </div>
@@ -872,7 +872,7 @@ export default function TaskCreation({
                             </div>
 
                             {columnsData.inProgress.length === 0 ? (
-                                <div className="flex-1 flex flex-col items-center justify-center text-center p-4 py-12">
+                                <div className="flex-1 flex flex-col items-center justify-start text-center p-4 pt-14 pb-12">
                                     <div className="w-10 h-10 rounded-full border border-blue-200/80 flex items-center justify-center text-blue-500 mb-2.5 bg-white shadow-2xs">
                                         <Clock className="w-4 h-4 text-blue-500" />
                                     </div>
@@ -953,7 +953,7 @@ export default function TaskCreation({
                             </div>
 
                             {columnsData.blocked.length === 0 ? (
-                                <div className="flex-1 flex flex-col items-center justify-center text-center p-4 py-12">
+                                <div className="flex-1 flex flex-col items-center justify-start text-center p-4 pt-14 pb-12">
                                     <div className="w-10 h-10 rounded-full border border-slate-200/90 flex items-center justify-center text-slate-400 mb-2.5 bg-white shadow-2xs">
                                         <Minus className="w-4 h-4 text-slate-400" />
                                     </div>
@@ -1011,7 +1011,7 @@ export default function TaskCreation({
                             </div>
 
                             {columnsData.done.length === 0 ? (
-                                <div className="flex-1 flex flex-col items-center justify-center text-center p-4 py-12">
+                                <div className="flex-1 flex flex-col items-center justify-start text-center p-4 pt-14 pb-12">
                                     <div className="w-10 h-10 rounded-full border border-emerald-200/90 text-emerald-500 flex items-center justify-center mb-2.5 bg-white shadow-2xs">
                                         <Check className="w-4 h-4 text-emerald-600 stroke-[2.5]" />
                                     </div>
@@ -1159,11 +1159,12 @@ export default function TaskCreation({
                     </div>
                 </div>
             )}
+
         </div>
     );
 }
 
-// ── REUSABLE TASK CARD COMPONENT (NATIVE DRAG & DROP + HOVER DETAILS / DEPENDENCIES) ──
+// ── REUSABLE TASK CARD COMPONENT (DRAG & DROP + HOVER ON (i) BUTTON FOR CARD DETAILS) ──
 function TaskCardItem({
     task,
     onToggleSelect,
@@ -1173,12 +1174,13 @@ function TaskCardItem({
     allTasks = [],
     columnIndex = 0,
 }) {
-    const [showPopover, setShowPopover] = useState(false);
+    const [showInfoPopover, setShowInfoPopover] = useState(false);
     const [popoverPos, setPopoverPos] = useState({
         vertical: 'top',
         horizontal: columnIndex >= 2 ? 'left' : 'right',
-        maxHeight: 460,
+        maxHeight: 420,
     });
+    const infoBtnRef = useRef(null);
     const cardRef = useRef(null);
     const hoverTimeoutRef = useRef(null);
 
@@ -1192,18 +1194,21 @@ function TaskCardItem({
         const spaceBelow = vh - rect.bottom;
         const spaceAbove = rect.top;
 
-        // When space below is tight (< 350px) and there's more room above, open UPWARDS (bottom aligned)
-        const vertical = (spaceBelow < 350 && spaceAbove > spaceBelow) ? 'bottom' : 'top';
+        // Target height is ~380-420px
+        // If room below is less than 380px and there's more room above, open UPWARDS (bottom aligned)
+        const vertical = (spaceBelow < 380 && spaceAbove > spaceBelow) ? 'bottom' : 'top';
 
-        // Check horizontal clearance to avoid right-edge overflow
+        // Check horizontal clearance: if column 2/3 or space on right < 420px, open to the left
         const spaceRight = vw - rect.right;
         const spaceLeft = rect.left;
-        const horizontal = (columnIndex >= 2 || (spaceRight < 340 && spaceLeft > spaceRight)) ? 'left' : 'right';
+        const horizontal = (columnIndex >= 2 || (spaceRight < 420 && spaceLeft > spaceRight)) ? 'left' : 'right';
 
-        // Constrain max height so popover is 100% within the viewport and NEVER triggers screen scrollbar/layout shifts
+        // Clamped height to ensure popover NEVER gets cut off or hidden under headers:
+        // When vertical is 'bottom', card bottom to top of viewport (leave 70px for header bar)
+        // When vertical is 'top', card top to bottom of viewport (leave 20px)
         const maxAvailable = vertical === 'bottom'
-            ? Math.max(220, Math.min(480, rect.bottom - 16))
-            : Math.max(220, Math.min(480, spaceBelow - 16));
+            ? Math.max(260, Math.min(420, rect.bottom - 70))
+            : Math.max(260, Math.min(420, spaceBelow - 20));
 
         setPopoverPos({
             vertical,
@@ -1212,37 +1217,37 @@ function TaskCardItem({
         });
     }, [columnIndex]);
 
-    const handleMouseEnter = () => {
+    const handleInfoMouseEnter = () => {
         if (isDragging) return;
         if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
         updatePopoverPosition();
         hoverTimeoutRef.current = setTimeout(() => {
-            setShowPopover(true);
-        }, 160);
+            setShowInfoPopover(true);
+        }, 120);
     };
 
-    const handleMouseLeave = () => {
+    const handleInfoMouseLeave = () => {
         if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
         hoverTimeoutRef.current = setTimeout(() => {
-            setShowPopover(false);
-        }, 160);
+            setShowInfoPopover(false);
+        }, 220);
     };
 
     useEffect(() => {
         if (isDragging) {
             if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
-            setShowPopover(false);
+            setShowInfoPopover(false);
         }
     }, [isDragging]);
 
     useEffect(() => {
-        if (!showPopover) return;
+        if (!showInfoPopover) return;
         const handleScroll = () => {
-            setShowPopover(false);
+            setShowInfoPopover(false);
         };
         window.addEventListener('scroll', handleScroll, { passive: true });
         return () => window.removeEventListener('scroll', handleScroll);
-    }, [showPopover]);
+    }, [showInfoPopover]);
 
     const type = (task.task_type || task.type || 'FEATURE').toUpperCase();
     const isFeature = type === 'FEATURE';
@@ -1299,7 +1304,7 @@ function TaskCardItem({
             draggable={true}
             onDragStart={(e) => {
                 if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
-                setShowPopover(false);
+                setShowInfoPopover(false);
                 e.dataTransfer.setData('text/plain', task.task_id || task.id);
                 e.dataTransfer.effectAllowed = 'move';
                 onDragStart?.(task.task_id || task.id);
@@ -1307,10 +1312,8 @@ function TaskCardItem({
             onDragEnd={() => {
                 onDragEnd?.();
             }}
-            onMouseEnter={handleMouseEnter}
-            onMouseLeave={handleMouseLeave}
             className={`bg-white border rounded-lg p-2.5 shadow-2xs hover:shadow-xs transition-all relative cursor-grab active:cursor-grabbing select-none ${
-                showPopover ? 'z-40' : 'z-10'
+                showInfoPopover ? 'z-40' : 'z-10'
             } ${
                 isDragging
                     ? 'opacity-40 scale-[0.98] border-dashed border-blue-400 shadow-none'
@@ -1332,13 +1335,31 @@ function TaskCardItem({
 
                 {/* Card content */}
                 <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                        <span className="text-slate-400 shrink-0">
-                            {isFeature ? <FileText className="w-3.5 h-3.5 text-purple-500 shrink-0" /> : <CheckSquare className="w-3.5 h-3.5 text-blue-500 shrink-0" />}
-                        </span>
-                        <h5 className="font-bold text-xs text-slate-800 leading-snug truncate" title={task.taskName || task.task_name || task.title}>
-                            {task.taskName || task.task_name || task.title || 'Task'}
-                        </h5>
+                    <div className="flex items-center justify-between gap-1.5 min-w-0">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="text-slate-400 shrink-0">
+                                {isFeature ? <FileText className="w-3.5 h-3.5 text-purple-500 shrink-0" /> : <CheckSquare className="w-3.5 h-3.5 text-blue-500 shrink-0" />}
+                            </span>
+                            <h5 className="font-bold text-xs text-slate-800 leading-snug truncate" title={task.taskName || task.task_name || task.title}>
+                                {task.taskName || task.task_name || task.title || 'Task'}
+                            </h5>
+                        </div>
+
+                        {/* (i) Info Button with hover trigger */}
+                        <div
+                            ref={infoBtnRef}
+                            onMouseEnter={handleInfoMouseEnter}
+                            onMouseLeave={handleInfoMouseLeave}
+                            className="relative shrink-0"
+                        >
+                            <button
+                                type="button"
+                                className="p-1 -mr-1 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors focus:outline-none"
+                                title="Hover to view details"
+                            >
+                                <Info className="w-3.5 h-3.5" />
+                            </button>
+                        </div>
                     </div>
 
                     {/* Type badge */}
@@ -1370,20 +1391,24 @@ function TaskCardItem({
                 </div>
             </div>
 
-            {/* ── RICH HOVER PREVIEW POPOVER (DETAILS, DEPENDENCIES & RELATED TASKS) ── */}
-            {showPopover && !isDragging && (
+            {/* ── MEDIUM-SIZED HOVER CARD PREVIEW (PERFECT WIDTH & HEIGHT, INVISIBLE SCROLLBARS) ── */}
+            {showInfoPopover && !isDragging && (
                 <div
-                    style={{ maxHeight: `${popoverPos.maxHeight}px` }}
-                    className={`absolute w-80 bg-white rounded-xl border border-slate-200 shadow-2xl p-3.5 text-xs z-50 animate-in fade-in zoom-in-95 duration-150 pointer-events-auto select-text overflow-y-auto overflow-x-hidden flex flex-col ${
+                    style={{
+                        maxHeight: `${popoverPos.maxHeight}px`,
+                        scrollbarWidth: 'none',
+                        msOverflowStyle: 'none'
+                    }}
+                    className={`absolute w-[390px] bg-white rounded-xl border border-slate-200/90 shadow-2xl p-4 text-xs z-50 animate-in fade-in zoom-in-95 duration-150 pointer-events-auto select-text overflow-y-auto overflow-x-hidden no-scrollbar [&::-webkit-scrollbar]:hidden flex flex-col ${
                         popoverPos.vertical === 'bottom' ? 'bottom-0' : 'top-0'
                     } ${
                         popoverPos.horizontal === 'left' ? 'right-[calc(100%+8px)]' : 'left-[calc(100%+8px)]'
                     }`}
                     onMouseEnter={() => {
                         if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
-                        setShowPopover(true);
+                        setShowInfoPopover(true);
                     }}
-                    onMouseLeave={handleMouseLeave}
+                    onMouseLeave={handleInfoMouseLeave}
                 >
                     {/* Invisible hover bridge across gap to avoid mouseleave jitter */}
                     <div
@@ -1393,7 +1418,7 @@ function TaskCardItem({
                     />
 
                     {/* Header tags: ID, Type, Priority, Status */}
-                    <div className="flex items-center justify-between gap-1 mb-2 pb-2 border-b border-slate-100 shrink-0">
+                    <div className="flex items-center justify-between gap-1.5 mb-2 pb-2 border-b border-slate-100 shrink-0">
                         <div className="flex items-center gap-1.5 flex-wrap">
                             <span className="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
                                 {task.task_id || 'TASK'}
@@ -1422,15 +1447,21 @@ function TaskCardItem({
                         {task.taskName || task.task_name || task.title || 'Task'}
                     </h4>
 
-                    {/* Description - fully readable with custom styled scroll container */}
-                    <div className="mt-1.5 bg-slate-50 p-2 rounded-lg border border-slate-100 shrink-0">
-                        <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">Description</div>
-                        <p className="text-[11px] text-slate-600 leading-relaxed max-h-24 overflow-y-auto">
+                    {/* Description - clean text container with invisible scroll */}
+                    <div className="mt-2 bg-slate-50/80 p-2.5 rounded-lg border border-slate-100 shrink-0">
+                        <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1 flex items-center gap-1">
+                            <FileText className="w-3 h-3 text-slate-400" />
+                            <span>Description</span>
+                        </div>
+                        <p
+                            className="text-[11px] text-slate-600 leading-relaxed max-h-28 overflow-y-auto whitespace-pre-wrap pr-1 no-scrollbar [&::-webkit-scrollbar]:hidden"
+                            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+                        >
                             {task.description || 'No detailed description provided for this work item.'}
                         </p>
                     </div>
 
-                    {/* Meta key-values */}
+                    {/* Meta key-values: 2x2 grid */}
                     <div className="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-slate-100 text-[10px] shrink-0">
                         <div>
                             <span className="text-slate-400 font-medium block">Milestone</span>
@@ -1465,13 +1496,13 @@ function TaskCardItem({
                             <span>Dependencies &amp; Prerequisites</span>
                         </div>
                         {dependencies.length > 0 ? (
-                            <div className="space-y-1 max-h-24 overflow-y-auto pr-0.5">
+                            <div className="space-y-1 max-h-20 overflow-y-auto pr-0.5 no-scrollbar [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
                                 {dependencies.map((dep, i) => (
                                     <div key={i} className="flex items-center justify-between text-[10px] bg-slate-50 px-2 py-1 rounded border border-slate-100">
-                                        <span className="font-medium text-slate-700 truncate max-w-[170px]" title={dep.name}>
+                                        <span className="font-medium text-slate-700 truncate max-w-[210px]" title={dep.name}>
                                             {dep.id}: {dep.name}
                                         </span>
-                                        <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-white text-slate-500 border border-slate-200">
+                                        <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-white text-slate-500 border border-slate-200">
                                             {dep.status}
                                         </span>
                                     </div>
@@ -1488,16 +1519,16 @@ function TaskCardItem({
                     <div className="mt-2 pt-2 border-t border-slate-100 shrink-0">
                         <div className="flex items-center gap-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
                             <Layers className="w-3 h-3 text-slate-400" />
-                            <span>Related Tasks</span>
+                            <span>Related Tasks in Milestone</span>
                         </div>
                         {relatedTasks.length > 0 ? (
-                            <div className="space-y-1 max-h-24 overflow-y-auto pr-0.5">
+                            <div className="space-y-1 max-h-20 overflow-y-auto pr-0.5 no-scrollbar [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
                                 {relatedTasks.map((rel) => (
                                     <div key={rel.task_id || rel.id} className="flex items-center justify-between text-[10px] bg-slate-50 px-2 py-1 rounded border border-slate-100">
-                                        <span className="font-medium text-slate-700 truncate max-w-[170px]" title={rel.taskName || rel.title}>
+                                        <span className="font-medium text-slate-700 truncate max-w-[210px]" title={rel.taskName || rel.title}>
                                             {rel.task_id}: {rel.taskName || rel.title}
                                         </span>
-                                        <span className={`text-[9px] font-bold px-1 py-0.2 rounded ${
+                                        <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${
                                             (rel.status || '').toUpperCase() === 'DONE' ? 'bg-emerald-100 text-emerald-700' : (rel.status || '').toUpperCase() === 'IN_PROGRESS' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'
                                         }`}>
                                             {rel.status || 'TODO'}
