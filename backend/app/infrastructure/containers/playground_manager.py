@@ -162,7 +162,7 @@ class PlaygroundContainerManager:
                         volumes={os.path.abspath(workspace_host_path): {"bind": "/workspace", "mode": "rw"}},
                         working_dir="/workspace",
                         entrypoint="/bin/sh",
-                        command=["-c", "tail -f /dev/null"],
+                        command=["-c", "mkdir -p /var/log && printf '[Playground Container Online] Ready for Agent Swarm execution.\\n' > /proc/1/fd/1; tail -f /dev/null"],
                         network_mode="bridge",
                         remove=False,
                         labels={
@@ -181,7 +181,7 @@ class PlaygroundContainerManager:
                         "-w", "/workspace",
                         "--entrypoint", "/bin/sh",
                         image,
-                        "-c", "tail -f /dev/null",
+                        "-c", "mkdir -p /var/log && printf '[Playground Container Online] Ready for Agent Swarm execution.\\n' > /proc/1/fd/1; tail -f /dev/null",
                     ]
                     res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
                     if res.returncode != 0:
@@ -200,6 +200,7 @@ class PlaygroundContainerManager:
                     "last_used": time.time(),
                 }
                 logger.info(f"[PlaygroundManager] Container '{container_name}' successfully provisioned and running.")
+                self.append_log_to_container(container_name, f"🚀 Playground initialized for {agent_id} in {org_name}.")
                 return container_name
 
             except Exception as e:
@@ -235,6 +236,49 @@ class PlaygroundContainerManager:
         except Exception:
             pass
 
+    def append_log_to_container(self, container_name: str, message: str) -> None:
+        """Stream formatted log directly into PID 1 stdout and /var/log/agent.log so `docker logs <container>` displays live output."""
+        try:
+            import datetime
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            formatted = f"[{now_str}] {message}"
+            safe = formatted.replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
+            # Write directly to PID 1 stdout (/proc/1/fd/1) so docker logs captures it, and persist to file
+            cmd = f'printf "%s\\n" "{safe}" > /proc/1/fd/1 2>/dev/null; printf "%s\\n" "{safe}" >> /var/log/agent.log 2>/dev/null || true'
+            if self._docker_client:
+                c = self._docker_client.containers.get(container_name)
+                c.exec_run(cmd=["sh", "-c", cmd], demux=False)
+            else:
+                subprocess.run(["docker", "exec", container_name, "sh", "-c", cmd], capture_output=True, timeout=5)
+        except Exception as e:
+            logger.debug(f"[PlaygroundManager] Failed writing log to {container_name}: {e}")
+
+    def write_file_in_playground(self, container_name: str, relative_path: str, content: str) -> Tuple[bool, str]:
+        """Write a file inside /workspace in the playground container via mounted host volume."""
+        try:
+            meta = self.containers.get(container_name)
+            host_root = meta.get("workspace_path") if meta else None
+            if not host_root:
+                # Try finding from running containers
+                for m in self.containers.values():
+                    if m.get("workspace_path"):
+                        host_root = m["workspace_path"]
+                        break
+            if host_root:
+                host_path = os.path.join(host_root, relative_path.replace("/", os.sep))
+                os.makedirs(os.path.dirname(host_path), exist_ok=True)
+                with open(host_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                line_count = len(content.splitlines())
+                msg = f"📄 [Tool: write_file] Wrote /workspace/{relative_path} ({line_count} lines)"
+                self.append_log_to_container(container_name, msg)
+                return True, msg
+            return False, "Workspace path not found for container"
+        except Exception as e:
+            err = f"Failed to write {relative_path}: {e}"
+            self.append_log_to_container(container_name, f"❌ [Tool: write_file] {err}")
+            return False, err
+
     def exec_in_playground(
         self,
         container_name: str,
@@ -245,7 +289,9 @@ class PlaygroundContainerManager:
         """
         Execute a shell command inside the playground container.
         Returns (exit_code, output_text).
+        Logs command and output into container's /var/log/agent.log.
         """
+        self.append_log_to_container(container_name, f"$ {command}")
         try:
             if self._docker_client:
                 c = self._docker_client.containers.get(container_name)
@@ -255,15 +301,21 @@ class PlaygroundContainerManager:
                     demux=False,
                 )
                 output = exec_res.output.decode("utf-8", errors="replace") if exec_res.output else ""
+                if output.strip():
+                    self.append_log_to_container(container_name, output.strip()[:1000])
                 return exec_res.exit_code, output
             else:
                 cmd = ["docker", "exec", "-w", workdir, container_name, "sh", "-c", command]
                 res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
                 output = (res.stdout or "") + (res.stderr or "")
+                if output.strip():
+                    self.append_log_to_container(container_name, output.strip()[:1000])
                 return res.returncode, output
         except subprocess.TimeoutExpired:
+            self.append_log_to_container(container_name, f"Command timed out after {timeout}s")
             return -1, f"Command timed out after {timeout} seconds."
         except Exception as e:
+            self.append_log_to_container(container_name, f"Execution failed: {e}")
             return -1, f"Execution failed: {e}"
 
     def release_playground(self, container_name: str, stop: bool = False) -> None:

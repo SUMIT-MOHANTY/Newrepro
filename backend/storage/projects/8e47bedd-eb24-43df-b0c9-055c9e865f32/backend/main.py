@@ -1,8 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime, timezone
+from routers.incidents import router as incidents_router
 
-app = FastAPI(title="NexusDesk-v1 API", version="1.0.0")
+app = FastAPI(title="DSuite Incident Platform API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -12,23 +12,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/api/health")
+app.include_router(incidents_router, prefix="/api/incidents", tags=["incidents"])
+
+@app.get("/health")
 def health_check():
-    return {
-        "status": "ok",
-        "app": "NexusDesk-v1",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "ready": True
-    }
-
-@app.get("/api/v1/info")
-def get_info():
-    return {
-        "project": "NexusDesk-v1",
-        "engine": "FastAPI + Vite React",
-        "version": "1.0.0"
-    }
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    return {"status": "ok", "service": "DSuite Platform API", "swarm": "active"}

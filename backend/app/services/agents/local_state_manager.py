@@ -983,7 +983,7 @@ def get_agent_lanes_from_skills(agent_id: str, skills_tags: Any, specialization:
     Lanes:
         frontend, backend, qa, devops, governance, integration, general
     """
-    lanes: Set[str] = {"general"}
+    lanes: Set[str] = set()
 
     tags: List[str] = []
     if isinstance(skills_tags, list):
@@ -1039,7 +1039,7 @@ def get_agent_lanes_from_skills(agent_id: str, skills_tags: Any, specialization:
         lanes.add("integration")
 
     # Fall back to specialization field if no tags matched
-    if len(lanes) == 1 and specialization:
+    if specialization:
         spec = specialization.lower().strip()
         _SPEC_MAP = {
             "frontend": "frontend",
@@ -1052,6 +1052,22 @@ def get_agent_lanes_from_skills(agent_id: str, skills_tags: Any, specialization:
         mapped = _SPEC_MAP.get(spec)
         if mapped:
             lanes.add(mapped)
+
+    # Fall back to agent_id hints if still empty
+    if not lanes and agent_id:
+        aid_lower = agent_id.lower()
+        if "front" in aid_lower or "react" in aid_lower:
+            lanes.add("frontend")
+        elif "back" in aid_lower or "api" in aid_lower:
+            lanes.add("backend")
+        elif "test" in aid_lower or "qa" in aid_lower:
+            lanes.add("qa")
+        elif "deploy" in aid_lower or "devops" in aid_lower:
+            lanes.add("devops")
+
+    # Default to general only if no specialized lane matched
+    if not lanes:
+        lanes.add("general")
 
     return lanes
 
@@ -1071,16 +1087,12 @@ def is_task_in_agent_lanes(task_lane: str, agent_lanes: Set[str]) -> bool:
     if not task_lane or task_lane == "general":
         return True  # Any agent can handle general tasks
 
-    # ── LAYER 1: General = Wildcard ────────────────────────────────────────
-    if "general" in agent_lanes:
-        return True  # General agents can pick any lane
+    specialized = agent_lanes - {"general"}
+    if specialized:
+        return task_lane in specialized
 
-    # ── LAYER 2: Unspecialized agent (only general) ────────────────────────
-    if len(agent_lanes) == 0 or agent_lanes == {"general"}:
-        return True
-
-    # ── LAYER 3: Strict match for fully specialised agents ─────────────────
-    return task_lane in agent_lanes
+    # Unspecialized fallback (agents with only general or empty)
+    return True
 
 
 # ---------------------------------------------------------------------------
