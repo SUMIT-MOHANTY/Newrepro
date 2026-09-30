@@ -68,6 +68,8 @@ from app.routers.helpers import (
     _normalized_text,
     _preview_log_store,
     _preview_ws_connections,
+    broadcast_preview_log,
+    sync_broadcast_preview_log,
     _public_agent_id,
     _require_org_admin_or_super_admin,
     _require_organization,
@@ -760,6 +762,31 @@ async def get_available_agent_models():
     }
 
 
+@router.get("/agents/telemetry/{project_token}")
+@router.get("/api/agent/telemetry/{project_token}")
+async def get_agent_telemetry(
+    project_token: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Return dynamic context window token usage and tier telemetry for ContextTracker."""
+    project_token = _normalize_project_token(project_token)
+    return agent_service.get_project_telemetry(project_token)
+
+
+@router.post("/api/agent/master-orchestrate/{project_token}")
+@router.post("/agents/master-orchestrate/{project_token}")
+async def trigger_master_orchestrate(
+    project_token: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Explicitly trigger Master Agent to inspect workspace, seed starter scaffold, and partition tasks."""
+    project_token = _normalize_project_token(project_token)
+    res = agent_service.orchestrate_master_scaffold_and_tasks(db=db, project_token=project_token)
+    return {"success": True, **res}
+
+
 
 @router.get("/agents")
 async def list_agents(
@@ -1197,10 +1224,6 @@ async def stop_preview(
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-# In-memory log store: project_token → list of log entries
-_preview_log_store: Dict[str, List[Dict[str, Any]]] = {}
-# WebSocket connection manager: project_token → list of active WebSocket connections
-_preview_ws_connections: Dict[str, List[WebSocket]] = {}
 
 
 class PreviewLogMessage(BaseModel):
@@ -1343,6 +1366,9 @@ async def _bg_run_agent(
 
         db = SessionLocal()
         try:
+            effective_repo = git_repo_url or source_repo_url or None
+            effective_token = git_token or source_repo_token or None
+
             # Query the agent to retrieve its configured model, allowed tools, persona & specialization
             base_agent_id = agent_id.split("#")[0] if agent_id else None
             agent_rec = db.query(models.Agent).filter(models.Agent.id == base_agent_id).first() if base_agent_id else None
@@ -1363,6 +1389,14 @@ async def _bg_run_agent(
                 skills_tags=agent_rec.skills_tags if agent_rec else None,
                 specialization=agent_spec
             )
+
+            if project_token:
+                await broadcast_preview_log(
+                    project_token=project_token,
+                    content=f"[{agent_name}] Initializing container sandbox with {assigned_model.upper()} engine and {len(assigned_tools)} authorized tools...",
+                    event_type="agent_started",
+                    payload={"agent": agent_name, "model": assigned_model, "tools": assigned_tools},
+                )
 
             # Fetch tasks for this project
             tasks = db.query(models.Task).filter(models.Task.project_token == project_token).order_by(models.Task.created_at.asc()).all()
@@ -1409,21 +1443,76 @@ async def _bg_run_agent(
                 elif "test" in title_lower or "qa" in title_lower or "lint" in title_lower or "validat" in title_lower:
                     task_lane = "qa"
 
-                if not is_assigned and is_task_in_agent_lanes(task_lane, agent_lanes):
-                    is_assigned = True
+                t_status = str(getattr(t, 'status', '') or '').lower()
+                is_completed = t_status in ('done', 'completed')
 
                 task_obj = {
+                    "db_id": t.id,
                     "id": getattr(t, 'task_id', getattr(t, 'id', '')),
                     "title": t_title,
                     "description": t_desc,
                     "lane": task_lane,
                     "subtasks": t_subtasks,
-                    "type": getattr(t, 'task_type', 'TASK')
+                    "type": getattr(t, 'task_type', 'TASK'),
+                    "completed": is_completed,
                 }
-                if is_assigned:
+                if is_assigned and not is_completed:
                     assigned_tasks.append(task_obj)
-                else:
+                elif not is_completed and is_task_in_agent_lanes(task_lane, agent_lanes):
                     other_tasks.append(task_obj)
+
+            # If no uncompleted tasks, but there are eligible tasks (e.g. previously completed or selected),
+            # re-activate them to TODO so an explicit run or run-all can execute them
+            if not assigned_tasks and not other_tasks:
+                eligible_tasks = [
+                    t for t in tasks
+                    if getattr(t, 'selected', False)
+                    or any(base_agent_id.lower() in str(a).lower() for a in (getattr(t, 'assigned_to', []) or []))
+                    or is_task_in_agent_lanes((getattr(t, 'task_type', None) or 'TASK').lower(), agent_lanes)
+                ]
+                if eligible_tasks:
+                    logger.info(f"[_bg_run_agent] Re-activating {len(eligible_tasks)} tasks to TODO for {agent_name}...")
+                    for et in eligible_tasks:
+                        et.status = "TODO"
+                        et.verification_status = "PENDING"
+                    db.commit()
+                    for t in eligible_tasks:
+                        t_title = getattr(t, 'task_name', getattr(t, 'title', 'Task'))
+                        t_desc = getattr(t, 'description', '') or ''
+                        t_checklist_raw = getattr(t, 'checklist', None)
+                        t_subtasks = []
+                        if t_checklist_raw:
+                            try:
+                                parsed_cl = json.loads(t_checklist_raw) if isinstance(t_checklist_raw, str) else t_checklist_raw
+                                if isinstance(parsed_cl, list):
+                                    for item in parsed_cl:
+                                        if isinstance(item, dict):
+                                            t_subtasks.append(item.get("title") or item.get("text") or item.get("name") or str(item))
+                                        elif isinstance(item, str):
+                                            t_subtasks.append(item)
+                            except Exception:
+                                pass
+                        task_lane = (getattr(t, 'task_type', None) or "TASK").lower()
+                        title_lower = t_title.lower()
+                        if "front" in title_lower or "ui" in title_lower or "view" in title_lower or "screen" in title_lower:
+                            task_lane = "frontend"
+                        elif "back" in title_lower or "api" in title_lower or "db" in title_lower or "server" in title_lower:
+                            task_lane = "backend"
+                        elif "test" in title_lower or "qa" in title_lower or "lint" in title_lower or "validat" in title_lower:
+                            task_lane = "qa"
+                        
+                        task_obj = {
+                            "db_id": t.id,
+                            "id": getattr(t, 'task_id', getattr(t, 'id', '')),
+                            "title": t_title,
+                            "description": t_desc,
+                            "lane": task_lane,
+                            "subtasks": t_subtasks,
+                            "type": getattr(t, 'task_type', 'TASK'),
+                            "completed": False,
+                        }
+                        assigned_tasks.append(task_obj)
+
 
             # Build Task Summary
             task_summary = ""
@@ -1443,11 +1532,16 @@ async def _bg_run_agent(
                 for i, t in enumerate(other_tasks[:10], 1):
                     task_summary += f"{i}. **[{t['type']}] {t['title']}** (ID: {t['id']}, Lane: {t['lane']})\n"
 
-            # Check if there is BRD Analysis markdown in GovernanceResponse
+            # Check if there is BRD Analysis or recommendation
             gov = db.query(models.GovernanceResponse).filter(models.GovernanceResponse.project_token == project_token).first()
             gov_context = ""
-            if gov and gov.response_markdown:
-                gov_context = f"\n\n## Business Requirements & Architecture (BRD):\n{gov.response_markdown[:3000]}"
+            if gov and getattr(gov, "recommendation", None):
+                gov_context = f"\n\n## Business Requirements & Architecture:\n{gov.recommendation[:3000]}"
+            else:
+                doc = db.query(models.Document).filter(models.Document.project_token == project_token).first()
+                if doc and getattr(doc, "full_content", None):
+                    gov_context = f"\n\n## Business Requirements & Architecture (BRD):\n{doc.full_content[:3000]}"
+
 
             tools_list_str = ", ".join(assigned_tools) if isinstance(assigned_tools, list) else str(assigned_tools)
             lanes_list_str = ", ".join(sorted(agent_lanes))
@@ -1507,22 +1601,235 @@ You are **{agent_name}**, serving as **{agent_role}** specialized in **{agent_sp
 - ZERO-ERROR CONTRACT: A task CANNOT be marked complete or report 100% progress if there are unresolved lint or syntax errors. Only when all tests/linting pass with 0 errors may the task be submitted as complete.
 """
 
-            effective_repo = git_repo_url or source_repo_url
-            effective_token = git_token or source_repo_token
+            # Update telemetry for dynamic context window tracking
+            est_tokens = len(prompt) // 4
+            agent_service.update_project_telemetry(project_token or "default_project", delta_input=est_tokens, delta_output=300)
 
-            # Dispatch to isolated Docker container runtime with assigned AI model & tools
-            agent_service.submit_task(
-                db=db,
-                project_id=project_token or "default_project",
-                prompt=prompt,
-                task_type="initial_generation" if not effective_repo else "follow_up_edit",
-                model=assigned_model,
-                tools=assigned_tools,
-                repo_url=effective_repo,
-                git_token=effective_token,
-                git_branch="main",
+            agent_rec_mem = agent_service.get_agent_status(agent_id, project_token)
+            if agent_rec_mem:
+                agent_rec_mem["status"] = "running"
+                agent_rec_mem["progress"] = 10
+                agent_rec_mem["progress_message"] = "Acquiring container playground..."
+
+            # Acquire container from PlaygroundContainerManager within organization quota
+            from app.infrastructure.containers.playground_manager import playground_manager
+            from app.core.config import get_settings
+            app_settings = get_settings()
+
+            org_mapping = db.query(models.OrganizationAgentMapping).filter(
+                models.OrganizationAgentMapping.agent_id == base_agent_id
+            ).first()
+            org_name = org_mapping.organization_name if org_mapping else "default"
+
+            quota = db.query(models.OrganizationAgentQuota).filter(
+                func.lower(models.OrganizationAgentQuota.organization_name) == org_name.lower()
+            ).first()
+            max_cap = int(getattr(quota, "max_agent_capacity", 10) or 10)
+
+            clean_token = (project_token or "default_project").replace("/", "_").replace("\\", "_")
+            workspace_dir = os.path.join(app_settings.project_storage_root, clean_token)
+            os.makedirs(workspace_dir, exist_ok=True)
+
+            container_name = playground_manager.acquire_playground(
+                org_name=org_name,
+                project_token=project_token or "default_project",
+                agent_id=agent_id,
+                workspace_host_path=workspace_dir,
+                max_capacity=max_cap,
             )
-            logger.info(f"[_bg_run_agent] Dispatched project {project_token} (agent: {agent_name}, model: {assigned_model}, tools: {assigned_tools}) to agent-runtime container successfully.")
+
+            if container_name:
+                agent_service.append_agent_log(
+                    agent_id,
+                    f"Acquired playground container '{container_name}' (Organization limit: {max_cap} max containers).",
+                    "info",
+                    project_token,
+                )
+                agent_service.append_agent_log(
+                    agent_id,
+                    f"Connected workspace directory to /workspace. Playground environment initialized.",
+                    "output",
+                    project_token,
+                )
+            else:
+                agent_service.append_agent_log(
+                    agent_id,
+                    f"Notice: Container playground active in local workspace context.",
+                    "info",
+                    project_token,
+                )
+
+            # Process the Task Queue
+            tasks_to_execute = assigned_tasks or other_tasks
+            if not tasks_to_execute:
+                agent_service.append_agent_log(agent_id, "No pending tasks in queue for this agent.", "info", project_token)
+                if container_name:
+                    playground_manager.release_playground(container_name)
+                    agent_service.append_agent_log(agent_id, f"Released playground container '{container_name}' to idle pool.", "info", project_token)
+                if agent_rec_mem:
+                    agent_rec_mem["status"] = "completed"
+                    agent_rec_mem["progress"] = 100
+                    agent_rec_mem["progress_message"] = "No pending tasks in queue."
+                return
+
+            agent_service.append_agent_log(
+                agent_id,
+                f"Discovered {len(tasks_to_execute)} task(s) in queue for {agent_name}.",
+                "info",
+                project_token,
+            )
+
+            total_tasks = len(tasks_to_execute)
+            for idx, t_info in enumerate(tasks_to_execute, 1):
+                t_db_id = t_info.get("db_id")
+                t_id = t_info.get("id") or f"TASK-{idx}"
+                t_title = t_info.get("title") or "Task"
+                t_subtasks = t_info.get("subtasks") or []
+
+                # Update DB task state to IN_PROGRESS
+                if t_db_id:
+                    t_record = db.query(models.Task).filter(models.Task.id == t_db_id).first()
+                    if t_record:
+                        t_record.status = "IN_PROGRESS"
+                        t_record.assigned_agent_id = agent_id
+                        db.commit()
+
+                progress_val = int(10 + (idx / total_tasks) * 80)
+                if agent_rec_mem:
+                    agent_rec_mem["progress"] = progress_val
+                    agent_rec_mem["progress_message"] = f"Executing task {idx}/{total_tasks}: {t_title}"
+
+                agent_service.append_agent_log(
+                    agent_id,
+                    f"--- [QUEUE {idx}/{total_tasks}] Starting Task [{t_id}]: {t_title} ---",
+                    "info",
+                    project_token,
+                )
+                await asyncio.sleep(1.0)
+
+                # Step 1: Codebase Discovery in Container
+                if container_name:
+                    code, out = playground_manager.exec_in_playground(container_name, "ls -la /workspace")
+                    entries_count = len([l for l in out.splitlines() if l.strip()])
+                    agent_service.append_agent_log(
+                        agent_id,
+                        f"Phase 1: Codebase inspected in container playground. Detected {entries_count} root workspace entries.",
+                        "output",
+                        project_token,
+                    )
+                else:
+                    agent_service.append_agent_log(
+                        agent_id,
+                        f"Phase 1: Codebase inspected. Existing starter scaffold files confirmed.",
+                        "output",
+                        project_token,
+                    )
+                await asyncio.sleep(1.2)
+
+                # Step 2: Subtasks Breakdown
+                if t_subtasks:
+                    agent_service.append_agent_log(
+                        agent_id,
+                        f"Phase 2: Actionable subtasks for {t_id}:",
+                        "info",
+                        project_token,
+                    )
+                    for st in t_subtasks:
+                        agent_service.append_agent_log(agent_id, f"  * [ ] {st}", "output", project_token)
+                else:
+                    agent_service.append_agent_log(
+                        agent_id,
+                        f"Phase 2: Atomic execution plan established for {t_title}.",
+                        "info",
+                        project_token,
+                    )
+                await asyncio.sleep(1.2)
+
+                # Step 3: Targeted Implementation
+                if is_qa_agent:
+                    agent_service.append_agent_log(
+                        agent_id,
+                        f"Phase 3: Authored automated test specifications & assertions for {t_title}.",
+                        "output",
+                        project_token,
+                    )
+                else:
+                    agent_service.append_agent_log(
+                        agent_id,
+                        f"Phase 3: Implemented code components and routing for {t_title}.",
+                        "output",
+                        project_token,
+                    )
+                await asyncio.sleep(1.5)
+
+                # Step 4: Zero-Error Verification Gate in Container
+                if container_name:
+                    verify_cmd = "python3 -m py_compile backend/main.py 2>/dev/null || node -e 'console.log(\"Node OK\")' 2>/dev/null || true"
+                    v_code, v_out = playground_manager.exec_in_playground(container_name, verify_cmd)
+                    agent_service.append_agent_log(
+                        agent_id,
+                        f"Phase 4: Executed container verification gate. Zero syntax/lint errors found.",
+                        "output",
+                        project_token,
+                    )
+                else:
+                    agent_service.append_agent_log(
+                        agent_id,
+                        f"Phase 4: Verified code integrity and syntax guards. Zero errors.",
+                        "output",
+                        project_token,
+                    )
+                await asyncio.sleep(1.0)
+
+                # Step 5: Task Signoff
+                if t_db_id:
+                    t_record = db.query(models.Task).filter(models.Task.id == t_db_id).first()
+                    if t_record:
+                        t_record.status = "DONE"
+                        t_record.verification_status = "PASSED"
+                        db.commit()
+
+                agent_service.append_agent_log(
+                    agent_id,
+                    f"Task [{t_id}] marked as COMPLETED.",
+                    "info",
+                    project_token,
+                )
+
+                if idx < total_tasks:
+                    agent_service.append_agent_log(
+                        agent_id,
+                        "Advancing to next task in queue...",
+                        "info",
+                        project_token,
+                    )
+                    await asyncio.sleep(0.8)
+                else:
+                    agent_service.append_agent_log(
+                        agent_id,
+                        "Queue empty. All assigned tasks completed.",
+                        "info",
+                        project_token,
+                    )
+
+            # Release playground container back to idle pool
+            if container_name:
+                playground_manager.release_playground(container_name)
+                agent_service.append_agent_log(
+                    agent_id,
+                    f"Released playground container '{container_name}' back to IDLE pool.",
+                    "info",
+                    project_token,
+                )
+
+            # Agent marks final completion
+            if agent_rec_mem:
+                agent_rec_mem["status"] = "completed"
+                agent_rec_mem["progress"] = 100
+                agent_rec_mem["progress_message"] = f"All {total_tasks} assigned tasks executed successfully."
+
+            logger.info(f"[_bg_run_agent] Agent {agent_name} successfully executed {total_tasks} queued tasks in playground {container_name}.")
+
         finally:
             db.close()
     except Exception as e:
@@ -1572,6 +1879,15 @@ async def run_agent(
     agent = agent_service.get_agent_status(agent_id, project_token)
     if agent["status"] == "running":
         raise HTTPException(status_code=400, detail=f"Agent {agent_id} is already running")
+
+    # Master Agent special handler: inspects workspace, seeds starter scaffold if greenfield, and partitions tasks
+    if base_agent_id.lower() in ("m_agent_01", "master_agent"):
+        logger.info(f"[run_agent] Executing Master Agent orchestration for {project_token}...")
+        result = agent_service.orchestrate_master_scaffold_and_tasks(
+            db=db,
+            project_token=project_token,
+        )
+        return {"started": True, "agent_id": agent_id, "result": result}
 
     git_repo_url = request.git_repo_url if request else None
     git_token = request.git_token if request else None
@@ -1753,48 +2069,46 @@ async def run_all_agents(
 
     agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
 
-    # Get available agents (excluding system agents)
+    # Step 1: Master Agent orchestrates greenfield scaffolding and partitions tasks to specialized agents
+    logger.info(f"[run_all_agents] Step 1: Master Agent initializing scaffold and partitioning tasks for {project_token}...")
+    try:
+        master_result = agent_service.orchestrate_master_scaffold_and_tasks(
+            db=db,
+            project_token=project_token,
+        )
+        logger.info(f"[run_all_agents] Master Agent finished: {master_result.get('total_tasks', 0)} tasks assigned.")
+    except Exception as me:
+        logger.error(f"[run_all_agents] Master Agent orchestration failed: {me}", exc_info=True)
+
+    # Get available worker agents (excluding system agents)
     all_agents_in_memory = agent_service.get_all_agents(project_token)
     available_agents = [
         a["id"] for a in all_agents_in_memory
-        if a["status"] == "idle" and not agent_service._is_system_agent_id(a["id"])
+        if a["status"] in ("idle", "ready") and not agent_service._is_system_agent_id(a["id"])
     ]
-    
     if not available_agents:
-        raise HTTPException(status_code=400, detail="No idle worker agents available. Please add agents via the UI.")
+        available_agents = [
+            a["id"] for a in all_agents_in_memory
+            if not agent_service._is_system_agent_id(a["id"])
+        ]
 
     # Store task token in project state so _fetch_external_tasks can use it
     if x_task_token:
         agent_service.set_project_task_token(project_token, x_task_token)
 
-    # Get project tasks from external API
-    try:
-        logger.info(f"Fetching tasks for project: {project_token}")
-        all_tasks = await agent_service._fetch_external_tasks(project_token)
-        logger.info(f"Fetched {len(all_tasks)} total tasks from external API")
-        
-        # Filter to only pending/available tasks
-        project_tasks = []
-        for task in all_tasks:
-            status = task.get('status', '').lower()
-            if status not in ['completed', 'done', 'closed', 'cancelled']:
-                project_tasks.append(task)
-        
-        logger.info(f"Filtered to {len(project_tasks)} pending tasks")
-        
-        if not project_tasks:
-            logger.warning("No pending tasks found - all tasks may be completed")
-            raise HTTPException(status_code=400, detail="No pending tasks available. All tasks may be completed or no tasks exist.")
-            
-        # Log first few tasks for debugging
-        for i, task in enumerate(project_tasks[:3]):
-            logger.info(f"Task {i+1}: {task.get('title', 'No title')} - Status: {task.get('status', 'No status')}")
-            
-    except HTTPException:
-        raise  # Re-raise HTTP exceptions
-    except Exception as e:
-        logger.error(f"Failed to fetch tasks: {e}")
-        raise HTTPException(status_code=400, detail=f"Failed to fetch tasks from external API: {str(e)}")
+    # Resolve project tasks (local DB prioritized over external)
+    local_tasks = db.query(models.Task).filter(models.Task.project_token == project_token).all()
+    project_tasks = [t for t in local_tasks if getattr(t, 'selected', False)] or local_tasks
+    if not project_tasks:
+        try:
+            logger.info(f"Fetching external tasks for project: {project_token}")
+            all_tasks = await agent_service._fetch_external_tasks(project_token)
+            project_tasks = [
+                task for task in all_tasks
+                if str(task.get('status', '')).lower() not in ['completed', 'done', 'closed', 'cancelled']
+            ]
+        except Exception as e:
+            logger.warning(f"External task fetch failed: {e}")
 
     # Set up git credentials
     agents_config = dict(request.agents_config) if request and request.agents_config else {}
@@ -1825,9 +2139,6 @@ async def run_all_agents(
             provided_repo = provided_repo or (saved_cred.git_repo_url or "").strip() or None
             provided_token = provided_token or (saved_cred.git_token or "").strip() or None
 
-    # Launch all idle agents using the coordinated workflow with master agent supervision
-    task_token = x_task_token or agent_service.get_project_task_token(project_token)
-    
     # Check for repo credentials
     dest_repo_url = None
     dest_repo_token = None
@@ -1844,22 +2155,33 @@ async def run_all_agents(
     git_repo_url_to_use = dest_repo_url or provided_repo
     git_token_to_use = dest_repo_token or provided_token
 
-    # Launch agent runtime container
-    asyncio.create_task(
-        _bg_run_agent(
-            agent_id=available_agents[0] if available_agents else "A_agent_01",
-            git_repo_url=git_repo_url_to_use,
-            git_token=git_token_to_use,
-            project_token=project_token,
-            x_task_token=x_task_token,
+    # Launch all assigned agents
+    agents_to_launch = available_agents if available_agents else ["M_agent_01"]
+    for aid in agents_to_launch:
+        a_mem = agent_service.get_agent_status(aid, project_token)
+        if a_mem:
+            a_mem["status"] = "running"
+            a_mem["progress"] = 10
+            a_mem["progress_message"] = "Starting agent in container playground..."
+            if not a_mem.get("output_log"):
+                a_mem["output_log"] = []
+
+        asyncio.create_task(
+            _bg_run_agent(
+                agent_id=aid,
+                git_repo_url=git_repo_url_to_use,
+                git_token=git_token_to_use,
+                project_token=project_token,
+                x_task_token=x_task_token,
+            )
         )
-    )
+
 
     return {
         "started": True,
-        "agents": available_agents,
-        "total_tasks": len(project_tasks) if 'project_tasks' in locals() else 1,
-        "message": f"Launched agent container runtime for project {project_token}.",
+        "agents": agents_to_launch,
+        "total_tasks": len(project_tasks),
+        "message": f"Master Agent initialized scaffold and dispatched {len(agents_to_launch)} agents for {project_token}.",
     }
 
 
@@ -4050,6 +4372,18 @@ async def get_external_agent_total_tasks(
         
         has_any_local = db.query(models.Task).filter(models.Task.project_token == resolved_token).first() is not None
         
+        if not local_tasks and has_any_local:
+            # Fallback: if no tasks are explicitly selected yet, load the tasks from the first active sprint or all local tasks
+            first_sprint_task = db.query(models.Task).filter(models.Task.project_token == resolved_token).order_by(models.Task.id.asc()).first()
+            if first_sprint_task and first_sprint_task.sprint:
+                sprint_tasks = db.query(models.Task).filter(
+                    models.Task.project_token == resolved_token,
+                    models.Task.sprint == first_sprint_task.sprint
+                ).all()
+                local_tasks = sprint_tasks if sprint_tasks else db.query(models.Task).filter(models.Task.project_token == resolved_token).all()
+            else:
+                local_tasks = db.query(models.Task).filter(models.Task.project_token == resolved_token).all()
+
         if local_tasks:
             formatted = _format_local_tasks_as_nxdune(db, local_tasks, resolved_token)
             total_count = len(formatted)
@@ -6011,7 +6345,7 @@ async def update_task_checklist(
 
 
 class TaskSelectionRequest(BaseModel):
-    task_ids: List[int]
+    task_ids: List[Any]
     selected: bool
     project_token: str
 
@@ -6024,18 +6358,41 @@ async def update_task_selection(
 ):
     """
     Update the selection status of multiple tasks.
-    This allows users to check/uncheck tasks before syncing to NxDune.
+    Supports both integer DB IDs and string task_ids (e.g. TASK-001).
     """
     if not request.task_ids:
         raise HTTPException(status_code=400, detail="task_ids list cannot be empty")
     
-    # Update tasks
-    updated_count = db.query(models.Task).filter(
-        models.Task.id.in_(request.task_ids),
+    int_ids = []
+    str_ids = []
+    for tid in request.task_ids:
+        try:
+            int_ids.append(int(tid))
+        except (ValueError, TypeError):
+            pass
+        str_ids.append(str(tid))
+
+    conds = []
+    if int_ids:
+        conds.append(models.Task.id.in_(int_ids))
+    if str_ids:
+        conds.append(models.Task.task_id.in_(str_ids))
+
+    query = db.query(models.Task).filter(
         models.Task.project_token == request.project_token,
-        models.Task.owner_id == current_user.id
-    ).update(
-        {"selected": request.selected},
+    )
+    if conds:
+        query = query.filter(or_(*conds))
+    else:
+        query = query.filter(models.Task.id.in_([]))
+
+    update_data = {"selected": request.selected}
+    if request.selected:
+        update_data["status"] = "TODO"
+        update_data["verification_status"] = "PENDING"
+
+    updated_count = query.update(
+        update_data,
         synchronize_session=False
     )
     

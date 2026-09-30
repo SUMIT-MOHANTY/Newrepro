@@ -97,6 +97,7 @@ function AllocationCounter({ label, value, onDecrement, onIncrement, disabled, e
 export default function ResourceOnboarding({ selectedProjectKey, fetchHistory }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const currentProjectToken = selectedProjectKey || location.state?.projectToken;
   const processMode = location.state?.processMode || 'ai_first';
   const token = localStorage.getItem('token');
 
@@ -126,7 +127,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
       .catch(() => {});
   }, [token]);
 
-  const taskToken = useMemo(() => getCachedTaskToken(selectedProjectKey), [selectedProjectKey]);
+  const taskToken = useMemo(() => getCachedTaskToken(currentProjectToken), [currentProjectToken]);
   const hasValidTaskToken = Boolean(taskToken);
 
   // ─── Quota helpers ──────────────────────────────────────────────────────────
@@ -139,12 +140,12 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
 
   // Usage by other projects
   const thisProjectCurrentShared = useMemo(() =>
-    agents.filter(a => a.project_token === selectedProjectKey && (a.agent_kind === 'shared' || !a.agent_kind)).length,
-    [agents, selectedProjectKey]
+    agents.filter(a => a.project_token === currentProjectToken && (a.agent_kind === 'shared' || !a.agent_kind)).length,
+    [agents, currentProjectToken]
   );
   const thisProjectCurrentDedicated = useMemo(() =>
-    agents.filter(a => a.project_token === selectedProjectKey && a.agent_kind === 'dedicated').length,
-    [agents, selectedProjectKey]
+    agents.filter(a => a.project_token === currentProjectToken && a.agent_kind === 'dedicated').length,
+    [agents, currentProjectToken]
   );
 
   const otherProjectsSharedUsage = Math.max(0, (quota?.shared_used || 0) - thisProjectCurrentShared);
@@ -204,7 +205,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
         // Initialize allocations: check if agent was already allocated to this project
         const initial = {};
         combined.forEach(agent => {
-          const isThisProject = agent.project_token === selectedProjectKey;
+          const isThisProject = agent.project_token === currentProjectToken;
           initial[agent.id] = {
             shared: isThisProject && (agent.agent_kind === 'shared' || !agent.agent_kind) ? 1 : 0,
             dedicated: isThisProject && agent.agent_kind === 'dedicated' ? 1 : 0,
@@ -226,7 +227,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
       isMounted = false;
       controller.abort();
     };
-  }, [token, selectedProjectKey]);
+  }, [token, currentProjectToken]);
 
   // ─── Fetch quota ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -293,7 +294,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
       return;
     }
 
-    if (!selectedProjectKey) {
+    if (!currentProjectToken) {
       setSubmitError('Please select a project before allocating agents.');
       setIsSubmitting(false);
       return;
@@ -318,7 +319,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
       }));
 
     const payload = {
-      project_token: selectedProjectKey,
+      project_token: currentProjectToken,
       assignments: [...assignments, ...unassignments],
     };
 
@@ -340,7 +341,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
         fetchHistory();
       }
 
-      navigate('/status-dashboard', { state: { processMode } });
+      navigate('/status-dashboard', { state: { processMode, projectToken: currentProjectToken } });
     } catch (err) {
       setSubmitError(err.message || 'Failed to complete onboarding');
     } finally {

@@ -369,16 +369,40 @@ export default function TaskCreation({
 
     // Start execution on selected tasks
     const handleStartSelectedTasks = async () => {
-        const selectedCount = tasks.filter(t => t.selected).length;
-        if (selectedCount === 0) {
+        let targetTasks = tasks.filter(t => t.selected);
+        if (targetTasks.length === 0) {
             // Auto select all in active sprint if none selected
-            handleSelectAll();
+            targetTasks = displayedTasks;
+            setTasks(prev => prev.map(t => displayedTasks.some(dt => (dt.task_id || dt.id) === (t.task_id || t.id)) ? { ...t, selected: true } : t));
         }
+
+        const taskIds = targetTasks.map(t => t.id || t.task_id).filter(Boolean);
+
+        // Persist selection to backend DB so StatusDashboard loads them
+        if (taskIds.length > 0 && selectedProjectKey) {
+            try {
+                await fetch(`${API_BASE_URL}/api/agent/tasks/selection/`, {
+                    method: 'PATCH',
+                    headers: {
+                        ...buildHeaders(),
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        task_ids: taskIds,
+                        selected: true,
+                        project_token: selectedProjectKey,
+                    }),
+                });
+            } catch (err) {
+                console.error("Failed to persist task selection:", err);
+            }
+        }
+
         navigate('/resource-onboarding', {
             state: {
                 projectToken: selectedProjectKey,
                 startSprint: activeSprint.name,
-                selectedTasks: tasks.filter(t => t.selected).map(t => t.task_id || t.id),
+                selectedTasks: targetTasks.map(t => t.task_id || t.id),
             }
         });
     };
@@ -1143,7 +1167,7 @@ export default function TaskCreation({
                             </button>
 
                             <button
-                                onClick={() => navigate('/resource-onboarding', { state: { projectToken: selectedProjectKey } })}
+                                onClick={handleStartSelectedTasks}
                                 className="w-full bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-semibold text-xs py-1.5 px-3 rounded-lg flex items-center justify-center gap-1.5 transition-all shadow-2xs"
                             >
                                 <ArrowRight className="w-3 h-3 text-slate-500" />

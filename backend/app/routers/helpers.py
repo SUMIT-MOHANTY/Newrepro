@@ -44,6 +44,76 @@ _preview_log_store: Dict[str, List[Dict[str, Any]]] = {}
 _preview_ws_connections: Dict[str, List[WebSocket]] = {}
 
 
+async def broadcast_preview_log(
+    project_token: str,
+    content: str,
+    event_type: str = "log",
+    payload: Optional[Dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Broadcast a log event to the in-memory log store and all connected WebSockets."""
+    if not project_token:
+        return
+    pt = project_token
+    entry = {
+        "type": "deploy_log",
+        "event_type": event_type,
+        "content": content,
+        "message": content,
+        "payload": payload or {},
+        "metadata": metadata or {},
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    if pt not in _preview_log_store:
+        _preview_log_store[pt] = []
+    _preview_log_store[pt].append(entry)
+    if len(_preview_log_store[pt]) > 500:
+        _preview_log_store[pt] = _preview_log_store[pt][-500:]
+
+    ws_list = _preview_ws_connections.get(pt, [])
+    if ws_list:
+        dead = []
+        for ws in ws_list:
+            try:
+                await ws.send_json(entry)
+            except Exception:
+                dead.append(ws)
+        for d in dead:
+            if d in ws_list:
+                try:
+                    ws_list.remove(d)
+                except ValueError:
+                    pass
+
+
+def sync_broadcast_preview_log(
+    project_token: str,
+    content: str,
+    event_type: str = "log",
+    payload: Optional[Dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Synchronous / fire-and-forget wrapper for broadcast_preview_log."""
+    if not project_token:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(broadcast_preview_log(project_token, content, event_type, payload, metadata))
+    except RuntimeError:
+        entry = {
+            "type": "deploy_log",
+            "event_type": event_type,
+            "content": content,
+            "message": content,
+            "payload": payload or {},
+            "metadata": metadata or {},
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        if project_token not in _preview_log_store:
+            _preview_log_store[project_token] = []
+        _preview_log_store[project_token].append(entry)
+
+
 def _get_cache_key(organization_name: str, project_token: Optional[str], user_id: int) -> str:
     return f"{organization_name}:{project_token or 'none'}:{user_id}"
 
@@ -1054,6 +1124,9 @@ def _runtime_agent_records(records: List[models.Agent], project_token: Optional[
                         "face": getattr(rec, "face", None),
                         "allowed_tools": getattr(rec, "allowed_tools", None) or [],
                         "model_name": getattr(rec, "model_name", None) or "claude",
+                        "status": getattr(rec, "status", None) or "idle",
+                        "progress": getattr(rec, "progress", None) or 0,
+                        "progress_message": getattr(rec, "progress_message", None) or "Ready",
                     })
                 for j in range(1, dc + 1):
                     idx = sc + j
@@ -1070,6 +1143,9 @@ def _runtime_agent_records(records: List[models.Agent], project_token: Optional[
                         "face": getattr(rec, "face", None),
                         "allowed_tools": getattr(rec, "allowed_tools", None) or [],
                         "model_name": getattr(rec, "model_name", None) or "claude",
+                        "status": getattr(rec, "status", None) or "idle",
+                        "progress": getattr(rec, "progress", None) or 0,
+                        "progress_message": getattr(rec, "progress_message", None) or "Ready",
                     })
             else:
                 agent_kind = "system" if is_default_system else (info[0] if info else "shared")
@@ -1086,6 +1162,9 @@ def _runtime_agent_records(records: List[models.Agent], project_token: Optional[
                     "face": getattr(rec, "face", None),
                     "allowed_tools": getattr(rec, "allowed_tools", None) or [],
                     "model_name": getattr(rec, "model_name", None) or "claude",
+                    "status": getattr(rec, "status", None) or "idle",
+                    "progress": getattr(rec, "progress", None) or 0,
+                    "progress_message": getattr(rec, "progress_message", None) or "Ready",
                 })
         return expanded
     finally:

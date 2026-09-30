@@ -796,6 +796,9 @@ def _runtime_agent_records(records: List[models.Agent], project_token: Optional[
                         "skills_tags": getattr(rec, "skills_tags", None),
                         "specialization": getattr(rec, "specialization", None),
                         "face": getattr(rec, "face", None),
+                        "status": getattr(rec, "status", None) or "idle",
+                        "progress": getattr(rec, "progress", None) or 0,
+                        "progress_message": getattr(rec, "progress_message", None) or "Ready",
                     })
                 # Expand dedicated instances
                 for j in range(1, dc + 1):
@@ -811,6 +814,9 @@ def _runtime_agent_records(records: List[models.Agent], project_token: Optional[
                         "skills_tags": getattr(rec, "skills_tags", None),
                         "specialization": getattr(rec, "specialization", None),
                         "face": getattr(rec, "face", None),
+                        "status": getattr(rec, "status", None) or "idle",
+                        "progress": getattr(rec, "progress", None) or 0,
+                        "progress_message": getattr(rec, "progress_message", None) or "Ready",
                     })
             else:
                 agent_kind = "shared" if sc > 0 else ("dedicated" if dc > 0 else (info[0] if info else "shared"))
@@ -825,6 +831,9 @@ def _runtime_agent_records(records: List[models.Agent], project_token: Optional[
                     "skills_tags": getattr(rec, "skills_tags", None),
                     "specialization": getattr(rec, "specialization", None),
                     "face": getattr(rec, "face", None),
+                    "status": getattr(rec, "status", None) or "idle",
+                    "progress": getattr(rec, "progress", None) or 0,
+                    "progress_message": getattr(rec, "progress_message", None) or "Ready",
                 })
         return expanded
     finally:

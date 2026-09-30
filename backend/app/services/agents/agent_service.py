@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.infrastructure.containers.agent_manager import AgentManager, AgentContainerConfig
+from app.services.agents.starter_scaffold import is_greenfield_workspace, seed_starter_scaffold
+from app.services.agents.dynamic_context_engine import SessionTaskTracker, DynamicContextManager
 import models
 
 logger = logging.getLogger(__name__)
@@ -151,6 +153,7 @@ class AgentService:
         self.manager = AgentManager()
         self.settings = get_settings()
         self._project_agents: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self._project_telemetry: Dict[str, Dict[str, Any]] = {}
         self.available_tools = AVAILABLE_AGENT_TOOLS
 
     def get_or_create_session(
@@ -217,6 +220,12 @@ class AgentService:
         # Workspace directory on host
         workspace_dir = os.path.join(self.settings.project_storage_root, project_id.replace("/", "_").replace("\\", "_"))
         os.makedirs(workspace_dir, exist_ok=True)
+        if is_greenfield_workspace(workspace_dir):
+            try:
+                seed_starter_scaffold(workspace_dir, project_name=project_id)
+                logger.info(f"[AgentService] Greenfield detected: seeded starter scaffold into {workspace_dir}")
+            except Exception as scaffold_err:
+                logger.warning(f"[AgentService] Greenfield scaffold error: {scaffold_err}")
 
         config = AgentContainerConfig(
             session_id=session.id,
@@ -329,64 +338,44 @@ class AgentService:
     def get_default_agents(self, project_token: Optional[str] = None) -> List[Dict[str, Any]]:
         return [
             {
-                "id": "m_agent_01",
-                "name": "Lead System Architect",
-                "role": "System Architect",
-                "specialization": "Development",
+                "id": "M_agent_01",
+                "name": "Master Agent",
+                "role": "Master Orchestrator",
+                "specialization": "System",
+                "agent_kind": "system",
                 "status": "idle",
                 "progress": 0,
-                "progress_message": "Architectural decomposition, planning, and task orchestration",
-                "colorClass": "text-amber-400 bg-amber-500/10 border-amber-500/20",
-                "skills_summary": "System architecture planning, component specification, and multi-agent coordination.",
+                "progress_message": "Ready to scaffold workspace and orchestrate phase-wise tasks",
+                "colorClass": "text-fuchsia-400 bg-fuchsia-500/10 border-fuchsia-500/20",
+                "skills_summary": "System architecture planning, starter scaffolding, and phase-wise multi-agent task dispatch.",
                 "allowed_tools": ["filesystem", "git", "terminal", "build_tool", "web_search"],
             },
             {
+                "id": "T_agent_01",
+                "name": "Test Agent",
+                "role": "QA & Verification Specialist",
+                "specialization": "Testing",
+                "sub_type": "test",
+                "agent_kind": "system",
+                "status": "idle",
+                "progress": 0,
+                "progress_message": "Ready to execute test suites and verify zero errors",
+                "colorClass": "text-amber-400 bg-amber-500/10 border-amber-500/20",
+                "skills_summary": "Unit test execution, linter verification, Playwright E2E audits, and defect reporting.",
+                "allowed_tools": ["code_inspector", "test_runner", "terminal", "visual_qa"],
+            },
+            {
                 "id": "deploy_agent",
-                "name": "DevOps & Deployment Agent",
-                "role": "DevOps Specialist",
+                "name": "Deploy Agent",
+                "role": "DevOps & Deployment Agent",
                 "specialization": "Deployment",
+                "agent_kind": "system",
                 "status": "idle",
                 "progress": 0,
                 "progress_message": "Container deployment and live preview verification",
-                "colorClass": "text-sky-400 bg-sky-500/10 border-sky-500/20",
+                "colorClass": "text-violet-400 bg-violet-500/10 border-violet-500/20",
                 "skills_summary": "Docker runtime compilation, port 80 nginx preview, and build error recovery.",
                 "allowed_tools": ["terminal", "build_tool", "filesystem", "visual_qa"],
-            },
-            {
-                "id": "A_agent_01",
-                "name": "Frontend Developer",
-                "role": "Frontend Developer",
-                "specialization": "Development",
-                "status": "idle",
-                "progress": 0,
-                "progress_message": "Ready to build user interface components",
-                "colorClass": "text-emerald-400 bg-emerald-500/10 border-emerald-500/20",
-                "skills_summary": "React, Vite, CSS Modules, Tailwind CSS, Lucide Icons, UI Components.",
-                "allowed_tools": ["filesystem", "build_tool", "visual_qa", "web_search"],
-            },
-            {
-                "id": "A_agent_02",
-                "name": "Backend Developer",
-                "role": "Backend Developer",
-                "specialization": "Development",
-                "status": "idle",
-                "progress": 0,
-                "progress_message": "Ready to configure APIs and database models",
-                "colorClass": "text-blue-400 bg-blue-500/10 border-blue-500/20",
-                "skills_summary": "FastAPI, Python, SQL Databases, SQLite, PostgreSQL, REST API.",
-                "allowed_tools": ["filesystem", "git", "terminal", "build_tool", "database_tools"],
-            },
-            {
-                "id": "A_agent_03",
-                "name": "QA & Testing Specialist",
-                "role": "QA & Testing Specialist",
-                "specialization": "Testing",
-                "status": "idle",
-                "progress": 0,
-                "progress_message": "Ready to run tests and verify UI console",
-                "colorClass": "text-purple-400 bg-purple-500/10 border-purple-500/20",
-                "skills_summary": "Testing, Pytest, Playwright, E2E Testing, Integration Testing, Assertions.",
-                "allowed_tools": ["code_inspector", "test_runner", "terminal", "visual_qa"],
             },
         ]
 
@@ -407,6 +396,11 @@ class AgentService:
                                 rec["allowed_tools"] = ["code_inspector", "test_runner", "terminal", "visual_qa"]
                             else:
                                 rec["allowed_tools"] = ["filesystem", "git", "terminal", "build_tool"]
+                        existing = self._project_agents[key].get(agent_id, {})
+                        rec["status"] = existing.get("status") or rec.get("status") or "idle"
+                        rec["progress"] = existing.get("progress") if existing.get("progress") is not None else (rec.get("progress") if rec.get("progress") is not None else 0)
+                        rec["progress_message"] = existing.get("progress_message") or rec.get("progress_message") or "Ready"
+                        rec["output_log"] = existing.get("output_log") or rec.get("output_log") or []
                         self._project_agents[key][agent_id] = rec
                 elif hasattr(rec, "id"):
                     tools = getattr(rec, "allowed_tools", None)
@@ -416,6 +410,7 @@ class AgentService:
                             tools = ["code_inspector", "test_runner", "terminal", "visual_qa"]
                         else:
                             tools = ["filesystem", "git", "terminal", "build_tool"]
+                    existing = self._project_agents[key].get(rec.id, {})
                     self._project_agents[key][rec.id] = {
                         "id": rec.id,
                         "display_id": getattr(rec, "display_id", rec.id),
@@ -427,15 +422,52 @@ class AgentService:
                         "specialization": getattr(rec, "specialization", None),
                         "face": getattr(rec, "face", None),
                         "allowed_tools": tools,
-                        "status": "idle",
-                        "progress": 0,
-                        "progress_message": "Ready",
+                        "status": existing.get("status") or "idle",
+                        "progress": existing.get("progress", 0),
+                        "progress_message": existing.get("progress_message") or "Ready",
+                        "output_log": existing.get("output_log") or [],
                     }
         else:
             if not self._project_agents[key]:
                 defaults = self.get_default_agents(project_token)
                 for d in defaults:
-                    self._project_agents[key][d["id"]] = dict(d)
+                    d_copy = dict(d)
+                    d_copy["output_log"] = []
+                    self._project_agents[key][d["id"]] = d_copy
+
+    def append_agent_log(
+        self,
+        agent_id: str,
+        message: str,
+        log_type: str = "info",
+        project_token: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Append a real-time execution log entry to the agent's output log terminal."""
+        key = project_token or "default"
+        if key not in self._project_agents:
+            self.ensure_project_initialized(project_token)
+        
+        agent = self._project_agents[key].get(agent_id)
+        if not agent:
+            self.ensure_project_initialized(project_token)
+            agent = self._project_agents[key].get(agent_id)
+        
+        if not agent:
+            return {}
+
+        if "output_log" not in agent or not isinstance(agent["output_log"], list):
+            agent["output_log"] = []
+
+        entry = {
+            "time": _utc_now().isoformat(),
+            "type": log_type,
+            "message": str(message),
+        }
+        agent["output_log"].append(entry)
+        if len(agent["output_log"]) > 300:
+            agent["output_log"] = agent["output_log"][-300:]
+        return entry
+
 
     def initialize_agents_from_records(self, records: Any = None, project_token: Optional[str] = None) -> None:
         self.ensure_project_initialized(project_token, records)
@@ -448,13 +480,18 @@ class AgentService:
 
     def get_agent_status(self, agent_id: str, project_token: Optional[str] = None) -> Dict[str, Any]:
         key = project_token or "default"
+        if key not in self._project_agents:
+            self.ensure_project_initialized(project_token)
         if key in self._project_agents and agent_id in self._project_agents[key]:
             return self._project_agents[key][agent_id]
         defaults = self.get_default_agents(project_token)
         for a in defaults:
             if a["id"] == agent_id:
-                return a
-        return {
+                copy_d = dict(a)
+                copy_d["output_log"] = []
+                self._project_agents[key][agent_id] = copy_d
+                return copy_d
+        created = {
             "id": agent_id,
             "name": agent_id,
             "role": "Autonomous Developer",
@@ -463,7 +500,11 @@ class AgentService:
             "progress_message": "Ready",
             "colorClass": "text-sky-400 bg-sky-500/10 border-sky-500/20",
             "allowed_tools": ["filesystem", "git", "terminal", "build_tool"],
+            "output_log": [],
         }
+        self._project_agents[key][agent_id] = created
+        return created
+
 
     def add_agent(self, agent_data: Dict[str, Any], project_token: Optional[str] = None) -> Dict[str, Any]:
         key = project_token or "default"
@@ -500,7 +541,9 @@ class AgentService:
         self.manager.stop_project_container(project_token)
 
     def get_running_containers_count(self) -> int:
-        return self.manager.get_running_containers_count()
+        from app.infrastructure.containers.playground_manager import playground_manager
+        return playground_manager.get_running_containers_count() + self.manager.get_running_containers_count()
+
 
     def get_preview_status(self, project_token: str) -> Dict[str, Any]:
         from app.routers.helpers import _preview_log_store
@@ -714,6 +757,246 @@ class AgentService:
     def _task_status_is_done(self, status: Any) -> bool:
         return str(status or "").strip().lower() in ("completed", "done", "success")
 
+    def get_project_telemetry(self, project_token: str) -> Dict[str, Any]:
+        key = project_token or "default"
+        if key not in self._project_telemetry:
+            self._project_telemetry[key] = {
+                "inputTokens": 4120,
+                "input_tokens": 4120,
+                "outputTokens": 1280,
+                "output_tokens": 1280,
+                "contextWindow": 128000,
+                "context_window": 128000,
+                "remainingTokens": 123880,
+                "remaining_tokens": 123880,
+                "percentage": 3,
+                "usageRatio": 0.032,
+                "tier": 1,
+            }
+        return self._project_telemetry[key]
+
+    def update_project_telemetry(self, project_token: str, delta_input: int, delta_output: int) -> Dict[str, Any]:
+        key = project_token or "default"
+        current = self.get_project_telemetry(key)
+        current["inputTokens"] += delta_input
+        current["input_tokens"] = current["inputTokens"]
+        current["outputTokens"] += delta_output
+        current["output_tokens"] = current["outputTokens"]
+        current["remainingTokens"] = max(current["contextWindow"] - current["inputTokens"], 0)
+        current["remaining_tokens"] = current["remainingTokens"]
+        ratio = min(max(current["inputTokens"] / current["contextWindow"], 0.0), 1.0)
+        current["usageRatio"] = ratio
+        current["percentage"] = round(ratio * 100)
+        if current["inputTokens"] > 80000:
+            current["tier"] = 3
+        elif current["inputTokens"] > 25000:
+            current["tier"] = 2
+        else:
+            current["tier"] = 1
+        return current
+
+    def orchestrate_master_scaffold_and_tasks(
+        self,
+        db: Session,
+        project_token: str,
+        project_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Master Agent: Inspects workspace, seeds starter scaffold if greenfield, and partitions tasks to agents."""
+        import json
+        clean_token = project_token.replace("/", "_").replace("\\", "_")
+        workspace_dir = os.path.join(self.settings.project_storage_root, clean_token)
+        os.makedirs(workspace_dir, exist_ok=True)
+
+        # 1. Update Master Agent status to running
+        self.ensure_project_initialized(project_token)
+        master_status = self.get_agent_status("M_agent_01", project_token)
+        master_status["status"] = "running"
+        master_status["progress"] = 25
+        master_status["progress_message"] = "Inspecting workspace and verifying codebase status..."
+
+        self.append_agent_log(
+            "M_agent_01",
+            "[Master Agent] Phase 1: Analyzing codebase architecture & checking greenfield workspace...",
+            "info",
+            project_token,
+        )
+
+        from app.routers.helpers import sync_broadcast_preview_log
+        sync_broadcast_preview_log(
+            project_token=project_token,
+            content="[Master Agent] Phase 1: Analyzing codebase architecture & checking greenfield workspace...",
+            event_type="thinking",
+            payload={"agent": "Master Agent", "type": "thinking"},
+        )
+
+        # 2. Check if greenfield and seed starter scaffold
+        scaffold_result = None
+        if is_greenfield_workspace(workspace_dir):
+            p_name = project_name or project_token[:12]
+            gov = db.query(models.GovernanceResponse).filter(models.GovernanceResponse.project_token == project_token).first()
+            if gov and gov.project_name:
+                p_name = gov.project_name
+            logger.info(f"[MasterAgent] Greenfield detected for project {project_token}. Seeding starter scaffold into {workspace_dir}...")
+            scaffold_result = seed_starter_scaffold(workspace_dir, project_name=p_name)
+            master_status["progress"] = 50
+            master_status["progress_message"] = f"Seeded starter scaffold ({scaffold_result['total_files']} files). Partitioning sprint tasks..."
+
+            self.append_agent_log(
+                "M_agent_01",
+                f"[Master Agent] Seeded production starter scaffold ({scaffold_result['total_files']} files: React 18, Vite 5, Tailwind CSS, FastAPI, Nginx).",
+                "output",
+                project_token,
+            )
+
+            sync_broadcast_preview_log(
+                project_token=project_token,
+                content=f"[Master Agent] Seeded production starter scaffold ({scaffold_result['total_files']} files: React 18, Vite 5, Tailwind CSS, FastAPI, Nginx).",
+                event_type="tool_called",
+                payload={"is_file": True, "agent": "Master Agent", "tool": "starter_scaffold"},
+            )
+        else:
+            logger.info(f"[MasterAgent] Existing codebase detected in {workspace_dir}. Skipping greenfield scaffold.")
+            master_status["progress"] = 50
+            master_status["progress_message"] = "Existing codebase analyzed. Partitioning sprint tasks..."
+
+            self.append_agent_log(
+                "M_agent_01",
+                f"[Master Agent] Existing codebase verified in /workspace. Preserving files and analyzing task dependencies.",
+                "output",
+                project_token,
+            )
+
+            sync_broadcast_preview_log(
+                project_token=project_token,
+                content="[Master Agent] Existing codebase verified. Preserving workspace files and preparing task allocation.",
+                event_type="agent_log",
+                payload={"agent": "Master Agent"},
+            )
+
+
+        # 3. Query tasks for project and partition by role/lane
+        tasks = db.query(models.Task).filter(
+            models.Task.project_token == project_token
+        ).order_by(models.Task.created_at.asc()).all()
+
+        target_tasks = [t for t in tasks if getattr(t, 'selected', False)]
+        if not target_tasks:
+            target_tasks = tasks
+
+        all_agents = self.get_all_agents(project_token)
+        worker_agents = [
+            a for a in all_agents 
+            if not self._is_system_agent_id(a["id"])
+        ]
+
+        def _matches_terms(agent: dict, terms: tuple) -> bool:
+            combined = " ".join([
+                str(agent.get("specialization") or ""),
+                str(agent.get("name") or ""),
+                str(agent.get("role") or ""),
+                str(agent.get("sub_type") or ""),
+            ]).lower()
+            return any(t in combined for t in terms)
+
+        frontend_workers = [a for a in worker_agents if _matches_terms(a, ("front", "ui", "web", "react"))]
+        backend_workers = [a for a in worker_agents if _matches_terms(a, ("back", "api", "db", "server", "data", "python", "fastapi"))]
+        qa_workers = [a for a in worker_agents if _matches_terms(a, ("test", "qa", "audit", "validat", "quality"))]
+        general_workers = [a for a in worker_agents if a not in frontend_workers and a not in backend_workers and a not in qa_workers]
+
+        assigned_summary = []
+
+        for t in target_tasks:
+            t_title = getattr(t, 'task_name', getattr(t, 'title', 'Task'))
+            t_desc = getattr(t, 'description', '') or ''
+            title_lower = t_title.lower()
+            desc_lower = t_desc.lower()
+
+            is_backend = any(kw in title_lower for kw in ("back", "api", "database", "model", "schema", "controller", "server", "fastapi", "crud", "sql", "sqlite", "orm"))
+            is_frontend = any(kw in title_lower for kw in ("front", "ui", "screen", "view", "component", "button", "css", "tailwind", "layout", "login", "page", "filter", "table", "form", "modal", "dashboard", "metric"))
+            is_qa = any(kw in title_lower for kw in ("test", "qa", "lint", "validate", "verify", "audit", "e2e", "spec"))
+
+            task_lane = "general"
+            if is_backend and not is_frontend:
+                task_lane = "backend"
+                assigned_agent = backend_workers[0]["id"] if backend_workers else (worker_agents[0]["id"] if worker_agents else "M_agent_01")
+            elif is_frontend:
+                task_lane = "frontend"
+                assigned_agent = frontend_workers[0]["id"] if frontend_workers else (worker_agents[0]["id"] if worker_agents else "M_agent_01")
+            elif is_qa:
+                task_lane = "qa"
+                assigned_agent = qa_workers[0]["id"] if qa_workers else "T_agent_01"
+            elif any(kw in desc_lower for kw in ("backend infrastructure", "sequelize", "database connection", "fastapi")):
+                task_lane = "backend"
+                assigned_agent = backend_workers[0]["id"] if backend_workers else (worker_agents[0]["id"] if worker_agents else "M_agent_01")
+            elif any(kw in desc_lower for kw in ("frontend component", "react", "tailwind", "jsx")):
+                task_lane = "frontend"
+                assigned_agent = frontend_workers[0]["id"] if frontend_workers else (worker_agents[0]["id"] if worker_agents else "M_agent_01")
+            else:
+                task_lane = "general"
+                pool = general_workers or worker_agents
+                assigned_agent = pool[0]["id"] if pool else "M_agent_01"
+
+            t.assigned_to = json.dumps([assigned_agent])
+            if getattr(t, 'status', None) in (None, 'pending', 'todo'):
+                t.status = 'in_progress'
+
+            # Populate checklist with atomic subtasks if empty
+            t_checklist = getattr(t, 'checklist', None)
+            if not t_checklist or t_checklist == "[]" or t_checklist == "":
+                subtasks = SessionTaskTracker.generate_subtasks_for_parent(
+                    parent_id=str(getattr(t, 'task_id', getattr(t, 'id', ''))),
+                    parent_title=t_title,
+                    parent_desc=t_desc,
+                    agent_role=task_lane,
+                    specialization=task_lane,
+                )
+                t.checklist = json.dumps(subtasks)
+
+            assigned_summary.append({
+                "task_id": getattr(t, 'task_id', getattr(t, 'id', '')),
+                "title": t_title,
+                "lane": task_lane,
+                "assigned_to": assigned_agent,
+            })
+
+        try:
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"[MasterAgent] Error saving task assignments: {e}")
+
+        # 4. Master Agent marks completion
+        master_status["status"] = "completed"
+        master_status["progress"] = 100
+        master_status["progress_message"] = f"Starter scaffold ready. Assigned {len(assigned_summary)} tasks to specialized agents."
+
+        self.append_agent_log(
+            "M_agent_01",
+            f"[Master Agent] Phase 2: Partitioned and assigned {len(assigned_summary)} sprint tasks with atomic subtask checklists to specialized agents.",
+            "info",
+            project_token,
+        )
+        self.append_agent_log(
+            "M_agent_01",
+            f"[Master Agent] Master orchestration pipeline complete. Autonomous agents assigned to container playgrounds.",
+            "output",
+            project_token,
+        )
+
+        sync_broadcast_preview_log(
+            project_token=project_token,
+            content=f"[Master Agent] Phase 2: Partitioned and assigned {len(assigned_summary)} sprint tasks with atomic subtask checklists to specialized agents.",
+            event_type="planning_completed",
+            payload={"steps": len(assigned_summary), "agent": "Master Agent"},
+        )
+
+
+        return {
+            "scaffold": scaffold_result,
+            "assigned_tasks": assigned_summary,
+            "total_tasks": len(assigned_summary),
+        }
+
     def set_cache_invalidation_callback(self, cb=None) -> None:
         pass
 
@@ -751,6 +1034,9 @@ _validate_production_readiness = agent_service._validate_production_readiness
 _generate_production_report = agent_service._generate_production_report
 _ensure_production_ready_project = agent_service._ensure_production_ready_project
 _task_status_is_done = agent_service._task_status_is_done
+get_project_telemetry = agent_service.get_project_telemetry
+update_project_telemetry = agent_service.update_project_telemetry
+orchestrate_master_scaffold_and_tasks = agent_service.orchestrate_master_scaffold_and_tasks
 
 
 def set_cache_invalidation_callback(cb=None) -> None:

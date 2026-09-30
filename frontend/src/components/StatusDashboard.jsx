@@ -9,11 +9,12 @@ import 'react-loading-skeleton/dist/skeleton.css';
 import { API_ENDPOINTS, VIBE_WORKSPACE_URL } from '../config';
 import { getNeutralAgentLabel, getNeutralAgentName } from '../utils/agentNames';
 import AgentChatPanel from './AgentChatPanel';
-import ExecutionStream from './ExecutionStream';
+
 import kaktoxLogo from '../assets/Kaktox.png';
 import nModLogo from '../assets/N-Mod-icon.png';
 import masterLogo from '../assets/logo1.png';
 import cloudIcon from '../assets/cloud-icon.png';
+import ContextTracker from './ContextTracker';
 // import KnowledgeGraphCard from './KnowledgeGraphCard';
 // import PrStatusCard from './PrStatusCard';
 
@@ -250,7 +251,14 @@ function sanitizePrerequisiteForAiPayload(item = {}) {
     return safe;
 }
 
-export default function StatusDashboard({ projects = [], projectsLoading = false, selectedProjectKey, selectedRole, fetchRoadmapData }) {
+export default function StatusDashboard({
+    projects = [],
+    projectsLoading = false,
+    selectedProjectKey: propSelectedProjectKey,
+    setSelectedProjectKey,
+    selectedRole,
+    fetchRoadmapData
+}) {
     const navigate = useNavigate();
     
     const getClockedHours = (task) => {
@@ -307,9 +315,27 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const queryClient = useQueryClient();
     const [showModal, setShowModal] = useState(false);
     const [newProjectName, setNewProjectName] = useState('');
-    // Props for selectedProjectKey and selectedRole are now passed in, so we no longer
-    // keep local state for them.
-    // However, Dashboard.jsx might not be passing default if not given, so we rely on AppLayout as the source of truth.
+
+    const [localSelectedProjectKey, setLocalSelectedProjectKey] = useState(
+        propSelectedProjectKey || location.state?.projectToken || localStorage.getItem(PROJECT_STORAGE_KEY) || ''
+    );
+    const selectedProjectKey = propSelectedProjectKey || localSelectedProjectKey;
+
+    const handleSetSelectedProjectKey = useCallback((val) => {
+        if (typeof setSelectedProjectKey === 'function') {
+            setSelectedProjectKey(val);
+        }
+        setLocalSelectedProjectKey(val);
+        if (val) {
+            localStorage.setItem(PROJECT_STORAGE_KEY, val);
+        }
+    }, [setSelectedProjectKey]);
+
+    useEffect(() => {
+        if (propSelectedProjectKey && propSelectedProjectKey !== localSelectedProjectKey) {
+            setLocalSelectedProjectKey(propSelectedProjectKey);
+        }
+    }, [propSelectedProjectKey, localSelectedProjectKey]);
 
     const token = localStorage.getItem('token');
 
@@ -486,12 +512,63 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     }, [agents]);
 
     const orderedAgents = useMemo(() => {
-        const systemAgents = agents.filter(agent => agent.agent_kind === 'system');
-        return [
-            ...systemAgents,
-            ...devAgents,
-        ];
+        // Find Master Agent (only system master agent)
+        const masterAgent = agents.find(a => 
+            a.id === 'M_agent_01' || a.id === 'm_agent_01' || (a.agent_kind === 'system' && a.name?.toLowerCase().includes('master'))
+        );
+        // Find Test Agent (only system test agent T_agent_01)
+        const testAgent = agents.find(a => 
+            a.id === 'T_agent_01' || a.id === 't_agent_01' || (a.agent_kind === 'system' && (a.id?.toLowerCase().includes('test') || a.name?.toLowerCase().includes('test agent')))
+        );
+
+        // Fallback default objects if not yet in DB cache
+        const master = masterAgent || {
+            id: 'M_agent_01',
+            name: 'Master Agent',
+            role: 'Master Orchestrator',
+            specialization: 'System',
+            agent_kind: 'system',
+            status: 'idle',
+            progress: 0,
+            progress_message: 'Ready to scaffold workspace and orchestrate tasks',
+        };
+
+        const test = testAgent || {
+            id: 'T_agent_01',
+            name: 'Test Agent',
+            role: 'QA & Verification Specialist',
+            specialization: 'Testing',
+            sub_type: 'test',
+            agent_kind: 'system',
+            status: 'idle',
+            progress: 0,
+            progress_message: 'Ready to execute test suites and verify zero errors',
+        };
+
+        // Custom onboarded dev agents (exclude system & deploy agents to avoid duplicate cards)
+        const customDevs = devAgents.filter(a => 
+            a.id !== 'deploy_agent' && 
+            a.id !== master.id && 
+            a.id !== test.id &&
+            a.id !== 'M_agent_01' && 
+            a.id !== 'm_agent_01' && 
+            a.id !== 'T_agent_01' &&
+            a.id !== 't_agent_01' &&
+            !a.name?.toLowerCase().includes('deploy agent')
+        );
+
+        // Deduplicate strictly by ID to guarantee unique React keys
+        const seenIds = new Set();
+        const result = [];
+        for (const ag of [master, test, ...customDevs]) {
+            if (ag && ag.id && !seenIds.has(ag.id)) {
+                seenIds.add(ag.id);
+                result.push(ag);
+            }
+        }
+        return result;
     }, [agents, devAgents]);
+
 
     const getAgentDisplayName = useCallback((agent) => {
         if (!agent) return 'Agent';
@@ -528,6 +605,19 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         enabled: !!token && hasValidTaskToken,
     });
 
+    const { data: telemetryData = null } = useQuery({
+        queryKey: ['telemetry', selectedProjectKey],
+        queryFn: async () => {
+            if (!selectedProjectKey) return null;
+            const headers = { 'Authorization': `Bearer ${token}` };
+            const res = await fetch(API_ENDPOINTS.AGENT_TELEMETRY(selectedProjectKey), { headers });
+            if (!res.ok) return null;
+            return await res.json();
+        },
+        enabled: !!token && !!selectedProjectKey,
+        refetchInterval: 4000,
+    });
+
     const isDashboardSkeletonVisible = projects.length > 0 && !dashboardData && (isLoadingAgents || isLoadingProjectInfo || isLoadingDashboardData);
 
     useEffect(() => {
@@ -535,17 +625,21 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     }, [selectedProjectKey]);
 
     useEffect(() => {
-        if (!selectedProjectKey) {
+        if (location.state?.projectToken && selectedProjectKey !== location.state.projectToken) {
+            handleSetSelectedProjectKey(location.state.projectToken);
+        }
+        if (!selectedProjectKey && !location.state?.projectToken) {
             setProcessMode(DEFAULT_PROCESS_MODE);
             return;
         }
+        const activeKey = selectedProjectKey || location.state?.projectToken;
         const incomingMode = location.state?.processMode;
         const normalizedMode = ['ai_first', 'ai_assist', 'developer_only', 'coexistence', 'vibe_coding'].includes(incomingMode)
             ? incomingMode
-            : getProcessModeForProject(selectedProjectKey);
+            : getProcessModeForProject(activeKey);
         setProcessMode(normalizedMode);
-        setProcessModeForProject(selectedProjectKey, normalizedMode);
-    }, [selectedProjectKey, location.state]);
+        setProcessModeForProject(activeKey, normalizedMode);
+    }, [selectedProjectKey, location.state, handleSetSelectedProjectKey]);
 
     const isAiAssistMode = processMode === 'ai_assist' || processMode === 'ai_first';
     const isDeveloperOnlyMode = processMode === 'developer_only';
@@ -738,16 +832,6 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
     // ── Run Agent (Docker execution) ─────────────────────────────────
     const handleRunAgentClick = (agent) => {
-        if (agent.agent_kind === 'system') return;
-        // For private repos, require both URL and PAT. For public repos, only URL is needed.
-        const needsRepoUrl = !agent.git_repo_url;
-        const needsPatForPrivateRepo = agent.git_repo_url && !agent.is_public_repo && !agent.has_git_token;
-        
-        if (needsRepoUrl || needsPatForPrivateRepo) {
-            navigate('/prerequisites');
-            return;
-        }
-
         handleRunAgent(agent.id);
     };
 
@@ -871,28 +955,16 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const [runningAll, setRunningAll] = useState(false);
 
     const handleRunAll = useCallback(async () => {
-        const idleAgents = agents.filter(a => a.status === 'idle' && a.agent_kind !== 'system');
+        const idleAgents = agents.filter(a => a.status === 'idle');
         if (idleAgents.length === 0) return;
-
-        // Check for missing config: require repo URL for all, and PAT only for private repos
-        const missingConfig = idleAgents.filter(agent => {
-            const needsRepoUrl = !agent.git_repo_url;
-            const needsPatForPrivateRepo = agent.git_repo_url && !agent.is_public_repo && !agent.has_git_token;
-            return needsRepoUrl || needsPatForPrivateRepo;
-        });
-        
-        if (missingConfig.length > 0) {
-            navigate('/prerequisites');
-            return;
-        }
 
         setGitModalAgent(null);
         setRunningAll(true);
         setAgentRunStartTime(new Date().toISOString());
         setAgentRunCompletedTime(null);
         setExecutionSteps([]);
-        setAgents(prev => prev.map(a => (a.status === 'idle' && a.agent_kind !== 'system')
-            ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' }
+        setAgents(prev => (prev || []).map(a => a.status !== 'running'
+            ? { ...a, status: 'running', progress: 10, progress_message: 'Starting agent in container playground...' }
             : a));
 
         try {
@@ -919,24 +991,23 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         } finally {
             setRunningAll(false);
         }
-    }, [agents, token, hasValidTaskToken, taskToken, withProjectToken, fetchAgents, fetchTasks, refreshRoadmap, navigate]);
+    }, [agents, token, hasValidTaskToken, taskToken, withProjectToken, fetchAgents, fetchTasks, refreshRoadmap, selectedProjectKey]);
 
     useEffect(() => {
         if (!isAiAssistMode) return;
         if (!selectedProjectKey) return;
         if (isLoadingAgents || runningAll) return;
         if (gitModalAgent) return;
-        if (!hasValidTaskToken) return;
         if (agents.some(a => a.status === 'running')) return;
 
-        const idleAgents = agents.filter(a => a.status === 'idle' && a.agent_kind !== 'system');
+        const idleAgents = agents.filter(a => (a.status === 'idle' || !a.status || a.status === 'not_started' || a.status === 'ready') && a.agent_kind !== 'system');
         if (idleAgents.length === 0) return;
 
         const autoKey = `${selectedProjectKey}:${processMode}`;
         if (autoAiAssistRunRef.current.has(autoKey)) return;
         autoAiAssistRunRef.current.add(autoKey);
         handleRunAll();
-    }, [isAiAssistMode, selectedProjectKey, isLoadingAgents, runningAll, gitModalAgent, hasValidTaskToken, agents, processMode, handleRunAll]);
+    }, [isAiAssistMode, selectedProjectKey, isLoadingAgents, runningAll, gitModalAgent, agents, processMode, handleRunAll]);
 
     const submitMultiAgentConfig = async () => {
         const globalConfig = agentsGitConfig.__global__ || {};
@@ -1182,8 +1253,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
 
     // WebSocket log streaming for Agent Container Runtime & Deploy Preview
     useEffect(() => {
-        const hasRunningAgents = runningAll || Boolean(runningAgent) || agents.some(a => a.status === 'running');
-        const shouldConnect = Boolean(selectedProjectKey && (previewStatus.status === 'deploying' || previewStatus.status === 'running' || hasRunningAgents));
+        const shouldConnect = Boolean(selectedProjectKey);
 
         if (!shouldConnect) {
             if (wsRef.current) {
@@ -1311,7 +1381,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                 wsRef.current = null;
             }
         };
-    }, [selectedProjectKey, previewStatus.status, runningAll, runningAgent, agents, refreshRoadmap, fetchAgents]);
+    }, [selectedProjectKey]);
+
 
     const handleDeployPreview = async () => {
         setIsDeploying(true);
@@ -1435,19 +1506,31 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
     const renderAgentCard = (agent) => {
         const isSystemAgent = agent.agent_kind === 'system';
         const isGitManager = agent.id === 'G_agent_01';
-        const isMasterAgent = agent.id === 'M_agent_01';
-        const isTest = agent.sub_type === 'test';
+        const isMasterAgent = agent.id === 'M_agent_01' || agent.id === 'm_agent_01' || (agent.agent_kind === 'system' && agent.name?.toLowerCase().includes('master'));
+        const isTest = agent.id === 'T_agent_01' || agent.id === 't_agent_01' || (agent.agent_kind === 'system' && (agent.name?.toLowerCase().includes('test') || agent.sub_type === 'test'));
+
         const isShared = agent.id?.startsWith('shared_');
         const isDedicated = agent.id?.startsWith('dedicated_');
         const agentType = isShared ? 'Shared' : isDedicated ? 'Dedicated' : null;
         const displayName = getAgentDisplayName(agent);
         let cfg = agentConfig[agent.id] || agentConfig.agent_01;
 
-        if (isTest) {
+        if (isMasterAgent) {
             cfg = {
                 ...cfg,
-                gradient: 'from-orange-400 to-orange-600',
-                accent: 'from-orange-400 to-orange-600',
+                icon: <Bot className="w-5 h-5 text-white" />,
+                gradient: 'from-fuchsia-500 to-purple-600',
+                accent: 'from-fuchsia-500 to-purple-600',
+                shadow: 'shadow-fuchsia-200',
+                color: 'fuchsia',
+                logo: masterLogo,
+            };
+        } else if (isTest) {
+            cfg = {
+                ...cfg,
+                icon: <Shield className="w-5 h-5 text-white" />,
+                gradient: 'from-amber-400 to-orange-500',
+                accent: 'from-amber-400 to-orange-500',
                 shadow: 'shadow-orange-200',
                 color: 'orange',
                 logo: kaktoxLogo,
@@ -1455,15 +1538,15 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
         }
 
         const Icon = cfg.icon;
-        // Use logo for specific agents, or dev agents use N-Mod logo
-        const useLogo = cfg.logo || (isShared || isDedicated);
-        const logoSrc = cfg.logo || (useLogo ? nModLogo : null);
+        // Use logo for specific agents, or dev agents use N-Mod logo / agent.face
+        const useLogo = Boolean(cfg.logo) || isMasterAgent || isTest || isShared || isDedicated || Boolean(agent.face);
+        const logoSrc = isMasterAgent ? masterLogo : isTest ? kaktoxLogo : (agent.face || cfg.logo || nModLogo);
         const isRunning = agent.status === 'running';
         const isCompleted = agent.status === 'completed';
         const isError = agent.status === 'error';
-        const isIdle = agent.status === 'idle';
+        const isIdle = agent.status === 'idle' || !agent.status || agent.status === 'not_started' || agent.status === 'ready';
         const statusColor = isRunning ? cfg.color : isCompleted ? 'emerald' : isError ? 'red' : 'gray';
-        const canRun = taskList.filter(t => (t.taskStatus || '').toLowerCase() !== 'completed').length > 0;
+        const canRun = taskList.length > 0;
 
         return (
             <div key={agent.id} className="bg-app-bg-card rounded-xl shadow border border-app-border-light p-4 flex flex-col relative overflow-hidden group hover:shadow-lg transition-shadow">
@@ -1519,13 +1602,21 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                 </span>
                             )}
                             <span className={`text-[10px] font-bold text-${statusColor}-${isIdle ? '500' : '600'} whitespace-nowrap`}>
-                                {isRunning ? 'RUNNING' : (isIdle ? 'IDLE' : (isCompleted ? 'COMPLETED' : (isError ? 'ERROR' : 'NOT STARTED')))}
+                                {isRunning ? 'RUNNING' : (isCompleted ? 'COMPLETED' : (isError ? 'ERROR' : 'IDLE'))}
                             </span>
                         </div>
                         {/* Action buttons */}
                         <div className="flex items-center gap-1">
                             {!isSystemAgent && (
-                                (isIdle || isCompleted || isError) ? (
+                                isRunning ? (
+                                    <button
+                                        onClick={() => handleResetAgent(agent.id)}
+                                        className="inline-flex items-center justify-center gap-1 px-2 py-1 text-[10px] font-bold text-white bg-app-status-error hover:bg-app-status-error rounded shadow-sm whitespace-nowrap"
+                                        title="Stop agent"
+                                    >
+                                        <StopCircle className="w-2.5 h-2.5" /> Stop
+                                    </button>
+                                ) : (
                                     <button
                                         onClick={() => handleRunAgentClick(agent)}
                                         disabled={!canRun || runningAgent === agent.id}
@@ -1536,14 +1627,6 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                         title={!canRun ? 'No pending tasks available' : `Run ${displayName}`}
                                     >
                                         {runningAgent === agent.id ? (<><Loader2 className="w-2.5 h-2.5 animate-spin" /> Starting</>) : (<><Play className="w-2.5 h-2.5" /> Run</>)}
-                                    </button>
-                                ) : (
-                                    <button
-                                        onClick={() => handleResetAgent(agent.id)}
-                                        className="inline-flex items-center justify-center gap-1 px-2 py-1 text-[10px] font-bold text-white bg-app-status-error hover:bg-app-status-error rounded shadow-sm whitespace-nowrap"
-                                        title="Stop agent"
-                                    >
-                                        <StopCircle className="w-2.5 h-2.5" /> Stop
                                     </button>
                                 )
                             )}
@@ -2715,17 +2798,18 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                 </span>
                                             </div>
                                             <div className="flex items-center flex-wrap gap-2 lg:justify-end">
+                                                <ContextTracker tokenUsage={telemetryData} size="sm" align="right" />
                                                 <span className="text-[10px] font-bold text-app-text-light uppercase tracking-wider bg-orange-50 text-orange-600 px-2.5 py-1 rounded-full">
                                                     {totalTaskCount} Available Tasks
                                                 </span>
                                                 <button
                                                     onClick={() => handleRunAll()}
-                                                    disabled={runningAll || agents.filter(a => a.status === 'idle' && a.agent_kind !== 'system').length === 0}
-                                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${runningAll || agents.filter(a => a.status === 'idle' && a.agent_kind !== 'system').length === 0
+                                                    disabled={runningAll || orderedAgents.filter(a => a.status !== 'running' && a.id !== 'deploy_agent').length === 0}
+                                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide transition-all duration-200 ${runningAll || orderedAgents.filter(a => a.status !== 'running' && a.id !== 'deploy_agent').length === 0
                                                         ? 'bg-app-bg-hover text-app-text-light cursor-not-allowed'
                                                         : 'bg-gradient-to-r from-orange-500 to-app-status-warning text-white shadow-md hover:shadow-lg hover:scale-105'
                                                         }`}
-                                                    title="Run all idle agents simultaneously"
+                                                    title="Run all agents simultaneously"
                                                 >
                                                     {runningAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
                                                     {runningAll ? 'Starting...' : 'Run All'}
@@ -2747,20 +2831,8 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
                                                 </button>
                                             </div>
                                         </div>
-
-                                        {/* ── Real-Time Agent Execution & Sandbox Logs ── */}
-                                        {(executionSteps.length > 0 || runningAll || Boolean(runningAgent) || agents.some(a => a.status === 'running') || previewStatus.status === 'deploying') && (
-                                            <div className="mb-4">
-                                                <ExecutionStream
-                                                    steps={executionSteps}
-                                                    isLive={runningAll || Boolean(runningAgent) || agents.some(a => a.status === 'running') || previewStatus.status === 'deploying'}
-                                                    promptTimestamp={agentRunStartTime}
-                                                    completedAt={agentRunCompletedTime}
-                                                />
-                                            </div>
-                                        )}
-
                                         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+
                                             {orderedAgents.map(agent => renderAgentCard(agent))}
 
                                             {/* ── Preview Deploy Section (Tile Format) ────────────────────── */}
@@ -3031,7 +3103,7 @@ export default function StatusDashboard({ projects = [], projectsLoading = false
             }
             {
                 showLogModal && (() => {
-                    const agent = agents.find(a => a.id === showLogModal);
+                    const agent = orderedAgents.find(a => a.id === showLogModal) || agents.find(a => a.id === showLogModal);
                     if (!agent) return null;
                     const logs = agent.output_log || [];
                     const result = agent.last_result;
