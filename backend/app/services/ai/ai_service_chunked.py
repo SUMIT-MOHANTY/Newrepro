@@ -825,6 +825,43 @@ async def analyze_document_chunked(
 
         update_job_progress(100, "Analysis complete!")
         
+        # Auto-synthesize baseline enterprise HLD and LLD specifications
+        hld_data = None
+        lld_data = None
+        try:
+            from app.services.ai.architecture_design_service import (
+                synthesize_hld_from_analysis,
+                synthesize_lld_from_analysis
+            )
+            analysis_meta = {
+                "title": final_json.get("title"),
+                "stages": {
+                    "stage1_requirements": stage1_data,
+                    "stage2_architecture": stage2_data,
+                    "stage3_data_api": stage3_data,
+                    "stage4_implementation": stage4_data
+                }
+            }
+            project_label = final_json.get("title") or "Enterprise Solution"
+            hld_md = synthesize_hld_from_analysis(analysis_meta, project_name=project_label)
+            lld_md = synthesize_lld_from_analysis(analysis_meta, project_name=project_label)
+            hld_data = {
+                "title": f"High-Level Design (HLD) - {project_label}",
+                "document_code": f"HLD-V1.0",
+                "markdown": hld_md,
+                "version": "1.0.0",
+                "generated_at": datetime.utcnow().isoformat()
+            }
+            lld_data = {
+                "title": f"Low-Level Design (LLD) - {project_label}",
+                "document_code": f"LLD-V1.0",
+                "markdown": lld_md,
+                "version": "1.0.0",
+                "generated_at": datetime.utcnow().isoformat()
+            }
+        except Exception as synth_err:
+            logger.warning(f"Auto-synthesis of HLD/LLD failed: {synth_err}")
+
         return {
             "status": "success",
             "analysis": stage5_result,
@@ -836,6 +873,8 @@ async def analyze_document_chunked(
             "user_flow": final_json.get("user_flow"),
             "title": final_json.get("title"),
             "revision_delta": final_json.get("revision_delta"),
+            "hld": hld_data,
+            "lld": lld_data,
             "stages": {
                 "stage1_requirements": stage1_data,
                 "stage2_architecture": stage2_data,

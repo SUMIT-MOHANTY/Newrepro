@@ -4,7 +4,7 @@ import { API_ENDPOINTS, API_BASE_URL } from '../config';
 import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { FileText, Download, Server, Users, Activity, Clock, Loader2, KeyRound, Plus, Circle, CheckCircle2, Info } from 'lucide-react';
+import { FileText, Download, Server, Users, Activity, Clock, Loader2, KeyRound, Plus, Circle, CheckCircle2, Info, Layers, Database, Code, Copy, Check, Sparkles } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
 import ReactFlow, { Background, Controls } from 'reactflow';
 import 'reactflow/dist/style.css';
@@ -743,6 +743,104 @@ export default function AgentAnalysis({
     const [sidebarTab, setSidebarTab] = useState('chat'); // 'chat' | 'clarification'
     const [analysisInProgress, setAnalysisInProgress] = useState(false); // Track if analysis is running
     const [selectedDocId, setSelectedDocId] = useState(null); // Selected revision document ID for checkpoints
+    const [activeDesignTab, setActiveDesignTab] = useState('executive'); // 'executive' | 'hld' | 'lld'
+    const [hldDesign, setHldDesign] = useState(null);
+    const [lldDesign, setLldDesign] = useState(null);
+    const [designLoading, setDesignLoading] = useState(false);
+    const [designGenerating, setDesignGenerating] = useState(false);
+    const [copiedSnippet, setCopiedSnippet] = useState(null);
+
+    useEffect(() => {
+        if (result?.analysis?.hld) {
+            setHldDesign(result.analysis.hld);
+        }
+        if (result?.analysis?.lld) {
+            setLldDesign(result.analysis.lld);
+        }
+    }, [result]);
+
+    const fetchArchitectureDesign = useCallback(async (docId) => {
+        const targetId = docId || result?.id;
+        if (!targetId) return;
+        setDesignLoading(true);
+        try {
+            const res = await fetch(`${API_BASE_URL}/documents/${targetId}/design`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                if (data.hld) setHldDesign(data.hld);
+                if (data.lld) setLldDesign(data.lld);
+            }
+        } catch (err) {
+            console.error('Failed to fetch architecture design:', err);
+        } finally {
+            setDesignLoading(false);
+        }
+    }, [result?.id, token]);
+
+    const handleRegenerateArchitectureDesign = async (type = 'all') => {
+        if (!result?.id) return;
+        setDesignGenerating(true);
+        try {
+            const res = await fetch(`${API_BASE_URL}/documents/${result.id}/design/generate`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ design_type: type, force_regenerate: true })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                if (data.hld) setHldDesign(data.hld);
+                if (data.lld) setLldDesign(data.lld);
+            }
+        } catch (err) {
+            console.error('Failed to regenerate architecture design:', err);
+        } finally {
+            setDesignGenerating(false);
+        }
+    };
+
+    const handleDownloadArchitectureMarkdown = (type = 'hld') => {
+        const design = type === 'lld' ? lldDesign : hldDesign;
+        const content = design?.markdown || '';
+        if (!content) return;
+        const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const cleanProj = (result?.filename || 'Enterprise_System').replace(/[^a-zA-Z0-9_-]/g, '_');
+        a.download = `${cleanProj}_${type.toUpperCase()}_Specification.md`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+
+    const handleDownloadArchitecturePDF = async (type = 'hld') => {
+        const design = type === 'lld' ? lldDesign : hldDesign;
+        const content = design?.markdown || '';
+        if (!content) return;
+        const { generateArchitectureDesignPDF } = await import('./architecturePdfGenerator');
+        await generateArchitectureDesignPDF({
+            title: design.title || `${type.toUpperCase()} Specification`,
+            documentType: type.toUpperCase(),
+            markdownContent: content,
+            projectName: result?.filename || 'Enterprise Solution',
+            version: design.version || '1.0.0'
+        });
+    };
+
+    const handleCopyDdl = () => {
+        const content = lldDesign?.markdown || '';
+        const match = content.match(/```sql([\s\S]*?)```/);
+        const ddl = match ? match[1].trim() : content;
+        navigator.clipboard.writeText(ddl);
+        setCopiedSnippet('ddl');
+        setTimeout(() => setCopiedSnippet(null), 2500);
+    };
 
     const handleSelectRevisionDoc = (doc) => {
         if (!doc || !doc.id) return;
@@ -753,6 +851,8 @@ export default function AgentAnalysis({
             setUserAnswers(docAnalysis.userAnswers || {});
             setUserFeedback(docAnalysis.userFeedback || '');
             setCompletedStages(docAnalysis.stages || {});
+            if (docAnalysis.hld) setHldDesign(docAnalysis.hld);
+            if (docAnalysis.lld) setLldDesign(docAnalysis.lld);
             setResult({
                 id: doc.id,
                 filename: doc.filename,
@@ -4329,157 +4429,379 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                 <div className="relative">
                                     {/* Main Content Area - Add right margin when sidebar is open */}
                                     <div>
-                                        <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6">
-                                            <h3 className="text-lg font-bold text-app-text-main mb-4 pb-2 border-b-2 border-app-border-light">
-                                                Executive Summary & Agent Analysis
-                                            </h3>
-                                            <div className="prose prose-lg prose-slate max-w-none text-app-text-label leading-relaxed">
-                                                {(() => {
-                                                    const analysisContent = result.analysis?.analysis || '';
-                                                    const explicitHtml = result.analysis?.html;
-                                                    const htmlToRender = explicitHtml || (isLikelyHtml(analysisContent) ? analysisContent : null);
+                                        {/* Design & Analysis Tab Switcher Bar */}
+                                        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200/80 pb-3 mb-5">
+                                            {/* Tab Buttons */}
+                                            <div className="flex items-center gap-1.5 p-1 bg-gray-100/90 rounded-xl border border-gray-200/60 shadow-inner">
+                                                <button
+                                                    onClick={() => setActiveDesignTab('executive')}
+                                                    className={`flex items-center gap-2 px-3.5 py-2 text-xs font-bold rounded-lg transition-all ${
+                                                        activeDesignTab === 'executive'
+                                                            ? 'bg-white text-blue-600 shadow-sm ring-1 ring-black/5'
+                                                            : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
+                                                    }`}
+                                                >
+                                                    <FileText className="w-3.5 h-3.5" />
+                                                    <span>Executive Summary</span>
+                                                </button>
 
-                                                    // Function to filter content for frontend display (hide ER diagrams and API sections)
-                                                    const filterContentForDisplay = (content) => {
-                                                        if (!content) return '';
+                                                <button
+                                                    onClick={() => {
+                                                        setActiveDesignTab('hld');
+                                                        if (!hldDesign && result?.id) fetchArchitectureDesign(result.id);
+                                                    }}
+                                                    className={`flex items-center gap-2 px-3.5 py-2 text-xs font-bold rounded-lg transition-all ${
+                                                        activeDesignTab === 'hld'
+                                                            ? 'bg-white text-blue-600 shadow-sm ring-1 ring-black/5'
+                                                            : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
+                                                    }`}
+                                                >
+                                                    <Layers className="w-3.5 h-3.5" />
+                                                    <span>High-Level Design (HLD)</span>
+                                                    <span className="px-1.5 py-0.5 text-[9px] font-bold bg-blue-100 text-blue-700 rounded-full">IEEE 1016</span>
+                                                </button>
 
-                                                        const lines = content.split('\n');
-                                                        const result = [];
-                                                        let inCodeBlock = false;
-                                                        let codeBlockType = '';
-                                                        let skipSection = false;
-                                                        let sectionLevel = 0;
+                                                <button
+                                                    onClick={() => {
+                                                        setActiveDesignTab('lld');
+                                                        if (!lldDesign && result?.id) fetchArchitectureDesign(result.id);
+                                                    }}
+                                                    className={`flex items-center gap-2 px-3.5 py-2 text-xs font-bold rounded-lg transition-all ${
+                                                        activeDesignTab === 'lld'
+                                                            ? 'bg-white text-indigo-600 shadow-sm ring-1 ring-black/5'
+                                                            : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
+                                                    }`}
+                                                >
+                                                    <Database className="w-3.5 h-3.5" />
+                                                    <span>Low-Level Design (LLD)</span>
+                                                    <span className="px-1.5 py-0.5 text-[9px] font-bold bg-indigo-100 text-indigo-700 rounded-full">OpenAPI & DDL</span>
+                                                </button>
 
-                                                        for (let i = 0; i < lines.length; i++) {
-                                                            const line = lines[i];
-                                                            const trimmed = line.trim();
+                                                <button
+                                                    onClick={() => setIsArchModalOpen(true)}
+                                                    className="flex items-center gap-2 px-3.5 py-2 text-xs font-bold rounded-lg text-gray-600 hover:text-gray-900 hover:bg-white/50 transition-all"
+                                                >
+                                                    <Activity className="w-3.5 h-3.5" />
+                                                    <span>User Flow Diagram</span>
+                                                </button>
+                                            </div>
 
-                                                            // Detect section headers to skip
-                                                            const headerMatch = trimmed.match(/^(#{1,6})\s+(.+)/);
-                                                            if (headerMatch) {
-                                                                const level = headerMatch[1].length;
-                                                                const headerText = headerMatch[2].toLowerCase();
+                                            {/* Design Actions (Download PDF, Download Markdown, Regenerate, Copy DDL) */}
+                                            {(activeDesignTab === 'hld' || activeDesignTab === 'lld') && (
+                                                <div className="flex items-center gap-2 flex-wrap">
+                                                    {activeDesignTab === 'lld' && (
+                                                        <button
+                                                            onClick={handleCopyDdl}
+                                                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-all shadow-sm"
+                                                            title="Copy SQL Migration DDL"
+                                                        >
+                                                            {copiedSnippet === 'ddl' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                                                            <span>{copiedSnippet === 'ddl' ? 'DDL Copied!' : 'Copy DDL'}</span>
+                                                        </button>
+                                                    )}
 
-                                                                // Check if this is a section we want to hide
-                                                                const shouldHide =
-                                                                    headerText.includes('api specification') ||
-                                                                    headerText.includes('api endpoint') ||
-                                                                    headerText.includes('core api') ||
-                                                                    headerText.includes('deliverable mapping') ||
-                                                                    headerText.includes('files to create') ||
-                                                                    headerText.includes('phase 1:') ||
-                                                                    headerText.includes('phase 2:') ||
-                                                                    headerText.includes('phase 3:') ||
-                                                                    headerText.includes('phase 4:') ||
-                                                                    headerText.includes('phase 5:') ||
-                                                                    (headerText.match(/^\d+\.\d+/) && (
-                                                                        headerText.includes('api') ||
-                                                                        headerText.includes('deliverable')
-                                                                    ));
+                                                    <button
+                                                        onClick={() => handleDownloadArchitectureMarkdown(activeDesignTab)}
+                                                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-all shadow-sm"
+                                                        title={`Download ${activeDesignTab.toUpperCase()} Markdown`}
+                                                    >
+                                                        <Download className="w-3.5 h-3.5 text-blue-600" />
+                                                        <span>Export Markdown</span>
+                                                    </button>
 
-                                                                if (shouldHide) {
-                                                                    skipSection = true;
-                                                                    sectionLevel = level;
-                                                                    continue;
-                                                                } else if (skipSection && level <= sectionLevel) {
-                                                                    // End of skipped section - new section at same or higher level
-                                                                    skipSection = false;
-                                                                    sectionLevel = 0;
-                                                                }
-                                                            }
+                                                    <button
+                                                        onClick={() => handleDownloadArchitecturePDF(activeDesignTab)}
+                                                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-all shadow-sm shadow-blue-500/20"
+                                                        title={`Download ${activeDesignTab.toUpperCase()} PDF`}
+                                                    >
+                                                        <Download className="w-3.5 h-3.5" />
+                                                        <span>Export PDF</span>
+                                                    </button>
 
-                                                            // Skip lines if we're in a hidden section
-                                                            if (skipSection) {
-                                                                continue;
-                                                            }
+                                                    <button
+                                                        onClick={() => handleRegenerateArchitectureDesign(activeDesignTab)}
+                                                        disabled={designGenerating}
+                                                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg transition-all disabled:opacity-50"
+                                                        title={`Regenerate ${activeDesignTab.toUpperCase()} with AI`}
+                                                    >
+                                                        {designGenerating ? (
+                                                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                        ) : (
+                                                            <Sparkles className="w-3.5 h-3.5 text-purple-600" />
+                                                        )}
+                                                        <span>{designGenerating ? 'Generating...' : 'Regenerate'}</span>
+                                                    </button>
+                                                </div>
+                                            )}
+                                        </div>
 
-                                                            // Handle code blocks
-                                                            if (trimmed.startsWith('```')) {
-                                                                if (!inCodeBlock) {
-                                                                    // Start of code block
-                                                                    inCodeBlock = true;
-                                                                    codeBlockType = trimmed.substring(3).trim().toLowerCase();
+                                        {/* ── VIEW 1: EXECUTIVE SUMMARY ── */}
+                                        {activeDesignTab === 'executive' && (
+                                            <>
+                                                <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6">
+                                                    <h3 className="text-lg font-bold text-app-text-main mb-4 pb-2 border-b-2 border-app-border-light">
+                                                        Executive Summary & Agent Analysis
+                                                    </h3>
+                                                    <div className="prose prose-lg prose-slate max-w-none text-app-text-label leading-relaxed">
+                                                        {(() => {
+                                                            const analysisContent = result.analysis?.analysis || '';
+                                                            const explicitHtml = result.analysis?.html;
+                                                            const htmlToRender = explicitHtml || (isLikelyHtml(analysisContent) ? analysisContent : null);
+
+                                                            // Function to filter content for frontend display (hide ER diagrams and API sections)
+                                                            const filterContentForDisplay = (content) => {
+                                                                if (!content) return '';
+
+                                                                const lines = content.split('\n');
+                                                                const result = [];
+                                                                let inCodeBlock = false;
+                                                                let codeBlockType = '';
+                                                                let skipSection = false;
+                                                                let sectionLevel = 0;
+
+                                                                for (let i = 0; i < lines.length; i++) {
+                                                                    const line = lines[i];
+                                                                    const trimmed = line.trim();
+
+                                                                    // Detect section headers to skip
+                                                                    const headerMatch = trimmed.match(/^(#{1,6})\s+(.+)/);
+                                                                    if (headerMatch) {
+                                                                        const level = headerMatch[1].length;
+                                                                        const headerText = headerMatch[2].toLowerCase();
+
+                                                                        // Check if this is a section we want to hide
+                                                                        const shouldHide =
+                                                                            headerText.includes('api specification') ||
+                                                                            headerText.includes('api endpoint') ||
+                                                                            headerText.includes('core api') ||
+                                                                            headerText.includes('deliverable mapping') ||
+                                                                            headerText.includes('files to create') ||
+                                                                            headerText.includes('phase 1:') ||
+                                                                            headerText.includes('phase 2:') ||
+                                                                            headerText.includes('phase 3:') ||
+                                                                            headerText.includes('phase 4:') ||
+                                                                            headerText.includes('phase 5:') ||
+                                                                            (headerText.match(/^\d+\.\d+/) && (
+                                                                                headerText.includes('api') ||
+                                                                                headerText.includes('deliverable')
+                                                                            ));
+
+                                                                        if (shouldHide) {
+                                                                            skipSection = true;
+                                                                            sectionLevel = level;
+                                                                            continue;
+                                                                        } else if (skipSection && level <= sectionLevel) {
+                                                                            // End of skipped section - new section at same or higher level
+                                                                            skipSection = false;
+                                                                            sectionLevel = 0;
+                                                                        }
+                                                                    }
+
+                                                                    // Skip lines if we're in a hidden section
+                                                                    if (skipSection) {
+                                                                        continue;
+                                                                    }
+
+                                                                    // Handle code blocks
+                                                                    if (trimmed.startsWith('```')) {
+                                                                        if (!inCodeBlock) {
+                                                                            // Start of code block
+                                                                            inCodeBlock = true;
+                                                                            codeBlockType = trimmed.substring(3).trim().toLowerCase();
+                                                                            result.push(line);
+                                                                        } else {
+                                                                            // End of code block
+                                                                            inCodeBlock = false;
+                                                                            codeBlockType = '';
+                                                                            result.push(line);
+                                                                        }
+                                                                        continue;
+                                                                    }
+
                                                                     result.push(line);
-                                                                } else {
-                                                                    // End of code block
-                                                                    inCodeBlock = false;
-                                                                    codeBlockType = '';
-                                                                    result.push(line);
                                                                 }
-                                                                continue;
+
+                                                                return result.join('\n');
+                                                            };
+
+                                                            if (processing && !analysisContent.trim()) {
+                                                                return (
+                                                                    <div className="text-sm text-app-text-muted italic">
+                                                                        Generating analysis...
+                                                                    </div>
+                                                                );
                                                             }
 
-                                                            result.push(line);
-                                                        }
+                                                            // Always use ReactMarkdown for consistent formatting
+                                                            return (
+                                                                <ReactMarkdown
+                                                                    remarkPlugins={[remarkGfm]}
+                                                                    components={markdownComponents}
+                                                                >
+                                                                    {filterContentForDisplay(analysisContent)}
+                                                                </ReactMarkdown>
+                                                            );
+                                                        })()}
+                                                    </div>
+                                                </div>
 
-                                                        return result.join('\n');
-                                                    };
+                                                {/* Raw Source (Collapsed) */}
+                                                <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 mt-6">
+                                                    <details className="group">
+                                                        <summary className="flex justify-between items-center font-medium cursor-pointer list-none text-xs text-app-text-light uppercase tracking-widest hover:text-app-text-label transition-colors">
+                                                            <span>View Processed Content</span>
+                                                            <span className="transition-transform group-open:rotate-180">
+                                                                <svg fill="none" height="16" shapeRendering="geometricPrecision" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" viewBox="0 0 24 24" width="16"><path d="M6 9l6 6 6-6"></path></svg>
+                                                            </span>
+                                                        </summary>
+                                                        <div className="mt-4 pt-4 border-t border-app-bg-page">
+                                                            {(() => {
+                                                                // Check if we have structured sections
+                                                                const sections = result.analysis?.sections || result.extraction?.sections;
+                                                                const markdown = result.extraction?.markdown || '';
 
-                                                    if (processing && !analysisContent.trim()) {
-                                                        return (
-                                                            <div className="text-sm text-app-text-muted italic">
-                                                                Generating analysis...
-                                                            </div>
-                                                        );
-                                                    }
+                                                                // If we have sections OR markdown with section separators, show tabs
+                                                                if ((sections && sections.length > 0) || markdown.includes('---')) {
+                                                                    return <ProcessedContentTabs sections={sections} markdown={markdown} />;
+                                                                }
 
-                                                    // Always use ReactMarkdown for consistent formatting
-                                                    return (
+                                                                // Fallback to HTML iframe if available
+                                                                if (result.extraction?.html) {
+                                                                    return (
+                                                                        <div className="bg-app-bg-card rounded-lg border border-app-border overflow-hidden">
+                                                                            <iframe
+                                                                                srcDoc={result.extraction.html}
+                                                                                className="w-full h-[420px] sm:h-[520px] lg:h-[600px] border-0"
+                                                                                title="Processed Content"
+                                                                                sandbox="allow-same-origin allow-scripts"
+                                                                            />
+                                                                        </div>
+                                                                    );
+                                                                }
+
+                                                                // Final fallback to plain markdown
+                                                                return (
+                                                                    <div className="bg-app-bg-page rounded-lg p-4 text-xs font-mono text-app-text-label max-h-96 overflow-y-auto whitespace-pre-wrap border border-app-border-light">
+                                                                        {markdown || '(No content extracted)'}
+                                                                    </div>
+                                                                );
+                                                            })()}
+                                                        </div>
+                                                    </details>
+                                                </div>
+                                            </>
+                                        )}
+
+                                        {/* ── VIEW 2: HIGH-LEVEL DESIGN (HLD) ── */}
+                                        {activeDesignTab === 'hld' && (
+                                            <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6 space-y-6">
+                                                {/* HLD Header Banner */}
+                                                <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-gray-200/80 gap-3">
+                                                    <div>
+                                                        <div className="flex items-center gap-2.5">
+                                                            <span className="px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-blue-100 text-blue-800 border border-blue-200">
+                                                                IEEE 1016-2009 / TOGAF ADM
+                                                            </span>
+                                                            <span className="text-xs font-mono font-semibold text-gray-400">
+                                                                {hldDesign?.document_code || 'HLD-V1.0'}
+                                                            </span>
+                                                        </div>
+                                                        <h2 className="text-xl font-extrabold text-gray-900 mt-1">
+                                                            {hldDesign?.title || `High-Level Design Specification`}
+                                                        </h2>
+                                                        <p className="text-xs text-gray-500 mt-0.5">
+                                                            System architecture topology, C4 container models, sequence workflows, enterprise security & RBAC matrix.
+                                                        </p>
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        <button
+                                                            onClick={() => handleDownloadArchitecturePDF('hld')}
+                                                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm transition-all"
+                                                        >
+                                                            <Download className="w-3.5 h-3.5" />
+                                                            <span>Download HLD PDF</span>
+                                                        </button>
+                                                    </div>
+                                                </div>
+
+                                                {/* HLD Content */}
+                                                {designLoading || designGenerating ? (
+                                                    <div className="py-20 flex flex-col items-center justify-center space-y-3">
+                                                        <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+                                                        <p className="text-sm font-semibold text-gray-700">Synthesizing Enterprise High-Level Design...</p>
+                                                        <p className="text-xs text-gray-400">Compiling C4 architecture topology, sequence workflows, and security matrices</p>
+                                                    </div>
+                                                ) : (
+                                                    <div className="prose prose-lg prose-slate max-w-none text-app-text-label leading-relaxed">
                                                         <ReactMarkdown
                                                             remarkPlugins={[remarkGfm]}
                                                             components={markdownComponents}
                                                         >
-                                                            {filterContentForDisplay(analysisContent)}
+                                                            {hldDesign?.markdown || '(No HLD generated yet. Click "Regenerate" to generate.)'}
                                                         </ReactMarkdown>
-                                                    );
-                                                })()}
+                                                    </div>
+                                                )}
                                             </div>
-                                        </div>
+                                        )}
 
-                                        {/* Raw Source (Collapsed) */}
-                                        <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4">
-                                            <details className="group">
-                                                <summary className="flex justify-between items-center font-medium cursor-pointer list-none text-xs text-app-text-light uppercase tracking-widest hover:text-app-text-label transition-colors">
-                                                    <span>View Processed Content</span>
-                                                    <span className="transition-transform group-open:rotate-180">
-                                                        <svg fill="none" height="16" shapeRendering="geometricPrecision" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" viewBox="0 0 24 24" width="16"><path d="M6 9l6 6 6-6"></path></svg>
-                                                    </span>
-                                                </summary>
-                                                <div className="mt-4 pt-4 border-t border-app-bg-page">
-                                                    {(() => {
-                                                        // Check if we have structured sections
-                                                        const sections = result.analysis?.sections || result.extraction?.sections;
-                                                        const markdown = result.extraction?.markdown || '';
-
-                                                        // If we have sections OR markdown with section separators, show tabs
-                                                        if ((sections && sections.length > 0) || markdown.includes('---')) {
-                                                            return <ProcessedContentTabs sections={sections} markdown={markdown} />;
-                                                        }
-
-                                                        // Fallback to HTML iframe if available
-                                                        if (result.extraction?.html) {
-                                                            return (
-                                                                <div className="bg-app-bg-card rounded-lg border border-app-border overflow-hidden">
-                                                                    <iframe
-                                                                        srcDoc={result.extraction.html}
-                                                                        className="w-full h-[420px] sm:h-[520px] lg:h-[600px] border-0"
-                                                                        title="Processed Content"
-                                                                        sandbox="allow-same-origin allow-scripts"
-                                                                    />
-                                                                </div>
-                                                            );
-                                                        }
-
-                                                        // Final fallback to plain markdown
-                                                        return (
-                                                            <div className="bg-app-bg-page rounded-lg p-4 text-xs font-mono text-app-text-label max-h-96 overflow-y-auto whitespace-pre-wrap border border-app-border-light">
-                                                                {markdown || '(No content extracted)'}
-                                                            </div>
-                                                        );
-                                                    })()}
+                                        {/* ── VIEW 3: LOW-LEVEL DESIGN (LLD) ── */}
+                                        {activeDesignTab === 'lld' && (
+                                            <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6 space-y-6">
+                                                {/* LLD Header Banner */}
+                                                <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-gray-200/80 gap-3">
+                                                    <div>
+                                                        <div className="flex items-center gap-2.5">
+                                                            <span className="px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                                                                Clean Layered Architecture / OpenAPI 3.1
+                                                            </span>
+                                                            <span className="text-xs font-mono font-semibold text-gray-400">
+                                                                {lldDesign?.document_code || 'LLD-V1.0'}
+                                                            </span>
+                                                        </div>
+                                                        <h2 className="text-xl font-extrabold text-gray-900 mt-1">
+                                                            {lldDesign?.title || `Low-Level Design Specification`}
+                                                        </h2>
+                                                        <p className="text-xs text-gray-500 mt-0.5">
+                                                            Layered module contracts, ER diagram, database dictionary, SQL migration DDL, state machine, and directory tree.
+                                                        </p>
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        <button
+                                                            onClick={handleCopyDdl}
+                                                            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 rounded-lg shadow-sm transition-all"
+                                                        >
+                                                            {copiedSnippet === 'ddl' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                                                            <span>{copiedSnippet === 'ddl' ? 'DDL Copied!' : 'Copy SQL DDL'}</span>
+                                                        </button>
+                                                        <button
+                                                            onClick={() => handleDownloadArchitecturePDF('lld')}
+                                                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-sm transition-all"
+                                                        >
+                                                            <Download className="w-3.5 h-3.5" />
+                                                            <span>Download LLD PDF</span>
+                                                        </button>
+                                                    </div>
                                                 </div>
-                                            </details>
-                                        </div>
+
+                                                {/* LLD Content */}
+                                                {designLoading || designGenerating ? (
+                                                    <div className="py-20 flex flex-col items-center justify-center space-y-3">
+                                                        <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
+                                                        <p className="text-sm font-semibold text-gray-700">Synthesizing Production Low-Level Design...</p>
+                                                        <p className="text-xs text-gray-400">Compiling data models, OpenAPI endpoint schemas, and migration DDL scripts</p>
+                                                    </div>
+                                                ) : (
+                                                    <div className="prose prose-lg prose-slate max-w-none text-app-text-label leading-relaxed">
+                                                        <ReactMarkdown
+                                                            remarkPlugins={[remarkGfm]}
+                                                            components={markdownComponents}
+                                                        >
+                                                            {lldDesign?.markdown || '(No LLD generated yet. Click "Regenerate" to generate.)'}
+                                                        </ReactMarkdown>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                             </div>
