@@ -783,7 +783,7 @@ async def trigger_master_orchestrate(
 ):
     """Explicitly trigger Master Agent to inspect workspace, seed starter scaffold, and partition tasks."""
     project_token = _normalize_project_token(project_token)
-    res = agent_service.orchestrate_master_scaffold_and_tasks(db=db, project_token=project_token)
+    res = await agent_service.orchestrate_master_scaffold_and_tasks(db=db, project_token=project_token, current_user=current_user)
     return {"success": True, **res}
 
 
@@ -1440,31 +1440,35 @@ async def _bg_run_agent(
                     except Exception:
                         pass
 
-                # Check if assigned to this agent
+                # ── PRIMARY: Check if Master Orchestrator LLM already assigned this task via assigned_agent_id ──
+                # assigned_agent_id is set by orchestrate_project() → assign_tasks_to_agents() using LLM reasoning.
+                # This is the canonical source of task ownership after the master orchestrator runs.
                 is_assigned = False
-                t_assigned_to = getattr(t, 'assigned_to', [])
-                if isinstance(t_assigned_to, str):
-                    try:
-                        t_assigned_to = json.loads(t_assigned_to)
-                    except Exception:
-                        t_assigned_to = [t_assigned_to]
-                if isinstance(t_assigned_to, list):
-                    if any(base_agent_id.lower() in str(a).lower() or agent_id.lower() in str(a).lower() for a in t_assigned_to):
-                        is_assigned = True
+                db_assigned_agent_id = getattr(t, 'assigned_agent_id', None)
+                if db_assigned_agent_id and base_agent_id:
+                    is_assigned = (
+                        db_assigned_agent_id.lower() == base_agent_id.lower()
+                        or db_assigned_agent_id.lower() == agent_id.lower()
+                    )
 
-                # Determine task lane
-                title_lower = t_title.lower()
-                if any(w in title_lower for w in ("front", "ui", "view", "screen", "component", "page")):
-                    task_lane = "frontend"
-                elif any(w in title_lower for w in ("back", "api", "db", "server", "model", "schema")):
-                    task_lane = "backend"
-                elif any(w in title_lower for w in ("test", "qa", "lint", "validat")):
-                    task_lane = "qa"
-                else:
-                    task_lane = (getattr(t, 'task_type', None) or "TASK").lower()
+                # ── SECONDARY: Check assigned_to JSON list (set alongside assigned_agent_id by orchestrator) ──
+                if not is_assigned:
+                    t_assigned_to = getattr(t, 'assigned_to', [])
+                    if isinstance(t_assigned_to, str):
+                        try:
+                            t_assigned_to = json.loads(t_assigned_to)
+                        except Exception:
+                            t_assigned_to = [t_assigned_to]
+                    if isinstance(t_assigned_to, list):
+                        if any(base_agent_id.lower() in str(a).lower() or agent_id.lower() in str(a).lower() for a in t_assigned_to):
+                            is_assigned = True
+
+                # ── Task lane: use canonical _infer_task_lane() consistent with master orchestrator ──
+                from app.services.agents.master_orchestrator import _infer_task_lane
+                task_lane = _infer_task_lane(t_title, t_desc)
 
                 t_status = str(getattr(t, 'status', '') or '').lower()
-                is_completed = t_status in ('done', 'completed')
+                is_completed = t_status in ('done', 'completed', 'finished')
 
                 task_obj = {
                     "db_id": t.id,
@@ -1481,6 +1485,9 @@ async def _bg_run_agent(
                 elif not is_completed and is_task_in_agent_lanes(task_lane, agent_lanes):
                     other_tasks.append(task_obj)
 
+            # Primary: use DB-assigned tasks (set by master orchestrator LLM).
+            # Fallback: use lane-matched tasks only if master orchestrator hasn't run yet
+            # (e.g. single-agent manual launch before run-all).
             tasks_to_execute = assigned_tasks or other_tasks
             if not tasks_to_execute:
                 agent_service.append_agent_log(agent_id, "No pending tasks in queue for this agent.", "info", project_token)
@@ -1510,7 +1517,8 @@ async def _bg_run_agent(
             workspace_dir = os.path.join(app_settings.project_storage_root, clean_token)
             os.makedirs(workspace_dir, exist_ok=True)
 
-            container_name = playground_manager.acquire_playground(
+            container_name = await asyncio.to_thread(
+                playground_manager.acquire_playground,
                 org_name=org_name,
                 project_token=project_token or "default_project",
                 agent_id=agent_id,
@@ -1604,6 +1612,21 @@ async def _bg_run_agent(
                 web_search_enabled="web_search" in (assigned_tools or []),
             )
 
+            # Embed structured tasks for the Supervisor DAG scheduler
+            task_config["tasks"] = [
+                {
+                    "task_id": str(t.get("id") or t.get("db_id") or f"task_{idx}"),
+                    "db_id": t.get("db_id"),
+                    "title": t.get("title", f"Task {idx + 1}"),
+                    "description": t.get("description", ""),
+                    "lane": t.get("lane", "backend"),
+                    "subtasks": t.get("subtasks", []),
+                    "depends_on": t.get("depends_on", []),
+                    "status": "pending",
+                }
+                for idx, t in enumerate(tasks_to_execute)
+            ]
+
             # Write task config to workspace
             config_json = json.dumps(task_config, indent=2)
             agent_dir = os.path.join(workspace_dir, ".agent")
@@ -1614,62 +1637,61 @@ async def _bg_run_agent(
 
             agent_service.append_agent_log(
                 agent_id,
-                f"Task config written to /workspace/.agent/task_config.json. Launching LangGraph runtime...",
+                f"Task config written to /workspace/.agent/task_config.json. Launching Agent Swarm runtime...",
                 "info",
                 project_token,
             )
 
             if agent_rec_mem:
                 agent_rec_mem["progress"] = 25
-                agent_rec_mem["progress_message"] = "LangGraph runtime executing: plan → code → build → verify..."
+                agent_rec_mem["progress_message"] = "Agent Swarm runtime executing: DAG scheduler → sub-agents → verify → push..."
 
             # Execute the in-container agent runtime
             execution_success = False
             if container_name:
-                # Run the LangGraph agent inside the container
-                exec_cmd = "cd /workspace && python -m agent.main 2>&1"
-                exit_code, output = playground_manager.exec_in_playground(
-                    container_name, exec_cmd, timeout=600
+                # Real-time streaming log callback: streams container stdout directly to dashboard
+                def on_agent_log_line(line: str) -> None:
+                    line_clean = line.strip()
+                    if not line_clean:
+                        return
+                    log_type = "error" if "error" in line_clean.lower() else "output"
+                    agent_service.append_agent_log(
+                        agent_id, line_clean[:500], log_type, project_token
+                    )
+
+                    # Update progress in real time as agents progress through phases
+                    if agent_rec_mem:
+                        lower = line_clean.lower()
+                        if "plan" in lower and "phase" in lower:
+                            agent_rec_mem["progress"] = 35
+                            agent_rec_mem["progress_message"] = "Swarm Phase: Planning & Architecture..."
+                        elif "dispatching" in lower or "starting task" in lower or ("code" in lower and ("generation" in lower or "writing" in lower)):
+                            agent_rec_mem["progress"] = 55
+                            agent_rec_mem["progress_message"] = "Swarm Phase: Sub-Agent Task Execution..."
+                        elif "build" in lower:
+                            agent_rec_mem["progress"] = 75
+                            agent_rec_mem["progress_message"] = "Swarm Phase: Build Verification..."
+                        elif "preview" in lower:
+                            agent_rec_mem["progress"] = 90
+                            agent_rec_mem["progress_message"] = "Swarm Phase: Preview Deployment..."
+                        elif "pushed to remote" in lower or "git push" in lower or "committed" in lower:
+                            agent_rec_mem["progress"] = 95
+                            agent_rec_mem["progress_message"] = "Swarm Phase: Code Committed & Pushed to Git..."
+
+                # Run with python -u (unbuffered binary stdout/stderr) for instant live streaming
+                exec_cmd = "export IDLE_TIMEOUT_SECONDS=1 && cd /workspace && python -u -m agent.main 2>&1"
+                exit_code, output = await asyncio.to_thread(
+                    playground_manager.exec_in_playground,
+                    container_name,
+                    exec_cmd,
+                    timeout=600,
+                    line_callback=on_agent_log_line,
                 )
-
-                # Stream output lines as agent logs
-                if output:
-                    lines = output.strip().splitlines()
-                    for i, line in enumerate(lines):
-                        line = line.strip()
-                        if not line:
-                            continue
-                        # Rate-limit log streaming (every 5th line or important lines)
-                        is_important = any(kw in line.lower() for kw in (
-                            "error", "warning", "success", "complete", "phase",
-                            "tool:", "wrote", "built", "preview", "failed",
-                            "[agentrunt", "[graphrouter", "[tool",
-                        ))
-                        if is_important or i % 5 == 0 or i < 10 or i >= len(lines) - 5:
-                            log_type = "error" if "error" in line.lower() else "output"
-                            agent_service.append_agent_log(
-                                agent_id, line[:500], log_type, project_token
-                            )
-
-                        # Update progress based on phase markers
-                        if agent_rec_mem:
-                            if "plan" in line.lower() and "phase" in line.lower():
-                                agent_rec_mem["progress"] = 35
-                                agent_rec_mem["progress_message"] = "LangGraph Phase: Planning..."
-                            elif "code" in line.lower() and ("generation" in line.lower() or "writing" in line.lower()):
-                                agent_rec_mem["progress"] = 55
-                                agent_rec_mem["progress_message"] = "LangGraph Phase: Code Generation..."
-                            elif "build" in line.lower():
-                                agent_rec_mem["progress"] = 75
-                                agent_rec_mem["progress_message"] = "LangGraph Phase: Build & Verify..."
-                            elif "preview" in line.lower():
-                                agent_rec_mem["progress"] = 90
-                                agent_rec_mem["progress_message"] = "LangGraph Phase: Preview Deployment..."
 
                 execution_success = exit_code == 0
                 agent_service.append_agent_log(
                     agent_id,
-                    f"LangGraph runtime {'completed successfully' if execution_success else f'exited with code {exit_code}'}.",
+                    f"Agent Swarm runtime {'completed successfully' if execution_success else f'exited with code {exit_code}'}.",
                     "info" if execution_success else "error",
                     project_token,
                 )
@@ -1758,7 +1780,7 @@ async def _bg_run_agent(
 
             # ── Release container ──
             if container_name:
-                playground_manager.release_playground(container_name)
+                await asyncio.to_thread(playground_manager.release_playground, container_name)
                 agent_service.append_agent_log(
                     agent_id,
                     f"Released playground container '{container_name}' back to IDLE pool.",
@@ -1781,6 +1803,14 @@ async def _bg_run_agent(
             db.close()
     except Exception as e:
         logger.error(f"[_bg_run_agent] Error launching agent runtime: {e}", exc_info=True)
+        try:
+            agent_rec_mem = agent_service.get_agent_status(agent_id, project_token)
+            if agent_rec_mem:
+                agent_rec_mem["status"] = "error"
+                agent_rec_mem["progress"] = 0
+                agent_rec_mem["progress_message"] = f"Runtime execution failed: {e}"
+        except Exception:
+            pass
 
 
 class RunAgentRequest(BaseModel):
@@ -1831,10 +1861,11 @@ async def run_agent(
     if base_agent_id.lower() in ("m_agent_01", "master_agent"):
         logger.info(f"[run_agent] Executing Master Agent orchestration for {project_token}...")
         from app.services.agents.master_orchestrator import orchestrate_project
-        result = orchestrate_project(
+        result = await orchestrate_project(
             db=db,
             project_token=project_token,
             agent_service=agent_service,
+            current_user=current_user,
         )
         return {"started": True, "agent_id": agent_id, "result": result}
 
@@ -1977,7 +2008,7 @@ async def _run_phased_swarm_coordinator(
     if p1:
         agent_service.append_agent_log(
             "M_agent_01",
-            f"🚀 [Swarm Coordinator] Launching Phase 1: Backend & Data Layer ({len(p1)} agents: {', '.join(p1)})...",
+            f"[Swarm Coordinator] Launching Phase 1: Backend & Data Layer ({len(p1)} agents: {', '.join(p1)})...",
             "info",
             project_token,
         )
@@ -1993,14 +2024,15 @@ async def _run_phased_swarm_coordinator(
         ]
         await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Extract and publish API contracts for Phase 2 consumers
+        # Extract and publish API contracts for Phase 2 consumers (IPC: Backend -> Frontend)
         try:
             contracts = extract_backend_contracts(workspace_dir)
             routes = contracts.get("routes", [])
             models_list = contracts.get("models", [])
             agent_service.append_agent_log(
                 "M_agent_01",
-                f"📜 [Swarm Coordinator] Published verified API contracts: {len(routes)} routes, {len(models_list)} data schemas.",
+                f"[Swarm Coordinator] Phase 1 complete. Published verified API contracts: "
+                f"{len(routes)} routes, {len(models_list)} data schemas to .agent/contracts/api_contract.json.",
                 "output",
                 project_token,
             )
@@ -2010,9 +2042,24 @@ async def _run_phased_swarm_coordinator(
     # ── Phase 2: Frontend / UI Layer ──
     p2 = phased_plan.get("phase2_frontend", [])
     if p2:
+        # IPC: Write a signal for Phase 2 agents so they know contracts are available
+        try:
+            contracts_dir = os.path.join(workspace_dir, ".agent", "contracts")
+            api_contract_path = os.path.join(contracts_dir, "api_contract.json")
+            if os.path.exists(api_contract_path):
+                agent_service.append_agent_log(
+                    "M_agent_01",
+                    "[Swarm Coordinator] IPC: Backend API contracts are published. "
+                    "Phase 2 Frontend agents will consume .agent/contracts/api_contract.json.",
+                    "info",
+                    project_token,
+                )
+        except Exception:
+            pass
+
         agent_service.append_agent_log(
             "M_agent_01",
-            f"🚀 [Swarm Coordinator] Launching Phase 2: Frontend & UI Integration ({len(p2)} agents: {', '.join(p2)})...",
+            f"[Swarm Coordinator] Launching Phase 2: Frontend & UI Integration ({len(p2)} agents: {', '.join(p2)})...",
             "info",
             project_token,
         )
@@ -2033,7 +2080,7 @@ async def _run_phased_swarm_coordinator(
     if p3:
         agent_service.append_agent_log(
             "M_agent_01",
-            f"🛡️ [Swarm Coordinator] Launching Phase 3: Automated QA & Verification Gate ({len(p3)} agent: {', '.join(p3)})...",
+            f"[Swarm Coordinator] Launching Phase 3: Automated QA & Verification Gate ({len(p3)} agent(s): {', '.join(p3)})...",
             "info",
             project_token,
         )
@@ -2048,6 +2095,30 @@ async def _run_phased_swarm_coordinator(
             for aid in p3
         ]
         await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Read QA gate result from IPC contract file
+        try:
+            qa_gate_path = os.path.join(workspace_dir, ".agent", "contracts", "qa_gate.json")
+            if os.path.exists(qa_gate_path):
+                with open(qa_gate_path, "r", encoding="utf-8") as f:
+                    qa_gate = json.load(f)
+                qa_status = qa_gate.get("status", "UNKNOWN")
+                tests_run = qa_gate.get("tests_run", 0)
+                agent_service.append_agent_log(
+                    "M_agent_01",
+                    f"[Swarm Coordinator] QA Gate Result: {qa_status} ({tests_run} tests executed).",
+                    "info" if qa_status == "PASSED" else "error",
+                    project_token,
+                )
+            else:
+                agent_service.append_agent_log(
+                    "M_agent_01",
+                    "[Swarm Coordinator] QA Gate: No test report generated (qa_gate.json not found).",
+                    "info",
+                    project_token,
+                )
+        except Exception as qe:
+            logger.debug(f"[SwarmCoordinator] QA gate read error: {qe}")
 
     agent_service.append_agent_log(
         "M_agent_01",
@@ -2129,10 +2200,11 @@ async def run_all_agents(
     master_result: Dict[str, Any] = {}
     try:
         from app.services.agents.master_orchestrator import orchestrate_project
-        master_result = orchestrate_project(
+        master_result = await orchestrate_project(
             db=db,
             project_token=project_token,
             agent_service=agent_service,
+            current_user=current_user,
         )
         logger.info(f"[run_all_agents] Master Agent finished: {master_result.get('total_tasks', 0)} tasks assigned.")
     except Exception as me:
@@ -2211,6 +2283,7 @@ async def run_all_agents(
         logger.error(f"Failed to check governance response: {e}")
 
     git_repo_url_to_use = dest_repo_url or provided_repo
+    git_token_to_use = dest_repo_token or provided_token
     # ── Resolve Phased Execution Plan (Dependency DAG) ──
     phased_plan = master_result.get("phased_plan") or {
         "phase1_backend": available_agents,
@@ -2234,15 +2307,25 @@ async def run_all_agents(
                 a_mem["output_log"] = []
 
     # Launch Phased Swarm Coordinator in background
-    asyncio.create_task(
-        _run_phased_swarm_coordinator(
-            project_token=project_token,
-            phased_plan=phased_plan,
-            git_repo_url=git_repo_url_to_use,
-            git_token=git_token_to_use,
-            x_task_token=x_task_token,
+    try:
+        asyncio.create_task(
+            _run_phased_swarm_coordinator(
+                project_token=project_token,
+                phased_plan=phased_plan,
+                git_repo_url=git_repo_url_to_use,
+                git_token=git_token_to_use,
+                x_task_token=x_task_token,
+            )
         )
-    )
+    except Exception as spawn_err:
+        logger.error(f"[run_all_agents] Failed to dispatch swarm coordinator: {spawn_err}", exc_info=True)
+        for aid in all_target_agents:
+            a_mem = agent_service.get_agent_status(aid, project_token)
+            if a_mem:
+                a_mem["status"] = "error"
+                a_mem["progress"] = 0
+                a_mem["progress_message"] = f"Failed to dispatch: {spawn_err}"
+        raise HTTPException(status_code=500, detail=f"Failed to dispatch swarm coordinator: {spawn_err}")
 
     return {
         "started": True,

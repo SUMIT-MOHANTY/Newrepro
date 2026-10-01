@@ -13,13 +13,17 @@ class TaskStatus(Enum):
 
 class Task:
     def __init__(self, data: Dict[str, Any]):
-        self.task_id = data.get("task_id", "")
+        self.task_id = str(data.get("task_id") or data.get("id") or data.get("db_id") or "")
         self.title = data.get("title", "")
         self.description = data.get("description", "")
-        self.lane = data.get("lane", "")
+        self.lane = (data.get("lane") or "backend").lower()
         self.subtasks = data.get("subtasks", [])
         self.depends_on = data.get("depends_on", [])
-        self.status = TaskStatus(data.get("status", "pending").lower())
+        raw_status = str(data.get("status", "pending")).lower()
+        try:
+            self.status = TaskStatus(raw_status)
+        except ValueError:
+            self.status = TaskStatus.PENDING
 
     def to_dict(self):
         return {
@@ -43,9 +47,16 @@ class DAGScheduler:
         try:
             with open(self.task_config_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                for t in data:
+                if isinstance(data, dict):
+                    task_items = data.get("tasks", [])
+                elif isinstance(data, list):
+                    task_items = data
+                else:
+                    task_items = []
+                for t in task_items:
                     task = Task(t)
-                    self.tasks[task.task_id] = task
+                    if task.task_id:
+                        self.tasks[task.task_id] = task
         except Exception as e:
             logger.error(f"Failed to load tasks from {self.task_config_path}: {e}")
 

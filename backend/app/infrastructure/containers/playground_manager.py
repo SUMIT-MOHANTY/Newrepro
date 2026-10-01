@@ -285,32 +285,73 @@ class PlaygroundContainerManager:
         command: str,
         workdir: str = "/workspace",
         timeout: int = 45,
+        line_callback: Optional[Any] = None,
     ) -> Tuple[int, str]:
         """
-        Execute a shell command inside the playground container.
+        Execute a shell command inside the playground container with real-time streaming.
         Returns (exit_code, output_text).
         Logs command and output into container's /var/log/agent.log.
         """
         self.append_log_to_container(container_name, f"$ {command}")
         try:
             if self._docker_client:
-                c = self._docker_client.containers.get(container_name)
-                exec_res = c.exec_run(
+                # Use low-level Docker API to stream output chunks in real time
+                exec_instance = self._docker_client.api.exec_create(
+                    container_name,
                     cmd=["sh", "-c", command],
                     workdir=workdir,
-                    demux=False,
                 )
-                output = exec_res.output.decode("utf-8", errors="replace") if exec_res.output else ""
-                if output.strip():
-                    self.append_log_to_container(container_name, output.strip()[:1000])
-                return exec_res.exit_code, output
+                exec_id = exec_instance["Id"]
+                stream = self._docker_client.api.exec_start(exec_id, stream=True)
+                output_chunks = []
+                buffer = ""
+
+                for chunk in stream:
+                    text = chunk.decode("utf-8", errors="replace")
+                    output_chunks.append(text)
+                    buffer += text
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line_clean = line.strip()
+                        if line_clean:
+                            self.append_log_to_container(container_name, line_clean[:1000])
+                            if line_callback:
+                                try:
+                                    line_callback(line_clean)
+                                except Exception:
+                                    pass
+
+                if buffer.strip():
+                    self.append_log_to_container(container_name, buffer.strip()[:1000])
+                    if line_callback:
+                        try:
+                            line_callback(buffer.strip())
+                        except Exception:
+                            pass
+
+                inspect_res = self._docker_client.api.exec_inspect(exec_id)
+                exit_code = inspect_res.get("ExitCode", 0)
+                output = "".join(output_chunks)
+                return exit_code, output
             else:
                 cmd = ["docker", "exec", "-w", workdir, container_name, "sh", "-c", command]
-                res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-                output = (res.stdout or "") + (res.stderr or "")
-                if output.strip():
-                    self.append_log_to_container(container_name, output.strip()[:1000])
-                return res.returncode, output
+                process = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+                )
+                output_lines = []
+                if process.stdout:
+                    for line in process.stdout:
+                        output_lines.append(line)
+                        line_clean = line.strip()
+                        if line_clean:
+                            self.append_log_to_container(container_name, line_clean[:1000])
+                            if line_callback:
+                                try:
+                                    line_callback(line_clean)
+                                except Exception:
+                                    pass
+                process.wait(timeout=timeout)
+                return process.returncode, "".join(output_lines)
         except subprocess.TimeoutExpired:
             self.append_log_to_container(container_name, f"Command timed out after {timeout}s")
             return -1, f"Command timed out after {timeout} seconds."

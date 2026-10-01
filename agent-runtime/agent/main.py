@@ -176,7 +176,7 @@ def main() -> None:
                         task_list = raw.get("tasks", [])
                     elif isinstance(raw, list):
                         task_list = raw
-                    use_supervisor = len(task_list) > 1
+                    use_supervisor = len(task_list) >= 1
                 except Exception:
                     pass
 
