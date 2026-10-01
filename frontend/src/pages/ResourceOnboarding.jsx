@@ -341,7 +341,20 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
         fetchHistory();
       }
 
-      navigate('/status-dashboard', { state: { processMode, projectToken: currentProjectToken } });
+      // After successful onboard, auto-trigger agent execution
+      try {
+        const runHeaders = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+        if (currentProjectToken) runHeaders['x-project-token'] = currentProjectToken;
+        await fetch(`${API_ENDPOINTS.AGENTS}/run-all?project_token=${encodeURIComponent(currentProjectToken)}`, {
+          method: 'POST',
+          headers: runHeaders,
+          body: JSON.stringify({}),
+        });
+      } catch (runErr) {
+        console.warn('Auto-trigger agents failed, user can manually start from dashboard:', runErr);
+      }
+
+      navigate('/status-dashboard', { state: { processMode, projectToken: currentProjectToken, autoStarted: true } });
     } catch (err) {
       setSubmitError(err.message || 'Failed to complete onboarding');
     } finally {

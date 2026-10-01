@@ -52,12 +52,43 @@ def detect_techstack(prompt: str, llm_client: Any = None, model: str = "") -> Te
 
     prompt_lower = prompt.lower()
 
-    # Fast heuristic check for obvious custom frameworks
+    # Priority 0: Check if control plane already resolved techstack in task_config.json or workspace_index.json
+    try:
+        import os
+        from pathlib import Path
+        for cfg_file in ("/workspace/.agent/task_config.json", "/workspace/.agent/workspace_index.json"):
+            if os.path.exists(cfg_file):
+                with open(cfg_file, "r", encoding="utf-8") as f:
+                    cfg_data = json.load(f)
+                resolved_stack = cfg_data.get("techstack") or cfg_data.get("detected_stack")
+                if resolved_stack:
+                    if isinstance(resolved_stack, dict):
+                        be = resolved_stack.get("backend")
+                        fe = resolved_stack.get("frontend")
+                        stack_name = f"{fe or ''}_{be or ''}".strip("_") or "custom"
+                        return {
+                            "is_custom": True if be or (fe and fe != "react_vite") else False,
+                            "stack": stack_name,
+                            "reason": f"Resolved from control plane workspace analysis ({cfg_file})",
+                        }
+                    elif isinstance(resolved_stack, str) and resolved_stack:
+                        return {
+                            "is_custom": True if resolved_stack != "react_vite_tailwind" else False,
+                            "stack": resolved_stack,
+                            "reason": f"Specified in {cfg_file}",
+                        }
+    except Exception:
+        pass
+
+    # Fast heuristic check for custom frameworks, backend runtimes, and migration
     custom_keywords = [
         "next.js", "nextjs", "nuxt", "remix", "astro",
         "vue.js", "vue 3", "vuejs", "svelte", "sveltekit", "angular", "solid.js",
-        "fastapi", "flask", "django", "express.js", "nestjs",
-        "python backend", "golang", "rust web", "vanilla js",
+        "fastapi", "flask", "django", "express.js", "express", "nestjs", "node.js",
+        "python backend", "python", "golang", "go ", "go/", "rust web", "rust",
+        "java", "spring boot", "springboot", "c#", ".net", "dotnet",
+        "migration", "migrate", "brownfield", "microservice", "backend api",
+        "vanilla js", "html/css",
     ]
     has_custom_keyword = any(k in prompt_lower for k in custom_keywords)
 
@@ -68,7 +99,7 @@ def detect_techstack(prompt: str, llm_client: Any = None, model: str = "") -> Te
                 if kw in prompt_lower:
                     return {
                         "is_custom": True,
-                        "stack": kw.replace(" ", "_"),
+                        "stack": kw.strip().replace(" ", "_"),
                         "reason": f"Detected explicit tech stack keyword: {kw}",
                     }
         return dict(DEFAULT_DECISION)

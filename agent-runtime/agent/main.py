@@ -19,12 +19,62 @@ import traceback
 from pathlib import Path
 
 
+def _load_task_config(workspace_path: str = "/workspace") -> dict | None:
+    """Load task configuration from .agent/task_config.json if present.
+
+    The control plane writes this file into the workspace before executing
+    the agent runtime so it can pass full task prompts, model selection,
+    and callback URLs without relying solely on environment variables.
+    """
+    config_path = Path(workspace_path) / ".agent" / "task_config.json"
+    if config_path.exists():
+        try:
+            raw = config_path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+            print(f"[AgentRuntime] Loaded task config from {config_path}")
+            return data
+        except Exception as exc:
+            print(f"[AgentRuntime] Warning: Failed to parse task_config.json: {exc}")
+    return None
+
+
 def main() -> None:
     print("[AgentRuntime] Starting agent session...")
 
-    # Build state from environment
+    # Priority 1: Load task config from JSON file written by control plane
+    # Priority 2: Fall back to environment variables (backward compat)
+    from agent.state import AgentState
+
+    task_config = _load_task_config(
+        os.environ.get("WORKSPACE_PATH", "/workspace")
+    )
+
+    if task_config:
+        # Inject config values into environment so AgentState.from_env() picks them up
+        env_mapping = {
+            "SESSION_ID": "session_id",
+            "TASK_ID": "task_id",
+            "TASK_TYPE": "task_type",
+            "PROMPT": "prompt",
+            "WORKSPACE_PATH": "workspace_path",
+            "PROJECT_ID": "project_id",
+            "TENANT_ID": "tenant_id",
+            "CALLBACK_URL": "callback_url",
+            "CALLBACK_SECRET": "callback_secret",
+            "MODEL_NAME": "model_name",
+            "AI_MODEL": "model_name",
+            "MODEL_PROVIDER": "model_provider",
+            "TOOL_USE_ENABLED": "tool_use_enabled",
+            "WEB_SEARCH_ENABLED": "web_search_enabled",
+            "GIT_REPO_URL": "git_repo_url",
+            "MAX_TOOL_CALLS": "max_tool_calls",
+        }
+        for env_key, config_key in env_mapping.items():
+            if config_key in task_config and env_key not in os.environ:
+                val = task_config[config_key]
+                os.environ[env_key] = str(val) if not isinstance(val, bool) else str(val).lower()
+
     try:
-        from agent.state import AgentState
         state = AgentState.from_env()
     except KeyError as exc:
         print(f"[AgentRuntime] FATAL: Missing required environment variable: {exc}")
@@ -109,7 +159,42 @@ def main() -> None:
                         pass
 
         try:
-            orchestrator.run()
+            # ═══════════════════════════════════════════════════════════════
+            # SUPERVISOR MODE: When multiple tasks exist in task_config.json,
+            # use the SupervisorAgent to coordinate sub-agents (Backend,
+            # Frontend, QA) working in parallel via the DAG scheduler.
+            # LEGACY MODE: Single task → use the existing Orchestrator.
+            # ═══════════════════════════════════════════════════════════════
+            task_config_path = Path(state.workspace_path) / ".agent" / "task_config.json"
+            use_supervisor = False
+            task_list = []
+
+            if task_config_path.exists():
+                try:
+                    raw = json.loads(task_config_path.read_text(encoding="utf-8"))
+                    if isinstance(raw, dict):
+                        task_list = raw.get("tasks", [])
+                    elif isinstance(raw, list):
+                        task_list = raw
+                    use_supervisor = len(task_list) > 1
+                except Exception:
+                    pass
+
+            if use_supervisor:
+                print(f"[AgentRuntime] 🏗️  SUPERVISOR MODE: {len(task_list)} tasks detected — launching Agent Swarm")
+                from agent.supervisor import SupervisorAgent
+                supervisor = SupervisorAgent(
+                    workspace_path=state.workspace_path,
+                    mcp=mcp,
+                    router=orchestrator._router,
+                    callback=orchestrator._post_event,
+                )
+                summary = supervisor.run()
+                print(f"[AgentRuntime] 📊 Swarm complete: {summary.get('completed', 0)}/{summary.get('total_tasks', 0)} tasks done")
+            else:
+                print(f"[AgentRuntime] 🔧 LEGACY MODE: Single task — using Orchestrator")
+                orchestrator.run()
+
             init_marker.touch(exist_ok=True)
             print(f"[AgentRuntime] Task {state.task_id} complete. Preview is live.")
         except Exception:
@@ -121,7 +206,7 @@ def main() -> None:
     # ══════════════════════════════════════════════════════════════════════════
     # Default to 15-minute standby (900s). After 15 minutes without new prompts,
     # the container exits cleanly into sleep state without deleting any files.
-    IDLE_TIMEOUT_SECONDS = int(os.environ.get("IDLE_TIMEOUT_SECONDS", "900"))
+    IDLE_TIMEOUT_SECONDS = int(os.environ.get("IDLE_TIMEOUT_SECONDS", "30"))
     print(f"[AgentRuntime] 🚀 Agent Runtime daemon active — waiting for prompts (idle sleep timeout: {IDLE_TIMEOUT_SECONDS}s / {IDLE_TIMEOUT_SECONDS // 60}m)...")
     last_activity_time = time.time()
 

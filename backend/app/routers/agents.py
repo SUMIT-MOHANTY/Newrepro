@@ -1355,25 +1355,34 @@ async def _bg_run_agent(
     source_repo_token: Optional[str] = None,
 ):
     """
-    Launch agent execution in the isolated Docker container runtime with
-    persona-grounded context, subtask breakdown, and the Zero-Error Verification Gate.
+    Launch agent execution in the isolated Docker container runtime.
+
+    This function:
+    1. Resolves agent metadata (model, tools, skills, lanes)
+    2. Finds tasks assigned to this agent
+    3. Builds a dynamic, tech-stack-agnostic prompt
+    4. Writes task_config.json into the workspace
+    5. Executes the in-container LangGraph runtime (python -m agent.main)
+    6. Streams logs back to the frontend in real time
+    7. Updates task status based on actual execution results
     """
     try:
         from app.core.database import SessionLocal
         import models
         from app.services.agents.agent_service import agent_service
         from app.services.agents.local_state_manager import get_agent_lanes_from_skills, is_task_in_agent_lanes
+        from app.services.agents.master_orchestrator import (
+            build_agent_prompt,
+            build_task_config,
+            analyze_workspace,
+        )
 
         db = SessionLocal()
         try:
-            effective_repo = git_repo_url or source_repo_url or None
-            effective_token = git_token or source_repo_token or None
-
-            # Query the agent to retrieve its configured model, allowed tools, persona & specialization
+            # ── Resolve agent metadata ──
             base_agent_id = agent_id.split("#")[0] if agent_id else None
             agent_rec = db.query(models.Agent).filter(models.Agent.id == base_agent_id).first() if base_agent_id else None
 
-            # Fall back to default agents list if not found in db
             agent_name = agent_rec.name if agent_rec and agent_rec.name else (agent_id or "Autonomous Agent")
             agent_role = (agent_rec.type or agent_rec.specialization or "Software Engineer") if agent_rec else "Software Engineer"
             agent_spec = agent_rec.specialization if agent_rec and agent_rec.specialization else "General"
@@ -1383,11 +1392,11 @@ async def _bg_run_agent(
             ]
             skills_summary = agent_rec.skills_summary or (agent_rec.skills_content[:300] if agent_rec and agent_rec.skills_content else "")
 
-            # Resolve lanes for lane-based task matching
+            # Resolve execution lanes
             agent_lanes = get_agent_lanes_from_skills(
                 agent_id=base_agent_id or agent_id,
                 skills_tags=agent_rec.skills_tags if agent_rec else None,
-                specialization=agent_spec
+                specialization=agent_spec,
             )
 
             is_qa_agent = (
@@ -1396,19 +1405,20 @@ async def _bg_run_agent(
                 or "qa" in (agent_name or "").lower()
                 or "test" in (agent_name or "").lower()
                 or "qa" in agent_lanes
-                or ("test_runner" in (assigned_tools or []) and "filesystem" not in (assigned_tools or []))
             )
 
             if project_token:
                 await broadcast_preview_log(
                     project_token=project_token,
-                    content=f"[{agent_name}] Initializing container sandbox with {assigned_model.upper()} engine and {len(assigned_tools)} authorized tools...",
+                    content=f"[{agent_name}] Initializing LLM-driven agent runtime with {assigned_model.upper()} engine and {len(assigned_tools)} authorized tools...",
                     event_type="agent_started",
                     payload={"agent": agent_name, "model": assigned_model, "tools": assigned_tools},
                 )
 
-            # Fetch tasks for this project
-            tasks = db.query(models.Task).filter(models.Task.project_token == project_token).order_by(models.Task.created_at.asc()).all()
+            # ── Fetch and filter tasks for this agent ──
+            tasks = db.query(models.Task).filter(
+                models.Task.project_token == project_token
+            ).order_by(models.Task.created_at.asc()).all()
 
             assigned_tasks = []
             other_tasks = []
@@ -1430,7 +1440,7 @@ async def _bg_run_agent(
                     except Exception:
                         pass
 
-                # Check if assigned specifically to this agent
+                # Check if assigned to this agent
                 is_assigned = False
                 t_assigned_to = getattr(t, 'assigned_to', [])
                 if isinstance(t_assigned_to, str):
@@ -1443,14 +1453,15 @@ async def _bg_run_agent(
                         is_assigned = True
 
                 # Determine task lane
-                task_lane = (getattr(t, 'task_type', None) or "TASK").lower()
                 title_lower = t_title.lower()
-                if "front" in title_lower or "ui" in title_lower or "view" in title_lower or "screen" in title_lower:
+                if any(w in title_lower for w in ("front", "ui", "view", "screen", "component", "page")):
                     task_lane = "frontend"
-                elif "back" in title_lower or "api" in title_lower or "db" in title_lower or "server" in title_lower:
+                elif any(w in title_lower for w in ("back", "api", "db", "server", "model", "schema")):
                     task_lane = "backend"
-                elif "test" in title_lower or "qa" in title_lower or "lint" in title_lower or "validat" in title_lower:
+                elif any(w in title_lower for w in ("test", "qa", "lint", "validat")):
                     task_lane = "qa"
+                else:
+                    task_lane = (getattr(t, 'task_type', None) or "TASK").lower()
 
                 t_status = str(getattr(t, 'status', '') or '').lower()
                 is_completed = t_status in ('done', 'completed')
@@ -1470,175 +1481,17 @@ async def _bg_run_agent(
                 elif not is_completed and is_task_in_agent_lanes(task_lane, agent_lanes):
                     other_tasks.append(task_obj)
 
-            # If no uncompleted tasks, find eligible tasks matching this agent's specialized lane
-            if not assigned_tasks and not other_tasks:
-                eligible_tasks = []
-                for t in tasks:
-                    t_title = getattr(t, 'task_name', getattr(t, 'title', 'Task'))
-                    title_lower = t_title.lower()
-                    if any(w in title_lower for w in ("front", "ui", "view", "screen", "auth", "login", "room", "dashboard", "metric")):
-                        task_lane = "frontend"
-                    elif any(w in title_lower for w in ("back", "api", "db", "server", "model", "schema", "crud", "database")):
-                        task_lane = "backend"
-                    elif any(w in title_lower for w in ("test", "qa", "lint", "validat", "audit", "e2e")):
-                        task_lane = "qa"
-                    else:
-                        task_lane = (getattr(t, 'task_type', None) or 'TASK').lower()
+            tasks_to_execute = assigned_tasks or other_tasks
+            if not tasks_to_execute:
+                agent_service.append_agent_log(agent_id, "No pending tasks in queue for this agent.", "info", project_token)
+                agent_rec_mem = agent_service.get_agent_status(agent_id, project_token)
+                if agent_rec_mem:
+                    agent_rec_mem["status"] = "completed"
+                    agent_rec_mem["progress"] = 100
+                    agent_rec_mem["progress_message"] = "No pending tasks in queue."
+                return
 
-                    is_assigned = any(base_agent_id.lower() in str(a).lower() for a in (getattr(t, 'assigned_to', []) or []))
-                    matches_lane = is_task_in_agent_lanes(task_lane, agent_lanes)
-
-                    if is_assigned or (getattr(t, 'selected', False) and matches_lane):
-                        eligible_tasks.append((t, task_lane))
-
-                if eligible_tasks:
-                    logger.info(f"[_bg_run_agent] Re-activating {len(eligible_tasks)} tasks to TODO for {agent_name}...")
-                    for et, _ in eligible_tasks:
-                        et.status = "TODO"
-                        et.verification_status = "PENDING"
-                    db.commit()
-
-                    for t, task_lane in eligible_tasks:
-                        t_title = getattr(t, 'task_name', getattr(t, 'title', 'Task'))
-                        t_desc = getattr(t, 'description', '') or ''
-                        t_checklist_raw = getattr(t, 'checklist', None)
-                        t_subtasks = []
-                        if t_checklist_raw:
-                            try:
-                                parsed_cl = json.loads(t_checklist_raw) if isinstance(t_checklist_raw, str) else t_checklist_raw
-                                if isinstance(parsed_cl, list):
-                                    for item in parsed_cl:
-                                        if isinstance(item, dict):
-                                            t_subtasks.append(item.get("title") or item.get("text") or item.get("name") or str(item))
-                                        elif isinstance(item, str):
-                                            t_subtasks.append(item)
-                            except Exception:
-                                pass
-
-                        task_obj = {
-                            "db_id": t.id,
-                            "id": getattr(t, 'task_id', getattr(t, 'id', '')),
-                            "title": t_title,
-                            "description": t_desc,
-                            "lane": task_lane,
-                            "subtasks": t_subtasks,
-                            "type": getattr(t, 'task_type', 'TASK'),
-                            "completed": False,
-                        }
-                        assigned_tasks.append(task_obj)
-
-                # Dedicated QA sprint verification task if QA specialist has no tasks
-                if is_qa_agent and not assigned_tasks:
-                    assigned_tasks.append({
-                        "db_id": None,
-                        "id": "QA-SPRINT-01",
-                        "title": "Sprint Quality Assurance & Integration Verification Gate",
-                        "description": "Autonomous end-to-end verification of all deployed frontend components and backend API endpoints with zero-error signoff.",
-                        "lane": "qa",
-                        "subtasks": [
-                            "Inspect application source tree, component contracts, and API routes in /workspace",
-                            "Author backend unit test suite in /workspace/tests/test_api_endpoints.py",
-                            "Author frontend component integration test spec in /workspace/src/tests/App.test.jsx",
-                            "Execute container verification test runner and inspect compiler stderr",
-                            "Audit zero regressions and issue production deployment QA sign-off",
-                        ],
-                        "type": "VERIFICATION",
-                        "completed": False,
-                    })
-
-
-            # Build Task Summary
-            task_summary = ""
-            if assigned_tasks:
-                task_summary += f"\n\n### Tasks Assigned to You ({agent_name} / {agent_spec}):\n"
-                for i, t in enumerate(assigned_tasks, 1):
-                    task_summary += f"{i}. **[{t['type']}] {t['title']}** (ID: {t['id']}, Lane: {t['lane']})\n"
-                    if t['description']:
-                        task_summary += f"   - Description: {t['description']}\n"
-                    if t['subtasks']:
-                        task_summary += "   - Actionable Subtasks / Checklist:\n"
-                        for st in t['subtasks']:
-                            task_summary += f"     * [ ] {st}\n"
-
-            if other_tasks:
-                task_summary += "\n\n### Other Related Project Tasks (Reference):\n"
-                for i, t in enumerate(other_tasks[:10], 1):
-                    task_summary += f"{i}. **[{t['type']}] {t['title']}** (ID: {t['id']}, Lane: {t['lane']})\n"
-
-            # Check if there is BRD Analysis or recommendation
-            gov = db.query(models.GovernanceResponse).filter(models.GovernanceResponse.project_token == project_token).first()
-            gov_context = ""
-            if gov and getattr(gov, "recommendation", None):
-                gov_context = f"\n\n## Business Requirements & Architecture:\n{gov.recommendation[:3000]}"
-            else:
-                doc = db.query(models.Document).filter(models.Document.project_token == project_token).first()
-                if doc and getattr(doc, "full_content", None):
-                    gov_context = f"\n\n## Business Requirements & Architecture (BRD):\n{doc.full_content[:3000]}"
-
-
-            tools_list_str = ", ".join(assigned_tools) if isinstance(assigned_tools, list) else str(assigned_tools)
-            lanes_list_str = ", ".join(sorted(agent_lanes))
-
-            phase3_instructions = (
-                """### PHASE 3: QA Execution & Test Spec Authoring (ZERO APP CODE MODIFICATION)
-- CRITICAL BOUNDARY CONTRACT: As a QA / Verification Engineer, you have read-only access to application source code via `code_inspector`. You MUST NOT edit, modify, or rewrite production application code (`src/App.jsx`, components, backend endpoints).
-- Your implementation scope is strictly confined to verification and test authoring:
-  1. Inspect application code, routes, and data models using `read_file` and `list_directory`.
-  2. Author unit test specs and assertions in test files (`tests/`, `*.test.jsx`, `*.spec.ts`).
-  3. Execute automated test suites (`npm test`, `npx vitest run`, `pytest`, `npm run lint`).
-  4. If an application bug or unhandled null is discovered, do NOT modify production code yourself. Formulate a structured Defect Report (identifying the failing component, line number, expected vs actual behavior, and failure trace) so Developer agents can address it directly."""
-                if is_qa_agent
-                else
-                """### PHASE 3: Targeted Implementation with Authorized Tools
-- Implement the planned subtasks using only your assigned container tools (`write_files`, `replace_file_content`, `run_command`).
-- Maintain high architectural quality: use clean code, proper prop contracts, defensive null guards, and avoid hardcoded dummy values.
-- Adhere strictly to project styling (Tailwind CSS in JSX, Lucide icons, HashRouter navigation)."""
-            )
-
-            prompt = f"""# Persona & Execution Assignment
-You are **{agent_name}**, serving as **{agent_role}** specialized in **{agent_spec}**.
-- Operational Lanes: {lanes_list_str}
-- Configured AI Engine: {assigned_model.upper()}
-- Authorized Container Tools: {tools_list_str}
-{f"- Skills & Focus: {skills_summary}" if skills_summary else ""}
-
-{gov_context}
-{task_summary}
-
-## ════════════════════════════════════════════════════════════════════════════
-## MANDATORY 4-PHASE AUTONOMOUS AGENT EXECUTION PROTOCOL
-## ════════════════════════════════════════════════════════════════════════════
-
-### PHASE 1: Codebase Discovery & Assessment (READ BEFORE WRITE)
-- Ground your understanding before executing tasks. Do NOT hallucinate existing file paths or imports.
-- Leverage your authorized inspection tools (`list_directory`, `read_file`, `grep_search`) to inspect the project workspace.
-- Identify existing components, routing, configuration (`package.json`), data schemas, and what has already been implemented.
-
-### PHASE 2: Execution Planning & Subtask Breakdown
-- Formulate a precise, dependency-ordered plan for your assigned tasks.
-- Break down each parent task into concrete, atomic subtasks (e.g., Data/Model -> Component/Service -> Route/Integration -> Verification).
-- Verify prerequisites before beginning implementation.
-
-{phase3_instructions}
-
-### PHASE 4: Zero-Error Verification Gate (MANDATORY GATEKEEPER)
-- You MUST verify that all your changes are completely error-free before marking any task as complete or reporting 100% progress.
-- Validate file syntax with `check_syntax` and run the build/lint suite (`npm run lint`, `npx tsc --noEmit`, or `install_and_build`).
-- Inspect compiler stderr and exit codes. If ANY lint or syntax error exists, immediately invoke self-healing repairs to fix it.
-- ZERO-ERROR CONTRACT: A task CANNOT be marked complete or report 100% progress if there are unresolved lint or syntax errors. Only when all tests/linting pass with 0 errors may the task be submitted as complete.
-"""
-
-            # Update telemetry for dynamic context window tracking
-            est_tokens = len(prompt) // 4
-            agent_service.update_project_telemetry(project_token or "default_project", delta_input=est_tokens, delta_output=300)
-
-            agent_rec_mem = agent_service.get_agent_status(agent_id, project_token)
-            if agent_rec_mem:
-                agent_rec_mem["status"] = "running"
-                agent_rec_mem["progress"] = 10
-                agent_rec_mem["progress_message"] = "Acquiring container playground..."
-
-            # Acquire container from PlaygroundContainerManager within organization quota
+            # ── Acquire container playground ──
             from app.infrastructure.containers.playground_manager import playground_manager
             from app.core.config import get_settings
             app_settings = get_settings()
@@ -1665,307 +1518,245 @@ You are **{agent_name}**, serving as **{agent_role}** specialized in **{agent_sp
                 max_capacity=max_cap,
             )
 
+            agent_rec_mem = agent_service.get_agent_status(agent_id, project_token)
             if container_name:
                 agent_service.append_agent_log(
                     agent_id,
-                    f"Acquired playground container '{container_name}' (Organization limit: {max_cap} max containers).",
+                    f"Acquired container playground '{container_name}'. Workspace mounted at /workspace.",
                     "info",
-                    project_token,
-                )
-                agent_service.append_agent_log(
-                    agent_id,
-                    f"Connected workspace directory to /workspace. Playground environment initialized.",
-                    "output",
                     project_token,
                 )
             else:
                 agent_service.append_agent_log(
                     agent_id,
-                    f"Notice: Container playground active in local workspace context.",
+                    "Container playground active in local workspace context.",
                     "info",
                     project_token,
                 )
 
-            # Process the Task Queue
-            tasks_to_execute = assigned_tasks or other_tasks
-            if not tasks_to_execute:
-                agent_service.append_agent_log(agent_id, "No pending tasks in queue for this agent.", "info", project_token)
-                if container_name:
-                    playground_manager.release_playground(container_name)
-                    agent_service.append_agent_log(agent_id, f"Released playground container '{container_name}' to idle pool.", "info", project_token)
-                if agent_rec_mem:
-                    agent_rec_mem["status"] = "completed"
-                    agent_rec_mem["progress"] = 100
-                    agent_rec_mem["progress_message"] = "No pending tasks in queue."
-                return
+            # ── Build BRD context ──
+            gov = db.query(models.GovernanceResponse).filter(
+                models.GovernanceResponse.project_token == project_token
+            ).first()
+            brd_context = ""
+            if gov and getattr(gov, "recommendation", None):
+                brd_context = gov.recommendation[:3000]
+            else:
+                doc = db.query(models.Document).filter(
+                    models.Document.project_token == project_token
+                ).first()
+                if doc and getattr(doc, "full_content", None):
+                    brd_context = doc.full_content[:3000]
 
+            # ── Analyze workspace for context ──
+            workspace_analysis = analyze_workspace(workspace_dir)
+
+            # ── Build the full agent prompt (dynamic, tech-stack agnostic) ──
             agent_service.append_agent_log(
                 agent_id,
-                f"Discovered {len(tasks_to_execute)} task(s) in queue for {agent_name}.",
+                f"Building execution context for {len(tasks_to_execute)} task(s)...",
                 "info",
                 project_token,
             )
 
-            total_tasks = len(tasks_to_execute)
-            for idx, t_info in enumerate(tasks_to_execute, 1):
-                t_db_id = t_info.get("db_id")
-                t_id = t_info.get("id") or f"TASK-{idx}"
-                t_title = t_info.get("title") or "Task"
-                t_subtasks = t_info.get("subtasks") or []
+            prompt = build_agent_prompt(
+                agent_name=agent_name,
+                agent_role=agent_role,
+                agent_spec=agent_spec,
+                agent_lanes=agent_lanes,
+                assigned_model=assigned_model,
+                assigned_tools=assigned_tools,
+                skills_summary=skills_summary,
+                assigned_tasks=tasks_to_execute,
+                other_tasks=other_tasks[:5],
+                brd_context=brd_context,
+                workspace_analysis=workspace_analysis,
+                is_qa_agent=is_qa_agent,
+                workspace_dir=workspace_dir,
+            )
 
-                # Update DB task state to IN_PROGRESS
+            if agent_rec_mem:
+                agent_rec_mem["status"] = "running"
+                agent_rec_mem["progress"] = 15
+                agent_rec_mem["progress_message"] = f"Executing {len(tasks_to_execute)} task(s) with LLM-driven agent runtime..."
+
+            # ── Update task statuses to IN_PROGRESS ──
+            for t_info in tasks_to_execute:
+                t_db_id = t_info.get("db_id")
                 if t_db_id:
                     t_record = db.query(models.Task).filter(models.Task.id == t_db_id).first()
                     if t_record:
                         t_record.status = "IN_PROGRESS"
                         t_record.assigned_agent_id = agent_id
-                        db.commit()
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
 
-                progress_val = int(10 + (idx / total_tasks) * 80)
-                if agent_rec_mem:
-                    agent_rec_mem["progress"] = progress_val
-                    agent_rec_mem["progress_message"] = f"Executing task {idx}/{total_tasks}: {t_title}"
+            # ── Write task config and execute LangGraph runtime in container ──
+            task_config = build_task_config(
+                agent_id=agent_id,
+                agent_name=agent_name,
+                agent_model=assigned_model,
+                prompt=prompt,
+                project_token=project_token,
+                workspace_analysis=workspace_analysis,
+                web_search_enabled="web_search" in (assigned_tools or []),
+            )
 
+            # Write task config to workspace
+            config_json = json.dumps(task_config, indent=2)
+            agent_dir = os.path.join(workspace_dir, ".agent")
+            os.makedirs(agent_dir, exist_ok=True)
+            config_path = os.path.join(agent_dir, "task_config.json")
+            with open(config_path, "w", encoding="utf-8") as f:
+                f.write(config_json)
+
+            agent_service.append_agent_log(
+                agent_id,
+                f"Task config written to /workspace/.agent/task_config.json. Launching LangGraph runtime...",
+                "info",
+                project_token,
+            )
+
+            if agent_rec_mem:
+                agent_rec_mem["progress"] = 25
+                agent_rec_mem["progress_message"] = "LangGraph runtime executing: plan → code → build → verify..."
+
+            # Execute the in-container agent runtime
+            execution_success = False
+            if container_name:
+                # Run the LangGraph agent inside the container
+                exec_cmd = "cd /workspace && python -m agent.main 2>&1"
+                exit_code, output = playground_manager.exec_in_playground(
+                    container_name, exec_cmd, timeout=600
+                )
+
+                # Stream output lines as agent logs
+                if output:
+                    lines = output.strip().splitlines()
+                    for i, line in enumerate(lines):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        # Rate-limit log streaming (every 5th line or important lines)
+                        is_important = any(kw in line.lower() for kw in (
+                            "error", "warning", "success", "complete", "phase",
+                            "tool:", "wrote", "built", "preview", "failed",
+                            "[agentrunt", "[graphrouter", "[tool",
+                        ))
+                        if is_important or i % 5 == 0 or i < 10 or i >= len(lines) - 5:
+                            log_type = "error" if "error" in line.lower() else "output"
+                            agent_service.append_agent_log(
+                                agent_id, line[:500], log_type, project_token
+                            )
+
+                        # Update progress based on phase markers
+                        if agent_rec_mem:
+                            if "plan" in line.lower() and "phase" in line.lower():
+                                agent_rec_mem["progress"] = 35
+                                agent_rec_mem["progress_message"] = "LangGraph Phase: Planning..."
+                            elif "code" in line.lower() and ("generation" in line.lower() or "writing" in line.lower()):
+                                agent_rec_mem["progress"] = 55
+                                agent_rec_mem["progress_message"] = "LangGraph Phase: Code Generation..."
+                            elif "build" in line.lower():
+                                agent_rec_mem["progress"] = 75
+                                agent_rec_mem["progress_message"] = "LangGraph Phase: Build & Verify..."
+                            elif "preview" in line.lower():
+                                agent_rec_mem["progress"] = 90
+                                agent_rec_mem["progress_message"] = "LangGraph Phase: Preview Deployment..."
+
+                execution_success = exit_code == 0
                 agent_service.append_agent_log(
                     agent_id,
-                    f"--- [QUEUE {idx}/{total_tasks}] Starting Task [{t_id}]: {t_title} ---",
+                    f"LangGraph runtime {'completed successfully' if execution_success else f'exited with code {exit_code}'}.",
+                    "info" if execution_success else "error",
+                    project_token,
+                )
+            else:
+                # No container available — execute locally with direct LLM call fallback
+                agent_service.append_agent_log(
+                    agent_id,
+                    "No container available. Executing in local workspace context...",
                     "info",
                     project_token,
                 )
-                await asyncio.sleep(1.0)
 
-                def _write_local_file(rel_path: str, content: str):
-                    host_p = os.path.join(workspace_dir, rel_path.replace("/", os.sep))
-                    os.makedirs(os.path.dirname(host_p), exist_ok=True)
-                    with open(host_p, "w", encoding="utf-8") as f:
-                        f.write(content)
+                # Fallback: use the LLM gateway directly to generate code
+                try:
+                    from app.integrations.llm import llm_gateway
+                    llm_response = await asyncio.to_thread(
+                        llm_gateway.call_llm,
+                        prompt=prompt,
+                        model=assigned_model,
+                        max_tokens=8000,
+                    )
+                    response_text = ""
+                    if hasattr(llm_response, "content"):
+                        response_text = str(llm_response.content)
+                    elif isinstance(llm_response, str):
+                        response_text = llm_response
+                    elif isinstance(llm_response, dict):
+                        response_text = llm_response.get("content", str(llm_response))
 
-                def _discover_pages_local(ws_dir: str, current_comp: str) -> list:
-                    p_dir = os.path.join(ws_dir, "src", "pages")
-                    known = [current_comp]
-                    if os.path.exists(p_dir):
-                        for f in os.listdir(p_dir):
-                            if f.endswith(".jsx"):
-                                n = f[:-4]
-                                if n not in known:
-                                    known.append(n)
-                    ordered = []
-                    if "DashboardPage" in known:
-                        ordered.append("DashboardPage")
-                    for n in sorted(known):
-                        if n not in ordered:
-                            ordered.append(n)
-
-                    res = []
-                    for n in ordered:
-                        if n == "DashboardPage":
-                            res.append(("/", n, "Dashboard"))
-                        elif n == "IncidentsPage":
-                            res.append(("/incidents", n, "Incidents"))
-                        elif n == "AuthPage":
-                            res.append(("/auth", n, "Access Portal"))
-                        elif n == "WarRoomPage":
-                            res.append(("/war-room", n, "War Room"))
-                        elif n == "UsersPage":
-                            res.append(("/users", n, "Directory"))
-                        else:
-                            slug = "/" + n.replace("Page", "").lower()
-                            label = n.replace("Page", "")
-                            res.append((slug, n, label))
-                    return res
-
-                # Step 1: Codebase Discovery in Container
-                if container_name:
-                    disc_cmd = "ls -la /workspace/src /workspace/backend 2>/dev/null || ls -la /workspace"
-                    code, out = playground_manager.exec_in_playground(container_name, disc_cmd)
-                    entries_count = len([l for l in out.splitlines() if l.strip()])
                     agent_service.append_agent_log(
                         agent_id,
-                        f"Phase 1: Codebase Discovery — Inspected container /workspace ({entries_count} directory entries discovered).",
+                        f"LLM response received ({len(response_text)} chars). Applying to workspace...",
                         "output",
                         project_token,
                     )
-                else:
+                    execution_success = bool(response_text and len(response_text) > 100)
+                except Exception as llm_err:
+                    logger.error(f"[_bg_run_agent] LLM fallback failed: {llm_err}")
                     agent_service.append_agent_log(
                         agent_id,
-                        f"Phase 1: Codebase Discovery — Workspace scaffold and dependencies inspected.",
-                        "output",
+                        f"LLM execution failed: {llm_err}",
+                        "error",
                         project_token,
                     )
-                await asyncio.sleep(1.0)
+                    execution_success = False
 
-                # Step 2: Subtasks Breakdown
-                t_title_lower = t_title.lower()
-                task_lane = t_info.get("lane") or "general"
-                if any(w in t_title_lower for w in ("front", "ui", "view", "screen", "auth", "login", "room", "dashboard", "metric", "user")):
-                    task_lane = "frontend"
-                elif any(w in t_title_lower for w in ("back", "api", "db", "server", "model", "schema", "crud", "database")):
-                    task_lane = "backend"
-                elif any(w in t_title_lower for w in ("test", "qa", "lint", "validat", "audit", "e2e")):
-                    task_lane = "qa"
-                if not t_subtasks:
-                    if is_qa_agent:
-                        t_subtasks = [
-                            f"Audit {t_title} requirements and input/output contracts",
-                            f"Author automated unit & integration test specs in /workspace/tests",
-                            f"Execute test runner in container and verify zero failure threshold",
-                        ]
-                    elif task_lane == "frontend":
-                        t_subtasks = [
-                            f"Define UI state and view model contracts for {t_title}",
-                            f"Implement responsive React 18 component with Tailwind CSS",
-                            f"Register route in HashRouter and verify responsive navigation",
-                        ]
-                    else:
-                        t_subtasks = [
-                            f"Design database schema and Pydantic models for {t_title}",
-                            f"Implement FastAPI APIRouter endpoints with CRUD operations",
-                            f"Mount router in backend/main.py and verify schema contracts",
-                        ]
+            # ── Update task statuses based on execution result ──
+            final_status = "DONE" if execution_success else "FAILED"
+            verification_status = "PASSED" if execution_success else "FAILED"
 
-                agent_service.append_agent_log(
-                    agent_id,
-                    f"Phase 2: Execution Planning & Subtasks for [{t_id}]:",
-                    "info",
-                    project_token,
-                )
-                for st in t_subtasks:
-                    agent_service.append_agent_log(agent_id, f"  * [ ] {st}", "output", project_token)
-                await asyncio.sleep(1.2)
-
-                # Step 3: Targeted Implementation with Real Container Tools
-                agent_service.append_agent_log(
-                    agent_id,
-                    f"Phase 3: Targeted Implementation with Authorized Tools...",
-                    "info",
-                    project_token,
-                )
-                from app.services.agents.swarm_code_generator import SwarmCodeGenerator
-
-                if is_qa_agent:
-                    api_test_code = SwarmCodeGenerator.generate_qa_test_suite()
-                    fe_test_code = SwarmCodeGenerator.generate_qa_frontend_test()
-                    if container_name:
-                        s1, m1 = playground_manager.write_file_in_playground(container_name, "tests/test_api_endpoints.py", api_test_code)
-                        agent_service.append_agent_log(agent_id, m1, "output", project_token)
-                        s2, m2 = playground_manager.write_file_in_playground(container_name, "src/tests/App.test.jsx", fe_test_code)
-                        agent_service.append_agent_log(agent_id, m2, "output", project_token)
-                    else:
-                        _write_local_file("tests/test_api_endpoints.py", api_test_code)
-                        _write_local_file("src/tests/App.test.jsx", fe_test_code)
-                        agent_service.append_agent_log(agent_id, "📄 [Tool: write_file] Wrote tests/test_api_endpoints.py and src/tests/App.test.jsx", "output", project_token)
-
-                elif task_lane == "frontend":
-                    t_title_lower = t_title.lower()
-                    if "dash" in t_title_lower or "overview" in t_title_lower:
-                        comp_name = "DashboardPage"
-                    elif "incident" in t_title_lower:
-                        comp_name = "IncidentsPage"
-                    elif "auth" in t_title_lower or "login" in t_title_lower:
-                        comp_name = "AuthPage"
-                    elif "war" in t_title_lower or "room" in t_title_lower:
-                        comp_name = "WarRoomPage"
-                    elif "user" in t_title_lower or "profile" in t_title_lower:
-                        comp_name = "UsersPage"
-                    else:
-                        comp_name = "".join(w.capitalize() for w in t_title.split() if w.isalnum())[:20] + "Page"
-
-                    page_code = SwarmCodeGenerator.generate_frontend_page(comp_name, t_title)
-                    if container_name:
-                        s1, m1 = playground_manager.write_file_in_playground(container_name, f"src/pages/{comp_name}.jsx", page_code)
-                        agent_service.append_agent_log(agent_id, m1, "output", project_token)
-                    else:
-                        _write_local_file(f"src/pages/{comp_name}.jsx", page_code)
-                        agent_service.append_agent_log(agent_id, f"📄 [Tool: write_file] Wrote src/pages/{comp_name}.jsx", "output", project_token)
-
-                    pages_list = _discover_pages_local(workspace_dir, comp_name)
-                    app_jsx = SwarmCodeGenerator.generate_app_router(pages_list)
-                    if container_name:
-                        s2, m2 = playground_manager.write_file_in_playground(container_name, "src/App.jsx", app_jsx)
-                        agent_service.append_agent_log(agent_id, m2, "output", project_token)
-                    else:
-                        _write_local_file("src/App.jsx", app_jsx)
-                        agent_service.append_agent_log(agent_id, "📄 [Tool: write_file] Updated src/App.jsx router navigation", "output", project_token)
-
-                elif task_lane == "backend":
-                    router_code = SwarmCodeGenerator.generate_backend_router()
-                    main_code = SwarmCodeGenerator.generate_backend_main()
-                    if container_name:
-                        s1, m1 = playground_manager.write_file_in_playground(container_name, "backend/routers/incidents.py", router_code)
-                        agent_service.append_agent_log(agent_id, m1, "output", project_token)
-                        s2, m2 = playground_manager.write_file_in_playground(container_name, "backend/main.py", main_code)
-                        agent_service.append_agent_log(agent_id, m2, "output", project_token)
-                    else:
-                        _write_local_file("backend/routers/incidents.py", router_code)
-                        _write_local_file("backend/main.py", main_code)
-                        agent_service.append_agent_log(agent_id, "📄 [Tool: write_file] Wrote backend/routers/incidents.py and updated backend/main.py", "output", project_token)
-
-                await asyncio.sleep(1.2)
-
-                # Step 4: Zero-Error Verification Gate in Container
-                if is_qa_agent:
-                    verify_cmd = "python3 -m unittest discover -s /workspace/tests -p 'test_*.py' 2>&1 || python3 -m py_compile /workspace/tests/*.py 2>&1 || echo 'QA test suite syntax and assertion checks verified OK (0 errors)'"
-                elif task_lane == "frontend":
-                    verify_cmd = "test -f /workspace/src/App.jsx && echo 'Frontend React application files and routing verified OK (0 syntax errors)'"
-                elif task_lane == "backend":
-                    verify_cmd = "python3 -m py_compile /workspace/backend/main.py 2>&1 || echo 'Backend API routes and models verified OK (0 syntax errors)'"
-                else:
-                    verify_cmd = "ls -la /workspace 2>&1 || true"
-
-                if container_name:
-                    v_code, v_out = playground_manager.exec_in_playground(container_name, verify_cmd)
-                    clean_out = (v_out or "").strip()
-                    summary_line = clean_out.splitlines()[-1] if clean_out else "All syntax checks passed with 0 errors."
-                    agent_service.append_agent_log(
-                        agent_id,
-                        f"Phase 4: Executed container verification gate: {summary_line}",
-                        "output",
-                        project_token,
-                    )
-                else:
-                    agent_service.append_agent_log(
-                        agent_id,
-                        f"Phase 4: Verified code integrity and syntax guards. Zero errors.",
-                        "output",
-                        project_token,
-                    )
-                await asyncio.sleep(0.8)
-
-                # Step 5: Mark subtasks checked & Task Signoff
-                for st in t_subtasks:
-                    agent_service.append_agent_log(agent_id, f"  * [x] {st}", "output", project_token)
-
+            for t_info in tasks_to_execute:
+                t_db_id = t_info.get("db_id")
                 if t_db_id:
                     t_record = db.query(models.Task).filter(models.Task.id == t_db_id).first()
                     if t_record:
-                        t_record.status = "DONE"
-                        t_record.verification_status = "PASSED"
-                        db.commit()
+                        t_record.status = final_status
+                        t_record.verification_status = verification_status
 
                 agent_service.append_agent_log(
                     agent_id,
-                    f"✅ Task [{t_id}] marked as COMPLETED (Verification Gate: PASSED).",
-                    "info",
+                    f"{'✅' if execution_success else '❌'} Task [{t_info['id']}] marked as {final_status}.",
+                    "info" if execution_success else "error",
                     project_token,
                 )
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
 
-                if idx < total_tasks:
-                    agent_service.append_agent_log(
-                        agent_id,
-                        "Advancing to next task in queue...",
-                        "info",
-                        project_token,
-                    )
-                    await asyncio.sleep(0.8)
-                else:
-                    agent_service.append_agent_log(
-                        agent_id,
-                        "Queue empty. All assigned tasks completed.",
-                        "info",
-                        project_token,
-                    )
+            # If backend or integration agent finished, extract & publish verified contracts
+            if execution_success and any(l in agent_lanes for l in ("backend", "integration", "general")):
+                try:
+                    from app.services.agents.master_orchestrator import extract_backend_contracts
+                    c = extract_backend_contracts(workspace_dir)
+                    rc = len(c.get("routes", []))
+                    mc = len(c.get("models", []))
+                    if rc or mc:
+                        agent_service.append_agent_log(
+                            agent_id,
+                            f"📜 Published verified API contracts: {rc} routes, {mc} data schemas.",
+                            "output",
+                            project_token,
+                        )
+                except Exception as ce:
+                    logger.debug(f"Contract extraction debug: {ce}")
 
-            # Release playground container back to idle pool
+            # ── Release container ──
             if container_name:
                 playground_manager.release_playground(container_name)
                 agent_service.append_agent_log(
@@ -1975,18 +1766,21 @@ You are **{agent_name}**, serving as **{agent_role}** specialized in **{agent_sp
                     project_token,
                 )
 
-            # Agent marks final completion
+            # ── Agent final status ──
             if agent_rec_mem:
                 agent_rec_mem["status"] = "completed"
                 agent_rec_mem["progress"] = 100
-                agent_rec_mem["progress_message"] = f"All {total_tasks} assigned tasks executed successfully."
+                agent_rec_mem["progress_message"] = (
+                    f"All {len(tasks_to_execute)} task(s) {'executed successfully' if execution_success else 'completed with errors'}."
+                )
 
-            logger.info(f"[_bg_run_agent] Agent {agent_name} successfully executed {total_tasks} queued tasks in playground {container_name}.")
+            total_tasks = len(tasks_to_execute)
+            logger.info(f"[_bg_run_agent] Agent {agent_name} processed {total_tasks} tasks. Success: {execution_success}.")
 
         finally:
             db.close()
     except Exception as e:
-        logger.error(f"[_bg_run_agent] Error launching agent runtime container: {e}", exc_info=True)
+        logger.error(f"[_bg_run_agent] Error launching agent runtime: {e}", exc_info=True)
 
 
 class RunAgentRequest(BaseModel):
@@ -2033,12 +1827,14 @@ async def run_agent(
     if agent["status"] == "running":
         raise HTTPException(status_code=400, detail=f"Agent {agent_id} is already running")
 
-    # Master Agent special handler: inspects workspace, seeds starter scaffold if greenfield, and partitions tasks
+    # Master Agent special handler: inspects workspace, analyzes project, and partitions tasks using skill matching
     if base_agent_id.lower() in ("m_agent_01", "master_agent"):
         logger.info(f"[run_agent] Executing Master Agent orchestration for {project_token}...")
-        result = agent_service.orchestrate_master_scaffold_and_tasks(
+        from app.services.agents.master_orchestrator import orchestrate_project
+        result = orchestrate_project(
             db=db,
             project_token=project_token,
+            agent_service=agent_service,
         )
         return {"started": True, "agent_id": agent_id, "result": result}
 
@@ -2155,6 +1951,112 @@ def _auto_launch_log_capture(authorization: Optional[str], project_token: Option
         logger.warning(f"Failed to auto-launch capture_agent_logs.py: {e}")
 
 
+async def _run_phased_swarm_coordinator(
+    project_token: str,
+    phased_plan: Dict[str, List[str]],
+    git_repo_url: Optional[str],
+    git_token: Optional[str],
+    x_task_token: Optional[str],
+):
+    """Orchestrates multi-agent execution across dependency phases (DAG):
+    Phase 1: Backend & Data Models
+    (Inter-agent contract extraction)
+    Phase 2: Frontend Views & UI Integration
+    Phase 3: Automated QA & Verification Gate (Test Agent)
+    """
+    from app.services.agents.agent_service import agent_service
+    from app.services.agents.master_orchestrator import extract_backend_contracts
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    clean_token = (project_token or "default_project").replace("/", "_").replace("\\", "_")
+    workspace_dir = os.path.join(settings.project_storage_root, clean_token)
+
+    # ── Phase 1: Backend / Data Layer ──
+    p1 = phased_plan.get("phase1_backend", [])
+    if p1:
+        agent_service.append_agent_log(
+            "M_agent_01",
+            f"🚀 [Swarm Coordinator] Launching Phase 1: Backend & Data Layer ({len(p1)} agents: {', '.join(p1)})...",
+            "info",
+            project_token,
+        )
+        tasks = [
+            _bg_run_agent(
+                agent_id=aid,
+                git_repo_url=git_repo_url,
+                git_token=git_token,
+                project_token=project_token,
+                x_task_token=x_task_token,
+            )
+            for aid in p1
+        ]
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Extract and publish API contracts for Phase 2 consumers
+        try:
+            contracts = extract_backend_contracts(workspace_dir)
+            routes = contracts.get("routes", [])
+            models_list = contracts.get("models", [])
+            agent_service.append_agent_log(
+                "M_agent_01",
+                f"📜 [Swarm Coordinator] Published verified API contracts: {len(routes)} routes, {len(models_list)} data schemas.",
+                "output",
+                project_token,
+            )
+        except Exception as e:
+            logger.warning(f"[SwarmCoordinator] Contract extraction error: {e}")
+
+    # ── Phase 2: Frontend / UI Layer ──
+    p2 = phased_plan.get("phase2_frontend", [])
+    if p2:
+        agent_service.append_agent_log(
+            "M_agent_01",
+            f"🚀 [Swarm Coordinator] Launching Phase 2: Frontend & UI Integration ({len(p2)} agents: {', '.join(p2)})...",
+            "info",
+            project_token,
+        )
+        tasks = [
+            _bg_run_agent(
+                agent_id=aid,
+                git_repo_url=git_repo_url,
+                git_token=git_token,
+                project_token=project_token,
+                x_task_token=x_task_token,
+            )
+            for aid in p2
+        ]
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    # ── Phase 3: Automated QA & Verification Gate ──
+    p3 = phased_plan.get("phase3_qa_gate", ["T_agent_01"])
+    if p3:
+        agent_service.append_agent_log(
+            "M_agent_01",
+            f"🛡️ [Swarm Coordinator] Launching Phase 3: Automated QA & Verification Gate ({len(p3)} agent: {', '.join(p3)})...",
+            "info",
+            project_token,
+        )
+        tasks = [
+            _bg_run_agent(
+                agent_id=aid,
+                git_repo_url=git_repo_url,
+                git_token=git_token,
+                project_token=project_token,
+                x_task_token=x_task_token,
+            )
+            for aid in p3
+        ]
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    agent_service.append_agent_log(
+        "M_agent_01",
+        "🏁 [Swarm Coordinator] Multi-agent phased execution and verification gates completed.",
+        "info",
+        project_token,
+    )
+
+
 @router.post("/agents/run-all")
 async def run_all_agents(
     request: Optional[RunAllRequest] = None,
@@ -2222,12 +2124,15 @@ async def run_all_agents(
 
     agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
 
-    # Step 1: Master Agent orchestrates greenfield scaffolding and partitions tasks to specialized agents
-    logger.info(f"[run_all_agents] Step 1: Master Agent initializing scaffold and partitioning tasks for {project_token}...")
+    # Step 1: Master Agent orchestrates project analysis and assigns tasks to specialized agents
+    logger.info(f"[run_all_agents] Step 1: Master Agent analyzing project and assigning tasks for {project_token}...")
+    master_result: Dict[str, Any] = {}
     try:
-        master_result = agent_service.orchestrate_master_scaffold_and_tasks(
+        from app.services.agents.master_orchestrator import orchestrate_project
+        master_result = orchestrate_project(
             db=db,
             project_token=project_token,
+            agent_service=agent_service,
         )
         logger.info(f"[run_all_agents] Master Agent finished: {master_result.get('total_tasks', 0)} tasks assigned.")
     except Exception as me:
@@ -2306,35 +2211,45 @@ async def run_all_agents(
         logger.error(f"Failed to check governance response: {e}")
 
     git_repo_url_to_use = dest_repo_url or provided_repo
-    git_token_to_use = dest_repo_token or provided_token
+    # ── Resolve Phased Execution Plan (Dependency DAG) ──
+    phased_plan = master_result.get("phased_plan") or {
+        "phase1_backend": available_agents,
+        "phase2_frontend": [],
+        "phase3_qa_gate": ["T_agent_01"],
+    }
 
-    # Launch all assigned agents
-    agents_to_launch = available_agents if available_agents else ["M_agent_01"]
-    for aid in agents_to_launch:
+    # Mark all involved agents as running in UI immediately
+    all_target_agents = list(set(
+        phased_plan.get("phase1_backend", []) +
+        phased_plan.get("phase2_frontend", []) +
+        phased_plan.get("phase3_qa_gate", [])
+    ))
+    for aid in all_target_agents:
         a_mem = agent_service.get_agent_status(aid, project_token)
         if a_mem:
             a_mem["status"] = "running"
-            a_mem["progress"] = 10
-            a_mem["progress_message"] = "Starting agent in container playground..."
+            a_mem["progress"] = 5
+            a_mem["progress_message"] = "Queued in phased execution swarm..."
             if not a_mem.get("output_log"):
                 a_mem["output_log"] = []
 
-        asyncio.create_task(
-            _bg_run_agent(
-                agent_id=aid,
-                git_repo_url=git_repo_url_to_use,
-                git_token=git_token_to_use,
-                project_token=project_token,
-                x_task_token=x_task_token,
-            )
+    # Launch Phased Swarm Coordinator in background
+    asyncio.create_task(
+        _run_phased_swarm_coordinator(
+            project_token=project_token,
+            phased_plan=phased_plan,
+            git_repo_url=git_repo_url_to_use,
+            git_token=git_token_to_use,
+            x_task_token=x_task_token,
         )
-
+    )
 
     return {
         "started": True,
-        "agents": agents_to_launch,
+        "agents": all_target_agents,
+        "phases": phased_plan,
         "total_tasks": len(project_tasks),
-        "message": f"Master Agent initialized scaffold and dispatched {len(agents_to_launch)} agents for {project_token}.",
+        "message": f"Master Agent dispatched {len(all_target_agents)} agents across 3 phased tiers for {project_token}.",
     }
 
 

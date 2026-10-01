@@ -84,7 +84,7 @@ class NodeContext:
 def initialize_node(state: LangGraphState, ctx: NodeContext) -> dict[str, Any]:
     """Seed base scaffold, initialize git, and synthesize Living Product Spec."""
     task_str = str(state.get("task_type", "")).lower()
-    if any(k in task_str for k in ("follow_up", "edit", "bug", "question")):
+    if any(k in task_str for k in ("follow_up", "edit", "bug", "question", "brownfield", "migration", "qa", "verification")):
         print(f"[Graph:InitializeNode] Defensive skip: task_type is '{state.get('task_type')}', delegating to follow_up_node.")
         return follow_up_node(state, ctx)
 
@@ -95,7 +95,7 @@ def initialize_node(state: LangGraphState, ctx: NodeContext) -> dict[str, Any]:
     os.makedirs(ws, exist_ok=True)
     ctx.mcp.call_tool("filesystem", "create_directory", {"path": ws})
 
-    # Detect if user explicitly requested a custom tech stack via lightweight AI call
+    # Detect if user explicitly requested a custom tech stack or if workspace has existing files
     llm_client = LLMClient()
     techstack = detect_techstack(prompt, llm_client=llm_client, model=state.get("model_name", ""))
     print(
@@ -103,11 +103,23 @@ def initialize_node(state: LangGraphState, ctx: NodeContext) -> dict[str, Any]:
         f"stack={techstack['stack']} ({techstack['reason']})"
     )
 
-    if not techstack["is_custom"]:
-        print(f"[Graph:InitializeNode] Injecting default React+Tailwind scaffold tooling (clean build configs, zero dummy App.jsx)...")
+    # Check if workspace already has existing files (brownfield or pre-existing code)
+    has_existing_code = False
+    try:
+        entries = [f for f in os.listdir(ws) if not f.startswith(".")]
+        if len(entries) > 2 or any(f in entries for f in ("package.json", "requirements.txt", "go.mod", "pom.xml", "main.py")):
+            has_existing_code = True
+    except Exception:
+        pass
+
+    if not techstack["is_custom"] and not has_existing_code:
+        print(f"[Graph:InitializeNode] Greenfield React+Tailwind scaffold tooling initialized...")
         seed_starter_scaffold(ws)
     else:
-        print(f"[Graph:InitializeNode] Custom tech stack '{techstack['stack']}' requested. Skipping starter scaffold injection.")
+        if has_existing_code:
+            print(f"[Graph:InitializeNode] Existing codebase detected in workspace. Preserving all existing code and skipping starter scaffold.")
+        else:
+            print(f"[Graph:InitializeNode] Tech stack '{techstack['stack']}' requested. Skipping starter scaffold injection.")
 
     ctx.mcp.call_tool("git", "init", {"workspace_path": ws})
     ctx.reality_guard.state.refresh()
@@ -2423,5 +2435,99 @@ def preview_node(state: LangGraphState, ctx: NodeContext) -> dict[str, Any]:
         "backend_healthy": backend_healthy,
         "backend_error": None if backend_healthy else (getattr(info, "backend_error", None) or "Backend did not start")[:500],
         "final_text": final_text,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Git Push Node — Auto-commit and push after task completion
+# ─────────────────────────────────────────────────────────────────────────────
+
+def git_push_node(state: LangGraphState, ctx: NodeContext) -> dict[str, Any]:
+    """Auto-commit all workspace changes and push to remote Git repository.
+
+    This node runs AFTER preview_node succeeds. It:
+    1. Stages all changed files
+    2. Creates a checkpoint commit with task metadata
+    3. Pushes to the remote repository (if GIT_REPO_URL is configured)
+    4. Reports the commit hash back via lifecycle events
+
+    Architecture: Every successful task completion produces a versioned commit
+    that is pushed to the project's Git repository, making agent work
+    immediately visible to the team.
+    """
+    ws = state["workspace_path"]
+    task_id = state.get("task_id", "unknown")
+    session_id = state.get("session_id", "unknown")
+    files_changed = state.get("files_changed", [])
+
+    print(f"[Graph:GitPushNode] Auto-committing and pushing {len(files_changed)} file(s)...")
+
+    from mcp.git_tools import GitTools
+    git = GitTools(ws)
+
+    # Step 1: Ensure git repo is initialized
+    try:
+        git.init(workspace_path=ws)
+    except Exception as e:
+        print(f"[Graph:GitPushNode] Git init note: {e}")
+
+    # Step 2: Commit checkpoint
+    summary = state.get("final_text", "Agent task completed")[:120]
+    commit_result = git.commit_checkpoint(
+        task_id=task_id,
+        summary=summary,
+        files_changed=files_changed,
+    )
+
+    commit_hash = "unknown"
+    if commit_result.success:
+        commit_hash = commit_result.data.get("commit_hash", "unknown")
+        commit_status = commit_result.data.get("status", "committed")
+        print(f"[Graph:GitPushNode] Committed: {commit_hash[:8]} ({commit_status})")
+    else:
+        print(f"[Graph:GitPushNode] Commit failed: {commit_result.error}")
+
+    # Step 3: Push to remote
+    push_success = False
+    push_message = "Push not attempted"
+
+    repo_url = os.environ.get("GIT_REPO_URL", "")
+    auth_token = os.environ.get("GIT_AUTH_TOKEN") or os.environ.get("GIT_PAT_TOKEN", "")
+
+    if repo_url:
+        try:
+            push_result = git.push(
+                branch=os.environ.get("GIT_BRANCH", "main"),
+                auth_token=auth_token if auth_token else None,
+                repo_url=repo_url if repo_url else None,
+            )
+            if push_result.success:
+                push_success = True
+                push_message = f"Pushed to {repo_url}"
+                print(f"[Graph:GitPushNode] Pushed to remote: {repo_url}")
+            else:
+                push_message = f"Push failed: {push_result.error}"
+                print(f"[Graph:GitPushNode] Push failed: {push_result.error}")
+        except Exception as e:
+            push_message = f"Push error: {e}"
+            print(f"[Graph:GitPushNode] Push error: {e}")
+    else:
+        push_message = "No GIT_REPO_URL configured - skipping push"
+        print(f"[Graph:GitPushNode] No GIT_REPO_URL set, skipping push")
+
+    # Step 4: Post lifecycle event
+    ctx.post_event("git_push_completed", {
+        "session_id": session_id,
+        "task_id": task_id,
+        "commit_hash": commit_hash,
+        "push_success": push_success,
+        "push_message": push_message,
+        "files_committed": len(files_changed),
+    })
+
+    return {
+        "commit_hash": commit_hash,
+        "push_success": push_success,
+        "push_message": push_message,
     }
 

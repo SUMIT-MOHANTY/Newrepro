@@ -16,7 +16,6 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.infrastructure.containers.agent_manager import AgentManager, AgentContainerConfig
-from app.services.agents.starter_scaffold import is_greenfield_workspace, seed_starter_scaffold
 from app.services.agents.dynamic_context_engine import SessionTaskTracker, DynamicContextManager
 import models
 
@@ -220,12 +219,6 @@ class AgentService:
         # Workspace directory on host
         workspace_dir = os.path.join(self.settings.project_storage_root, project_id.replace("/", "_").replace("\\", "_"))
         os.makedirs(workspace_dir, exist_ok=True)
-        if is_greenfield_workspace(workspace_dir):
-            try:
-                seed_starter_scaffold(workspace_dir, project_name=project_id)
-                logger.info(f"[AgentService] Greenfield detected: seeded starter scaffold into {workspace_dir}")
-            except Exception as scaffold_err:
-                logger.warning(f"[AgentService] Greenfield scaffold error: {scaffold_err}")
 
         config = AgentContainerConfig(
             session_id=session.id,
@@ -817,201 +810,14 @@ class AgentService:
         project_token: str,
         project_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Master Agent: Inspects workspace, seeds starter scaffold if greenfield, and partitions tasks to agents."""
-        import json
-        clean_token = project_token.replace("/", "_").replace("\\", "_")
-        workspace_dir = os.path.join(self.settings.project_storage_root, clean_token)
-        os.makedirs(workspace_dir, exist_ok=True)
-
-        # 1. Update Master Agent status to running
-        self.ensure_project_initialized(project_token)
-        master_status = self.get_agent_status("M_agent_01", project_token)
-        master_status["status"] = "running"
-        master_status["progress"] = 25
-        master_status["progress_message"] = "Inspecting workspace and verifying codebase status..."
-
-        self.append_agent_log(
-            "M_agent_01",
-            "[Master Agent] Phase 1: Analyzing codebase architecture & checking greenfield workspace...",
-            "info",
-            project_token,
-        )
-
-        from app.routers.helpers import sync_broadcast_preview_log
-        sync_broadcast_preview_log(
+        """Master Agent: Analyzes workspace, partitions and assigns tasks using skill-based matching."""
+        from app.services.agents.master_orchestrator import orchestrate_project
+        return orchestrate_project(
+            db=db,
             project_token=project_token,
-            content="[Master Agent] Phase 1: Analyzing codebase architecture & checking greenfield workspace...",
-            event_type="thinking",
-            payload={"agent": "Master Agent", "type": "thinking"},
+            agent_service=self,
+            project_name=project_name,
         )
-
-        # 2. Check if greenfield and seed starter scaffold
-        scaffold_result = None
-        if is_greenfield_workspace(workspace_dir):
-            p_name = project_name or project_token[:12]
-            gov = db.query(models.GovernanceResponse).filter(models.GovernanceResponse.project_token == project_token).first()
-            if gov and gov.project_name:
-                p_name = gov.project_name
-            logger.info(f"[MasterAgent] Greenfield detected for project {project_token}. Seeding starter scaffold into {workspace_dir}...")
-            scaffold_result = seed_starter_scaffold(workspace_dir, project_name=p_name)
-            master_status["progress"] = 50
-            master_status["progress_message"] = f"Seeded starter scaffold ({scaffold_result['total_files']} files). Partitioning sprint tasks..."
-
-            self.append_agent_log(
-                "M_agent_01",
-                f"[Master Agent] Seeded production starter scaffold ({scaffold_result['total_files']} files: React 18, Vite 5, Tailwind CSS, FastAPI, Nginx).",
-                "output",
-                project_token,
-            )
-
-            sync_broadcast_preview_log(
-                project_token=project_token,
-                content=f"[Master Agent] Seeded production starter scaffold ({scaffold_result['total_files']} files: React 18, Vite 5, Tailwind CSS, FastAPI, Nginx).",
-                event_type="tool_called",
-                payload={"is_file": True, "agent": "Master Agent", "tool": "starter_scaffold"},
-            )
-        else:
-            logger.info(f"[MasterAgent] Existing codebase detected in {workspace_dir}. Skipping greenfield scaffold.")
-            master_status["progress"] = 50
-            master_status["progress_message"] = "Existing codebase analyzed. Partitioning sprint tasks..."
-
-            self.append_agent_log(
-                "M_agent_01",
-                f"[Master Agent] Existing codebase verified in /workspace. Preserving files and analyzing task dependencies.",
-                "output",
-                project_token,
-            )
-
-            sync_broadcast_preview_log(
-                project_token=project_token,
-                content="[Master Agent] Existing codebase verified. Preserving workspace files and preparing task allocation.",
-                event_type="agent_log",
-                payload={"agent": "Master Agent"},
-            )
-
-
-        # 3. Query tasks for project and partition by role/lane
-        tasks = db.query(models.Task).filter(
-            models.Task.project_token == project_token
-        ).order_by(models.Task.created_at.asc()).all()
-
-        target_tasks = [t for t in tasks if getattr(t, 'selected', False)]
-        if not target_tasks:
-            target_tasks = tasks
-
-        all_agents = self.get_all_agents(project_token)
-        worker_agents = [
-            a for a in all_agents 
-            if not self._is_system_agent_id(a["id"])
-        ]
-
-        def _matches_terms(agent: dict, terms: tuple) -> bool:
-            combined = " ".join([
-                str(agent.get("specialization") or ""),
-                str(agent.get("name") or ""),
-                str(agent.get("role") or ""),
-                str(agent.get("sub_type") or ""),
-            ]).lower()
-            return any(t in combined for t in terms)
-
-        frontend_workers = [a for a in worker_agents if _matches_terms(a, ("front", "ui", "web", "react"))]
-        backend_workers = [a for a in worker_agents if _matches_terms(a, ("back", "api", "db", "server", "data", "python", "fastapi"))]
-        qa_workers = [a for a in worker_agents if _matches_terms(a, ("test", "qa", "audit", "validat", "quality"))]
-        general_workers = [a for a in worker_agents if a not in frontend_workers and a not in backend_workers and a not in qa_workers]
-
-        assigned_summary = []
-
-        for t in target_tasks:
-            t_title = getattr(t, 'task_name', getattr(t, 'title', 'Task'))
-            t_desc = getattr(t, 'description', '') or ''
-            title_lower = t_title.lower()
-            desc_lower = t_desc.lower()
-
-            is_backend = any(kw in title_lower for kw in ("back", "api", "database", "model", "schema", "controller", "server", "fastapi", "crud", "sql", "sqlite", "orm"))
-            is_frontend = any(kw in title_lower for kw in ("front", "ui", "screen", "view", "component", "button", "css", "tailwind", "layout", "login", "page", "filter", "table", "form", "modal", "dashboard", "metric"))
-            is_qa = any(kw in title_lower for kw in ("test", "qa", "lint", "validate", "verify", "audit", "e2e", "spec"))
-
-            task_lane = "general"
-            if is_backend and not is_frontend:
-                task_lane = "backend"
-                assigned_agent = backend_workers[0]["id"] if backend_workers else (worker_agents[0]["id"] if worker_agents else "M_agent_01")
-            elif is_frontend:
-                task_lane = "frontend"
-                assigned_agent = frontend_workers[0]["id"] if frontend_workers else (worker_agents[0]["id"] if worker_agents else "M_agent_01")
-            elif is_qa:
-                task_lane = "qa"
-                assigned_agent = qa_workers[0]["id"] if qa_workers else "T_agent_01"
-            elif any(kw in desc_lower for kw in ("backend infrastructure", "sequelize", "database connection", "fastapi")):
-                task_lane = "backend"
-                assigned_agent = backend_workers[0]["id"] if backend_workers else (worker_agents[0]["id"] if worker_agents else "M_agent_01")
-            elif any(kw in desc_lower for kw in ("frontend component", "react", "tailwind", "jsx")):
-                task_lane = "frontend"
-                assigned_agent = frontend_workers[0]["id"] if frontend_workers else (worker_agents[0]["id"] if worker_agents else "M_agent_01")
-            else:
-                task_lane = "general"
-                pool = general_workers or worker_agents
-                assigned_agent = pool[0]["id"] if pool else "M_agent_01"
-
-            t.assigned_to = json.dumps([assigned_agent])
-            if getattr(t, 'status', None) in (None, 'pending', 'todo'):
-                t.status = 'in_progress'
-
-            # Populate checklist with atomic subtasks if empty
-            t_checklist = getattr(t, 'checklist', None)
-            if not t_checklist or t_checklist == "[]" or t_checklist == "":
-                subtasks = SessionTaskTracker.generate_subtasks_for_parent(
-                    parent_id=str(getattr(t, 'task_id', getattr(t, 'id', ''))),
-                    parent_title=t_title,
-                    parent_desc=t_desc,
-                    agent_role=task_lane,
-                    specialization=task_lane,
-                )
-                t.checklist = json.dumps(subtasks)
-
-            assigned_summary.append({
-                "task_id": getattr(t, 'task_id', getattr(t, 'id', '')),
-                "title": t_title,
-                "lane": task_lane,
-                "assigned_to": assigned_agent,
-            })
-
-        try:
-            db.commit()
-        except Exception as e:
-            db.rollback()
-            logger.error(f"[MasterAgent] Error saving task assignments: {e}")
-
-        # 4. Master Agent marks completion
-        master_status["status"] = "completed"
-        master_status["progress"] = 100
-        master_status["progress_message"] = f"Starter scaffold ready. Assigned {len(assigned_summary)} tasks to specialized agents."
-
-        self.append_agent_log(
-            "M_agent_01",
-            f"[Master Agent] Phase 2: Partitioned and assigned {len(assigned_summary)} sprint tasks with atomic subtask checklists to specialized agents.",
-            "info",
-            project_token,
-        )
-        self.append_agent_log(
-            "M_agent_01",
-            f"[Master Agent] Master orchestration pipeline complete. Autonomous agents assigned to container playgrounds.",
-            "output",
-            project_token,
-        )
-
-        sync_broadcast_preview_log(
-            project_token=project_token,
-            content=f"[Master Agent] Phase 2: Partitioned and assigned {len(assigned_summary)} sprint tasks with atomic subtask checklists to specialized agents.",
-            event_type="planning_completed",
-            payload={"steps": len(assigned_summary), "agent": "Master Agent"},
-        )
-
-
-        return {
-            "scaffold": scaffold_result,
-            "assigned_tasks": assigned_summary,
-            "total_tasks": len(assigned_summary),
-        }
 
     def set_cache_invalidation_callback(self, cb=None) -> None:
         pass

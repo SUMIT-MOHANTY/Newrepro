@@ -165,6 +165,42 @@ class GitTools:
         except Exception as exc:
             return ToolResult(success=False, error=str(exc))
 
+    def push(self, branch: str = "main", remote: str = "origin", auth_token: str | None = None, repo_url: str | None = None) -> ToolResult:
+        """Push local commits to remote repository."""
+        token = auth_token or os.environ.get("GIT_AUTH_TOKEN") or os.environ.get("GIT_PAT_TOKEN")
+        url = repo_url or os.environ.get("GIT_REPO_URL")
+        
+        try:
+            # If we have a token and URL, we can set up an authenticated remote
+            temp_remote = False
+            if token and url:
+                clean_url = url.strip()
+                if "@" not in clean_url:
+                    if clean_url.startswith("https://"):
+                        auth_url = clean_url.replace("https://", f"https://x-access-token:{token}@")
+                    elif clean_url.startswith("http://"):
+                        auth_url = clean_url.replace("http://", f"http://x-access-token:{token}@")
+                    else:
+                        auth_url = clean_url
+                        
+                    self._run(["git", "remote", "add", "auth_origin", auth_url], cwd=str(self._workspace))
+                    remote = "auth_origin"
+                    temp_remote = True
+            
+            self._run(["git", "push", remote, branch], cwd=str(self._workspace))
+            
+            if temp_remote:
+                self._run(["git", "remote", "remove", "auth_origin"], cwd=str(self._workspace))
+                
+            return ToolResult(success=True, data={"message": f"Successfully pushed to {remote}/{branch}"})
+        except Exception as exc:
+            if 'temp_remote' in locals() and temp_remote:
+                try:
+                    self._run(["git", "remote", "remove", "auth_origin"], cwd=str(self._workspace))
+                except Exception:
+                    pass
+            return ToolResult(success=False, error=str(exc))
+
     def revert_checkpoint(self, commit_hash: str) -> ToolResult:
         """Hard-reset the workspace to the given commit hash.
 

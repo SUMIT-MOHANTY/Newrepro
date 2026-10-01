@@ -30,6 +30,7 @@ from agent.graph_nodes import (
     fail_node,
     fix_node,
     follow_up_node,
+    git_push_node,
     initialize_node,
     plan_node,
     preview_node,
@@ -137,6 +138,9 @@ def create_agent_graph(ctx: NodeContext) -> StateGraph:
     builder.add_node("fix", lambda s: fix_node(s, ctx))
     builder.add_node("preview", lambda s: preview_node(s, ctx))
 
+    # Git Push Node — auto-commit and push after successful task completion
+    builder.add_node("git_push", lambda s: git_push_node(s, ctx))
+
     # 2. Wire edges
     # START conditional branch: Initial generation (Prompt 1) vs Dedicated Follow-Up (Prompt 2+)
     builder.add_conditional_edges(
@@ -222,7 +226,9 @@ def create_agent_graph(ctx: NodeContext) -> StateGraph:
     # Cyclic self-healing edge
     builder.add_edge("fix", "build")
 
-    builder.add_edge("preview", END)
+    # Preview → Git Push → END (auto-commit + push after every successful task)
+    builder.add_edge("preview", "git_push")
+    builder.add_edge("git_push", END)
 
     return builder.compile()
 

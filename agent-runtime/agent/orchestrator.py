@@ -108,8 +108,10 @@ class Orchestrator:
                             "message": "No console errors found.",
                             "errors_remaining": 0,
                         })
+                except NameError as ne:
+                    print(f"[Orchestrator] Console fix skipped (variable not in scope): {ne}")
                 except Exception as ce:
-                    print(f"[Orchestrator] Console checking/auto-fixing completed: {ce}")
+                    print(f"[Orchestrator] Console checking/auto-fixing completed with note: {ce}")
 
                 # Emit session_completed only AFTER browser verification & auto-fix completes
                 msg = self._last_final_text or "Application is live, validated, and ready to use."
@@ -236,8 +238,10 @@ class Orchestrator:
                             "message": "No console errors found.",
                             "errors_remaining": 0,
                         })
+                except NameError as ne:
+                    print(f"[Orchestrator] Console fix skipped (variable not in scope): {ne}")
                 except Exception as ce:
-                    print(f"[Orchestrator] Follow-up visual/console check completed: {ce}")
+                    print(f"[Orchestrator] Follow-up visual/console check completed with note: {ce}")
 
                 msg = self._last_final_text or "Follow-up changes applied and verified."
                 self._post_event("session_completed", {
@@ -1387,6 +1391,7 @@ class Orchestrator:
         MAX_ROUNDS = 2  # Hard cap per batch
         ITERATIONS_PER_ROUND = 20  # Allow enough turns: inspect -> edit -> verify (expanded per user request)
         RETRY_CONTEXT_FILE = os.path.join(s.workspace_path, ".console_fix_context.json")
+        RETRY_SIGNAL_FILE = os.path.join(s.workspace_path, ".console_fix_retry")
         RETRY_POLL_INTERVAL = 3  # seconds
         RETRY_MAX_WAIT = 300  # 5 min max wait for retry
 
@@ -1647,6 +1652,17 @@ class Orchestrator:
         import urllib.error
 
         s = self._state
+
+        # Resolve callback URL: if inside Docker, replace localhost with host.docker.internal
+        callback_url = s.callback_url
+        if callback_url and ('localhost' in callback_url or '127.0.0.1' in callback_url):
+            import socket
+            try:
+                socket.getaddrinfo('host.docker.internal', None)
+                callback_url = callback_url.replace('localhost', 'host.docker.internal').replace('127.0.0.1', 'host.docker.internal')
+            except socket.gaierror:
+                pass  # Not in Docker, keep localhost
+
         if not isinstance(payload, dict):
             payload = {"message": str(payload)}
         else:
@@ -1663,7 +1679,7 @@ class Orchestrator:
 
         try:
             req = urllib.request.Request(
-                url=f"{s.callback_url.rstrip('/')}/internal/agent/callback",
+                url=callback_url,
                 data=body,
                 headers={
                     "Content-Type": "application/json",

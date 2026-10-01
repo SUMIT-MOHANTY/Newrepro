@@ -1,0 +1,43 @@
+{
+  "project_type": "brownfield",
+  "detected_stack": {
+    "frontend": "react_vite",
+    "css": "tailwind",
+    "backend": "fastapi"
+  },
+  "file_tree": [
+    ".agent_initialized",
+    ".gitignore",
+    "index.html",
+    "nginx.conf",
+    "package.json",
+    "postcss.config.js",
+    "tailwind.config.js",
+    "vite.config.js",
+    "backend/main.py",
+    "backend/requirements.txt",
+    "backend/routers/incidents.py",
+    "src/App.jsx",
+    "src/index.css",
+    "src/main.jsx",
+    "src/components/Dashboard.jsx",
+    "src/components/Header.jsx",
+    "src/pages/AuthPage.jsx",
+    "src/pages/DashboardPage.jsx",
+    "src/pages/IncidentsPage.jsx",
+    "src/pages/WarRoomPage.jsx",
+    "src/tests/App.test.jsx",
+    "tests/test_api_endpoints.py"
+  ],
+  "total_files": 22,
+  "entry_points": {
+    "frontend": "src/main.jsx",
+    "backend": "backend/main.py"
+  },
+  "config_files": [
+    "package.json",
+    "vite.config.js",
+    "requirements.txt"
+  ],
+  "brd_summary": "**Governance Classification: SANDBOX**\n\n\u2705 **Sandbox Approved** - This project has low governance overhead.\n\n**What you get:**\n- Azure Dev subscription (capped budget)\n- No production data allowed\n- 90-day review cycle\n- Self-service deployment\n\n**Weighted Score: 0.0/10**\n\n**Dimension Scores:**\n- Business Value & Urgency: 0.0/10\n- Data Sensitivity: 0.0/10\n- Integration & Architecture Complexity: 0.0/10\n- Operational Impact: 0.0/10\n- AI Risk: 0.0/10\n- Ownership & Support: 0.0/10\n"
+}

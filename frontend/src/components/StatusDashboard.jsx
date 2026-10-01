@@ -994,7 +994,7 @@ export default function StatusDashboard({
     }, [agents, token, hasValidTaskToken, taskToken, withProjectToken, fetchAgents, fetchTasks, refreshRoadmap, selectedProjectKey]);
 
     useEffect(() => {
-        if (!isAiAssistMode) return;
+        if (location?.state?.autoStarted) return; // Already auto-triggered by ResourceOnboarding
         if (!selectedProjectKey) return;
         if (isLoadingAgents || runningAll) return;
         if (gitModalAgent) return;
