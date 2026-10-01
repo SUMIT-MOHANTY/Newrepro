@@ -10,12 +10,14 @@
 
 FROM python:3.12-slim AS base
 
-# Install Node.js 20, npm, git, nginx, curl (healthcheck)
+# Install Node.js 20, npm, git, nginx, curl, build tools for any tech stack
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     nginx \
     gnupg \
+    build-essential \
+    procps \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
@@ -27,41 +29,6 @@ RUN node --version && npm --version && git --version && nginx -v
 RUN groupadd -r agent && useradd -r -g agent -m -d /home/agent agent
 
 # App directory
-WORKDIR /app
-
-# Pre-cache template node_modules for instant workspace seeding (~2s vs 3.5m)
-RUN mkdir -p /template_workspace
-WORKDIR /template_workspace
-RUN echo '{\
-  "name": "vibe-app",\
-  "private": true,\
-  "version": "0.1.0",\
-  "type": "module",\
-  "scripts": {\
-    "dev": "vite",\
-    "build": "vite build",\
-    "preview": "vite preview"\
-  },\
-  "dependencies": {\
-    "react": "^18.3.1",\
-    "react-dom": "^18.3.1",\
-    "lucide-react": "^0.460.0",\
-    "react-router-dom": "^6.26.0",\
-    "recharts": "^2.12.7",\
-    "date-fns": "^3.6.0",\
-    "clsx": "^2.1.1"\
-  },\
-  "devDependencies": {\
-    "@types/react": "^18.3.3",\
-    "@types/react-dom": "^18.3.0",\
-    "@vitejs/plugin-react": "^4.3.1",\
-    "autoprefixer": "^10.4.20",\
-    "postcss": "^8.4.49",\
-    "tailwindcss": "^3.4.17",\
-    "vite": "^5.3.4"\
-  }\
-}' > package.json && npm install --no-audit --no-fund && chown -R agent:agent /template_workspace
-
 WORKDIR /app
 
 # Upgrade pip and install Playwright first for persistent Docker caching
@@ -109,7 +76,7 @@ ENV WEB_SEARCH_ENABLED=true
 ENV RESEARCH_TOOLS_ENABLED=false
 ENV MAX_TOOL_CALLS=50
 ENV PYTHONUNBUFFERED=1
-ENV NODE_PATH=/template_workspace/node_modules:/workspace/node_modules
+ENV NODE_PATH=/workspace/node_modules
 
 # Expose port 80 for preview (Nginx) and 8080 for optional agent API
 EXPOSE 80
