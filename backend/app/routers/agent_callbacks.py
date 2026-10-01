@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Agent Container Callbacks"])
 
 
+@router.post("/callback")
+@router.post("/agent/callback")
 @router.post("/api/v1/agent/callback")
 @router.post("/api/v1/callback")
 @router.post("/api/agent/callback")
@@ -99,6 +101,19 @@ async def receive_agent_callback(
         _preview_log_store[project_id].append(log_entry)
         if len(_preview_log_store[project_id]) > 500:
             _preview_log_store[project_id] = _preview_log_store[project_id][-500:]
+
+        # Also push to agent log store if agent is identified
+        agent_id = payload.get("agent_id") or payload.get("agent")
+        if agent_id:
+            try:
+                agent_service.append_agent_log(
+                    agent_id=str(agent_id),
+                    message=f"[{event_type}] {msg}"[:500],
+                    log_type="error" if is_error else ("success" if is_success else "output"),
+                    project_token=project_id,
+                )
+            except Exception:
+                pass
 
         # Broadcast to all live WebSockets listening on this project
         ws_list = _preview_ws_connections.get(project_id, [])

@@ -138,10 +138,10 @@ class PlaygroundContainerManager:
                     })
                     return lru_name
 
-            # 4. Provision a new playground container
+            # 4. Provision a dedicated playground container for this sub-agent
             clean_org = "".join(c for c in (org_name or "default") if c.isalnum() or c == "_")[:12].lower()
-            slot = len(self.containers) + 1
-            container_name = f"dsuite_playground_{clean_org}_{slot}"
+            clean_agent = "".join(c for c in (agent_id or "worker") if c.isalnum() or c == "_")[:18].lower()
+            container_name = f"dsuite_agent_{clean_org}_{clean_agent}"
 
             # Make sure no conflicting stale container with this name exists in Docker
             self._force_remove_container(container_name)
@@ -395,6 +395,46 @@ class PlaygroundContainerManager:
         except Exception as e:
             logger.warning(f"[PlaygroundManager] Error counting running containers: {e}")
         return len([c for c in self.containers.values() if c.get("status") == "BUSY"])
+
+    def stop_agent_container(self, project_token: str, agent_id: Optional[str] = None) -> bool:
+        """Immediately stop and cancel any running agent container for a project/agent."""
+        stopped_any = False
+        with self.lock:
+            # 1. Search in tracking dict
+            for name, meta in list(self.containers.items()):
+                proj_match = meta.get("project_token") == project_token
+                agent_match = not agent_id or meta.get("agent_id") == agent_id
+                if proj_match and agent_match:
+                    host_ws = meta.get("workspace_path")
+                    if host_ws and os.path.exists(host_ws):
+                        try:
+                            sig_dir = os.path.join(host_ws, ".agent_signals")
+                            os.makedirs(sig_dir, exist_ok=True)
+                            with open(os.path.join(sig_dir, "cancel_active.json"), "w", encoding="utf-8") as f:
+                                f.write(f'{{"action": "cancel", "timestamp": {time.time()}}}')
+                        except Exception as sig_err:
+                            logger.warning(f"[PlaygroundManager] Failed writing cancel signal: {sig_err}")
+                    self._force_remove_container(name)
+                    meta["status"] = "IDLE"
+                    stopped_any = True
+
+            # 2. Also search Docker daemon for matching containers
+            if self._docker_client:
+                try:
+                    for c in self._docker_client.containers.list():
+                        c_name = c.name
+                        if project_token in c_name or (agent_id and agent_id in c_name) or "dsuite_playground_" in c_name:
+                            try:
+                                c.kill()
+                            except Exception:
+                                try:
+                                    c.stop(timeout=2)
+                                except Exception:
+                                    pass
+                            stopped_any = True
+                except Exception as e:
+                    logger.warning(f"[PlaygroundManager] Error stopping containers for {project_token}: {e}")
+        return stopped_any
 
     def cleanup_all(self) -> None:
         """Cleanly remove all playground containers."""

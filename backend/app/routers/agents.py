@@ -1918,17 +1918,25 @@ async def run_agent(
 
 
 @router.post("/agents/{agent_id}/reset")
+@router.post("/agents/{agent_id}/stop")
 async def reset_agent(
     agent_id: str,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
     project_token: Optional[str] = None,
 ):
-    """Reset an agent back to idle state."""
+    """Reset an agent back to idle state and kill any active running container."""
     try:
         project_token = _normalize_project_token(project_token)
         # Handle instance suffix
         base_agent_id = agent_id.split("#")[0] if "#" in agent_id else agent_id
+
+        # Immediately cancel and stop active container execution
+        try:
+            from app.infrastructure.containers.playground_manager import playground_manager
+            playground_manager.stop_agent_container(project_token=project_token, agent_id=agent_id)
+        except Exception as e:
+            logger.warning(f"[ResetAgent] Could not stop container: {e}")
         
         _ensure_default_agents(db, project_token)
         query = db.query(models.Agent)
@@ -1941,7 +1949,14 @@ async def reset_agent(
         agent = agent_service.reset_agent(agent_id, project_token)
         if agent:
             agent = {**agent, "id": agent_id}
-        return {"agent": agent}
+
+        agent_service.append_agent_log(
+            agent_id,
+            "🛑 Agent execution manually stopped by user.",
+            "warning",
+            project_token,
+        )
+        return {"agent": agent, "status": "stopped"}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
