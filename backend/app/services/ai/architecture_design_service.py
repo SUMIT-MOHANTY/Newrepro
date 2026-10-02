@@ -253,6 +253,20 @@ def _clean_mermaid(code: str) -> str:
     for pattern, replacement in truncation_fixes:
         cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
 
+    # Shape quoting repairs for flowcharts
+    # Stadium shape: id([ ... ]) -> id(["..."])
+    cleaned = re.sub(r'(\b\w+)\(\[\s*([^"\]\n]*?)\s*\]\)', r'\1(["\2"])', cleaned)
+    # Cylinder shape: id[( ... )] -> id[("...")]
+    cleaned = re.sub(r'(\b\w+)\[\(\s*([^"\]\n]*?)\s*\)\]', r'\1[("\2")]', cleaned)
+    # Hexagon shape: id{{ ... }} -> id{{"..."}}
+    cleaned = re.sub(r'(\b\w+)\{\{\s*([^"\}\n]*?)\s*\}\}', r'\1{{"\2"}}', cleaned)
+    # Circle shape: id(( ... )) -> id(("..."))
+    cleaned = re.sub(r'(\b\w+)\(\(\s*([^"\)\n]*?)\s*\)\)', r'\1(("\2"))', cleaned)
+    # Subroutine shape: id[[ ... ]] -> id[["..."]]
+    cleaned = re.sub(r'(\b\w+)\[\[\s*([^"\]\n]*?)\s*\]\]', r'\1[["\2"]]', cleaned)
+    # Box shape with special characters
+    cleaned = re.sub(r'(\b\w+)\[([^"\]\n]*[\(\)\{\}&\/\\#][^"\]\n]*)\]', r'\1["\2"]', cleaned)
+
     return cleaned.strip()
 
 
@@ -456,6 +470,7 @@ def synthesize_hld_from_analysis(analysis_data: Dict[str, Any], project_name: st
     stage4 = stages.get("stage4_implementation", {})
 
     prod_name = stage1.get("product_name") or analysis_data.get("title") or project_name
+    safe_prod_name = re.sub(r'["\r\n]', '', prod_name).strip()
     prod_code = re.sub(r"[^A-Za-z0-9]", "", prod_name).upper()[:8] or "PROJECT"
     vision = stage1.get("product_vision") or f"A scalable enterprise platform engineered for {prod_name}."
     target_users = stage1.get("target_users") or "Domain Operators, Administrators, End Users"
@@ -496,7 +511,7 @@ def synthesize_hld_from_analysis(analysis_data: Dict[str, Any], project_name: st
         if is_info:
             user_flow_diagram = f"""```mermaid
 flowchart TB
-    Start([Visitor Navigates to {prod_name}]) --> BrowseContent[Browse Responsive Sections]
+    Start(["Visitor Navigates to " + safe_prod_name]) --> BrowseContent[Browse Responsive Sections]
     BrowseContent --> HasInquiry{{Has Inquiry or Contact Need?}}
     HasInquiry -- No --> ReadPages[Consume Information / Articles]
     ReadPages --> EndVisit([Session Complete])
@@ -509,19 +524,20 @@ flowchart TB
         else:
             user_flow_diagram = f"""```mermaid
 flowchart TB
-    Start([User Initiates {prod_name}]) --> AuthCheck{{Authenticated?}}
+    Start(["User Initiates " + safe_prod_name]) --> AuthCheck{{"Authenticated?"}}
     AuthCheck -- No --> LoginView[Present Login Screen]
     LoginView --> IssueToken[Issue JWT Token]
-    IssueToken --> MainView[Access {prod_name} Dashboard]
+    IssueToken --> MainView["Access " + safe_prod_name + " Dashboard"]
     AuthCheck -- Yes --> MainView
     MainView --> ActionExecute[Perform Domain Action]
-    ActionExecute --> Persist[(Commit Transaction)]
-    Persist --> End([Complete Workflow])
+    ActionExecute --> Persist[("Commit Transaction")]
+    Persist --> End(["Complete Workflow"])
 ```"""
 
     # Build dynamic persona nodes for C4 context diagram
-    persona_nodes = "\n".join([f'        UserNode{i}["{p}"]' for i, p in enumerate(personas[:4])])
-    persona_links = "\n".join([f'    UserNode{i} -->|Interacts via HTTPS| CoreSystem' for i in range(len(personas[:4]))])
+    safe_personas = [re.sub(r'["\r\n]', '', p).strip() for p in personas[:4]]
+    persona_nodes = "\n".join([f'        UserNode{i}["{p}"]' for i, p in enumerate(safe_personas)])
+    persona_links = "\n".join([f'    UserNode{i} -->|Interacts via HTTPS| CoreSystem' for i in range(len(safe_personas))])
 
     if is_info:
         c4_container_diagram = f"""```mermaid
@@ -532,7 +548,7 @@ flowchart TB
     end
 
     subgraph StaticPresentation["Presentation Tier"]
-        StaticUI["Static / SSR Web Pages\\n({prod_name} Layouts & Sections)"]
+        StaticUI["Static / SSR Web Pages\\n({safe_prod_name} Layouts & Sections)"]
     end
 
     subgraph IngressTier["Serverless Ingress Tier"]
@@ -653,7 +669,7 @@ sequenceDiagram
         c4_container_diagram = f"""```mermaid
 flowchart TB
     subgraph ClientTier["Presentation Tier"]
-        ClientApp["Single Page App / Client Interface\\n{prod_name} UI"]
+        ClientApp["Single Page App / Client Interface\\n{safe_prod_name} UI"]
     end
 
     subgraph IngressTier["Ingress & Edge Tier"]
@@ -702,11 +718,15 @@ flowchart TB
             rbac_rows.append(f"| **{role_name}** | Primary stakeholder | {privileges} | `{scopes}` |")
         rbac_table = "\n".join(rbac_rows)
 
+        clean_actor = re.sub(r'[^A-Za-z0-9 _-]', '', personas[0]).strip() if personas else "Domain User"
+        if not clean_actor:
+            clean_actor = "Domain User"
+
         sequence_workflows = f"""### 4.1 Authentication & Token Lifecycle Workflow
 ```mermaid
 sequenceDiagram
     autonumber
-    actor User as {personas[0]}
+    actor User as {clean_actor}
     participant Gateway as API Gateway
     participant Auth as Auth Controller
     participant DB as User Database
@@ -796,8 +816,8 @@ flowchart TB
 {persona_nodes}
     end
 
-    subgraph PlatformBoundary["{prod_name} Platform"]
-        CoreSystem["Core System Boundary\\n({prod_name} APIs, Storage, Services)"]
+    subgraph PlatformBoundary["{safe_prod_name} Platform"]
+        CoreSystem["Core System Boundary\\n({safe_prod_name} APIs, Storage, Services)"]
     end
 
     subgraph ExternalServices["External Systems & Providers"]

@@ -50,6 +50,33 @@ if (typeof mermaid !== 'undefined' && mermaid.parseError) {
     mermaid.parseError = () => {};
 }
 
+// Global serialization queue to ensure mermaid.render calls execute sequentially.
+// Mermaid relies on singleton DOM manipulation in document.body which causes race conditions
+// and crashes with "Cannot read properties of null (reading 'firstChild')" if multiple diagrams render concurrently.
+let mermaidRenderQueue = Promise.resolve();
+
+const safeRenderMermaid = (id, code) => {
+    return new Promise((resolve, reject) => {
+        mermaidRenderQueue = mermaidRenderQueue
+            .catch(() => {}) // keep queue alive even if a previous diagram failed
+            .then(async () => {
+                try {
+                    const res = await mermaid.render(id, code);
+                    resolve(res);
+                } catch (err) {
+                    // Clean up only THIS diagram's temporary elements from DOM, NEVER all diagrams!
+                    try {
+                        const el = document.getElementById(id);
+                        if (el && el.parentNode) el.parentNode.removeChild(el);
+                        const dEl = document.getElementById('d' + id);
+                        if (dEl && dEl.parentNode) dEl.parentNode.removeChild(dEl);
+                    } catch (e) {}
+                    reject(err);
+                }
+            });
+    });
+};
+
 // Helper to sanitize and fix common LLM Mermaid syntax errors and word truncations
 const sanitizeMermaidCode = (rawCode) => {
     if (!rawCode || typeof rawCode !== 'string') return '';
@@ -68,10 +95,10 @@ const sanitizeMermaidCode = (rawCode) => {
     cleaned = cleaned.replace(/\bDispatches ale\b/gi, 'Dispatches Alerts');
     cleaned = cleaned.replace(/\bExchanges dat\b/gi, 'Exchanges Data');
 
-    // 2. Fix duplicate diagram headers at the start (e.g. erDiagram\nerDiagram or graph TD\ngraph TD)
+    // 3. Fix duplicate diagram headers at the start (e.g. erDiagram\nerDiagram or graph TD\ngraph TD)
     cleaned = cleaned.replace(/^(erDiagram|graph\s+[A-Z]+|flowchart\s+[A-Z]+|sequenceDiagram|classDiagram|stateDiagram)[\s\n]+\1/i, '$1');
 
-    // 3. Detect if this is an ER diagram
+    // 4. Detect if this is an ER diagram
     const isEr = cleaned.startsWith('erDiagram') ||
                  cleaned.toLowerCase().startsWith('erdiagram') ||
                  cleaned.includes('||--') ||
@@ -88,9 +115,6 @@ const sanitizeMermaidCode = (rawCode) => {
 
         // Fix ER Diagram attribute lines:
         // LLMs frequently output: "datatype PK column_name" instead of "datatype column_name PK"
-        // E.g. "int PK Id" -> "int Id PK"
-        // E.g. "string FK user_id" -> "string user_id FK"
-        // E.g. "uuid PK,FK org_id" -> "uuid org_id PK,FK"
         const lines = cleaned.split('\n');
         const fixedLines = lines.map(line => {
             const trimmed = line.trim();
@@ -98,7 +122,6 @@ const sanitizeMermaidCode = (rawCode) => {
             if (trimmed.toLowerCase() === 'end') return null;
 
             // Attribute ordering check
-            // Match: indent, datatype, key(s), column_name, rest
             const attrMatch = line.match(/^(\s*)([A-Za-z0-9_\[\]\<\>\.\(\)]+)\s+((?:PK|FK|UK)(?:\s*,?\s*(?:PK|FK|UK))*)\s+([A-Za-z0-9_]+)(.*)$/);
             if (attrMatch) {
                 const [, indent, dataType, keys, attrName, rest] = attrMatch;
@@ -106,7 +129,6 @@ const sanitizeMermaidCode = (rawCode) => {
                 return `${indent}${dataType} ${attrName} ${cleanKeys}${rest}`;
             }
 
-            // Also check if key comes first without datatype, e.g. "PK Id int"
             const attrMatch2 = line.match(/^(\s*)((?:PK|FK|UK)(?:\s*,?\s*(?:PK|FK|UK))*)\s+([A-Za-z0-9_]+)\s+([A-Za-z0-9_\[\]\<\>\.\(\)]+)(.*)$/);
             if (attrMatch2) {
                 const [, indent, keys, attrName, dataType, rest] = attrMatch2;
@@ -119,15 +141,42 @@ const sanitizeMermaidCode = (rawCode) => {
 
         cleaned = fixedLines.filter(l => l !== null).join('\n');
     } else {
-        // Flowchart/graph fixes
-        // Fix unquoted node labels with special characters (brackets, parens)
-        cleaned = cleaned.replace(/(\w+)\[([^"\]\n]*[\(\)\{\}&\/\\#][^"\]\n]*)\]/g, '$1["$2"]');
+        // Flowchart / Graph shape repairs:
+        // Ensure titles and labels with spaces/parentheses/special characters are safely quoted:
+        // Fix unquoted subgraph titles: subgraph ID [Title with special chars] -> subgraph ID ["Title..."]
+        cleaned = cleaned.replace(/subgraph\s+([A-Za-z0-9_]+)\s*\[([^"\]\n]+)\]/g, (m, id, text) => {
+            return `subgraph ${id}["${text.replace(/"/g, "'")}"]`;
+        });
+        // 1. Stadium shape: id([ ... ]) -> id(["..."])
+        cleaned = cleaned.replace(/(\b\w+)\(\[\s*([^"\]\n]*?)\s*\]\)/g, (match, id, text) => {
+            return `${id}(["${text.replace(/"/g, "'")}"])`;
+        });
+        // 2. Cylinder shape: id[( ... )] -> id[("...")]
+        cleaned = cleaned.replace(/(\b\w+)\[\(\s*([^"\]\n]*?)\s*\)\]/g, (match, id, text) => {
+            return `${id}[("${text.replace(/"/g, "'")}")]`;
+        });
+        // 3. Hexagon shape: id{{ ... }} -> id{{"..."}}
+        cleaned = cleaned.replace(/(\b\w+)\{\{\s*([^"\}\n]*?)\s*\}\}/g, (match, id, text) => {
+            return `${id}{{"${text.replace(/"/g, "'")}}"`;
+        });
+        // 4. Circle shape: id(( ... )) -> id(("..."))
+        cleaned = cleaned.replace(/(\b\w+)\(\(\s*([^"\)\n]*?)\s*\)\)/g, (match, id, text) => {
+            return `${id}(("${text.replace(/"/g, "'")}"))`;
+        });
+        // 5. Subroutine shape: id[[ ... ]] -> id[["..."]]
+        cleaned = cleaned.replace(/(\b\w+)\[\[\s*([^"\]\n]*?)\s*\]\]/g, (match, id, text) => {
+            return `${id}[["${text.replace(/"/g, "'")}"]]`;
+        });
+        // 6. Box shape: id[ ... ] -> id["..."]
+        cleaned = cleaned.replace(/(\b\w+)\[([^"\]\n]*[\(\)\{\}&\/\\#][^"\]\n]*)\]/g, (match, id, text) => {
+            return `${id}["${text.replace(/"/g, "'")}"]`;
+        });
     }
 
     return cleaned.trim();
 };
 
-// Improved Mermaid Diagram Component with smooth animation and expand functionality
+// Improved Mermaid Diagram Component with serialized rendering, smooth animation, and expand functionality
 const MermaidDiagram = ({ code, showDownload = true }) => {
     const containerRef = useRef(null);
     const [svg, setSvg] = useState('');
@@ -143,28 +192,14 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
             try {
                 const sanitized = sanitizeMermaidCode(code);
                 const id = `mermaid-${Math.random().toString(36).substr(2, 9)}`;
-                const { svg: renderedSvg } = await mermaid.render(id, sanitized);
+                const { svg: renderedSvg } = await safeRenderMermaid(id, sanitized);
                 if (!cancelled) {
-                    // Add a small delay for smooth transition effect
-                    setTimeout(() => {
-                        if (!cancelled) {
-                            setSvg(renderedSvg);
-                            setError(null);
-                            setIsRendering(false);
-                        }
-                    }, 150);
+                    setSvg(renderedSvg);
+                    setError(null);
+                    setIsRendering(false);
                 }
             } catch (err) {
                 console.warn('Mermaid render error:', err);
-                // Remove any error elements or leftover SVGs injected by Mermaid into body
-                try {
-                    const errorNodes = document.querySelectorAll('[id^="dmermaid"], [id^="mermaid-"], .error-icon');
-                    errorNodes.forEach(el => {
-                        if (el && el.parentNode) el.parentNode.removeChild(el);
-                    });
-                } catch (e) {
-                    // ignore
-                }
                 if (!cancelled) {
                     setError(err.message || 'Failed to render diagram');
                     setSvg('');
@@ -2745,19 +2780,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
             return <code className="block bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-xs font-mono" {...props}>{children}</code>;
         },
         pre: ({ node, children, ...props }) => {
-            const preContent = String(children || '');
-            const codeMatch = preContent.match(/<code[^>]*>([\s\S]*?)<\/code>/);
-            const codeContent = codeMatch ? codeMatch[1] : preContent;
-
-            if (codeContent.includes('graph') ||
-                codeContent.includes('flowchart') ||
-                codeContent.includes('sequenceDiagram') ||
-                codeContent.includes('classDiagram') ||
-                codeContent.includes('stateDiagram')) {
-                return <MermaidDiagram code={codeContent} />;
-            }
-
-            return <pre className="bg-gray-900 rounded-lg my-4" {...props}>{children}</pre>;
+            return <div className="my-4">{children}</div>;
         },
         blockquote: ({ node, ...props }) => <blockquote className="border-l-4 border-blue-500 pl-4 italic text-gray-600 my-4 bg-blue-50 py-2" {...props} />,
         a: ({ node, ...props }) => <a className="text-blue-600 hover:text-blue-800 underline font-medium" {...props} />,
@@ -2769,7 +2792,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
         try {
             const sanitized = sanitizeMermaidCode(mermaidCode);
             const uniqueId = `pdf-mermaid-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-            const { svg } = await mermaid.render(uniqueId, sanitized);
+            const { svg } = await safeRenderMermaid(uniqueId, sanitized);
 
             return await new Promise((resolve) => {
                 // Parse SVG and force high-resolution dimensions before rasterizing
@@ -2857,14 +2880,6 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
             });
         } catch (err) {
             console.warn('Mermaid→PNG render failed:', err);
-            try {
-                const errorNodes = document.querySelectorAll('[id^="dmermaid"], [id^="mermaid-"], .error-icon');
-                errorNodes.forEach(el => {
-                    if (el && el.parentNode) el.parentNode.removeChild(el);
-                });
-            } catch (e) {
-                // ignore
-            }
             return null;
         }
     };
