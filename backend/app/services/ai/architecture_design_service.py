@@ -12,7 +12,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List, Tuple
 
-from app.integrations.llm import llm_gateway
+from app.integrations.llm import llm_client
 
 logger = logging.getLogger(__name__)
 
@@ -218,7 +218,7 @@ stateDiagram-v2
 - **Database Transaction Isolation:** Target level (`READ COMMITTED` / `REPEATABLE READ`) and rollback guarantees.
 
 ### 5.2 Idempotency Guarantee Mechanism
-- Header handling (`Idempotency-Key`), Redis distributed lock key patterns (`lock:idempotency:{key}`), and deduplication window.
+- Header handling (`Idempotency-Key`), Redis distributed lock key patterns (`lock:idempotency:{{key}}`), and deduplication window.
 
 ### 5.3 Resilience & Circuit Breaker Policy
 - Retry policies with exponential backoff & jitter.
@@ -1156,7 +1156,7 @@ class ArchitectureDesignService:
         markdown_result = None
         try:
             logger.info(f"Generating HLD for project '{p_name}' via LLM Gateway...")
-            markdown_result = await llm_gateway.complete(
+            markdown_result = await llm_client.complete(
                 messages=messages,
                 purpose="architecture_hld_generation",
                 project_name=p_name,
@@ -1220,7 +1220,7 @@ class ArchitectureDesignService:
         markdown_result = None
         try:
             logger.info(f"Generating LLD for project '{p_name}' via LLM Gateway...")
-            markdown_result = await llm_gateway.complete(
+            markdown_result = await llm_client.complete(
                 messages=messages,
                 purpose="architecture_lld_generation",
                 project_name=p_name,

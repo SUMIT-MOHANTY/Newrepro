@@ -1979,13 +1979,14 @@ async def get_document_architecture_design(
     from app.services.ai.architecture_design_service import architecture_design_service
 
     p_name = analysis_data.get("title") or db_doc.filename or "Enterprise Solution"
+    brd_content = db_doc.full_content or db_doc.content_preview or analysis_data.get("analysis") or ""
     changed = False
 
     # Check or generate HLD via AI architecture design service
     hld = analysis_data.get("hld")
     if not hld or not isinstance(hld, dict) or not hld.get("markdown"):
         hld_res = await architecture_design_service.generate_high_level_design(
-            brd_content=db_doc.content or "",
+            brd_content=brd_content,
             analysis_data=analysis_data,
             project_name=p_name
         )
@@ -2002,7 +2003,7 @@ async def get_document_architecture_design(
     lld = analysis_data.get("lld")
     if not lld or not isinstance(lld, dict) or not lld.get("markdown"):
         lld_res = await architecture_design_service.generate_low_level_design(
-            brd_content=db_doc.content or "",
+            brd_content=brd_content,
             hld_content=hld.get("markdown"),
             analysis_data=analysis_data,
             project_name=p_name
@@ -2128,6 +2129,7 @@ async def export_document_architecture_design(
             analysis_data = {}
 
     p_name = analysis_data.get("title") or db_doc.filename or "Enterprise Solution"
+    brd_content = db_doc.full_content or db_doc.content_preview or analysis_data.get("analysis") or ""
     dtype = design_type.lower().strip()
 
     if dtype == "lld":
@@ -2135,7 +2137,7 @@ async def export_document_architecture_design(
         if not design_obj or not design_obj.get("markdown"):
             from app.services.ai.architecture_design_service import architecture_design_service
             res = await architecture_design_service.generate_low_level_design(
-                brd_content=db_doc.content or "",
+                brd_content=brd_content,
                 analysis_data=analysis_data,
                 project_name=p_name
             )
@@ -2148,7 +2150,7 @@ async def export_document_architecture_design(
         if not design_obj or not design_obj.get("markdown"):
             from app.services.ai.architecture_design_service import architecture_design_service
             res = await architecture_design_service.generate_high_level_design(
-                brd_content=db_doc.content or "",
+                brd_content=brd_content,
                 analysis_data=analysis_data,
                 project_name=p_name
             )
