@@ -84,7 +84,7 @@ export const generateArchitectureDesignPDF = async ({
             doc.setTextColor(...THEME.muted);
             const headerTitle = `${documentType.toUpperCase()} SPECIFICATION - ${cleanText(projectName).toUpperCase()}`;
             doc.text(headerTitle, marginLeft, 12);
-            doc.text(`CONFIDENTIAL - IEEE 1016`, pageWidth - marginRight, 12, { align: 'right' });
+            doc.text(`CONFIDENTIAL`, pageWidth - marginRight, 12, { align: 'right' });
 
             doc.setDrawColor(...THEME.tableBorder);
             doc.setLineWidth(0.3);
@@ -105,7 +105,7 @@ export const generateArchitectureDesignPDF = async ({
         doc.setFontSize(9);
         doc.setTextColor(...THEME.secondary);
         doc.text(
-            documentType === 'LLD' ? 'SOFTWARE ENGINEERING SPECIFICATION' : 'ENTERPRISE ARCHITECTURE FRAMEWORK',
+            documentType === 'LLD' ? 'LOW-LEVEL DESIGN SPECIFICATION' : 'HIGH-LEVEL ARCHITECTURE SPECIFICATION',
             marginLeft,
             cursorY
         );
@@ -130,20 +130,16 @@ export const generateArchitectureDesignPDF = async ({
         doc.setFillColor(...THEME.primaryLight);
         doc.setDrawColor(...THEME.tableBorder);
         doc.setLineWidth(0.4);
-        doc.roundedRect(marginLeft, cursorY, contentWidth, 24, 2, 2, 'FD');
+        doc.roundedRect(marginLeft, cursorY, contentWidth, 14, 2, 2, 'FD');
 
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(8.5);
         doc.setTextColor(...THEME.primary);
-        doc.text(`DOCUMENT ID:`, marginLeft + 5, cursorY + 7);
-        doc.text(`STANDARD:`, marginLeft + 5, cursorY + 14);
-        doc.text(`RELEASE DATE:`, marginLeft + 5, cursorY + 20);
+        doc.text(`RELEASE DATE:`, marginLeft + 5, cursorY + 9);
 
         doc.setFont('helvetica', 'normal');
         doc.setTextColor(...THEME.text);
-        doc.text(`${documentType.toUpperCase()}-${cleanText(projectName).replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 8)}-V${version}`, marginLeft + 35, cursorY + 7);
-        doc.text(documentType === 'LLD' ? 'Clean Architecture / OpenAPI 3.1 / ANSI SQL' : 'IEEE 1016-2009 / TOGAF ADM', marginLeft + 35, cursorY + 14);
-        doc.text(`${date} | Version ${version}`, marginLeft + 35, cursorY + 20);
+        doc.text(`${date} | Version ${version}`, marginLeft + 35, cursorY + 9);
 
         // Status badge inside info box
         doc.setFillColor(...THEME.badgeBg);

@@ -12,19 +12,45 @@ import dagre from 'dagre';
 import mermaid from 'mermaid';
 
 // Initialize mermaid with configuration
+// Initialize mermaid with optimal responsive configuration
 mermaid.initialize({
     startOnLoad: false,
-    theme: 'default',
+    theme: 'neutral',
     securityLevel: 'loose',
-    fontFamily: 'inherit',
+    fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
     suppressErrorRendering: true,
+    flowchart: {
+        htmlLabels: true,
+        useMaxWidth: false,
+        curve: 'basis',
+        padding: 20,
+        nodeSpacing: 50,
+        rankSpacing: 50
+    },
+    er: {
+        useMaxWidth: false
+    },
+    sequence: {
+        useMaxWidth: false,
+        showSequenceNumbers: true
+    },
+    themeVariables: {
+        fontSize: '13px',
+        fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        primaryColor: '#e0e7ff',
+        primaryTextColor: '#1e1b4b',
+        primaryBorderColor: '#6366f1',
+        lineColor: '#475569',
+        secondaryColor: '#f1f5f9',
+        tertiaryColor: '#ffffff'
+    }
 });
 
 if (typeof mermaid !== 'undefined' && mermaid.parseError) {
     mermaid.parseError = () => {};
 }
 
-// Helper to sanitize and fix common LLM Mermaid syntax errors
+// Helper to sanitize and fix common LLM Mermaid syntax errors and word truncations
 const sanitizeMermaidCode = (rawCode) => {
     if (!rawCode || typeof rawCode !== 'string') return '';
     let cleaned = rawCode.trim();
@@ -33,6 +59,14 @@ const sanitizeMermaidCode = (rawCode) => {
     cleaned = cleaned.replace(/^```(?:mermaid|erDiagram|erdiagram|flowchart|graph)?\s*/i, '');
     cleaned = cleaned.replace(/\s*```$/, '');
     cleaned = cleaned.trim();
+
+    // 2. Auto-repair common LLM word truncations in node/arrow labels
+    cleaned = cleaned.replace(/\bAdministratc\b/gi, 'Administrator');
+    cleaned = cleaned.replace(/\bStakehold\b/gi, 'Stakeholders');
+    cleaned = cleaned.replace(/\bInteracts via H\b/gi, 'Interacts via HTTPS');
+    cleaned = cleaned.replace(/\bValidates ident\b/gi, 'Validates Identity');
+    cleaned = cleaned.replace(/\bDispatches ale\b/gi, 'Dispatches Alerts');
+    cleaned = cleaned.replace(/\bExchanges dat\b/gi, 'Exchanges Data');
 
     // 2. Fix duplicate diagram headers at the start (e.g. erDiagram\nerDiagram or graph TD\ngraph TD)
     cleaned = cleaned.replace(/^(erDiagram|graph\s+[A-Z]+|flowchart\s+[A-Z]+|sequenceDiagram|classDiagram|stateDiagram)[\s\n]+\1/i, '$1');
@@ -738,7 +772,6 @@ export default function AgentAnalysis({
     const [userFeedback, setUserFeedback] = useState('');
     const [governanceContext, setGovernanceContext] = useState(null);
     const [repoContext, setRepoContext] = useState(null);
-    const [isArchModalOpen, setIsArchModalOpen] = useState(false);
     const [isSidebarOpen, setIsSidebarOpen] = useState(false); // Start closed by default
     const [sidebarTab, setSidebarTab] = useState('chat'); // 'chat' | 'clarification'
     const [analysisInProgress, setAnalysisInProgress] = useState(false); // Track if analysis is running
@@ -4458,7 +4491,6 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                                 >
                                                     <Layers className="w-3.5 h-3.5" />
                                                     <span>High-Level Design (HLD)</span>
-                                                    <span className="px-1.5 py-0.5 text-[9px] font-bold bg-blue-100 text-blue-700 rounded-full">IEEE 1016</span>
                                                 </button>
 
                                                 <button
@@ -4474,15 +4506,6 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                                 >
                                                     <Database className="w-3.5 h-3.5" />
                                                     <span>Low-Level Design (LLD)</span>
-                                                    <span className="px-1.5 py-0.5 text-[9px] font-bold bg-indigo-100 text-indigo-700 rounded-full">OpenAPI & DDL</span>
-                                                </button>
-
-                                                <button
-                                                    onClick={() => setIsArchModalOpen(true)}
-                                                    className="flex items-center gap-2 px-3.5 py-2 text-xs font-bold rounded-lg text-gray-600 hover:text-gray-900 hover:bg-white/50 transition-all"
-                                                >
-                                                    <Activity className="w-3.5 h-3.5" />
-                                                    <span>User Flow Diagram</span>
                                                 </button>
                                             </div>
 
@@ -4518,19 +4541,6 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                                         <span>Export PDF</span>
                                                     </button>
 
-                                                    <button
-                                                        onClick={() => handleRegenerateArchitectureDesign(activeDesignTab)}
-                                                        disabled={designGenerating}
-                                                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg transition-all disabled:opacity-50"
-                                                        title={`Regenerate ${activeDesignTab.toUpperCase()} with AI`}
-                                                    >
-                                                        {designGenerating ? (
-                                                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                                        ) : (
-                                                            <Sparkles className="w-3.5 h-3.5 text-purple-600" />
-                                                        )}
-                                                        <span>{designGenerating ? 'Generating...' : 'Regenerate'}</span>
-                                                    </button>
                                                 </div>
                                             )}
                                         </div>
@@ -4695,31 +4705,31 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                         {/* ── VIEW 2: HIGH-LEVEL DESIGN (HLD) ── */}
                                         {activeDesignTab === 'hld' && (
                                             <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6 space-y-6">
-                                                {/* HLD Header Banner */}
+                                                {/* Simple Header Bar */}
                                                 <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-gray-200/80 gap-3">
                                                     <div>
-                                                        <div className="flex items-center gap-2.5">
-                                                            <span className="px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-blue-100 text-blue-800 border border-blue-200">
-                                                                IEEE 1016-2009 / TOGAF ADM
-                                                            </span>
-                                                            <span className="text-xs font-mono font-semibold text-gray-400">
-                                                                {hldDesign?.document_code || 'HLD-V1.0'}
-                                                            </span>
-                                                        </div>
-                                                        <h2 className="text-xl font-extrabold text-gray-900 mt-1">
+                                                        <h2 className="text-xl font-extrabold text-gray-900">
                                                             {hldDesign?.title || `High-Level Design Specification`}
                                                         </h2>
                                                         <p className="text-xs text-gray-500 mt-0.5">
-                                                            System architecture topology, C4 container models, sequence workflows, enterprise security & RBAC matrix.
+                                                            System context, C4 container topology, sequence workflows, and security matrix.
                                                         </p>
                                                     </div>
                                                     <div className="flex items-center gap-2">
+                                                        <button
+                                                            onClick={() => handleDownloadArchitectureMarkdown('hld')}
+                                                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 rounded-lg shadow-sm transition-all"
+                                                            title="Download HLD Markdown"
+                                                        >
+                                                            <FileText className="w-3.5 h-3.5 text-blue-600" />
+                                                            <span>Markdown</span>
+                                                        </button>
                                                         <button
                                                             onClick={() => handleDownloadArchitecturePDF('hld')}
                                                             className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm transition-all"
                                                         >
                                                             <Download className="w-3.5 h-3.5" />
-                                                            <span>Download HLD PDF</span>
+                                                            <span>Download PDF</span>
                                                         </button>
                                                     </div>
                                                 </div>
@@ -4728,8 +4738,8 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                                 {designLoading || designGenerating ? (
                                                     <div className="py-20 flex flex-col items-center justify-center space-y-3">
                                                         <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
-                                                        <p className="text-sm font-semibold text-gray-700">Synthesizing Enterprise High-Level Design...</p>
-                                                        <p className="text-xs text-gray-400">Compiling C4 architecture topology, sequence workflows, and security matrices</p>
+                                                        <p className="text-sm font-semibold text-gray-700">Synthesizing High-Level Design...</p>
+                                                        <p className="text-xs text-gray-400">Compiling container topologies, sequence workflows, and security matrices</p>
                                                     </div>
                                                 ) : (
                                                     <div className="prose prose-lg prose-slate max-w-none text-app-text-label leading-relaxed">
@@ -4737,7 +4747,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                                             remarkPlugins={[remarkGfm]}
                                                             components={markdownComponents}
                                                         >
-                                                            {hldDesign?.markdown || '(No HLD generated yet. Click "Regenerate" to generate.)'}
+                                                            {hldDesign?.markdown || '(No HLD generated yet. Re-analyze the BRD to generate.)'}
                                                         </ReactMarkdown>
                                                     </div>
                                                 )}
@@ -4747,38 +4757,38 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                         {/* ── VIEW 3: LOW-LEVEL DESIGN (LLD) ── */}
                                         {activeDesignTab === 'lld' && (
                                             <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6 space-y-6">
-                                                {/* LLD Header Banner */}
+                                                {/* Simple Header Bar */}
                                                 <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-gray-200/80 gap-3">
                                                     <div>
-                                                        <div className="flex items-center gap-2.5">
-                                                            <span className="px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-indigo-100 text-indigo-800 border border-indigo-200">
-                                                                Clean Layered Architecture / OpenAPI 3.1
-                                                            </span>
-                                                            <span className="text-xs font-mono font-semibold text-gray-400">
-                                                                {lldDesign?.document_code || 'LLD-V1.0'}
-                                                            </span>
-                                                        </div>
-                                                        <h2 className="text-xl font-extrabold text-gray-900 mt-1">
+                                                        <h2 className="text-xl font-extrabold text-gray-900">
                                                             {lldDesign?.title || `Low-Level Design Specification`}
                                                         </h2>
                                                         <p className="text-xs text-gray-500 mt-0.5">
-                                                            Layered module contracts, ER diagram, database dictionary, SQL migration DDL, state machine, and directory tree.
+                                                            Layered module contracts, ER diagram, database dictionary, SQL migration DDL, state machines, and file tree.
                                                         </p>
                                                     </div>
                                                     <div className="flex items-center gap-2">
                                                         <button
                                                             onClick={handleCopyDdl}
-                                                            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 rounded-lg shadow-sm transition-all"
+                                                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 rounded-lg shadow-sm transition-all"
                                                         >
                                                             {copiedSnippet === 'ddl' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
                                                             <span>{copiedSnippet === 'ddl' ? 'DDL Copied!' : 'Copy SQL DDL'}</span>
+                                                        </button>
+                                                        <button
+                                                            onClick={() => handleDownloadArchitectureMarkdown('lld')}
+                                                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 rounded-lg shadow-sm transition-all"
+                                                            title="Download LLD Markdown"
+                                                        >
+                                                            <FileText className="w-3.5 h-3.5 text-indigo-600" />
+                                                            <span>Markdown</span>
                                                         </button>
                                                         <button
                                                             onClick={() => handleDownloadArchitecturePDF('lld')}
                                                             className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-sm transition-all"
                                                         >
                                                             <Download className="w-3.5 h-3.5" />
-                                                            <span>Download LLD PDF</span>
+                                                            <span>Download PDF</span>
                                                         </button>
                                                     </div>
                                                 </div>
@@ -4787,7 +4797,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                                 {designLoading || designGenerating ? (
                                                     <div className="py-20 flex flex-col items-center justify-center space-y-3">
                                                         <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
-                                                        <p className="text-sm font-semibold text-gray-700">Synthesizing Production Low-Level Design...</p>
+                                                        <p className="text-sm font-semibold text-gray-700">Synthesizing Low-Level Design...</p>
                                                         <p className="text-xs text-gray-400">Compiling data models, OpenAPI endpoint schemas, and migration DDL scripts</p>
                                                     </div>
                                                 ) : (
@@ -4796,7 +4806,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                                             remarkPlugins={[remarkGfm]}
                                                             components={markdownComponents}
                                                         >
-                                                            {lldDesign?.markdown || '(No LLD generated yet. Click "Regenerate" to generate.)'}
+                                                            {lldDesign?.markdown || '(No LLD generated yet. Re-analyze the BRD to generate.)'}
                                                         </ReactMarkdown>
                                                     </div>
                                                 )}
@@ -4809,78 +4819,6 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                     )}
                 </div>
             </div>
-
-            {/* Architecture Fullscreen Modal */}
-            {isArchModalOpen && result?.analysis?.architecture && (() => {
-                const arch = result.analysis.architecture || {};
-                const nodes = Array.isArray(arch.nodes) ? arch.nodes : [];
-                const edges = Array.isArray(arch.edges) ? arch.edges : [];
-
-                const rfNodes = layoutArchitectureGraph(nodes, edges, 'TB');
-
-                const rfEdges = edges.map((edge, idx) => ({
-                    id: String(edge.id || `e-${idx}`),
-                    source: String(edge.from),
-                    target: String(edge.to),
-                    label: edge.description || undefined,
-                }));
-
-                return (
-                    <div className="fixed inset-0 z-[400] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-                        <div className="relative w-full max-w-6xl h-[80vh] rounded-2xl bg-app-bg-card border border-app-border-light shadow-2xl flex flex-col">
-                            <div className="flex items-center justify-between px-4 py-3 border-b border-app-border-light">
-                                <h2 className="text-sm font-bold text-app-text-main">
-                                    User Flow Diagram (Business Process View)
-                                </h2>
-                                <button
-                                    type="button"
-                                    onClick={() => setIsArchModalOpen(false)}
-                                    className="text-xs font-semibold text-app-text-muted hover:text-app-text-main px-2 py-1 rounded-md"
-                                >
-                                    Close
-                                </button>
-                            </div>
-                            <div className="flex-1 bg-app-bg-page overflow-auto p-6">
-                                {(() => {
-                                    // Extract mermaid diagram from analysis content
-                                    const analysisContent = result.analysis?.analysis || '';
-                                    const mermaidMatch = analysisContent.match(/```mermaid\s*([\s\S]*?)```/);
-                                    const mermaidCode = mermaidMatch ? mermaidMatch[1].trim() : null;
-
-                                    if (mermaidCode) {
-                                        return <MermaidDiagram code={mermaidCode} />;
-                                    }
-
-                                    // Fallback to ReactFlow if no mermaid found
-                                    if (rfNodes.length > 0) {
-                                        return (
-                                            <div className="h-full">
-                                                <ReactFlow
-                                                    nodes={rfNodes}
-                                                    edges={rfEdges}
-                                                    fitView
-                                                    nodesDraggable={false}
-                                                    nodesConnectable={false}
-                                                    elementsSelectable={false}
-                                                >
-                                                    <Background gap={16} size={1} />
-                                                    <Controls showInteractive={false} />
-                                                </ReactFlow>
-                                            </div>
-                                        );
-                                    }
-
-                                    return (
-                                        <div className="h-full flex items-center justify-center text-xs text-app-text-muted">
-                                            Architecture details are not available for this analysis.
-                                        </div>
-                                    );
-                                })()}
-                            </div>
-                        </div>
-                    </div>
-                );
-            })()}
         </div>
     );
 }

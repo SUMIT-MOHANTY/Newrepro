@@ -1976,36 +1976,40 @@ async def get_document_architecture_design(
         except Exception:
             analysis_data = {}
 
-    from app.services.ai.architecture_design_service import (
-        synthesize_hld_from_analysis,
-        synthesize_lld_from_analysis
-    )
+    from app.services.ai.architecture_design_service import architecture_design_service
 
     p_name = analysis_data.get("title") or db_doc.filename or "Enterprise Solution"
     changed = False
 
-    # Check or synthesize HLD
+    # Check or generate HLD via AI architecture design service
     hld = analysis_data.get("hld")
     if not hld or not isinstance(hld, dict) or not hld.get("markdown"):
-        hld_md = synthesize_hld_from_analysis(analysis_data, project_name=p_name)
+        hld_res = await architecture_design_service.generate_high_level_design(
+            brd_content=db_doc.content or "",
+            analysis_data=analysis_data,
+            project_name=p_name
+        )
         hld = {
-            "title": f"High-Level Design (HLD) - {p_name}",
-            "document_code": "HLD-V1.0",
-            "markdown": hld_md,
+            "title": f"High-Level Design (HLD) — {p_name}",
+            "markdown": hld_res.get("markdown", ""),
             "version": "1.0.0",
             "generated_at": datetime.utcnow().isoformat()
         }
         analysis_data["hld"] = hld
         changed = True
 
-    # Check or synthesize LLD
+    # Check or generate LLD via AI architecture design service
     lld = analysis_data.get("lld")
     if not lld or not isinstance(lld, dict) or not lld.get("markdown"):
-        lld_md = synthesize_lld_from_analysis(analysis_data, project_name=p_name)
+        lld_res = await architecture_design_service.generate_low_level_design(
+            brd_content=db_doc.content or "",
+            hld_content=hld.get("markdown"),
+            analysis_data=analysis_data,
+            project_name=p_name
+        )
         lld = {
-            "title": f"Low-Level Design (LLD) - {p_name}",
-            "document_code": "LLD-V1.0",
-            "markdown": lld_md,
+            "title": f"Low-Level Design (LLD) — {p_name}",
+            "markdown": lld_res.get("markdown", ""),
             "version": "1.0.0",
             "generated_at": datetime.utcnow().isoformat()
         }
@@ -2129,16 +2133,26 @@ async def export_document_architecture_design(
     if dtype == "lld":
         design_obj = analysis_data.get("lld")
         if not design_obj or not design_obj.get("markdown"):
-            from app.services.ai.architecture_design_service import synthesize_lld_from_analysis
-            md = synthesize_lld_from_analysis(analysis_data, project_name=p_name)
+            from app.services.ai.architecture_design_service import architecture_design_service
+            res = await architecture_design_service.generate_low_level_design(
+                brd_content=db_doc.content or "",
+                analysis_data=analysis_data,
+                project_name=p_name
+            )
+            md = res.get("markdown", "")
         else:
             md = design_obj.get("markdown")
         doc_tag = "LLD"
     else:
         design_obj = analysis_data.get("hld")
         if not design_obj or not design_obj.get("markdown"):
-            from app.services.ai.architecture_design_service import synthesize_hld_from_analysis
-            md = synthesize_hld_from_analysis(analysis_data, project_name=p_name)
+            from app.services.ai.architecture_design_service import architecture_design_service
+            res = await architecture_design_service.generate_high_level_design(
+                brd_content=db_doc.content or "",
+                analysis_data=analysis_data,
+                project_name=p_name
+            )
+            md = res.get("markdown", "")
         else:
             md = design_obj.get("markdown")
         doc_tag = "HLD"

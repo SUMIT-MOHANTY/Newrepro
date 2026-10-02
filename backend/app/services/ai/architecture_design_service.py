@@ -1,7 +1,7 @@
 """
 Architecture Design Service
 Generates industry-grade High-Level Design (HLD) and Low-Level Design (LLD) specifications
-following enterprise standards (IEEE 1016, TOGAF, C4 Model, OpenAPI 3.1, and ANSI SQL).
+following C4 Model, OpenAPI 3.1, and ANSI SQL best practices.
 
 All diagrams, schemas, DDL, data dictionaries, and contracts are 100% dynamically generated
 from the project's extracted BRD requirements and domain architecture.
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════════════════
 
 HLD_SYSTEM_PROMPT = """# ROLE & PURPOSE
-You are a Principal Enterprise Systems Architect. Your objective is to produce an industry-grade, production-ready High-Level Design (HLD) specification strictly derived from the provided BRD requirements and context, adhering to IEEE 1016 and TOGAF standards.
+You are a Principal Enterprise Systems Architect. Your objective is to produce an industry-grade, production-ready High-Level Design (HLD) specification strictly derived from the provided BRD requirements and context.
 
 CRITICAL ARCHITECTURAL ADAPTATION RULES (DO NOT OVER-ENGINEER):
 1. EVALUATE PROJECT ARCHETYPE FIRST:
@@ -39,25 +39,24 @@ CRITICAL ARCHITECTURAL ADAPTATION RULES (DO NOT OVER-ENGINEER):
    * **Case B: FULL-STACK APPLICATION / SAAS / PLATFORM**
      - Follow the complete multi-tier container architecture (Web/Mobile Clients, Ingress / API Gateway, Domain Services, Relational/NoSQL Persistence, Background Worker Pools, JWT/OAuth2 RBAC).
 
-2. GENERAL INSTRUCTIONS:
-- You must tailor the entire architecture, components, workflows, security model, and diagrams SPECIFICALLY to the provided project name, domain, and requirements.
+2. GENERAL INSTRUCTIONS & MERMAID FORMATTING RULES:
+- Tailor the entire architecture, components, workflows, security model, and diagrams SPECIFICALLY to the provided project name, domain, and requirements.
 - Do NOT use generic placeholders or unrelated mock systems.
-- Every Mermaid diagram must be syntactically valid and reflect the actual personas, services, and domain flows of this project.
+- Every Mermaid diagram MUST be syntactically valid and use FULL, UN-TRUNCATED words for all node titles and edge text labels (e.g. write "Administrator", NOT "Administratc"; write "Interacts via HTTPS", NOT "Interacts via H").
+- Keep arrow text labels concise and clean (e.g. "|HTTPS Request|", "|Validate Identity|", "|Dispatch Alert|").
+- Use double quotes around node titles with line breaks <br/> if title text is long (e.g. Node["Core System Boundary<br/>(AI-Assisted Workbench)"]).
 
 ## REQUIRED DOCUMENT STRUCTURE
 
-# HIGH-LEVEL DESIGN (HLD) SPECIFICATION
-**Document ID:** HLD-{PROJECT_CODE}-V1.0
-**Standard:** IEEE 1016-2009 / TOGAF ADM Framework
-**Status:** Approved for Implementation
+# HIGH-LEVEL DESIGN (HLD) — {PRODUCT_NAME}
+**Date:** Current Date  
+**Version:** 1.0.0  
 
 ---
 
-## 1. Document Control & Metadata
+## 1. Executive Summary & Scope
 - **Project Name:** {PRODUCT_NAME}
-- **Document Version:** 1.0.0
-- **Classification:** Confidential / Enterprise Engineering
-- **Target Audience:** Engineering Leads, DevOps, Enterprise Architects, Product Stakeholders
+- **Target Audience:** Engineering Leads, DevOps, Architects, Product Stakeholders
 - **Executive Summary & Business Objectives:** Comprehensive overview of the project vision, strategic value, core problems solved, and operational metrics.
 
 ## 2. System Context & C4 Architecture Topology
@@ -119,56 +118,64 @@ sequenceDiagram
 """
 
 LLD_SYSTEM_PROMPT = """# ROLE & PURPOSE
-You are a Principal Software Engineer & Technical Lead. Your objective is to produce an industry-grade, exhaustive Low-Level Design (LLD) specification derived entirely from the provided BRD requirements and domain models.
+You are a Staff Software Architect & Principal Technical Lead. Your objective is to produce an enterprise-grade, exhaustive Low-Level Design (LLD) specification derived entirely from the provided BRD requirements and domain models.
 
 CRITICAL ARCHITECTURAL ADAPTATION RULES (DO NOT OVER-ENGINEER):
 1. ARCHETYPE AWARENESS:
    * **If the project is an INFORMATIONAL / MARKETING / CONTENT WEBSITE:**
-     - **Section 1 (Component Architecture):** Focus on UI component hierarchy and presentation architecture (Page templates, Responsive layout, Navigation bar, Hero, Feature showcases, Testimonials, Interactive Contact Form, Footer, SEO metadata head management, Asset optimization pipeline).
+     - **Section 1 (Component Architecture):** Focus on UI component hierarchy, presentation architecture (Page templates, Responsive layout, Navigation bar, Hero, Feature showcases, Testimonials, Interactive Contact Form, Footer, SEO metadata head management, Asset optimization pipeline), and component state management.
      - **Section 2 (Database Design & Migration DDL):** Model what an informational site actually needs:
-       * `contact_inquiries` / `leads` (id, full_name, email, phone, subject, message, status, ip_hash, submitted_at)
-       * `newsletter_subscribers` (id, email, status, subscribed_at)
+       * `contact_inquiries` / `leads` (id UUID DEFAULT gen_random_uuid(), full_name, email, phone, subject, message, status, ip_hash, submitted_at)
+       * `newsletter_subscribers` (id UUID DEFAULT gen_random_uuid(), email, status, subscribed_at)
        * `content_pages` / `articles` / `seo_metadata` (if dynamic or CMS-backed)
        Do NOT invent complex multi-tenant business schemas that have no relation to the BRD.
-     - **Section 3 (API Specification):** Focus on public website endpoints:
+     - **Section 3 (API Specification):** Focus on public website endpoints with full payload JSON schemas and field validations:
        * `POST /api/contact` (Contact Form Submission with honeypot & Turnstile validation)
        * `POST /api/newsletter` (Newsletter Subscription)
        * `GET /sitemap.xml`, `GET /robots.txt`
-       * `GET /api/content/...` (if headless CMS)
-     - **Section 4 (State Machine):** State machine for Lead / Inquiry lifecycle (e.g. `NEW` -> `SPAM_CHECK_PASSED` -> `DISPATCHED_TO_EMAIL` -> `ACKNOWLEDGED`).
+     - **Section 4 (State Machine):** State machine for Lead / Inquiry lifecycle (`NEW` -> `SPAM_CHECK_PASSED` -> `DISPATCHED_TO_EMAIL` -> `ACKNOWLEDGED`).
    * **If the project is a FULL-STACK APPLICATION / SAAS / ENTERPRISE PLATFORM:**
      - Provide comprehensive domain entities, relational models, foreign keys, transaction boundaries, and full domain REST APIs.
 
-2. GENERAL INSTRUCTIONS:
-- You must design the entities, data dictionary, SQL DDL, and API specifications SPECIFICALLY for this project's domain.
-- Do NOT generate generic or boilerplate mock tables. Every table and endpoint must represent a real requirement from this BRD.
-- The SQL DDL must be syntactically valid and runnable (ANSI SQL / PostgreSQL compatible).
-- The OpenAPI specification must detail actual domain endpoints with request/response schemas.
+2. GENERAL INSTRUCTIONS & STAFF ARCHITECT MERMAID FORMATTING RULES:
+- Design the entities, data dictionary, SQL DDL, and API specifications SPECIFICALLY for this project's domain.
+- Every table, endpoint, and interface contract must represent a real requirement from this BRD.
+- The SQL DDL must be syntactically valid and runnable (ANSI SQL / PostgreSQL compatible) with UUID primary keys (`gen_random_uuid()`), foreign keys with `ON DELETE CASCADE/SET NULL`, check constraints, composite B-Tree indexes, and automated `updated_at` trigger functions.
+- The OpenAPI specification MUST detail actual domain endpoints with request headers, body schemas, field validation rules, and full 200/201/400/401/403/404/409/422/500 JSON response payloads with realistic domain values.
+- Every Mermaid diagram (ER Diagram, State Machine, Sequence Flow) MUST be syntactically valid and use FULL, UN-TRUNCATED words for all node titles and edge text labels.
 
 ## REQUIRED DOCUMENT STRUCTURE
 
-# LOW-LEVEL DESIGN (LLD) SPECIFICATION
-**Document ID:** LLD-{PROJECT_CODE}-V1.0
-**Standard:** Clean Layered Architecture / OpenAPI 3.1 / ANSI SQL-92
-**Status:** Approved for Implementation
+# LOW-LEVEL DESIGN (LLD) — {PROJECT_CODE}
+**Date:** Current Date  
+**Version:** 1.0.0  
 
 ---
 
-## 1. Clean Layered Component Architecture
+## 1. Clean Layered Component Architecture & Design Patterns
 ### 1.1 Architectural Pattern & Module Separation
-Detailed breakdown of the five software layers for this project:
-1. Presentation / Router Layer
-2. Application / Service Layer
-3. Domain / Business Logic Layer
-4. Repository / Data Access Layer
-5. Schema / DTO Layer
+Detailed breakdown of the software layers for this project with Clean Architecture principles:
+1. Presentation / Router Layer (Request handling, DTO validation, status codes)
+2. Application / Service Layer (Use case orchestration, business rules, transactions)
+3. Domain / Entity Layer (Pure domain logic, domain events, value objects)
+4. Repository / Persistence Layer (Data access abstractions, ORM queries, cache lookups)
+5. Schema / DTO Layer (Validation contracts, serialization envelopes)
 
-### 1.2 Dependency Injection & Middleware Pipeline
-Explain middleware execution sequence tailored to this application.
+### 1.2 Enterprise Design Patterns Applied
+Table detailing design patterns applied per module with architectural justification:
+| Layer / Component | Design Pattern Applied | Architectural Rationale & Implementation Details |
+| :--- | :--- | :--- |
+| Application Services | **Unit of Work & Repository Pattern** | Decouple domain logic from ORM queries and ensure atomic multi-entity write commits |
+| Router / Ingress | **Middleware Chain of Responsibility** | Sequential processing for TLS, Rate Limiting, Authentication, and Payload Sanitization |
+| Domain Events | **Observer / Publisher-Subscriber** | Async event publication (Kafka / Redis) upon state transitions |
+| Data Transformers | **Data Transfer Object (DTO) & Mapper** | Enforce strict boundaries between external HTTP APIs and internal persistence models |
 
-## 2. Database Detailed Design & Complete Migration DDL
+### 1.3 Concrete Interface & Method Signatures
+Provide exact language-agnostic interface definitions, function signatures, input parameters, return types, and exceptions raised for the core domain services of this project.
+
+## 2. Database Detailed Design & Production-Ready Migration DDL
 ### 2.1 Entity-Relationship Diagram (ERD)
-Valid Mermaid `erDiagram` with all domain entities, attributes, and relationships:
+Valid Mermaid `erDiagram` with all domain entities, attributes, primary keys, foreign keys, and relationships:
 ```mermaid
 erDiagram
     %% Project-specific entities and relationships
@@ -176,22 +183,23 @@ erDiagram
 
 ### 2.2 Comprehensive Data Dictionary
 Complete table covering every entity and attribute for this project:
-| Table Name | Column Name | Data Type | PK/FK | Nullable | Default | Constraints & Indexes | Business Purpose |
+| Table Name | Column Name | Data Type | PK/FK | Nullable | Default Value | Constraints & Indexes | Business Purpose |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 
 ### 2.3 Production-Ready SQL Migration DDL
-Complete, runnable SQL migration script with `CREATE TABLE`, foreign keys, cascade rules, composite indices, and audit timestamp triggers:
+Complete, runnable PostgreSQL migration script with `CREATE TABLE`, `UUID` generation (`gen_random_uuid()`), `FOREIGN KEY` constraints, composite B-Tree/GIN indexes, `CHECK` constraints, and an automated `updated_at` trigger function:
 ```sql
 -- Project SQL Migration DDL
 ```
 
 ## 3. Comprehensive OpenAPI 3.1 REST API Specification
-Group endpoints by domain. For EVERY endpoint provide:
+For EVERY endpoint provide:
 - **HTTP Method & Path**
-- **Summary & Purpose**
+- **Summary & Domain Purpose**
 - **Auth Scope Required**
-- **Path & Query Parameters** (type, required, description)
-- **Request Body JSON Schema** (with sample values)
-- **Response Schemas:** 200/201 (success), 400 (validation), 401 (unauthorized), 404 (not found), 422 (unprocessable), 500 (internal error)
+- **Request Parameters** (Headers, Query, Path params with validation rules)
+- **Request Body JSON Schema** (with realistic sample payload)
+- **Response Schemas:** Full JSON bodies for `200/201 Success`, `400 Bad Request`, `401 Unauthorized`, `404 Not Found`, `422 Unprocessable Entity`, `500 Server Error`.
 
 ## 4. State Machine & Domain Entity Lifecycles
 ### 4.1 State Machine Diagram
@@ -201,14 +209,23 @@ stateDiagram-v2
     %% Project-specific entity lifecycle
 ```
 ### 4.2 State Transition Matrix
-| Current State | Trigger / Event | Guard Condition | Next State | Emitted Event / Side Effect |
+| Current State | Trigger Action / Event | Guard Condition | Next State | Emitted Domain Event | Side Effects & Auditing |
+| :--- | :--- | :--- | :--- | :--- | :--- |
 
-## 5. Standardized Error Handling & Transaction Boundaries
-- Universal Error Envelope JSON.
-- Database transaction scopes and ACID guarantees.
+## 5. Concurrency, Locking, Idempotency & Fault Tolerance
+### 5.1 Concurrency & Transaction Isolation Strategy
+- **Optimistic Locking:** Detail `version` column checks to prevent lost updates during concurrent edits.
+- **Database Transaction Isolation:** Target level (`READ COMMITTED` / `REPEATABLE READ`) and rollback guarantees.
+
+### 5.2 Idempotency Guarantee Mechanism
+- Header handling (`Idempotency-Key`), Redis distributed lock key patterns (`lock:idempotency:{key}`), and deduplication window.
+
+### 5.3 Resilience & Circuit Breaker Policy
+- Retry policies with exponential backoff & jitter.
+- Circuit breaker thresholds (50% failure rate over 20-second rolling window, half-open probe after 30 seconds).
 
 ## 6. Concrete Physical Repository & File Tree Blueprint
-Full directory tree from the root down to individual source files, with a file creation manifest table.
+Full directory tree from the root down to individual source files, with a file creation manifest table mapping tests to implementation files.
 """
 
 
@@ -217,12 +234,25 @@ Full directory tree from the root down to individual source files, with a file c
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _clean_mermaid(code: str) -> str:
-    """Sanitize mermaid code to ensure valid parsing."""
+    """Sanitize mermaid code to ensure valid parsing and clean labels."""
     if not code:
         return ""
     cleaned = code.strip()
     cleaned = re.sub(r"^```(?:mermaid)?\s*", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    # Common truncation repairs
+    truncation_fixes = [
+        (r"\bAdministratc\b", "Administrator"),
+        (r"\bStakehold\b", "Stakeholders"),
+        (r"\bInteracts via H\b", "Interacts via HTTPS"),
+        (r"\bValidates ident\b", "Validates Identity"),
+        (r"\bDispatches ale\b", "Dispatches Alerts"),
+        (r"\bExchanges dat\b", "Exchanges Data"),
+    ]
+    for pattern, replacement in truncation_fixes:
+        cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
+
     return cleaned.strip()
 
 
@@ -415,9 +445,9 @@ def _is_informational_site(stage1: Dict[str, Any], prod_name: str) -> bool:
 
 def synthesize_hld_from_analysis(analysis_data: Dict[str, Any], project_name: str = "Enterprise Solution") -> str:
     """
-    Dynamically synthesizes an IEEE 1016 compliant HLD document directly
-    from the project's actual Stage 1-4 analysis data, adapting appropriately
-    to the project archetype (informational website vs full-stack application).
+    Dynamically synthesizes an HLD document directly from the project's
+    actual Stage 1-4 analysis data, adapting to the project archetype
+    (informational website vs full-stack application).
     """
     stages = analysis_data.get("stages", {})
     stage1 = stages.get("stage1_requirements", {})
@@ -736,25 +766,22 @@ sequenceDiagram
 - **Scalability:** Horizontal scaling of API instances; connection pool configured with minimum 5, maximum 20 connections per instance.
 - **Disaster Recovery (DR):** Automated daily snapshots with 30-day retention; Recovery Point Objective (RPO) < 15 minutes; Recovery Time Objective (RTO) < 60 minutes."""
 
-    doc = f"""# HIGH-LEVEL DESIGN (HLD) SPECIFICATION
-**Document ID:** HLD-{prod_code}-V1.0  
-**Standard:** IEEE 1016-2009 / TOGAF Architecture Development Framework  
-**Classification:** Confidential - Enterprise Engineering Standard  
+    doc = f"""# HIGH-LEVEL DESIGN (HLD) — {prod_name}
 **Date:** {datetime.now(timezone.utc).strftime('%B %d, %Y')}  
 **Version:** 1.0.0  
-**Project Classification:** {dev_type}  
+**Project Type:** {dev_type}  
 
 ---
 
-## 1. Document Control & Metadata
+## 1. Executive Summary & Scope
 ### 1.1 Executive Summary
 {vision}
 
-This High-Level Design (HLD) defines the foundational software architecture, system topologies, integration contracts, security controls, and non-functional guarantees for **{prod_name}**. The architecture is structured to support enterprise-grade reliability, clear domain separation, and deterministic delivery.
+This High-Level Design (HLD) defines the foundational software architecture, system topologies, integration contracts, security controls, and non-functional guarantees for **{prod_name}**.
 
 ### 1.2 Scope & Boundary Definitions
 - **Target System:** {prod_name}
-- **Target Audience:** Solution Architects, Technical Leads, DevOps Specialists, Security Auditors, and Development Teams.
+- **Target Audience:** Solution Architects, Technical Leads, DevOps, and Development Teams.
 - **Key Domain Personas:** {target_users}.
 
 ---
@@ -956,10 +983,7 @@ The system is constructed following Clean Architecture principles, establishing 
 4. **Schemas (`app/schemas/`):** Define strict request validation contracts and serialization responses.
 5. **Models (`app/models/`):** Define relational tables, indices, and foreign key cascades."""
 
-    doc = f"""# LOW-LEVEL DESIGN (LLD) SPECIFICATION
-**Document ID:** LLD-{prod_code}-V1.0  
-**Standard:** Clean Layered Architecture / OpenAPI 3.1 / ANSI SQL-92  
-**Classification:** Engineering Implementation Blueprint  
+    doc = f"""# LOW-LEVEL DESIGN (LLD) — {prod_name}
 **Date:** {datetime.now(timezone.utc).strftime('%B %d, %Y')}  
 **Version:** 1.0.0  
 
@@ -1101,7 +1125,7 @@ class ArchitectureDesignService:
         timeout: float = 120.0
     ) -> Dict[str, Any]:
         """
-        Generate a comprehensive, IEEE 1016 compliant High-Level Design (HLD)
+        Generate a comprehensive High-Level Design (HLD)
         dynamically customized to the project BRD.
         """
         analysis_data = analysis_data or {}
@@ -1118,9 +1142,10 @@ class ArchitectureDesignService:
         }
 
         user_prompt = (
-            f"Generate an industry-grade High-Level Design (HLD) document according to IEEE 1016 standards for:\n\n"
+            f"Generate an industry-grade High-Level Design (HLD) document for:\n\n"
             f"{json.dumps(context, indent=2, default=str)}\n\n"
             f"Produce the COMPLETE, un-truncated Markdown specification with all diagrams, tables, and sections."
+            f"\nDo NOT include IEEE/TOGAF standard references, Document IDs, or Classification headers — keep it clean and professional."
         )
 
         messages = [
@@ -1148,8 +1173,7 @@ class ArchitectureDesignService:
             markdown_result = synthesize_hld_from_analysis(analysis_data, project_name=p_name)
 
         return {
-            "title": f"High-Level Design (HLD) - {p_name}",
-            "document_code": f"HLD-{p_code}-V1.0",
+            "title": f"High-Level Design (HLD) — {p_name}",
             "markdown": markdown_result.strip(),
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "version": "1.0.0"
@@ -1202,7 +1226,7 @@ class ArchitectureDesignService:
                 project_name=p_name,
                 timeout=timeout,
                 temperature=0.2,
-                max_tokens=7000
+                max_tokens=9000
             )
         except Exception as e:
             logger.warning(f"LLM call for LLD encountered issue: {e}. Falling back to dynamic synthesis.")
@@ -1212,8 +1236,7 @@ class ArchitectureDesignService:
             markdown_result = synthesize_lld_from_analysis(analysis_data, project_name=p_name)
 
         return {
-            "title": f"Low-Level Design (LLD) - {p_name}",
-            "document_code": f"LLD-{p_code}-V1.0",
+            "title": f"Low-Level Design (LLD) — {p_name}",
             "markdown": markdown_result.strip(),
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "version": "1.0.0"

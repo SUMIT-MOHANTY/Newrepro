@@ -829,10 +829,7 @@ async def analyze_document_chunked(
         hld_data = None
         lld_data = None
         try:
-            from app.services.ai.architecture_design_service import (
-                synthesize_hld_from_analysis,
-                synthesize_lld_from_analysis
-            )
+            from app.services.ai.architecture_design_service import architecture_design_service
             analysis_meta = {
                 "title": final_json.get("title"),
                 "stages": {
@@ -843,19 +840,29 @@ async def analyze_document_chunked(
                 }
             }
             project_label = final_json.get("title") or "Enterprise Solution"
-            hld_md = synthesize_hld_from_analysis(analysis_meta, project_name=project_label)
-            lld_md = synthesize_lld_from_analysis(analysis_meta, project_name=project_label)
+            
+            logger.info(f"Generating AI HLD and LLD for project '{project_label}'...")
+            hld_res = await architecture_design_service.generate_high_level_design(
+                brd_content=document_content,
+                analysis_data=analysis_meta,
+                project_name=project_label
+            )
+            lld_res = await architecture_design_service.generate_low_level_design(
+                brd_content=document_content,
+                hld_content=hld_res.get("markdown"),
+                analysis_data=analysis_meta,
+                project_name=project_label
+            )
+
             hld_data = {
-                "title": f"High-Level Design (HLD) - {project_label}",
-                "document_code": f"HLD-V1.0",
-                "markdown": hld_md,
+                "title": f"High-Level Design (HLD) — {project_label}",
+                "markdown": hld_res.get("markdown", ""),
                 "version": "1.0.0",
                 "generated_at": datetime.utcnow().isoformat()
             }
             lld_data = {
-                "title": f"Low-Level Design (LLD) - {project_label}",
-                "document_code": f"LLD-V1.0",
-                "markdown": lld_md,
+                "title": f"Low-Level Design (LLD) — {project_label}",
+                "markdown": lld_res.get("markdown", ""),
                 "version": "1.0.0",
                 "generated_at": datetime.utcnow().isoformat()
             }
