@@ -154,7 +154,17 @@ CRITICAL ARCHITECTURAL ADAPTATION RULES (DO NOT OVER-ENGINEER):
 
 ## 1. Clean Layered Component Architecture & Design Patterns
 ### 1.1 Architectural Pattern & Module Separation
-Detailed breakdown of the software layers for this project with Clean Architecture principles:
+Detailed breakdown of the software layers with Clean Architecture principles and a valid Mermaid flowchart diagram:
+```mermaid
+flowchart TB
+    Presentation["Presentation / Router Layer\n(HTTP, DTO Validation, Status Codes)"]
+    Application["Application / Service Layer\n(Business Rules, Transaction Orchestration)"]
+    Domain["Domain / Entity Layer\n(Pure Domain Logic, Value Objects)"]
+    DataAccess["Data Access / Repository Layer\n(ORM, Database Queries, Transactions)"]
+    Persistence[("Persistence Layer\n(Relational Database)")]
+
+    Presentation --> Application --> Domain --> DataAccess --> Persistence
+```
 1. Presentation / Router Layer (Request handling, DTO validation, status codes)
 2. Application / Service Layer (Use case orchestration, business rules, transactions)
 3. Domain / Entity Layer (Pure domain logic, domain events, value objects)
@@ -238,7 +248,7 @@ def _clean_mermaid(code: str) -> str:
     if not code:
         return ""
     cleaned = code.strip()
-    cleaned = re.sub(r"^```(?:mermaid)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^```(?:mermaid|erDiagram|erdiagram|flowchart|graph)?\s*", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s*```$", "", cleaned)
 
     # Common truncation repairs
@@ -253,19 +263,59 @@ def _clean_mermaid(code: str) -> str:
     for pattern, replacement in truncation_fixes:
         cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
 
-    # Shape quoting repairs for flowcharts
-    # Stadium shape: id([ ... ]) -> id(["..."])
-    cleaned = re.sub(r'(\b\w+)\(\[\s*([^"\]\n]*?)\s*\]\)', r'\1(["\2"])', cleaned)
-    # Cylinder shape: id[( ... )] -> id[("...")]
-    cleaned = re.sub(r'(\b\w+)\[\(\s*([^"\]\n]*?)\s*\)\]', r'\1[("\2")]', cleaned)
-    # Hexagon shape: id{{ ... }} -> id{{"..."}}
-    cleaned = re.sub(r'(\b\w+)\{\{\s*([^"\}\n]*?)\s*\}\}', r'\1{{"\2"}}', cleaned)
-    # Circle shape: id(( ... )) -> id(("..."))
-    cleaned = re.sub(r'(\b\w+)\(\(\s*([^"\)\n]*?)\s*\)\)', r'\1(("\2"))', cleaned)
-    # Subroutine shape: id[[ ... ]] -> id[["..."]]
-    cleaned = re.sub(r'(\b\w+)\[\[\s*([^"\]\n]*?)\s*\]\]', r'\1[["\2"]]', cleaned)
-    # Box shape with special characters
-    cleaned = re.sub(r'(\b\w+)\[([^"\]\n]*[\(\)\{\}&\/\\#][^"\]\n]*)\]', r'\1["\2"]', cleaned)
+    # Header deduplication
+    cleaned = re.sub(r'^(erDiagram|graph\s+[A-Z]+|flowchart\s+[A-Z]+|sequenceDiagram|classDiagram|stateDiagram)[\s\n]+\1', r'\1', cleaned, flags=re.IGNORECASE)
+
+    is_er = (
+        cleaned.startswith('erDiagram')
+        or cleaned.lower().startswith('erdiagram')
+        or '||--' in cleaned
+        or '}o--' in cleaned
+        or '|o--' in cleaned
+    )
+
+    if is_er:
+        if not cleaned.lower().startswith('erdiagram'):
+            cleaned = 'erDiagram\n' + cleaned
+        cleaned = re.sub(r'^erDiagram[\s\n]+erDiagram', 'erDiagram', cleaned, flags=re.IGNORECASE)
+
+        lines = cleaned.split('\n')
+        fixed_lines = []
+        for line in lines:
+            trimmed = line.strip()
+            if trimmed.lower() == 'end':
+                continue
+            # LLM ordering: datatype PK col -> datatype col PK
+            m = re.match(r'^(\s*)([A-Za-z0-9_\[\]\<\>\.\(\)]+)\s+((?:PK|FK|UK)(?:\s*,?\s*(?:PK|FK|UK))*)\s+([A-Za-z0-9_]+)(.*)$', line)
+            if m:
+                indent, dt, keys, name, rest = m.groups()
+                clean_keys = re.sub(r'\s+', '', keys)
+                fixed_lines.append(f"{indent}{dt} {name} {clean_keys}{rest}")
+                continue
+            # LLM ordering: PK col datatype -> datatype col PK
+            m2 = re.match(r'^(\s*)((?:PK|FK|UK)(?:\s*,?\s*(?:PK|FK|UK))*)\s+([A-Za-z0-9_]+)\s+([A-Za-z0-9_\[\]\<\>\.\(\)]+)(.*)$', line)
+            if m2:
+                indent, keys, name, dt, rest = m2.groups()
+                clean_keys = re.sub(r'\s+', '', keys)
+                fixed_lines.append(f"{indent}{dt} {name} {clean_keys}{rest}")
+                continue
+            fixed_lines.append(line)
+        cleaned = "\n".join(fixed_lines)
+    else:
+        # Subgraph quoting: subgraph ID [Title with special chars] -> subgraph ID ["Title..."]
+        cleaned = re.sub(r'subgraph\s+([A-Za-z0-9_]+)\s*\[([^"\]\n]+)\]', r'subgraph \1["\2"]', cleaned)
+        # Stadium shape: id([ ... ]) -> id(["..."])
+        cleaned = re.sub(r'(\b\w+)\(\[\s*([^"\]\n]*?)\s*\]\)', r'\1(["\2"])', cleaned)
+        # Cylinder shape: id[( ... )] -> id[("...")]
+        cleaned = re.sub(r'(\b\w+)\[\(\s*([^"\]\n]*?)\s*\)\]', r'\1[("\2")]', cleaned)
+        # Hexagon shape: id{{ ... }} -> id{{"..."}}
+        cleaned = re.sub(r'(\b\w+)\{\{\s*([^"\}\n]*?)\s*\}\}', r'\1{{"\2"}}', cleaned)
+        # Circle shape: id(( ... )) -> id(("..."))
+        cleaned = re.sub(r'(\b\w+)\(\(\s*([^"\)\n]*?)\s*\)\)', r'\1(("\2"))', cleaned)
+        # Subroutine shape: id[[ ... ]] -> id[["..."]]
+        cleaned = re.sub(r'(\b\w+)\[\[\s*([^"\]\n]*?)\s*\]\]', r'\1[["\2"]]', cleaned)
+        # Box shape with special characters
+        cleaned = re.sub(r'(\b\w+)\[([^"\]\n]*[\(\)\{\}&\/\\#][^"\]\n]*)\]', r'\1["\2"]', cleaned)
 
     return cleaned.strip()
 
@@ -511,25 +561,25 @@ def synthesize_hld_from_analysis(analysis_data: Dict[str, Any], project_name: st
         if is_info:
             user_flow_diagram = f"""```mermaid
 flowchart TB
-    Start(["Visitor Navigates to " + safe_prod_name]) --> BrowseContent[Browse Responsive Sections]
-    BrowseContent --> HasInquiry{{Has Inquiry or Contact Need?}}
-    HasInquiry -- No --> ReadPages[Consume Information / Articles]
-    ReadPages --> EndVisit([Session Complete])
-    HasInquiry -- Yes --> OpenContact[Open Contact / Lead Form]
-    OpenContact --> SubmitInquiry[Submit Message with Anti-Spam Check]
-    SubmitInquiry --> DispatchAlert[Persist Inquiry & Notify Team]
-    DispatchAlert --> Confirmation[Display Success Feedback]
+    Start(["Visitor Navigates to {safe_prod_name}"]) --> BrowseContent["Browse Responsive Sections"]
+    BrowseContent --> HasInquiry["Has Inquiry or Contact Need?"]
+    HasInquiry -->|No| ReadPages["Consume Information / Articles"]
+    ReadPages --> EndVisit(["Session Complete"])
+    HasInquiry -->|Yes| OpenContact["Open Contact / Lead Form"]
+    OpenContact --> SubmitInquiry["Submit Message with Anti-Spam Check"]
+    SubmitInquiry --> DispatchAlert["Persist Inquiry & Notify Team"]
+    DispatchAlert --> Confirmation["Display Success Feedback"]
     Confirmation --> EndVisit
 ```"""
         else:
             user_flow_diagram = f"""```mermaid
 flowchart TB
-    Start(["User Initiates " + safe_prod_name]) --> AuthCheck{{"Authenticated?"}}
-    AuthCheck -- No --> LoginView[Present Login Screen]
-    LoginView --> IssueToken[Issue JWT Token]
-    IssueToken --> MainView["Access " + safe_prod_name + " Dashboard"]
-    AuthCheck -- Yes --> MainView
-    MainView --> ActionExecute[Perform Domain Action]
+    Start(["User Initiates {safe_prod_name}"]) --> AuthCheck["Authenticated?"]
+    AuthCheck -->|No| LoginView["Present Login Screen"]
+    LoginView --> IssueToken["Issue JWT Token"]
+    IssueToken --> MainView["Access {safe_prod_name} Dashboard"]
+    AuthCheck -->|Yes| MainView
+    MainView --> ActionExecute["Perform Domain Action"]
     ActionExecute --> Persist[("Commit Transaction")]
     Persist --> End(["Complete Workflow"])
 ```"""
@@ -937,37 +987,43 @@ def synthesize_lld_from_analysis(analysis_data: Dict[str, Any], project_name: st
             {"method": "GET", "path": "/sitemap.xml", "purpose": "Search engine sitemap index", "auth": "none", "domain": "SEO"}
         ]
 
-    if clean_er:
-        if not clean_er.startswith("erDiagram"):
-            clean_er = "erDiagram\n" + clean_er
-        er_diagram_md = f"```mermaid\n{clean_er}\n```"
-    else:
-        er_diagram_md = "*(ER diagram will be generated by the AI architecture service.)*"
-
     # Dynamically parse real entities from the ER diagram, or infer from endpoints
     entities = _parse_entities_from_mermaid_er(clean_er)
     if not entities:
         entities = _infer_entities_from_endpoints(endpoints, prod_name)
     data_dict_table, dynamic_ddl = _generate_dynamic_ddl_and_dictionary(entities, prod_name)
 
+    if clean_er:
+        if not clean_er.startswith("erDiagram"):
+            clean_er = "erDiagram\n" + clean_er
+        er_diagram_md = f"```mermaid\n{clean_er}\n```"
+    else:
+        # Dynamically synthesize clean Mermaid ER diagram from entities
+        er_lines = ["erDiagram"]
+        for ent in entities:
+            ent_name = re.sub(r'[^A-Za-z0-9_]', '', ent.get("name", "ENTITY")).upper()
+            er_lines.append(f"    {ent_name} {{")
+            for f in ent.get("fields", []):
+                fn = re.sub(r'[^A-Za-z0-9_]', '', f.get("name", "id"))
+                ft = re.sub(r'[^A-Za-z0-9_]', '', f.get("type", "string"))
+                fpk = " PK" if f.get("is_pk") else ""
+                er_lines.append(f"        {ft} {fn}{fpk}")
+            er_lines.append("    }")
+        er_diagram_md = f"```mermaid\n" + "\n".join(er_lines) + "\n```"
+
     if is_info:
         layer_explanation = """### 1.1 Architectural Pattern & Module Separation
 The informational website follows a Modern Component-Driven Architecture optimized for sub-second delivery, Core Web Vitals, and edge caching:
 
-```
-[Edge CDN Delivery Tier] (Cloudflare / CloudFront Caching & TLS)
-             │
-             ▼
-[Page Layout & Template Tier] (SEO Meta Tags, Responsive Wrappers)
-             │
-             ▼
-[UI Component Showcase Tier] (Hero, Feature Grid, Testimonials, Form)
-             │
-             ▼
-[Edge Ingress & Serverless Tier] (Turnstile Anti-Spam, POST /api/contact)
-             │
-             ▼
-[Persistence / Notification] (SQLite / Leads DB, SendGrid/Resend Email)
+```mermaid
+flowchart TB
+    EdgeTier["Edge CDN Delivery Tier\\n(Cloudflare / CloudFront Caching & TLS)"]
+    LayoutTier["Page Layout & Template Tier\\n(SEO Meta Tags, Responsive Wrappers)"]
+    ShowcaseTier["UI Component Showcase Tier\\n(Hero, Feature Grid, Testimonials, Form)"]
+    IngressTier["Edge Ingress & Serverless Tier\\n(Turnstile Anti-Spam, POST /api/contact)"]
+    PersistTier[("Persistence & Notification Layer\\n(SQLite / Leads DB, SendGrid/Resend Email)")]
+
+    EdgeTier --> LayoutTier --> ShowcaseTier --> IngressTier --> PersistTier
 ```
 
 ### 1.2 Frontend Component Manifest Contract
@@ -980,20 +1036,15 @@ The informational website follows a Modern Component-Driven Architecture optimiz
         layer_explanation = """### 1.1 Architectural Pattern & Module Separation
 The system is constructed following Clean Architecture principles, establishing strict one-way dependency boundaries:
 
-```
-[Presentation / Router Layer] (HTTP, DTO Validation, Status Codes)
-             │
-             ▼
-[Application / Service Layer] (Business Rules, Transaction Orchestration)
-             │
-             ▼
-[Domain / Entity Layer]       (Pure Domain Logic, Value Objects)
-             │
-             ▼
-[Data Access / Repository Layer] (ORM, Database Queries, Transactions)
-             │
-             ▼
-[Persistence Layer]           (Relational Database)
+```mermaid
+flowchart TB
+    Presentation["Presentation / Router Layer\\n(HTTP, DTO Validation, Status Codes)"]
+    Application["Application / Service Layer\\n(Business Rules, Transaction Orchestration)"]
+    Domain["Domain / Entity Layer\\n(Pure Domain Logic, Value Objects)"]
+    DataAccess["Data Access / Repository Layer\\n(ORM, Database Queries, Transactions)"]
+    Persistence[("Persistence Layer\\n(Relational Database)")]
+
+    Presentation --> Application --> Domain --> DataAccess --> Persistence
 ```
 
 ### 1.2 Component Responsibility Contract
@@ -1031,6 +1082,33 @@ The system is constructed following Clean Architecture principles, establishing 
 ## 3. Comprehensive OpenAPI 3.1 REST API Specification
 ### 3.1 Endpoint Inventory
 """
+
+    if not endpoints and entities:
+        endpoints = []
+        for ent in entities[:4]:
+            ent_name = ent.get("name", "Item")
+            ent_slug = re.sub(r'[^A-Za-z0-9_]', '', ent_name).lower()
+            endpoints.append({
+                "method": "GET",
+                "path": f"/api/v1/{ent_slug}s",
+                "purpose": f"List {ent_name} records with pagination and filtering",
+                "auth": "Bearer JWT",
+                "domain": ent_name
+            })
+            endpoints.append({
+                "method": "POST",
+                "path": f"/api/v1/{ent_slug}s",
+                "purpose": f"Create a new {ent_name} record",
+                "auth": "Bearer JWT",
+                "domain": ent_name
+            })
+            endpoints.append({
+                "method": "GET",
+                "path": f"/api/v1/{ent_slug}s/{{id}}",
+                "purpose": f"Retrieve single {ent_name} record by ID",
+                "auth": "Bearer JWT",
+                "domain": ent_name
+            })
 
     if endpoints and isinstance(endpoints, list):
         for ep in endpoints:
@@ -1072,6 +1150,7 @@ The system is constructed following Clean Architecture principles, establishing 
 
     doc += f"""
 ---
+
 
 ## 4. State Machine & Domain Entity Lifecycles
 ### 4.1 State Machine Diagram

@@ -101,12 +101,16 @@ const sanitizeMermaidCode = (rawCode) => {
     // 4. Detect if this is an ER diagram
     const isEr = cleaned.startsWith('erDiagram') ||
                  cleaned.toLowerCase().startsWith('erdiagram') ||
+                 cleaned.toLowerCase().includes('erdiagram') ||
                  cleaned.includes('||--') ||
                  cleaned.includes('}o--') ||
                  cleaned.includes('|o--');
 
     if (isEr) {
-        if (!cleaned.toLowerCase().startsWith('erdiagram')) {
+        const erIdx = cleaned.toLowerCase().indexOf('erdiagram');
+        if (erIdx > 0) {
+            cleaned = cleaned.substring(erIdx);
+        } else if (!cleaned.toLowerCase().startsWith('erdiagram')) {
             cleaned = 'erDiagram\n' + cleaned;
         }
 
@@ -2763,24 +2767,43 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
             if (inline) {
                 return <code className="bg-gray-100 text-red-600 px-1 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>;
             }
-            const codeContent = String(children || '').trim();
-            const isMermaid = codeContent.startsWith('graph') ||
+            const extractText = (elem) => {
+                if (!elem) return '';
+                if (typeof elem === 'string') return elem;
+                if (Array.isArray(elem)) return elem.map(extractText).join('');
+                if (elem?.props?.children) return extractText(elem.props.children);
+                return String(elem || '');
+            };
+            const codeContent = extractText(children).trim();
+            const lang = (className || '').toLowerCase();
+
+            const isMermaid = lang.includes('mermaid') ||
+                codeContent.startsWith('graph') ||
                 codeContent.includes('flowchart') ||
                 codeContent.includes('sequenceDiagram') ||
                 codeContent.includes('classDiagram') ||
-                codeContent.includes('stateDiagram');
+                codeContent.includes('stateDiagram') ||
+                codeContent.includes('stateDiagram-v2') ||
+                codeContent.includes('erDiagram') ||
+                codeContent.toLowerCase().includes('erdiagram') ||
+                codeContent.includes('||--') ||
+                codeContent.includes('}o--') ||
+                codeContent.includes('|o--');
 
-            const isErDiagram = codeContent.startsWith('erDiagram') ||
-                (codeContent.toLowerCase().startsWith('erdiagram'));
-
-            if (isMermaid || isErDiagram) {
+            if (isMermaid) {
                 return <MermaidDiagram code={codeContent} showDownload={true} />;
             }
 
-            return <code className="block bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-xs font-mono" {...props}>{children}</code>;
+            return (
+                <div className="my-4 rounded-xl border border-gray-800 bg-gray-900 overflow-hidden shadow-sm">
+                    <pre className="p-4 text-gray-100 text-xs font-mono overflow-x-auto whitespace-pre leading-relaxed">
+                        <code className="text-gray-100 font-mono whitespace-pre" {...props}>{children}</code>
+                    </pre>
+                </div>
+            );
         },
         pre: ({ node, children, ...props }) => {
-            return <div className="my-4">{children}</div>;
+            return <>{children}</>;
         },
         blockquote: ({ node, ...props }) => <blockquote className="border-l-4 border-blue-500 pl-4 italic text-gray-600 my-4 bg-blue-50 py-2" {...props} />,
         a: ({ node, ...props }) => <a className="text-blue-600 hover:text-blue-800 underline font-medium" {...props} />,
