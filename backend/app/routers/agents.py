@@ -5032,7 +5032,10 @@ async def generate_tasks_locally(
                             linked_tasks=as_linked,
                             checklist=as_check,
                             selected=False,
-                            synced_to_nxdune=False
+                            synced_to_nxdune=False,
+                            status="TODO",
+                            assigned_agent_role=tdata.get("assigned_agent_role") or (tdata.get("assignedTo", ["Fullstack Developer"])[0] if isinstance(tdata.get("assignedTo"), list) and tdata.get("assignedTo") else "Fullstack Developer"),
+                            verification_status="PENDING",
                         )
                         db.add(new_t)
                 db.commit()
@@ -5553,6 +5556,13 @@ async def get_local_tasks(
             "selected": t.selected,  # Include selection status
             "synced_to_nxdune": t.synced_to_nxdune,
             "nxdune_task_id": t.nxdune_task_id,
+            "status": (t.status or "TODO").upper(),
+            "assigned_agent_role": t.assigned_agent_role or (t.assigned_to[0] if isinstance(t.assigned_to, list) and t.assigned_to else "Fullstack Developer"),
+            "assigned_agent_id": t.assigned_agent_id,
+            "verification_status": t.verification_status or "PENDING",
+            "files_modified": t.files_modified or [],
+            "execution_logs": t.execution_logs,
+            "error_details": t.error_details,
         }
 
     has_next = (offset + page_size) < total
@@ -5677,6 +5687,89 @@ async def save_tasks_locally(
     except Exception as e:
         logger.error(f"Failed to save tasks locally: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to save tasks locally: {str(e)}")
+
+
+class UpdateTaskStatusRequest(BaseModel):
+    status: str
+    assigned_agent_role: Optional[str] = None
+    assigned_agent_id: Optional[str] = None
+
+
+@router.patch("/api/agent/tasks/{task_id}/status/")
+async def update_task_status(
+    task_id: str,
+    payload: UpdateTaskStatusRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update task status directly from the modern Kanban board"""
+    task = db.query(models.Task).filter(
+        or_(
+            models.Task.task_id == task_id,
+            models.Task.id == int(task_id) if task_id.isdigit() else False,
+            models.Task.task_id.like(f"%_{task_id}")
+        ),
+        models.Task.owner_id == current_user.id
+    ).first()
+
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
+
+    task.status = payload.status.upper()
+    if payload.assigned_agent_role:
+        task.assigned_agent_role = payload.assigned_agent_role
+    if payload.assigned_agent_id:
+        task.assigned_agent_id = payload.assigned_agent_id
+    task.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(task)
+
+    return {
+        "status": "success",
+        "task_id": task.task_id,
+        "new_status": task.status,
+        "assigned_agent_role": task.assigned_agent_role,
+        "updated_at": task.updated_at.isoformat() if task.updated_at else None
+    }
+
+
+class UpdateTaskChecklistRequest(BaseModel):
+    checklist: Any
+
+
+@router.patch("/api/agent/tasks/{task_id}/checklist/")
+async def update_task_checklist(
+    task_id: str,
+    payload: UpdateTaskChecklistRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update task checklist directly from the slide-over drawer"""
+    task = db.query(models.Task).filter(
+        or_(
+            models.Task.task_id == task_id,
+            models.Task.id == int(task_id) if task_id.isdigit() else False,
+            models.Task.task_id.like(f"%_{task_id}")
+        ),
+        models.Task.owner_id == current_user.id
+    ).first()
+
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
+
+    if isinstance(payload.checklist, (list, dict)):
+        task.checklist = json.dumps(payload.checklist)
+    elif isinstance(payload.checklist, str):
+        task.checklist = payload.checklist
+
+    task.updated_at = datetime.utcnow()
+    db.commit()
+
+    return {
+        "status": "success",
+        "task_id": task.task_id,
+        "checklist": task.checklist
+    }
 
 
 class TaskSelectionRequest(BaseModel):

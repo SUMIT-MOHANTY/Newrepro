@@ -1,30 +1,45 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-    AlertCircle,
-    AlertTriangle,
-    ArrowRight,
-    CalendarDays,
-    CheckCircle2,
-    Flag,
-    FolderKanban,
-    Loader2,
-    Milestone,
-    RefreshCw,
-    Sparkles,
+    Search,
     ChevronDown,
     ChevronRight,
+    Filter,
+    ArrowUpDown,
+    Calendar,
+    Check,
+    CheckSquare,
+    Square,
+    MoreVertical,
+    Play,
+    ArrowRight,
+    Info,
+    Sparkles,
+    RefreshCw,
+    Loader2,
+    FolderKanban,
+    LayoutGrid,
+    List,
+    Minus,
+    CheckCircle2,
+    AlertCircle,
+    AlertTriangle,
     Lock,
+    Tag,
     X,
+    FileText,
+    Layers,
+    Clock,
+    ListTodo,
+    Link2,
+    GitBranch,
+    Bot,
+    Plus,
 } from 'lucide-react';
 import { API_ENDPOINTS, API_BASE_URL } from '../config';
-import { upsertDraftProject, getDraftProject } from '../utils/draftProjects';
+import { getDraftProject } from '../utils/draftProjects';
 import { getCachedTaskToken, setCachedTaskToken as cacheTaskToken } from '../utils/tokenCache';
-
-const PLAN_CREATION_STEPS = ['Creating Tasks'];
-const PROCESS_MODE_STORAGE_KEY = 'status_dashboard_process_mode_map';
-const GENERATED_TASK_PLAN_STORAGE_KEY_PREFIX = 'task_creation_generated_plan_';
 
 function extractEntityId(item, key) {
     const direct = item?.[key];
@@ -48,408 +63,14 @@ function extractEntityName(item, key) {
     return fallback || '';
 }
 
-function formatTaskErrorMessage(errorPayload, fallback = 'Task creation failed. Please try again.') {
-    if (!errorPayload) return null;
-
-    let raw = '';
-    let statusCode = null;
-
-    if (errorPayload && typeof errorPayload === 'object') {
-        if (errorPayload.status) statusCode = errorPayload.status;
-        if (typeof errorPayload.detail === 'string') {
-            raw = errorPayload.detail;
-        } else if (errorPayload.detail && typeof errorPayload.detail === 'object') {
-            raw = errorPayload.detail.message || JSON.stringify(errorPayload.detail);
-        } else if (typeof errorPayload.error === 'string') {
-            raw = errorPayload.error;
-        } else if (typeof errorPayload.message === 'string') {
-            raw = errorPayload.message;
-        } else {
-            raw = String(errorPayload);
-        }
-    } else {
-        raw = String(errorPayload);
-    }
-
-    // Try parsing if raw is a JSON string
-    try {
-        if (typeof raw === 'string' && (raw.startsWith('{') || raw.includes('"detail"'))) {
-            const parsed = JSON.parse(raw);
-            if (parsed.detail) raw = typeof parsed.detail === 'string' ? parsed.detail : JSON.stringify(parsed.detail);
-            else if (parsed.message) raw = parsed.message;
-            else if (parsed.error) raw = parsed.error;
-        }
-    } catch {
-        // ignore
-    }
-
-    const upper = String(raw).toUpperCase();
-
-    // Check specific known conditions
-    if (upper.includes('TOKEN_EXHAUSTED') || (upper.includes('402') && upper.includes('TOKEN')) || statusCode === 402) {
-        return {
-            type: 'token_exhausted',
-            title: 'Token Quota Exhausted',
-            message: 'Your organization has exhausted its available token quota. Please allocate more tokens or review your subscription in Billing to proceed.',
-            canGoToBilling: true,
-        };
-    }
-
-    if (upper.includes('PAYG_HARD_LIMIT_REACHED')) {
-        return {
-            type: 'billing_limit',
-            title: 'Spending Limit Reached',
-            message: "Your organization's pay-as-you-go spending limit has been reached. Please contact your administrator to adjust the limit.",
-            canGoToBilling: true,
-        };
-    }
-
-    if (upper.includes('PAYG ACCESS SUSPENDED') || upper.includes('OVERDUE') || upper.includes('GRACE PERIOD')) {
-        return {
-            type: 'billing_suspended',
-            title: 'Payment Required',
-            message: 'Your organization has overdue invoices exceeding its grace period. Please review your billing status to resume AI services.',
-            canGoToBilling: true,
-        };
-    }
-
-    if (upper.includes('ORGANIZATION_BLOCKED')) {
-        return {
-            type: 'account_blocked',
-            title: 'Organization Blocked',
-            message: 'Your organization account is currently suspended. Please contact the administrator or review billing.',
-            canGoToBilling: true,
-        };
-    }
-
-    if (upper.includes('USER_BLOCKED')) {
-        return {
-            type: 'account_blocked',
-            title: 'User Account Blocked',
-            message: 'Your user account has been blocked. Please contact your organization administrator.',
-            canGoToBilling: false,
-        };
-    }
-
-    if (upper.includes('PAYMENT_REQUIRED') || upper.includes(' 402') || upper.includes('402:')) {
-        return {
-            type: 'token_exhausted',
-            title: 'Payment Required / Token Limit',
-            message: 'Payment is required or your token quota is exhausted. Please check your token balance in the billing dashboard.',
-            canGoToBilling: true,
-        };
-    }
-
-    if (raw.toLowerCase().includes('already exists')) {
-        const sprintMatch = raw.match(/sprint.*?"([^"]+)"|sprint.*?name\s+["']([^"']+)["']/i);
-        const milestoneMatch = raw.match(/milestone.*?"([^"]+)"|milestone.*?name\s+["']([^"']+)["']/i);
-        const name = sprintMatch ? (sprintMatch[1] || sprintMatch[2]) : (milestoneMatch ? (milestoneMatch[1] || milestoneMatch[2]) : null);
-        return {
-            type: 'warning',
-            title: 'Item Already Exists',
-            message: name ? `An item named "${name}" already exists in this project. The system will continue with the existing item.` : 'This item already exists in the project.',
-            canGoToBilling: false,
-        };
-    }
-
-    if (upper.includes('401') || upper.includes('UNAUTHORIZED')) {
-        return {
-            type: 'auth_error',
-            title: 'Session Expired',
-            message: 'Your session has expired. Please log in again to continue.',
-            canGoToBilling: false,
-        };
-    }
-
-    if (upper.includes('403') || upper.includes('FORBIDDEN')) {
-        return {
-            type: 'auth_error',
-            title: 'Access Restricted',
-            message: 'You do not have permission to generate tasks for this project. Please contact your administrator.',
-            canGoToBilling: false,
-        };
-    }
-
-    if (upper.includes('TIMEOUT') || upper.includes('TIMED OUT') || upper.includes('504')) {
-        return {
-            type: 'timeout',
-            title: 'Request Timed Out',
-            message: 'The AI planning process took longer than expected. Please verify your repository connection and try again.',
-            canGoToBilling: false,
-        };
-    }
-
-    if (upper.includes('500') || upper.includes('INTERNAL SERVER ERROR')) {
-        return {
-            type: 'server_error',
-            title: 'AI Service Unavailable',
-            message: 'The AI planning service is temporarily unavailable or experiencing high load. Please try again in a few moments.',
-            canGoToBilling: false,
-        };
-    }
-
-    // Clean up technical wrappers like "Task generation failed: ..." or "AI Dynamic Sprint Planning failed after 5 attempts. Last error: ..."
-    let cleanMessage = raw
-        .replace(/^Task generation failed:\s*/i, '')
-        .replace(/^AI Dynamic Sprint Planning failed after \d+ attempts\.\s*(Last error:\s*)?/i, '')
-        .replace(/^(Error|Exception|Fail|Failure|Failed):\s*/i, '')
-        .trim();
-
-    return {
-        type: 'general',
-        title: 'Task Generation Failed',
-        message: cleanMessage || fallback,
-        canGoToBilling: false,
-    };
-}
-
-function getErrorMessage(errorPayload, fallback) {
-    const formatted = formatTaskErrorMessage(errorPayload, fallback);
-    return formatted?.message || fallback || '';
-}
-
-function sanitizePrerequisiteForAiPayload(item = {}) {
-    const safe = {
-        name: String(item.name || '').trim() || 'Unknown',
-        description: String(item.description || '').trim(),
-        category: String(item.category || 'other').trim() || 'other',
-        priority: String(item.priority || 'medium').trim() || 'medium',
-        fieldType: String(item.fieldType || 'text').trim() || 'text',
-        provided: Boolean(item.provided),
-    };
-
-    const isSecret = Boolean(item.containsSecret);
-    safe.containsSecret = isSecret;
-
-    const value = String(item.userValue || '').trim();
-    const fileName = String(item.userFileName || '').trim();
-    if (!isSecret) {
-        if (value) safe.userValue = value;
-        if (fileName) safe.userFileName = fileName;
-    }
-
-    return safe;
-}
-
-function normalizePrerequisiteKey(name) {
-    const raw = String(name || '').trim();
-    if (!raw) return '';
-    return raw
-        .toLowerCase()
-        .replace(/[^\w]+/g, '_')
-        .replace(/^_+|_+$/g, '');
-}
-
-function buildPrerequisitesObjectFromStorage(projectKey) {
-    if (!projectKey) return [];
-    try {
-        const saved = localStorage.getItem(`prerequisites_completed_${projectKey}`);
-        if (!saved) return [];
-        const parsed = JSON.parse(saved);
-        const items = Array.isArray(parsed?.items) ? parsed.items : [];
-        return items
-            .filter((item) => item && item.provided)
-            .map((item) => sanitizePrerequisiteForAiPayload(item))
-            .filter((item) => item.name || item.description);
-    } catch {
-        return [];
-    }
-}
-
-function readRepoLinkUrlForProject(projectKey) {
-    if (!projectKey) return '';
-    const storageKey = `repo_context_meta_${projectKey}`;
-    const raw = sessionStorage.getItem(storageKey) || localStorage.getItem(storageKey);
-    if (!raw) return '';
-    try {
-        const parsed = JSON.parse(raw);
-        return String(parsed?.url || '').trim();
-    } catch {
-        return '';
-    }
-}
-
-function parseJsonSafely(value) {
-    try {
-        return JSON.parse(value);
-    } catch {
-        return null;
-    }
-}
-
-function readProcessModeMap() {
-    try {
-        const raw = localStorage.getItem(PROCESS_MODE_STORAGE_KEY);
-        if (!raw) return {};
-        const parsed = JSON.parse(raw);
-        return parsed && typeof parsed === 'object' ? parsed : {};
-    } catch {
-        return {};
-    }
-}
-
-function readGeneratedTaskPlan(projectKey) {
-    if (!projectKey) return null;
-    try {
-        const raw = localStorage.getItem(`${GENERATED_TASK_PLAN_STORAGE_KEY_PREFIX}${projectKey}`);
-        if (!raw) return null;
-        const parsed = JSON.parse(raw);
-        return parsed && typeof parsed === 'object' ? parsed : null;
-    } catch {
-        return null;
-    }
-}
-
-function writeGeneratedTaskPlan(projectKey, payload) {
-    if (!projectKey || !payload) return;
-    try {
-        localStorage.setItem(
-            `${GENERATED_TASK_PLAN_STORAGE_KEY_PREFIX}${projectKey}`,
-            JSON.stringify(payload)
-        );
-    } catch {
-        // Ignore storage errors.
-    }
-}
-
-function formatCsvCell(value) {
-    const text = String(value ?? '');
-    return `"${text.replace(/"/g, '""')}"`;
-}
-
-function buildTaskPreviewCsv(tasks) {
-    if (!Array.isArray(tasks) || tasks.length === 0) return '';
-
-    const columns = [
-        'project_id',
-        'project_name',
-        'task_id',
-        'parent_id',
-        'type',
-        'title',
-        'description',
-        'status',
-        'priority',
-        'story_points',
-        'sprint_id',
-        'sprint_name',
-        'milestone_id',
-        'reporter',
-        'assignee',
-        'resource_names',
-        'planned_start',
-        'planned_end',
-        'estimated_hours',
-        'wbs',
-        'level',
-        'dependencies',
-        'checklists',
-    ];
-
-    const lines = [columns.map(formatCsvCell).join(',')];
-
-    tasks.forEach((task) => {
-        const row = columns.map((column) => {
-            const value = task?.[column];
-
-            if (column === 'resource_names' && Array.isArray(value)) {
-                return formatCsvCell(value.join(' | '));
-            }
-            if (column === 'dependencies' && Array.isArray(value)) {
-                return formatCsvCell(value.join(' | '));
-            }
-            if (column === 'checklists' && Array.isArray(value)) {
-                const flattened = value.map((checklist) => {
-                    const title = String(checklist?.title || '').trim();
-                    const items = Array.isArray(checklist?.items)
-                        ? checklist.items.map((item) => {
-                            if (item && typeof item === 'object') {
-                                const text = String(item.text || item.title || '').trim();
-                                return text ? `${text}${item.completed ? ' [done]' : ''}` : '';
-                            }
-                            return String(item || '').trim();
-                        }).filter(Boolean).join(' | ')
-                        : '';
-                    return title ? `${title}: ${items}` : items;
-                }).join(' || ');
-                return formatCsvCell(flattened);
-            }
-            return formatCsvCell(value ?? '');
-        });
-        lines.push(row.join(','));
-    });
-
-    return lines.join('\n');
-}
-
-function getPreviewJsonForDisplay(previewJson) {
-    if (Array.isArray(previewJson)) {
-        return previewJson.map((task) => {
-            if (!task || typeof task !== 'object') {
-                return task;
-            }
-
-            const rawChecklist = task.checklist;
-            if (typeof rawChecklist !== 'string' || !rawChecklist.trim()) {
-                return task;
-            }
-
-            try {
-                const parsedChecklist = JSON.parse(rawChecklist);
-                return {
-                    ...task,
-                    checklist: parsedChecklist,
-                };
-            } catch {
-                return task;
-            }
-        });
-    }
-
-    if (!previewJson || typeof previewJson !== 'object') {
-        return previewJson;
-    }
-
-    const tasks = Array.isArray(previewJson.tasks) ? previewJson.tasks : [];
-    return {
-        ...previewJson,
-        tasks: tasks.map((task) => {
-            if (!task || typeof task !== 'object') {
-                return task;
-            }
-
-            const rawChecklist = task.checklist;
-            if (typeof rawChecklist !== 'string' || !rawChecklist.trim()) {
-                return task;
-            }
-
-            try {
-                const parsedChecklist = JSON.parse(rawChecklist);
-                return {
-                    ...task,
-                    checklist: parsedChecklist,
-                };
-            } catch {
-                return task;
-            }
-        }),
-    };
-}
-
-if (typeof document !== 'undefined') {
-    const existingStyle = document.getElementById('progress-slide-style');
-    if (!existingStyle) {
-        const styleTag = document.createElement('style');
-        styleTag.id = 'progress-slide-style';
-        styleTag.textContent = `
-            @keyframes progressSlide {
-                0% { transform: translateX(-100%); }
-                100% { transform: translateX(100%); }
-            }
-        `;
-        document.head.appendChild(styleTag);
-    }
-}
+const EMPTY_DEFAULT_SPRINT = {
+    id: 'sprint_1',
+    name: 'Sprint 1',
+    subtitle: '',
+    total: 0,
+    done: 0,
+    due: '',
+};
 
 export default function TaskCreation({
     projects = [],
@@ -460,21 +81,35 @@ export default function TaskCreation({
     const queryClient = useQueryClient();
     const token = localStorage.getItem('token');
 
-    // CRITICAL FIX: Initialize based on whether we have a project selected
-    // If we have a project, start with false to show loader immediately
-    // If no project, start with true to skip loader
-    const [hasCompletedInitialBootstrap, setHasCompletedInitialBootstrap] = useState(!selectedProjectKey);
-    const [taskToken, setTaskToken] = useState(null);
-    // CRITICAL FIX: Start with true to show loader immediately on mount
-    const [isResolvingTaskToken, setIsResolvingTaskToken] = useState(true);
+    // Project state
+    const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
+    const selectedProject = useMemo(
+        () => projects.find((p) => p.key === selectedProjectKey) || null,
+        [projects, selectedProjectKey]
+    );
 
-    const [projectDeadline, setProjectDeadline] = useState('');
+    // Data state
+    const [tasks, setTasks] = useState([]);
     const [sprints, setSprints] = useState([]);
     const [milestones, setMilestones] = useState([]);
-    const [tasks, setTasks] = useState([]);
-    const [generatedTaskPlan, setGeneratedTaskPlan] = useState(null);
     const [isLoading, setIsLoading] = useState(false);
     const [isGenerating, setIsGenerating] = useState(false);
+    const [error, setError] = useState('');
+    const [success, setSuccess] = useState('');
+
+    // Active views & filters
+    const [viewMode, setViewMode] = useState('board'); // 'board' | 'list'
+    const [activeSprintIndex, setActiveSprintIndex] = useState(0);
+    const [searchQuery, setSearchQuery] = useState('');
+    const [filterType, setFilterType] = useState('ALL'); // 'ALL' | 'FEATURE' | 'TASK' | 'BUG'
+    const [filterPriority, setFilterPriority] = useState('ALL'); // 'ALL' | 'high' | 'medium' | 'low'
+    const [filterDropdownOpen, setFilterDropdownOpen] = useState(false);
+    const [sortAsc, setSortAsc] = useState(true);
+    const [activeMenuTaskId, setActiveMenuTaskId] = useState(null);
+    const [draggingTaskId, setDraggingTaskId] = useState(null);
+    const [dragOverColumn, setDragOverColumn] = useState(null);
+
+    // Generation status polling
     const [generationStatus, setGenerationStatus] = useState({
         is_generating: false,
         status: 'idle',
@@ -486,11 +121,27 @@ export default function TaskCreation({
         released_sprints: [],
         released_tasks: []
     });
-    const [isSyncing, setIsSyncing] = useState(false);
-    const [error, setError] = useState('');
-    const [success, setSuccess] = useState('');
-    const [creationStageIndex, setCreationStageIndex] = useState(0);
-    const [liveCreatedTaskCount, setLiveCreatedTaskCount] = useState(0);
+    const [showGenerationModal, setShowGenerationModal] = useState(true);
+
+    // Keep progress bar smoothly moving during AI generation
+    useEffect(() => {
+        let smoothTimer = null;
+        if (isGenerating) {
+            smoothTimer = setInterval(() => {
+                setGenerationStatus(prev => {
+                    if (!prev.is_generating || prev.progress_percent >= 94) return prev;
+                    return {
+                        ...prev,
+                        progress_percent: Math.min(94, (prev.progress_percent || 15) + 1),
+                    };
+                });
+            }, 850);
+        }
+        return () => {
+            if (smoothTimer) clearInterval(smoothTimer);
+        };
+    }, [isGenerating]);
+
     const [projectType, setProjectType] = useState(() => {
         if (selectedProjectKey) {
             return localStorage.getItem(`project_type_${selectedProjectKey}`) || 'greenfield';
@@ -498,1396 +149,1773 @@ export default function TaskCreation({
         return 'greenfield';
     });
 
-    const [collapsedSprints, setCollapsedSprints] = useState({});
-    const toggleSprint = (sprintId) => {
-        setCollapsedSprints(prev => ({
-            ...prev,
-            [sprintId]: !prev[sprintId]
-        }));
-    };
-
-    useEffect(() => {
-        if (selectedProjectKey) {
-            const savedType = localStorage.getItem(`project_type_${selectedProjectKey}`);
-            if (savedType) {
-                setProjectType(savedType);
-            } else {
-                setProjectType('greenfield');
-            }
-        }
-    }, [selectedProjectKey]);
-
-    const handleProjectTypeChange = (val) => {
-        setProjectType(val);
-        if (selectedProjectKey) {
-            localStorage.setItem(`project_type_${selectedProjectKey}`, val);
-            
-            // Persist the user's manual change in DB
-            const userToken = localStorage.getItem('token');
-            fetch(`${API_BASE_URL}/api/agent/projects/${selectedProjectKey}/project-type`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${userToken}`
-                },
-                body: JSON.stringify({ project_type: val })
-            }).then(res => {
-                if (res.ok) {
-                    console.log(`Saved manual project type change to DB: ${val}`);
-                }
-            }).catch(err => {
-                console.error("Failed to save project type change:", err);
-            });
-        }
-    };
-
-    const [pagination, setPagination] = useState({
-        count: 0,
-        next: null,
-        previous: null,
-        currentPage: 1
-    });
-    const autoStartRunKeysRef = useRef(new Set());
-
-    const [customRules, setCustomRules] = useState(() => {
-        if (selectedProjectKey) {
-            return localStorage.getItem(`custom_rules_${selectedProjectKey}`) || '';
-        }
-        return '';
-    });
-
-    const selectedProject = useMemo(
-        () => projects.find((p) => p.key === selectedProjectKey) || null,
-        [projects, selectedProjectKey]
-    );
-    const hasProjectClientCredentials = Boolean(
-        selectedProject?.client_id && selectedProject?.client_secret
-    );
-
-    const processMode = useMemo(() => {
-        const map = readProcessModeMap();
-        return selectedProjectKey ? map[selectedProjectKey] || 'ai_first' : 'ai_first';
-    }, [selectedProjectKey]);
-
-    const previewJson = useMemo(() => {
-        if (Array.isArray(generatedTaskPlan?.preview_json)) {
-            return generatedTaskPlan.preview_json;
-        }
-        if (generatedTaskPlan?.preview_json && typeof generatedTaskPlan.preview_json === 'object') {
-            return generatedTaskPlan.preview_json;
-        }
-        return Array.isArray(generatedTaskPlan?.tasks) ? generatedTaskPlan.tasks : [];
-    }, [generatedTaskPlan]);
-
-    const previewJsonForDisplay = useMemo(
-        () => getPreviewJsonForDisplay(previewJson),
-        [previewJson]
-    );
-
-    const previewCsv = useMemo(
-        () => buildTaskPreviewCsv(Array.isArray(previewJson) ? previewJson : (Array.isArray(previewJson?.tasks) ? previewJson.tasks : [])),
-        [previewJson]
-    );
-
-    const hydrateGeneratedPlan = useCallback((payload) => {
-        const nextPayload = payload && typeof payload === 'object' ? payload : null;
-
-        // Handle both flat array and paginated response (results field)
-        const nextTasks = Array.isArray(nextPayload?.tasks)
-            ? nextPayload.tasks
-            : (Array.isArray(nextPayload?.results) ? nextPayload.results : []);
-
-        const nextSprints = Array.isArray(nextPayload?.sprints) ? nextPayload.sprints : [];
-        const nextMilestones = Array.isArray(nextPayload?.milestones) ? nextPayload.milestones : [];
-
-        const paginationInfo = nextPayload?.pagination || {
-            count: nextPayload?.count || nextTasks.length || 0,
-            next: nextPayload?.next || null,
-            previous: nextPayload?.previous || null,
-            currentPage: nextPayload?.pagination?.currentPage || 1
-        };
-
-        setGeneratedTaskPlan(nextPayload);
-        setTasks(nextTasks);
-        setPagination(paginationInfo);
-        setSprints(
-            nextSprints.map((sprint) => ({
-                ...sprint,
-                id: sprint.id || sprint.sprint_id,
-                name: sprint.name || sprint.sprint_name || 'Sprint',
-            }))
-        );
-        setMilestones(
-            nextMilestones.map((milestone) => ({
-                ...milestone,
-                id: milestone.id || milestone.milestone_id,
-                name: milestone.name || milestone.milestone_name || 'Milestone',
-            }))
-        );
-    }, []);
-
-    useEffect(() => {
-        if (!selectedProjectKey) {
-            setHasCompletedInitialBootstrap(true);
-            setGeneratedTaskPlan(null);
-            return;
-        }
-        setHasCompletedInitialBootstrap(false);
-        setProjectDeadline('');
-        setSprints([]);
-        setMilestones([]);
-        setTasks([]);
-        setGeneratedTaskPlan(null);
-        setError('');
-        setSuccess('');
-        setTaskToken(null);
-    }, [selectedProjectKey]);
-
-    useEffect(() => {
-        if (selectedProjectKey) {
-            const saved = localStorage.getItem(`custom_rules_${selectedProjectKey}`) || '';
-            setCustomRules(saved);
-        }
-    }, [selectedProjectKey]);
-
-    useEffect(() => {
-        if (selectedProjectKey) {
-            localStorage.setItem(`custom_rules_${selectedProjectKey}`, customRules);
-        }
-    }, [selectedProjectKey, customRules]);
-
     const buildHeaders = useCallback(() => {
         return { Authorization: `Bearer ${token}` };
     }, [token]);
 
-    const resolveTaskToken = useCallback(async () => {
-        if (!selectedProjectKey) return null;
-
-        // If the project has its own credentials, we should prefer a token derived from them.
-        // Reason: earlier screens (Prerequisites) may have fetched a token using org/default creds.
-        // If that token was cached, using it here can return "random" project/task data until relogin.
-        const cachedToken = getCachedTaskToken(selectedProjectKey);
-        if (cachedToken && !hasProjectClientCredentials) return cachedToken;
-
-        // Check both selectedProject and draftProject for credentials
-        const draftProject = getDraftProject(selectedProjectKey);
-        const clientId = selectedProject?.client_id || draftProject?.client_id;
-        const clientSecret = selectedProject?.client_secret || draftProject?.client_secret;
-
-        if (!clientId || !clientSecret) {
-            // Fall back to cached token if we have one but no credentials to refresh with.
-            if (cachedToken) return cachedToken;
-            return null;
-        }
-
-        const res = await fetch(API_ENDPOINTS.TASK_TOKEN, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
-        });
-        if (!res.ok) {
-            throw new Error('Failed to fetch task token');
-        }
-
-        const data = await res.json().catch(() => ({}));
-        const fetchedToken = typeof data?.access === 'string' ? data.access : '';
-        if (!fetchedToken) {
-            throw new Error('Task token is missing from token response');
-        }
-
-        cacheTaskToken(selectedProjectKey, fetchedToken);
-        return fetchedToken;
-    }, [selectedProjectKey, selectedProject, hasProjectClientCredentials]);
-
-    // Resolve task token on mount and when project changes
-    useEffect(() => {
-        if (!selectedProjectKey) {
-            setTaskToken(null);
-            setIsResolvingTaskToken(false);
-            return;
-        }
-
-        setIsResolvingTaskToken(true);
-        resolveTaskToken()
-            .then((token) => {
-                setTaskToken(token);
-            })
-            .catch((err) => {
-                console.error('Failed to resolve task token:', err);
-                setTaskToken(null);
-            })
-            .finally(() => {
-                setIsResolvingTaskToken(false);
-            });
-    }, [selectedProjectKey, resolveTaskToken]);
-
-    // Fetch project info whenever task token is available OR if we have credentials
-    // This ensures project info is fetched even if token resolution is in progress
-    const draftProject = useMemo(() => getDraftProject(selectedProjectKey), [selectedProjectKey]);
-    const hasCredentials = useMemo(() => {
-        return !!(selectedProject?.client_id || draftProject?.client_id);
-    }, [selectedProject?.client_id, draftProject?.client_id]);
-
-    const { data: projectInfo = null, isFetching: isLoadingProjectInfo } = useQuery({
-        queryKey: ['projectInfo', selectedProjectKey, taskToken, hasCredentials],
-        queryFn: async () => {
-            const headers = { 'Authorization': `Bearer ${token}` };
-            // Use taskToken if available, otherwise try to get one
-            let tokenToUse = taskToken;
-            if (!tokenToUse && hasCredentials) {
-                // Try to resolve token if we have credentials but token not resolved yet
-                const clientId = selectedProject?.client_id || draftProject?.client_id;
-                const clientSecret = selectedProject?.client_secret || draftProject?.client_secret;
-                if (clientId && clientSecret) {
-                    try {
-                        const tokenRes = await fetch(API_ENDPOINTS.TASK_TOKEN, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
-                        });
-                        if (tokenRes.ok) {
-                            const tokenData = await tokenRes.json();
-                            tokenToUse = tokenData?.access;
-                            if (tokenToUse) {
-                                cacheTaskToken(selectedProjectKey, tokenToUse);
-                                setTaskToken(tokenToUse);
-                            }
-                        }
-                    } catch (err) {
-                        console.warn('Failed to get token for project info:', err);
-                    }
-                }
-            }
-            if (tokenToUse) headers['x-task-token'] = tokenToUse;
-            const res = await fetch(API_ENDPOINTS.AGENT_PROJECT_INFO, { headers });
-            if (!res.ok) throw new Error('Failed to fetch project info');
-            return await res.json();
-        },
-        enabled: !!token && !!selectedProjectKey && (!!taskToken || hasCredentials),
-    });
-
-    // Update project deadline from project info when available
-    useEffect(() => {
-        const deadline = projectInfo?.project?.deadline || projectInfo?.deadline;
-        if (deadline) {
-            setProjectDeadline(deadline);
-        }
-    }, [projectInfo]);
-
-    const loadData = useCallback(async (page = 1) => {
-        if (!selectedProjectKey) {
-            setHasCompletedInitialBootstrap(true);
-            return null;
-        }
+    // Load data from backend
+    const loadData = useCallback(async () => {
+        if (!selectedProjectKey) return;
         setIsLoading(true);
         setError('');
+
         try {
-            // Fetch from our local tasks API
-            const headers = { 'Authorization': `Bearer ${token}` };
-            const url = new URL(API_ENDPOINTS.AGENT_TASKS_LOCAL);
-            url.searchParams.set('project_token', selectedProjectKey);
-            url.searchParams.set('page', page);
+            const res = await fetch(`${API_BASE_URL}/api/agent/tasks/local/?project_token=${encodeURIComponent(selectedProjectKey)}&page=1&page_size=200`, {
+                headers: buildHeaders(),
+            });
 
-            const tasksRes = await fetch(url.toString(), { headers });
+            if (res.ok) {
+                const data = await res.json();
+                const fetchedTasks = Array.isArray(data?.tasks) ? data.tasks : [];
+                setTasks(fetchedTasks);
 
-            if (tasksRes.ok) {
-                const tasksData = await tasksRes.json();
-                const tasksList = Array.isArray(tasksData?.tasks) ? tasksData.tasks : [];
+                // Derive sprints from tasks
+                const sprintMap = new Map();
+                const milestoneMap = new Map();
 
-                if (tasksList.length > 0) {
-                    // Build sprints and milestones maps from task data
-                    const sprintsMap = new Map();
-                    const milestonesMap = new Map();
+                fetchedTasks.forEach(t => {
+                    const sName = t.sprint || 'Sprint 1';
+                    if (!sprintMap.has(sName)) {
+                        sprintMap.set(sName, { id: sName, name: sName, tasks: [] });
+                    }
+                    sprintMap.get(sName).tasks.push(t);
 
-                    tasksList.forEach((task) => {
-                        const sprintVal = task.sprint || 'new';
-                        const milestoneVal = task.milestone || 'main';
+                    const mName = t.milestone || 'General';
+                    if (!milestoneMap.has(mName)) {
+                        milestoneMap.set(mName, { id: mName, name: mName });
+                    }
+                });
 
-                        if (!sprintsMap.has(String(sprintVal))) {
-                            sprintsMap.set(String(sprintVal), {
-                                id: sprintVal,
-                                name: sprintVal === 'new' ? 'Sprint 1' : String(sprintVal),
-                            });
-                        }
-                        if (!milestonesMap.has(String(milestoneVal))) {
-                            milestonesMap.set(String(milestoneVal), {
-                                id: milestoneVal,
-                                name: milestoneVal === 'main' ? 'Main Milestone' : String(milestoneVal),
-                            });
-                        }
+                if (sprintMap.size > 0) {
+                    const derivedSprints = Array.from(sprintMap.values()).map((s) => {
+                        const total = s.tasks.length;
+                        const done = s.tasks.filter(t => (t.status || 'TODO').toUpperCase() === 'DONE').length;
+                        const firstMilestone = s.tasks.find(t => t.milestone)?.milestone;
+                        const firstDesc = s.tasks[0]?.description?.slice(0, 45);
+                        const firstTitle = s.tasks[0]?.taskName || s.tasks[0]?.title;
+                        const subtitle = firstMilestone || firstDesc || firstTitle || '';
+                        return {
+                            id: s.id,
+                            name: s.name,
+                            subtitle,
+                            total,
+                            done,
+                            due: s.tasks[0]?.deadline || '',
+                        };
                     });
-
-                    const plan = {
-                        tasks: tasksList,
-                        sprints: Array.from(sprintsMap.values()),
-                        milestones: Array.from(milestonesMap.values()),
-                        project_deadline: projectInfo?.project?.deadline || projectInfo?.deadline || projectDeadline || '',
-                        pagination: {
-                            count: tasksData.count || tasksList.length,
-                            next: tasksData.next || null,
-                            previous: tasksData.previous || null,
-                            currentPage: page,
-                        }
-                    };
-
-                    setPagination(plan.pagination);
-                    writeGeneratedTaskPlan(selectedProjectKey, plan);
-                    hydrateGeneratedPlan(plan);
-
-                    return {
-                        sprints: plan.sprints,
-                        milestones: plan.milestones,
-                        tasks: tasksList,
-                        projectDeadline: plan.project_deadline,
-                    };
+                    setSprints(derivedSprints);
+                } else {
+                    setSprints([]);
                 }
-            } else {
-                console.warn('Local tasks API failed, falling back to localStorage');
+
+                setMilestones(Array.from(milestoneMap.values()));
             }
-
-            // Fallback to localStorage if API returns empty or fails
-            const cached = readGeneratedTaskPlan(selectedProjectKey);
-            if (cached) {
-                hydrateGeneratedPlan(cached);
-                return {
-                    sprints: Array.isArray(cached?.sprints) ? cached.sprints : [],
-                    milestones: Array.isArray(cached?.milestones) ? cached.milestones : [],
-                    tasks: Array.isArray(cached?.tasks) ? cached.tasks : [],
-                    projectDeadline: cached?.project_deadline || '',
-                };
-            }
-
-            return { sprints: [], milestones: [], tasks: [], projectDeadline: '' };
-
-        } catch (e) {
-            setError(e?.message || 'Failed to load tasks');
-            return null;
+        } catch (err) {
+            console.error('Failed to load local tasks:', err);
+            setError('Failed to load tasks. Please refresh.');
         } finally {
             setIsLoading(false);
         }
-    }, [selectedProjectKey, hydrateGeneratedPlan, token, projectInfo, projectDeadline]);
+    }, [selectedProjectKey, buildHeaders]);
 
-    // Load data when project key changes or when task token becomes available
     useEffect(() => {
-        // Only load if we have completed initial bootstrap (project info loaded)
-        if (hasCompletedInitialBootstrap) {
-            loadData();
-        }
-    }, [loadData, hasCompletedInitialBootstrap, taskToken]);
+        loadData();
 
-    // Mark bootstrap as complete only when project info is loaded (or if no project selected)
-    useEffect(() => {
-        if (!selectedProjectKey) {
-            setHasCompletedInitialBootstrap(true);
-            return;
-        }
-
-        const hasClientCredentials = selectedProject?.client_id && selectedProject?.client_secret;
-
-        // Determine what we're waiting for:
-        const waitingForToken = hasClientCredentials && isResolvingTaskToken;
-        const waitingForProjectInfo = hasClientCredentials && taskToken && isLoadingProjectInfo;
-        const waitingForData = isLoading;
-
-        // If we're not waiting for anything, check if we can complete bootstrap
-        if (!waitingForToken && !waitingForData) {
-            if (hasClientCredentials) {
-                // Need to wait for project info if we have a task token
-                if (taskToken) {
-                    // Project info query is enabled and has completed (either success or error)
-                    // isLoadingProjectInfo will be false when query completes (even on error)
-                    if (!isLoadingProjectInfo) {
-                        setHasCompletedInitialBootstrap(true);
+        // Check if an AI task generation job is already active on the backend
+        let pollTimer = null;
+        const checkActiveJob = async () => {
+            if (!selectedProjectKey) return;
+            try {
+                const res = await fetch(`${API_BASE_URL}/api/agent/tasks/generation-status/${encodeURIComponent(selectedProjectKey)}`, {
+                    headers: buildHeaders(),
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data && data.is_generating && data.status === 'generating') {
+                        setIsGenerating(true);
+                        setShowGenerationModal(true);
+                        setGenerationStatus(data);
+                        pollTimer = setInterval(async () => {
+                            try {
+                                const pRes = await fetch(`${API_BASE_URL}/api/agent/tasks/generation-status/${encodeURIComponent(selectedProjectKey)}`, {
+                                    headers: buildHeaders(),
+                                });
+                                if (pRes.ok) {
+                                    const pData = await pRes.json();
+                                    setGenerationStatus(pData);
+                                    if (Array.isArray(pData.released_tasks) && pData.released_tasks.length > 0) {
+                                        setTasks(prev => {
+                                            const existingIds = new Set(prev.map(t => t.task_id || t.id));
+                                            const newTasks = pData.released_tasks.filter(t => !existingIds.has(t.task_id || t.id));
+                                            return newTasks.length > 0 ? [...prev, ...newTasks] : prev;
+                                        });
+                                    }
+                                    if (!pData.is_generating || pData.status === 'completed' || pData.status === 'failed') {
+                                        clearInterval(pollTimer);
+                                        setIsGenerating(false);
+                                        setShowGenerationModal(false);
+                                        loadData();
+                                    }
+                                }
+                            } catch {
+                                // silent
+                            }
+                        }, 2500);
                     }
-                } else if (!isResolvingTaskToken) {
-                    // Token resolution failed or not available, but we tried
-                    // Allow to continue (project info will fail but that's okay)
-                    setHasCompletedInitialBootstrap(true);
                 }
+            } catch {
+                // silent
+            }
+        };
+
+        checkActiveJob();
+        return () => {
+            if (pollTimer) clearInterval(pollTimer);
+        };
+    }, [loadData, selectedProjectKey, buildHeaders]);
+
+    // Active sprint
+    const activeSprint = useMemo(() => {
+        if (sprints.length > 0 && sprints[activeSprintIndex]) {
+            return sprints[activeSprintIndex];
+        }
+        if (sprints.length > 0) {
+            return sprints[0];
+        }
+        return EMPTY_DEFAULT_SPRINT;
+    }, [sprints, activeSprintIndex]);
+
+    // Filter tasks for the active sprint & filters
+    const displayedTasks = useMemo(() => {
+        return tasks.filter(t => {
+            // Sprint filter
+            if (activeSprint) {
+                const taskSprint = String(t.sprint || '').toLowerCase();
+                const activeSprintName = String(activeSprint.name || '').toLowerCase();
+                if (taskSprint && !taskSprint.includes(activeSprintName) && !activeSprintName.includes(taskSprint)) {
+                    // Check if index matches
+                    if (sprints.length > 0 && t.sprint !== sprints[activeSprintIndex]?.id && t.sprint !== sprints[activeSprintIndex]?.name) {
+                        return false;
+                    }
+                }
+            }
+
+            // Type filter
+            if (filterType !== 'ALL') {
+                const type = String(t.task_type || t.type || '').toUpperCase();
+                if (type !== filterType) return false;
+            }
+
+            // Priority filter
+            if (filterPriority !== 'ALL') {
+                const p = String(t.priority || 'medium').toLowerCase();
+                if (p !== filterPriority.toLowerCase()) return false;
+            }
+
+            // Search query
+            if (searchQuery.trim()) {
+                const q = searchQuery.toLowerCase();
+                const name = String(t.taskName || t.task_name || t.title || '').toLowerCase();
+                const id = String(t.task_id || '').toLowerCase();
+                const desc = String(t.description || '').toLowerCase();
+                if (!name.includes(q) && !id.includes(q) && !desc.includes(q)) return false;
+            }
+
+            return true;
+        }).sort((a, b) => {
+            const dateA = a.deadline || a.planned_start || '';
+            const dateB = b.deadline || b.planned_start || '';
+            return sortAsc ? dateA.localeCompare(dateB) : dateB.localeCompare(dateA);
+        });
+    }, [tasks, activeSprint, activeSprintIndex, sprints, filterType, filterPriority, searchQuery, sortAsc]);
+
+    // Group active sprint tasks into columns: To Do, In Progress, Blocked, Done
+    const columnsData = useMemo(() => {
+        const todo = [];
+        const inProgress = [];
+        const blocked = [];
+        const done = [];
+
+        displayedTasks.forEach(t => {
+            const status = (t.status || 'TODO').toUpperCase();
+            if (status === 'DONE' || status === 'COMPLETED') {
+                done.push(t);
+            } else if (status === 'BLOCKED' || status === 'FAILED') {
+                blocked.push(t);
+            } else if (status === 'IN_PROGRESS') {
+                inProgress.push(t);
             } else {
-                // No client credentials, no need to fetch project info
-                setHasCompletedInitialBootstrap(true);
+                todo.push(t);
             }
+        });
+
+        return { todo, inProgress, blocked, done };
+    }, [displayedTasks]);
+
+    // Helper to persist task selection to DB
+    const syncTaskSelection = async (taskIds, selected) => {
+        if (!selectedProjectKey || !taskIds || taskIds.length === 0) return;
+        try {
+            await fetch(`${API_BASE_URL}/api/agent/tasks/selection/`, {
+                method: 'PATCH',
+                headers: {
+                    ...buildHeaders(),
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    task_ids: taskIds,
+                    selected: selected,
+                    project_token: selectedProjectKey,
+                }),
+            });
+        } catch (err) {
+            console.error('Failed to sync task selection to backend:', err);
         }
-    }, [selectedProjectKey, taskToken, projectInfo, isResolvingTaskToken, isLoadingProjectInfo, isLoading, selectedProject]);
+    };
 
-    useEffect(() => {
-        if (!isGenerating) {
-            setCreationStageIndex(0);
-            setLiveCreatedTaskCount(0);
+    // Selection handlers
+    const handleSelectAll = () => {
+        const idsToSelect = (displayedTasks.length > 0 ? displayedTasks : tasks)
+            .map(t => t.task_id || t.id)
+            .filter(Boolean);
+        setTasks(prev => prev.map(t => idsToSelect.includes(t.task_id || t.id) ? { ...t, selected: true } : t));
+        syncTaskSelection(idsToSelect, true);
+    };
+
+    const handleDeselectAll = () => {
+        const idsToDeselect = (displayedTasks.length > 0 ? displayedTasks : tasks)
+            .map(t => t.task_id || t.id)
+            .filter(Boolean);
+        setTasks(prev => prev.map(t => idsToDeselect.includes(t.task_id || t.id) ? { ...t, selected: false } : t));
+        syncTaskSelection(idsToDeselect, false);
+    };
+
+    const handleToggleTaskSelect = (taskId) => {
+        const target = tasks.find(t => (t.task_id === taskId || t.id === taskId));
+        const newSelected = target ? !target.selected : true;
+        setTasks(prev => prev.map(t => (t.task_id === taskId || t.id === taskId) ? { ...t, selected: newSelected } : t));
+        syncTaskSelection([taskId], newSelected);
+    };
+
+    // Change task status (1-click move)
+    const handleUpdateTaskStatus = async (taskId, newStatus) => {
+        try {
+            setTasks(prev => prev.map(t => (t.task_id === taskId || t.id === taskId) ? { ...t, status: newStatus } : t));
+            setActiveMenuTaskId(null);
+
+            await fetch(`${API_BASE_URL}/api/agent/tasks/${encodeURIComponent(taskId)}/status/`, {
+                method: 'PATCH',
+                headers: {
+                    ...buildHeaders(),
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ status: newStatus }),
+            });
+        } catch (err) {
+            console.error('Failed to update task status:', err);
         }
-    }, [isGenerating]);
+    };
 
-    const groupedTasks = useMemo(() => {
-        const sprintById = new Map(sprints.map((s) => [String(s.id), s]));
-        const milestoneById = new Map(milestones.map((m) => [String(m.id), m]));
-        const groups = new Map();
-
-        tasks.forEach((task) => {
-            const sprintId = extractEntityId(task, 'sprint');
-            const milestoneId = extractEntityId(task, 'milestone');
-            const sprintName = extractEntityName(task, 'sprint');
-            const milestoneName = extractEntityName(task, 'milestone');
-            const sprintKey = sprintId != null ? String(sprintId) : 'unassigned_sprint';
-            const milestoneKey = milestoneId != null ? String(milestoneId) : 'unassigned_milestone';
-
-            if (!groups.has(sprintKey)) {
-                groups.set(sprintKey, {
-                    sprint: sprintId != null
-                        ? (sprintById.get(String(sprintId)) || { id: sprintId, name: sprintName || `Sprint #${sprintId}` })
-                        : { id: 'unassigned_sprint', name: 'Unassigned Sprint' },
-                    milestones: new Map(),
-                });
-            }
-
-            const sprintGroup = groups.get(sprintKey);
-            if (!sprintGroup.milestones.has(milestoneKey)) {
-                sprintGroup.milestones.set(milestoneKey, {
-                    milestone: milestoneId != null
-                        ? (milestoneById.get(String(milestoneId)) || { id: milestoneId, name: milestoneName || `Milestone #${milestoneId}` })
-                        : { id: 'unassigned_milestone', name: 'Unassigned Milestone' },
-                    tasks: [],
-                });
-            }
-
-            sprintGroup.milestones.get(milestoneKey).tasks.push(task);
-        });
-
-        return Array.from(groups.values());
-    }, [tasks, sprints, milestones]);
-
-    // Helper to check if all tasks in a sprint are selected
-    const isSprintFullySelected = useCallback((sprintId) => {
-        const sprintTasks = tasks.filter(t => {
-            const taskSprintId = extractEntityId(t, 'sprint');
-            const taskSprintKey = taskSprintId != null ? String(taskSprintId) : 'unassigned_sprint';
-            return taskSprintKey === String(sprintId) && !t.synced_to_nxdune;
-        });
-        return sprintTasks.length > 0 && sprintTasks.every(t => t.selected);
-    }, [tasks]);
-
-    // Helper to check if all tasks in a milestone are selected
-    const isMilestoneFullySelected = useCallback((sprintId, milestoneId) => {
-        const milestoneTasks = tasks.filter(t => {
-            const taskSprintId = extractEntityId(t, 'sprint');
-            const taskMilestoneId = extractEntityId(t, 'milestone');
-            const taskSprintKey = taskSprintId != null ? String(taskSprintId) : 'unassigned_sprint';
-            const taskMilestoneKey = taskMilestoneId != null ? String(taskMilestoneId) : 'unassigned_milestone';
-            return taskSprintKey === String(sprintId) && taskMilestoneKey === String(milestoneId) && !t.synced_to_nxdune;
-        });
-        return milestoneTasks.length > 0 && milestoneTasks.every(t => t.selected);
-    }, [tasks]);
-
-    const handleMasterCreate = useCallback(async () => {
+    // Generate tasks via AI
+    const handleMasterCreate = async () => {
         if (!selectedProjectKey) {
-            setError('Select a project before creating tasks.');
+            setError('Please select a project first.');
             return;
         }
 
         setIsGenerating(true);
+        setShowGenerationModal(true);
         setError('');
         setSuccess('');
-        setCreationStageIndex(0);
-        setLiveCreatedTaskCount(0);
+        setGenerationStatus({
+            is_generating: true,
+            status: 'generating',
+            current_sprint: 1,
+            current_sprint_name: 'Analyzing Project Architecture & Technical Scope...',
+            total_sprints: 4,
+            progress_percent: 15,
+            status_message: 'Master AI Agent evaluating project BRD and technical architecture...',
+            released_sprints: [],
+            released_tasks: []
+        });
+
+        let activePoll = true;
+        let pollInterval = null;
 
         try {
-            // First, try to resolve task token from existing credentials
-            let taskToken = await resolveTaskToken();
-
-            // Task token is optional for local AI generation — only needed for NXDUNE sync.
-            // We proceed without it; the backend will skip sync if no token is available.
-
-            // Now proceed with task generation
-            const headers = {
-                ...buildHeaders(),
-                'Content-Type': 'application/json',
-                'X-Task-Token': taskToken,
-            };
-
-            let prerequisites = null;
-            try {
-                const saved = localStorage.getItem(`prerequisites_completed_${selectedProjectKey}`);
-                if (saved) {
-                    const parsed = JSON.parse(saved);
-                    const items = Array.isArray(parsed?.items) ? parsed.items : [];
-                    // Only include prerequisites that were marked as provided/checked in the prerequisites screen.
-                    prerequisites = items
-                        .filter((item) => item?.provided)
-                        .map((item) => sanitizePrerequisiteForAiPayload(item))
-                        .filter((item) => item.name || item.description);
-                }
-            } catch {
-                prerequisites = null;
-            }
-
-            // Retrieve user branch name if stored for brownfield projects
-            let storedBranch = null;
-            try {
-                const storedRaw = localStorage.getItem(`repo_context_meta_${selectedProjectKey}`) || sessionStorage.getItem(`repo_context_meta_${selectedProjectKey}`);
-                if (storedRaw) {
-                    const parsed = JSON.parse(storedRaw);
-                    storedBranch = parsed.userBranch || parsed.branch;
-                }
-            } catch (err) {
-                console.warn('Failed to parse stored repo context branch:', err);
-            }
-
-            const generatePayload = {
-                project_token: selectedProjectKey,
-                auto_create_plan: true,
-                custom_rules: customRules,
-                project_type: projectType,
-                process_mode: processMode,
-                branch: storedBranch || null,
-            };
-
-            if (prerequisites && prerequisites.length > 0) {
-                generatePayload.prerequisites = prerequisites;
-            }
-
-            // Start 7-second polling interval for live progressive sprint status updates
-            let pollInterval = null;
             pollInterval = setInterval(async () => {
+                if (!activePoll) return;
                 try {
-                    const statusRes = await fetch(`${API_BASE_URL}/api/agent/tasks/generation-status/${selectedProjectKey}`, {
+                    const statusRes = await fetch(`${API_BASE_URL}/api/agent/tasks/generation-status/${encodeURIComponent(selectedProjectKey)}`, {
                         headers: buildHeaders(),
                     });
                     if (statusRes.ok) {
                         const statusData = await statusRes.json();
-                        setGenerationStatus(statusData);
-
-                        // If released_tasks contains new tasks, update tasks state live so UI renders them immediately
-                        if (Array.isArray(statusData.released_tasks) && statusData.released_tasks.length > 0) {
-                            setTasks(prev => {
-                                const existingIds = new Set(prev.map(t => t.task_id));
-                                const newTasks = statusData.released_tasks.filter(t => !existingIds.has(t.task_id));
-                                return newTasks.length > 0 ? [...prev, ...newTasks] : prev;
-                            });
+                        if (statusData && activePoll) {
+                            setGenerationStatus(prev => ({
+                                ...prev,
+                                ...statusData,
+                                progress_percent: Math.max(prev.progress_percent || 0, statusData.progress_percent || 0),
+                            }));
+                            if (Array.isArray(statusData.released_tasks) && statusData.released_tasks.length > 0) {
+                                setTasks(prev => {
+                                    const existingIds = new Set(prev.map(t => t.task_id || t.id));
+                                    const newTasks = statusData.released_tasks.filter(t => !existingIds.has(t.task_id || t.id));
+                                    return newTasks.length > 0 ? [...prev, ...newTasks] : prev;
+                                });
+                            }
                         }
                     }
-                } catch (pollErr) {
-                    console.warn('Task generation status poll error:', pollErr);
+                } catch {
+                    // silent
                 }
-            }, 7000);
+            }, 2500);
 
-            try {
-                // Use new local task generation endpoint
-                const generateRes = await fetch(API_ENDPOINTS.AGENT_TASKS_GENERATE_LOCAL, {
-                    method: 'POST',
-                    headers,
-                    body: JSON.stringify(generatePayload),
-                });
-                const generateJson = await generateRes.json().catch(() => ({}));
-                if (!generateRes.ok) {
-                    const errorObj = formatTaskErrorMessage(
-                        generateJson?.detail ? generateJson : { ...generateJson, status: generateRes.status },
-                        'Failed to generate tasks'
-                    );
-                    if (errorObj?.type === 'warning' || errorObj?.message?.toLowerCase().includes('already exists') || errorObj?.message?.toLowerCase().includes('will use the existing')) {
-                        console.warn('Sprint/milestone already exists, continuing:', errorObj?.message);
-                    } else {
-                        const err = new Error(errorObj?.message || 'Task creation failed');
-                        err.errorObj = errorObj;
-                        throw err;
-                    }
-                }
-
-                // Reload from DB instead of using localStorage
-                await loadData(1);
-
-                const createdCount = Array.isArray(generateJson?.tasks)
-                    ? generateJson.tasks.length
-                    : (generateJson?.tasks_created ?? 0);
-                const backendMessage =
-                    typeof generateJson?.message === 'string' ? generateJson.message : '';
-                const syncedToNxdune = generateJson?.synced_to_nxdune === true;
-                const syncError = generateJson?.sync_error;
-
-                if (backendMessage) {
-                    setSuccess(backendMessage + (syncedToNxdune ? ' ✅ Synced to NXDUNE.' : ''));
-                } else {
-                    setSuccess(`Generated ${createdCount} task preview item(s).` + (syncedToNxdune ? ' ✅ Synced to NXDUNE.' : ''));
-                }
-                if (!syncedToNxdune && syncError) {
-                    console.warn('NXDUNE sync failed:', syncError);
-                    setError(formatTaskErrorMessage(`Tasks generated but NXDUNE sync failed: ${syncError}`));
-                }
-                setLiveCreatedTaskCount(createdCount);
-                setCreationStageIndex(1);
-            } finally {
-                if (pollInterval) clearInterval(pollInterval);
-            }
-        } catch (e) {
-            const formatted = e?.errorObj || formatTaskErrorMessage(e?.message || e || 'Task creation failed');
-            setError(formatted);
-        } finally {
-            setIsGenerating(false);
-        }
-    }, [selectedProjectKey, selectedProject, buildHeaders, customRules, hydrateGeneratedPlan, resolveTaskToken, projectInfo, token, projectDeadline]);
-
-    const handleSync = useCallback(async () => {
-        if (!selectedProjectKey || !taskToken) return;
-        setIsSyncing(true);
-        setError('');
-        setSuccess('');
-        try {
-            // First, save all selected tasks to the backend
-            const selectedTasksToSync = tasks.filter(t => t.selected && !t.synced_to_nxdune);
-            
-            if (selectedTasksToSync.length === 0) {
-                setError('No tasks selected for sync. Please select at least one task.');
-                setIsSyncing(false);
-                return;
-            }
-            
-            // Save selections/tasks to backend first
-            await saveSelectionsToDb();
-            
-            // Now sync to NxDune
-            const url = new URL(API_ENDPOINTS.AGENT_TASKS_SYNC);
-            url.searchParams.set('project_token', selectedProjectKey);
-            const res = await fetch(url.toString(), {
+            const res = await fetch(API_ENDPOINTS.AGENT_TASKS_GENERATE_LOCAL, {
                 method: 'POST',
-                headers: { Authorization: `Bearer ${token}`, 'x-task-token': taskToken },
+                headers: {
+                    ...buildHeaders(),
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    project_token: selectedProjectKey,
+                    project_type: projectType,
+                    process_mode: 'ai_first',
+                    auto_create_plan: true,
+                }),
             });
-            const data = await res.json().catch(() => ({}));
-            if (res.ok && data.status === 'success') {
-                const warningMsg = data.warning ? ` (${data.warning})` : '';
-                setSuccess(`✅ Synced ${data.synced} task(s) to NXDUNE.${warningMsg}`);
-                await loadData();
-            } else {
-                const msg = data.detail || data.message || data.error || 'Sync failed';
-                setError(`Sync failed: ${msg}`);
+
+            activePoll = false;
+            if (pollInterval) clearInterval(pollInterval);
+
+            if (!res.ok) {
+                const errData = await res.json().catch(() => ({}));
+                throw new Error(errData.detail || 'Failed to generate sprint plan');
             }
-        } catch (e) {
-            setError(e?.message || 'Sync failed');
-        } finally {
-            setIsSyncing(false);
+
+            setGenerationStatus(prev => ({
+                ...prev,
+                is_generating: false,
+                status: 'completed',
+                progress_percent: 100,
+                status_message: 'Sprint plan and work breakdown generated successfully!',
+            }));
+
+            setSuccess('AI Sprint Plan generated successfully!');
+            await loadData();
+            setTimeout(() => {
+                setIsGenerating(false);
+                setShowGenerationModal(false);
+            }, 800);
+        } catch (err) {
+            activePoll = false;
+            if (pollInterval) clearInterval(pollInterval);
+            setError(err.message || 'Generation failed. Please try again.');
+            setIsGenerating(false);
+            setShowGenerationModal(false);
         }
-    }, [selectedProjectKey, taskToken, token, loadData, tasks]);
+    };
 
-    const saveSelectionsToDb = useCallback(async () => {
-        if (!selectedProjectKey) return;
-        if (!Array.isArray(tasks) || tasks.length === 0) return;
+    // Start execution on selected tasks
+    const handleStartSelectedTasks = async () => {
+        let targetTasks = tasks.filter(t => t.selected);
+        if (targetTasks.length === 0) {
+            // Auto select all in active sprint if none selected
+            targetTasks = displayedTasks.length > 0 ? displayedTasks : tasks;
+            setTasks(prev => prev.map(t => targetTasks.some(dt => (dt.task_id || dt.id) === (t.task_id || t.id)) ? { ...t, selected: true } : t));
+        }
 
-        const res = await fetch(API_ENDPOINTS.AGENT_TASKS_SAVE_LOCAL, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                project_token: selectedProjectKey,
-                tasks: tasks,
-            }),
+        const taskIds = targetTasks.map(t => t.id || t.task_id).filter(Boolean);
+
+        // Persist selection to backend DB so StatusDashboard loads them
+        if (taskIds.length > 0 && selectedProjectKey) {
+            try {
+                await fetch(`${API_BASE_URL}/api/agent/tasks/selection/`, {
+                    method: 'PATCH',
+                    headers: {
+                        ...buildHeaders(),
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        task_ids: taskIds,
+                        selected: true,
+                        project_token: selectedProjectKey,
+                    }),
+                });
+            } catch (err) {
+                console.error("Failed to persist task selection:", err);
+            }
+        }
+
+        navigate('/resource-onboarding', {
+            state: {
+                projectToken: selectedProjectKey,
+                startSprint: activeSprint?.name || 'Sprint 1',
+                selectedTasks: taskIds,
+            }
         });
+    };
 
-        if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            const errorMsg = typeof data.detail === 'string'
-                ? data.detail
-                : (typeof data.message === 'string' ? data.message : 'Failed to save tasks locally');
-            throw new Error(errorMsg);
-        }
-        
-        await loadData(1);
-    }, [selectedProjectKey, tasks, token, loadData]);
-
-    const handleSaveSelection = useCallback(async () => {
-        if (!selectedProjectKey) {
-            setError('Select a project before saving.');
-            return;
-        }
-        setIsLoading(true);
-        setError('');
-        setSuccess('');
-        try {
-            await saveSelectionsToDb();
-            setSuccess('Task selection saved successfully locally. Click "Start the Process" at the top right to proceed.');
-        } catch (e) {
-            setError(e?.message || 'Failed to save task selection.');
-        } finally {
-            setIsLoading(false);
-        }
-    }, [selectedProjectKey, saveSelectionsToDb]);
-
-    const handleTaskSelection = useCallback((taskId, selected) => {
-        // Update local state only - no API call yet
-        setTasks(prevTasks => 
-            prevTasks.map(t => 
-                t.id === taskId ? { ...t, selected } : t
-            )
-        );
-    }, []);
-
-    const handleBulkSelection = useCallback((selectAll) => {
-        // Update local state only - no API call yet
-        setTasks(prevTasks => 
-            prevTasks.map(t => 
-                !t.synced_to_nxdune ? { ...t, selected: selectAll } : t
-            )
-        );
-    }, []);
-
-    const handleSprintSelection = useCallback((sprintId, selected) => {
-        // Select/deselect all tasks in a specific sprint
-        setTasks(prevTasks => 
-            prevTasks.map(t => {
-                const taskSprintId = extractEntityId(t, 'sprint');
-                const taskSprintKey = taskSprintId != null ? String(taskSprintId) : 'unassigned_sprint';
-                
-                if (taskSprintKey === String(sprintId) && !t.synced_to_nxdune) {
-                    return { ...t, selected };
-                }
-                return t;
-            })
-        );
-    }, []);
-
-    const handleMilestoneSelection = useCallback((sprintId, milestoneId, selected) => {
-        // Select/deselect all tasks in a specific milestone within a sprint
-        setTasks(prevTasks => 
-            prevTasks.map(t => {
-                const taskSprintId = extractEntityId(t, 'sprint');
-                const taskMilestoneId = extractEntityId(t, 'milestone');
-                const taskSprintKey = taskSprintId != null ? String(taskSprintId) : 'unassigned_sprint';
-                const taskMilestoneKey = taskMilestoneId != null ? String(taskMilestoneId) : 'unassigned_milestone';
-                
-                if (taskSprintKey === String(sprintId) && taskMilestoneKey === String(milestoneId) && !t.synced_to_nxdune) {
-                    return { ...t, selected };
-                }
-                return t;
-            })
-        );
-    }, []);
-
-    useEffect(() => {
-        const shouldAutoStart = Boolean(location.state?.autoStartTaskCreation);
-        if (!shouldAutoStart) return;
-        if (!selectedProjectKey) return;
-        if (isGenerating) return;
-
-        const runKey = `${selectedProjectKey}:${location.key}`;
-        if (autoStartRunKeysRef.current.has(runKey)) return;
-        autoStartRunKeysRef.current.add(runKey);
-
-        let isCancelled = false;
-        (async () => {
-            const snapshot = await loadData();
-            if (isCancelled) return;
-            if (!snapshot) return;
-            if (Array.isArray(snapshot?.tasks) && snapshot.tasks.length > 0) {
-                setSuccess(`Found ${snapshot.tasks.length} existing task(s).`);
-                return;
-            }
-            await handleMasterCreate();
-        })();
-
-        return () => {
-            isCancelled = true;
-        };
-    }, [
-        location.state,
-        location.key,
-        selectedProjectKey,
-        isGenerating,
-        loadData,
-        handleMasterCreate,
-    ]);
-
-    const handleStartProcess = useCallback(async () => {
-        if (!selectedProjectKey) return;
-        setIsLoading(true);
-        setError('');
-        setSuccess('');
-        try {
-            if (tasks.length > 0) {
-                await saveSelectionsToDb();
-            }
-            if (processMode === 'ai_assist') {
-                window.location.href = 'vscode:extension/bourntec-Solutions.n-mod-vscode-assistant';
-            } else {
-                navigate('/resource-onboarding', { state: { processMode } });
-            }
-        } catch (e) {
-            setError(e?.message || 'Failed to save task selection.');
-        } finally {
-            setIsLoading(false);
-        }
-    }, [selectedProjectKey, tasks, saveSelectionsToDb, processMode, navigate]);
-
-    const showInitialProjectLoader = Boolean(selectedProjectKey) && (
-        !hasCompletedInitialBootstrap ||
-        isLoading ||
-        isResolvingTaskToken ||
-        isLoadingProjectInfo
-    );
-
-    if (showInitialProjectLoader) {
-        return (
-            <div className="h-full min-h-[70vh] bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
-                <div className="fixed inset-0 z-[300] bg-black/60 backdrop-blur-sm flex items-center justify-center px-4">
-                    <div className="w-full max-w-md rounded-2xl border border-app-border bg-app-bg-card shadow-2xl p-6 text-center" style={{ filter: 'none', backdropFilter: 'none' }}>
-                        <div className="flex justify-center mb-5">
-                            <div className="w-12 h-12 rounded-xl bg-app-primary-light/50 border border-app-primary-ring flex items-center justify-center animate-pulse shadow-sm shadow-app-primary/10">
-                                <Sparkles className="w-6 h-6 text-app-primary" />
-                            </div>
-                        </div>
-                        <h3 className="text-lg font-bold text-app-text-main">Loading Task Creation</h3>
-                        <p className="mt-2 text-sm text-app-text-label leading-relaxed">
-                            {isResolvingTaskToken || isLoadingProjectInfo
-                                ? <>Fetching project information for <span className="font-semibold text-app-text-main">{selectedProject?.name || 'selected project'}</span>.</>
-                                : <>Loading the local task preview for <span className="font-semibold text-app-text-main">{selectedProject?.name || 'selected project'}</span>.</>
-                            }
-                        </p>
-                        <p className="mt-1.5 text-xs text-app-text-muted">
-                            {isResolvingTaskToken || isLoadingProjectInfo
-                                ? 'Please wait while we fetch the project details...'
-                                : 'The page will open as soon as the saved preview is ready.'
-                            }
-                        </p>
-                        <div className="mt-5 w-28 mx-auto bg-app-border-light/40 rounded-full h-1.5 overflow-hidden relative">
-                            <div className="bg-app-primary h-full w-full rounded-full absolute inset-0 animate-[progressSlide_1.5s_infinite_linear]"></div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        );
-    }
+    // Calculate progress percent for active sprint
+    const sprintStats = useMemo(() => {
+        const total = displayedTasks.length;
+        const done = columnsData.done.length;
+        const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+        return { total, done, percent };
+    }, [displayedTasks, columnsData]);
 
     return (
-        <>
-            <div className="h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/10">
-                <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
-                    {/* Top Premium Gradient Banner Header */}
-                    <div className="relative rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-blue-950 text-white shadow-xl border border-indigo-500/10 p-6 sm:p-7">
-                        <div className="absolute top-0 right-0 w-64 h-64 bg-app-primary/10 rounded-full blur-3xl -mr-16 -mt-16 pointer-events-none"></div>
-                        <div className="absolute bottom-0 left-0 w-48 h-48 bg-indigo-500/5 rounded-full blur-2xl -ml-16 -mb-16 pointer-events-none"></div>
-                        
-                        <div className="relative flex flex-col md:flex-row md:items-center justify-between gap-6">
-                            <div>
-                                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/10 border border-white/10 text-[10px] font-extrabold tracking-widest uppercase text-indigo-200">
-                                    <Sparkles className="w-3 h-3 text-indigo-300 animate-pulse" />
-                                    Master Agent Planner
-                                </div>
-                                <h2 className="text-2xl sm:text-3xl font-black tracking-tight mt-3">Create Sprint, Milestone & Tasks</h2>
-                                <p className="text-sm text-slate-300 mt-2 flex items-center gap-2">
-                                    <span>Project:</span>
-                                    <span className="px-2 py-0.5 rounded bg-indigo-500/20 border border-indigo-500/30 text-white font-semibold text-xs">
-                                        {selectedProject?.name || 'Not selected'}
-                                    </span>
-                                </p>
-                                <div className="flex flex-wrap gap-2 mt-3 text-xs text-slate-400">
-                                    <span className="flex items-center gap-1">
-                                        Mode: <span className="font-semibold text-white">
-                                            {processMode === 'ai_first' ? 'AI-First' :
-                                                processMode === 'coexistence' ? 'Coexistence' :
-                                                    processMode === 'developer_only' ? 'Developer Only' :
-                                                        processMode === 'ai_assist' ? 'AI Assist' :
-                                                            processMode === 'vibe_coding' ? 'Vibe Coding' :
-                                                                processMode}
-                                        </span>
-                                    </span>
-                                </div>
-                                {processMode === 'ai_assist' && (
-                                    <div className="mt-4 inline-flex items-center gap-2 px-3 py-1.5 bg-indigo-500/25 border border-indigo-500/35 rounded-lg text-xs font-semibold text-indigo-200">
-                                        <Sparkles className="w-3.5 h-3.5 text-indigo-300 animate-bounce" />
-                                        <span>AI Assist Active: You will be redirected to VS Code's N-Mod Extension.</span>
-                                    </div>
-                                )}
-                            </div>
-                            <div className="relative group shrink-0">
-                                {tasks.length === 0 && (
-                                    <div className="absolute top-full right-0 mt-3 w-64 bg-slate-950/95 border border-slate-800 text-[11px] text-slate-300 rounded-xl p-3 shadow-xl backdrop-blur-md opacity-0 pointer-events-none group-hover:opacity-100 transition-all duration-200 z-50 text-center leading-relaxed">
-                                        <div className="font-bold text-white mb-0.5 flex items-center justify-center gap-1">
-                                            <Lock className="w-3 h-3 text-emerald-400" />
-                                            <span>Roadmap Required</span>
-                                        </div>
-                                        Please generate your sprint tasks below to activate the process.
-                                        <div className="absolute bottom-full right-8 border-4 border-transparent border-b-slate-950/95"></div>
-                                    </div>
-                                )}
-                                <button
-                                    onClick={handleStartProcess}
-                                    disabled={tasks.length === 0}
-                                    className={`group inline-flex items-center justify-center gap-2 px-6 py-3.5 text-sm font-extrabold text-white rounded-xl duration-200 shrink-0 border border-transparent ${
-                                        tasks.length === 0
-                                            ? 'bg-slate-900/40 border-slate-800/60 text-slate-500 cursor-default'
-                                            : 'bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 shadow-lg shadow-emerald-500/20 active:scale-95 cursor-pointer'
-                                    }`}
-                                >
-                                    {tasks.length === 0 ? <Lock className="w-3.5 h-3.5 text-slate-500 mr-0.5" /> : null}
-                                    Start the Process
-                                    {tasks.length > 0 ? (
-                                        <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-                                    ) : null}
-                                </button>
-                            </div>
-                        </div>
-                    </div>
+        <div className="w-full bg-[#F8FAFC] text-slate-800 font-sans p-3 sm:p-5 pb-20 flex flex-col select-none">
+            {/* ── 1. COMPACT TOP HEADER BAR ── */}
+            <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 mb-3">
+                <div>
+                    <div className="flex items-center gap-2">
+                        {/* Project dropdown */}
+                        <div className="relative inline-block">
+                            <button
+                                onClick={() => setProjectDropdownOpen(!projectDropdownOpen)}
+                                className="flex items-center gap-1.5 text-base sm:text-lg font-bold text-slate-900 hover:text-blue-600 transition-colors focus:outline-none"
+                            >
+                                <span>{selectedProject?.name || 'Project Roadmap'}</span>
+                                <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
+                            </button>
 
-                    {/* Inline Live AI Task Generation Progress Banner */}
-                    {isGenerating && (
-                        <div className="rounded-2xl border border-indigo-500/30 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white p-5 shadow-xl animate-fade-in relative overflow-hidden">
-                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                                <div className="flex items-center gap-3.5">
-                                    <div className="w-10 h-10 rounded-xl bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shrink-0">
-                                        <Loader2 className="w-5 h-5 animate-spin" />
+                            {projectDropdownOpen && (
+                                <div className="absolute top-full left-0 mt-1.5 w-60 bg-white border border-slate-200 rounded-xl shadow-xl z-50 py-1 animate-in fade-in zoom-in-95 duration-100">
+                                    <div className="px-3 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                                        Switch Project
                                     </div>
-                                    <div>
-                                        <div className="flex items-center gap-2">
-                                            <span className="text-xs font-bold uppercase tracking-wider text-indigo-300">
-                                                AI Generation Active (Sprint {generationStatus.current_sprint || 1} of {generationStatus.total_sprints || 4})
-                                            </span>
-                                            {/* <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-semibold">
-                                                Polling Live 7s
-                                            </span> */}
-                                        </div>
-                                        <h4 className="text-base font-bold text-white mt-0.5">
-                                            {generationStatus.current_sprint_name || 'Generating Sprint Tasks...'}
-                                        </h4>
-                                        <p className="text-xs text-slate-300 mt-0.5">
-                                            {generationStatus.status_message}
-                                        </p>
-                                    </div>
-                                </div>
-                                <div className="text-right shrink-0">
-                                    <span className="text-2xl font-black text-indigo-300 font-mono">
-                                        {generationStatus.progress_percent || 10}%
-                                    </span>
-                                </div>
-                            </div>
-
-                            {/* Progress Line */}
-                            <div className="mt-4 w-full bg-slate-800 rounded-full h-2 overflow-hidden">
-                                <div
-                                    className="bg-gradient-to-r from-indigo-500 via-teal-400 to-emerald-400 h-full rounded-full transition-all duration-500"
-                                    style={{ width: `${Math.max(10, generationStatus.progress_percent || 10)}%` }}
-                                ></div>
-                            </div>
-
-                            {/* Released Sprint Pills */}
-                            {(generationStatus.released_sprints || []).length > 0 && (
-                                <div className="mt-3 flex flex-wrap gap-2">
-                                    {(generationStatus.released_sprints || []).map((s, idx) => (
-                                        <div key={idx} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/20 border border-emerald-500/30 text-emerald-200 text-xs font-medium">
-                                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                                            <span>{s.sprint_name} ({s.task_count} tasks released)</span>
-                                        </div>
+                                    {projects.map((p) => (
+                                        <button
+                                            key={p.key}
+                                            onClick={() => {
+                                                setProjectDropdownOpen(false);
+                                                navigate(`/task-creation?project=${encodeURIComponent(p.key)}`);
+                                            }}
+                                            className={`w-full text-left px-3 py-1.5 text-xs flex items-center justify-between hover:bg-slate-50 transition-colors ${
+                                                p.key === selectedProjectKey ? 'font-bold text-blue-600 bg-blue-50/50' : 'text-slate-700'
+                                            }`}
+                                        >
+                                            <span className="truncate">{p.name}</span>
+                                            {p.key === selectedProjectKey && <Check className="w-3.5 h-3.5 text-blue-600" />}
+                                        </button>
                                     ))}
                                 </div>
                             )}
                         </div>
-                    )}
 
-                    {/* AI Planning & Configuration Section */}
-                    <div className="bg-app-bg-card rounded-2xl border border-app-border-light shadow-md p-6 space-y-5 relative overflow-hidden">
-                        <div className="absolute top-0 left-0 w-1 h-full bg-app-primary"></div>
-                        <div className="flex items-center justify-between border-b border-app-border-light pb-3">
-                            <h3 className="text-sm font-bold text-app-text-main flex items-center gap-2">
-                                <Sparkles className="w-4 h-4 text-app-primary" />
-                                AI Planner Config
-                            </h3>
-                            <span className="text-xs text-app-text-muted">Generate & customize your plan strategy</span>
-                        </div>
-                        
-                        <p className="text-sm text-app-text-label leading-relaxed">
-                            The Master Agent parses project context to generate a structured Sprint/Milestone task model, uploads the results to the external task API, and tracks it dynamically.
-                        </p>
-                        
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {/* Deadline Display */}
-                            <div className="flex items-center gap-3 px-4 py-3 bg-app-bg-page border border-app-border-light rounded-xl">
-                                <CalendarDays className="w-5 h-5 text-indigo-500 shrink-0" />
-                                <div className="min-w-0 flex-1">
-                                    <p className="text-[10px] font-bold text-app-text-muted uppercase tracking-wider">Project Deadline</p>
-                                    <p className="text-sm font-semibold text-app-text-main truncate mt-0.5">
-                                        {projectDeadline || 'Not specified'}
-                                    </p>
-                                </div>
-                            </div>
-                            
-                            {/* Strategy Select */}
-                            <div className="flex items-center gap-3 px-4 py-3 bg-app-bg-page border border-app-border-light rounded-xl">
-                                <FolderKanban className="w-5 h-5 text-app-primary shrink-0" />
-                                <div className="min-w-0 flex-1">
-                                    <p className="text-[10px] font-bold text-app-text-muted uppercase tracking-wider">Plan Strategy</p>
-                                    <select
-                                        value={projectType}
-                                        onChange={(e) => handleProjectTypeChange(e.target.value)}
-                                        className="w-full bg-transparent border-0 p-0 text-sm font-semibold text-app-primary-hover focus:outline-none focus:ring-0 mt-0.5 cursor-pointer"
-                                    >
-                                        <option value="greenfield">Greenfield (New Build)</option>
-                                        <option value="brownfield">Brownfield (Enhancement)</option>
-                                        <option value="modernization">Modernization (Migration)</option>
-                                    </select>
-                                </div>
-                            </div>
-                        </div>
+                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+                            {sprints.length} {sprints.length === 1 ? 'Sprint' : 'Sprints'}
+                        </span>
+                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                            {tasks.length} Work Items
+                        </span>
+                    </div>
+                </div>
 
-                        {projectType !== 'greenfield' && (
-                            <div className="text-xs px-4 py-3 bg-blue-500/10 border border-blue-500/20 text-blue-600 dark:text-blue-400 rounded-xl flex items-center gap-2.5">
-                                <Sparkles className="w-4 h-4 text-blue-500 animate-pulse shrink-0" />
-                                <span>Auto-detected <strong>{projectType === 'brownfield' ? 'Brownfield' : 'Modernization'}</strong> development pattern based on repository architecture.</span>
-                            </div>
-                        )}
-                        
-                        <div className="space-y-3 pt-2">
-                            <button
-                                onClick={handleMasterCreate}
-                                disabled={!selectedProjectKey || isGenerating || isLoadingProjectInfo || isResolvingTaskToken}
-                                className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg font-semibold text-sm transition-all duration-200 active:scale-95 ${
-                                    (!selectedProjectKey || isGenerating || isLoadingProjectInfo || isResolvingTaskToken)
-                                        ? 'bg-app-border text-app-text-muted cursor-not-allowed border border-app-border'
-                                        : 'bg-app-primary hover:bg-app-primary-hover text-white shadow-sm hover:shadow-md'
-                                }`}
-                            >
-                                {isGenerating ? (
-                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                ) : (isLoadingProjectInfo || isResolvingTaskToken) ? (
-                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                ) : (
-                                    <Sparkles className="w-3.5 h-3.5" />
-                                )}
-                                {isGenerating ? 'Creating Plan...' : (isLoadingProjectInfo || isResolvingTaskToken) ? 'Loading...' : 'Create Tasks (AI Auto Plan)'}
-                            </button>
+                {/* Right controls: Board, List, Filter, Due Date beside search bar towards left, plus search bar & Re-Generate */}
+                <div className="flex flex-wrap items-center gap-2">
+                    {/* View Switcher: Board vs List */}
+                    <div className="flex items-center bg-slate-100 border border-slate-200 rounded-lg p-0.5 shadow-2xs">
+                        <button
+                            onClick={() => setViewMode('board')}
+                            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold transition-all ${
+                                viewMode === 'board'
+                                    ? 'bg-blue-600 text-white shadow-xs'
+                                    : 'text-slate-600 hover:text-slate-900'
+                            }`}
+                        >
+                            <LayoutGrid className="w-3.5 h-3.5" />
+                            <span>Board</span>
+                        </button>
+                        <button
+                            onClick={() => setViewMode('list')}
+                            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold transition-all ${
+                                viewMode === 'list'
+                                    ? 'bg-blue-600 text-white shadow-xs'
+                                    : 'text-slate-600 hover:text-slate-900'
+                            }`}
+                        >
+                            <List className="w-3.5 h-3.5" />
+                            <span>List</span>
+                        </button>
+                    </div>
 
-                            {!selectedProjectKey && (
-                                <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                                    No project selected. Select a project from the sidebar to initialize planning.
-                                </p>
+                    {/* Filter Dropdown */}
+                    <div className="relative">
+                        <button
+                            onClick={() => setFilterDropdownOpen(!filterDropdownOpen)}
+                            className="bg-white border border-slate-200 text-slate-700 text-xs font-medium px-2.5 py-1 rounded-lg shadow-2xs hover:bg-slate-50 flex items-center gap-1.5 transition-colors"
+                        >
+                            <Filter className="w-3.5 h-3.5 text-slate-500" />
+                            <span>Filter</span>
+                            {(filterType !== 'ALL' || filterPriority !== 'ALL') && (
+                                <span className="w-1.5 h-1.5 rounded-full bg-blue-600" />
                             )}
+                        </button>
 
-                            {selectedProjectKey && (isLoadingProjectInfo || isResolvingTaskToken) && (
-                                <div className="text-xs text-app-primary bg-app-primary-light border border-app-primary-ring rounded-lg px-3 py-2 flex items-center gap-2">
-                                    <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" />
-                                    <span>Retrieving project context. Creating tasks will be unlocked shortly.</span>
-                                </div>
-                            )}
-
-                            {selectedProjectKey && tasks.length > 0 && !isLoadingProjectInfo && !isResolvingTaskToken && (
-                                <div className="text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 flex items-center gap-2">
-                                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-600" />
-                                    <span>Task roadmap generated. Modify selections, sync, or regenerate below.</span>
-                                </div>
-                            )}
-
-                            {selectedProjectKey && tasks.length > 0 && !isLoadingProjectInfo && !isResolvingTaskToken && (
-                                <div className="flex flex-wrap items-center gap-2 pt-1">
-                                    {tasks.some(t => !t.synced_to_nxdune && t.selected) && taskToken && (
-                                        <button
-                                            onClick={handleSync}
-                                            disabled={isSyncing || isLoading}
-                                            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-semibold text-xs transition-all duration-200 bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed"
-                                        >
-                                            {isSyncing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-                                            {isSyncing ? 'Syncing...' : `Sync ${tasks.filter(t => !t.synced_to_nxdune && t.selected).length} to NXDUNE`}
-                                        </button>
-                                    )}
+                        {filterDropdownOpen && (
+                            <div className="absolute right-0 top-full mt-1.5 w-48 bg-white border border-slate-200 rounded-xl shadow-xl z-50 p-2 text-xs">
+                                <div className="font-bold text-[10px] text-slate-400 uppercase tracking-wider px-2 py-1">Task Type</div>
+                                {['ALL', 'FEATURE', 'TASK', 'BUG'].map(t => (
                                     <button
-                                        onClick={handleSaveSelection}
-                                        disabled={isLoading || isSyncing}
-                                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-semibold text-xs transition-all duration-200 bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed"
+                                        key={t}
+                                        onClick={() => { setFilterType(t); setFilterDropdownOpen(false); }}
+                                        className={`w-full text-left px-2 py-1 rounded flex items-center justify-between ${filterType === t ? 'bg-blue-50 text-blue-600 font-bold' : 'hover:bg-slate-50 text-slate-700'}`}
                                     >
-                                        {isLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
-                                        {isLoading ? 'Saving...' : tasks.some(t => t.selected) ? `Save Selection (${tasks.filter(t => t.selected).length})` : 'Save Selection'}
+                                        <span>{t}</span>
+                                        {filterType === t && <Check className="w-3 h-3 text-blue-600" />}
                                     </button>
-                                </div>
-                            )}
-                        </div>
+                                ))}
 
-                        {error && (
-                            <div className="rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 p-4 shadow-sm animate-fade-in transition-all">
-                                <div className="flex items-start gap-3">
-                                    <div className="p-2 bg-red-100 dark:bg-red-900/50 text-red-600 dark:text-red-400 rounded-lg shrink-0 mt-0.5">
-                                        <AlertCircle className="w-5 h-5" />
-                                    </div>
-                                    <div className="flex-1 min-w-0">
-                                        <h4 className="text-sm font-bold text-red-900 dark:text-red-200 mb-0.5">
-                                            {typeof error === 'object' && error?.title ? error.title : 'Unable to Complete Action'}
-                                        </h4>
-                                        <p className="text-xs text-red-700 dark:text-red-300 leading-relaxed">
-                                            {typeof error === 'object' && error?.message ? error.message : String(error)}
-                                        </p>
-                                        {typeof error === 'object' && error?.canGoToBilling && (
-                                            <div className="mt-3 flex items-center gap-2.5">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => navigate('/billing')}
-                                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg bg-red-600 hover:bg-red-700 text-white shadow-sm transition-all active:scale-95 cursor-pointer"
-                                                >
-                                                    <span>Go to Billing &amp; Tokens</span>
-                                                    <ArrowRight className="w-3.5 h-3.5" />
-                                                </button>
-                                            </div>
-                                        )}
-                                    </div>
+                                <div className="font-bold text-[10px] text-slate-400 uppercase tracking-wider px-2 py-1 mt-2 border-t border-slate-100">Priority</div>
+                                {['ALL', 'high', 'medium', 'low'].map(p => (
                                     <button
-                                        type="button"
-                                        onClick={() => setError(null)}
-                                        className="text-red-400 hover:text-red-600 dark:hover:text-red-200 p-1 rounded-md hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors cursor-pointer"
-                                        title="Dismiss"
+                                        key={p}
+                                        onClick={() => { setFilterPriority(p); setFilterDropdownOpen(false); }}
+                                        className={`w-full text-left px-2 py-1 rounded capitalize flex items-center justify-between ${filterPriority === p ? 'bg-blue-50 text-blue-600 font-bold' : 'hover:bg-slate-50 text-slate-700'}`}
                                     >
-                                        <X className="w-4 h-4" />
+                                        <span>{p}</span>
+                                        {filterPriority === p && <Check className="w-3 h-3 text-blue-600" />}
                                     </button>
-                                </div>
-                            </div>
-                        )}
-                        {success && (
-                            <div className="text-xs text-app-status-success bg-app-status-successBg border border-emerald-200 rounded-xl px-4 py-3 flex items-start gap-2.5">
-                                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-500 mt-0.5" />
-                                <span>{success}</span>
+                                ))}
                             </div>
                         )}
                     </div>
 
-                    {/* Task Tree Grid / Accordion Grouping */}
-                    <div className="bg-app-bg-card rounded-2xl border border-app-border-light shadow-md p-6 space-y-6">
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-app-border-light pb-4">
-                            <div>
-                                <h3 className="text-base font-extrabold text-app-text-main">Project Roadmap</h3>
-                                <p className="text-xs text-app-text-muted mt-1">Sprints, milestones, and development work items</p>
+                    {/* Due Date Sort */}
+                    <button
+                        onClick={() => setSortAsc(!sortAsc)}
+                        className="bg-white border border-slate-200 text-slate-700 text-xs font-medium px-2.5 py-1 rounded-lg shadow-2xs hover:bg-slate-50 flex items-center gap-1.5 transition-colors"
+                    >
+                        <ArrowUpDown className="w-3.5 h-3.5 text-slate-500" />
+                        <span>Due Date</span>
+                    </button>
+
+                    {/* Search bar */}
+                    <div className="relative">
+                        <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input
+                            type="text"
+                            placeholder="Search tasks, features, or sprints..."
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            className="bg-white border border-slate-200 rounded-lg pl-8 pr-7 py-1 text-xs text-slate-700 placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 w-52 sm:w-60 shadow-2xs transition-all"
+                        />
+                        {searchQuery && (
+                            <button
+                                onClick={() => setSearchQuery('')}
+                                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                            >
+                                <X className="w-3 h-3" />
+                            </button>
+                        )}
+                    </div>
+
+                    {/* AI Plan Generation Action */}
+                    <button
+                        onClick={handleMasterCreate}
+                        disabled={isGenerating}
+                        className="bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs px-3 py-1 rounded-lg shadow-sm flex items-center gap-1.5 transition-colors"
+                    >
+                        {isGenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                        <span>{tasks.length === 0 ? 'Generate Plan' : 'Re-Generate'}</span>
+                    </button>
+                </div>
+            </div>
+
+            {/* Background Generating Notice Banner (shown if modal is minimized) */}
+            {isGenerating && !showGenerationModal && (
+                <div className="mb-3 p-3 bg-blue-50/90 border border-blue-200 rounded-xl text-xs flex items-center justify-between shadow-2xs animate-in fade-in">
+                    <div className="flex items-center gap-2.5">
+                        <Loader2 className="w-4 h-4 text-blue-600 animate-spin shrink-0" />
+                        <div>
+                            <span className="font-bold text-blue-900">AI Task Generation in Progress: </span>
+                            <span className="text-blue-700">{generationStatus.status_message} ({generationStatus.progress_percent}%)</span>
+                        </div>
+                    </div>
+                    <button
+                        onClick={() => setShowGenerationModal(true)}
+                        className="text-xs font-semibold text-blue-600 bg-white border border-blue-200 hover:bg-blue-50 px-2.5 py-1 rounded-lg shadow-2xs transition-colors"
+                    >
+                        View Live Progress
+                    </button>
+                </div>
+            )}
+
+            {/* ── 2. DYNAMIC HORIZONTAL SPRINT CARDS (SCROLLABLE ON NARROW SCREENS) ── */}
+            {sprints.length > 0 && (
+                <div className="flex items-center gap-2 overflow-x-auto pb-2 mb-2.5 min-w-0 scrollbar-thin">
+                    {sprints.map((sprint, idx) => {
+                        const isActive = activeSprintIndex === idx;
+                        const sprintTasks = tasks.filter(t => {
+                            const ts = String(t.sprint || '').toLowerCase();
+                            const sn = String(sprint.name || '').toLowerCase();
+                            return ts.includes(sn) || sn.includes(ts) || t.sprint === sprint.id;
+                        });
+                        const total = sprintTasks.length || sprint.total || 0;
+                        const done = sprintTasks.filter(t => (t.status || '').toUpperCase() === 'DONE').length;
+
+                        let label = sprint.name || `Sprint ${idx + 1}`;
+                        if (!label.includes(':') && sprint.subtitle && sprint.subtitle.trim()) {
+                            label = `${label}: ${sprint.subtitle}`;
+                        }
+
+                        return (
+                            <div
+                                key={sprint.id || idx}
+                                onClick={() => setActiveSprintIndex(idx)}
+                                className={`rounded-lg py-2 px-3 transition-all cursor-pointer flex items-center justify-between gap-2.5 shrink-0 min-w-[210px] flex-1 max-w-[340px] ${
+                                    isActive
+                                        ? 'bg-blue-600 text-white shadow-sm border border-blue-600'
+                                        : 'bg-white border border-slate-200 text-slate-800 shadow-2xs hover:border-slate-300 hover:shadow-xs'
+                                }`}
+                            >
+                                <span className={`text-xs font-bold truncate leading-tight ${isActive ? 'text-white' : 'text-slate-800'}`} title={label}>
+                                    {label}
+                                </span>
+                                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${
+                                    isActive ? 'bg-blue-500/70 text-white' : 'text-slate-500 font-mono bg-slate-100'
+                                }`}>
+                                    {done}/{total}
+                                </span>
                             </div>
-                            <div className="flex flex-wrap items-center gap-2">
-                                {tasks.length > 0 && tasks.some(t => !t.synced_to_nxdune) && (
+                        );
+                    })}
+                </div>
+            )}
+
+            {/* ── 3. SELECTION & ACTION TOOLBAR ── */}
+            <div className="flex flex-wrap items-center justify-between gap-2.5 mb-2.5">
+                <div className="flex items-center space-x-3">
+                    <label className="flex items-center space-x-1.5 text-xs font-semibold text-slate-700 cursor-pointer select-none">
+                        <input
+                            type="checkbox"
+                            checked={displayedTasks.length > 0 && displayedTasks.every(t => t.selected)}
+                            onChange={(e) => e.target.checked ? handleSelectAll() : handleDeselectAll()}
+                            className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5 cursor-pointer"
+                        />
+                        <span>Select All</span>
+                    </label>
+                    <button
+                        onClick={handleDeselectAll}
+                        className="text-xs font-semibold text-blue-600 hover:underline cursor-pointer"
+                    >
+                        Deselect All
+                    </button>
+                    {tasks.filter(t => t.selected).length > 0 && (
+                        <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
+                            {tasks.filter(t => t.selected).length} selected
+                        </span>
+                    )}
+                </div>
+            </div>
+
+            {/* Error or Success banners */}
+            {error && (
+                <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 text-xs flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4 text-rose-500" />
+                        <span>{error}</span>
+                    </div>
+                    <button onClick={() => setError('')}><X className="w-4 h-4" /></button>
+                </div>
+            )}
+            {success && (
+                <div className="mb-4 p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-700 text-xs flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                        <span>{success}</span>
+                    </div>
+                    <button onClick={() => setSuccess('')}><X className="w-4 h-4" /></button>
+                </div>
+            )}
+
+            {/* ── 4. MAIN BOARD AREA OR LIST VIEW ── */}
+            {isLoading ? (
+                <div className="flex-1 flex flex-col items-center justify-center py-24 text-slate-400">
+                    <Loader2 className="w-8 h-8 animate-spin text-blue-600 mb-3" />
+                    <span className="text-sm font-medium text-slate-600">Loading sprint tasks...</span>
+                </div>
+            ) : tasks.length === 0 ? (
+                <div className="flex-1 bg-white border border-slate-200 rounded-2xl p-12 text-center flex flex-col items-center justify-center shadow-xs">
+                    <FolderKanban className="w-12 h-12 text-slate-300 mb-4" />
+                    <h3 className="text-base font-bold text-slate-800 mb-1">No Tasks Generated Yet</h3>
+                    <p className="text-xs text-slate-500 max-w-md mb-6 leading-relaxed">
+                        Ready to plan your application? Use our high-speed AI Sprint Planner to generate full architecture, API services, frontend UI, and QA test tasks.
+                    </p>
+                    <button
+                        onClick={handleMasterCreate}
+                        disabled={isGenerating}
+                        className="bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs px-5 py-2.5 rounded-xl shadow-md shadow-blue-500/20 flex items-center gap-2 transition-all"
+                    >
+                        {isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                        <span>Generate Sprint Roadmap with AI</span>
+                    </button>
+                </div>
+            ) : viewMode === 'list' ? (
+                /* ── TABLE / LIST VIEW (FULL LENGTH, WHOLE PAGE SCROLLABLE) ── */
+                <div className="w-full bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                            <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px] sticky top-0 z-10 shadow-2xs">
+                                <tr>
+                                    <th className="py-2.5 px-3 w-10 text-center">
+                                        <input
+                                            type="checkbox"
+                                            checked={displayedTasks.length > 0 && displayedTasks.every(t => t.selected)}
+                                            onChange={(e) => e.target.checked ? handleSelectAll() : handleDeselectAll()}
+                                            className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5 cursor-pointer"
+                                        />
+                                    </th>
+                                    <th className="py-2.5 px-3 w-28">Task ID</th>
+                                    <th className="py-2.5 px-3">Title</th>
+                                    <th className="py-2.5 px-3 w-24">Type</th>
+                                    <th className="py-2.5 px-3 w-24">Priority</th>
+                                    <th className="py-2.5 px-3 w-36">Sprint</th>
+                                    <th className="py-2.5 px-3 w-28">Due Date</th>
+                                    <th className="py-2.5 px-3 w-28">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 text-slate-700">
+                                {displayedTasks.map(t => (
+                                    <tr
+                                        key={t.id || t.task_id}
+                                        className={`hover:bg-blue-50/40 transition-colors ${t.selected ? 'bg-blue-50/20' : ''}`}
+                                    >
+                                        <td className="py-2.5 px-3 text-center">
+                                            <input
+                                                type="checkbox"
+                                                checked={Boolean(t.selected)}
+                                                onChange={() => handleToggleTaskSelect(t.task_id)}
+                                                className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5 cursor-pointer"
+                                            />
+                                        </td>
+                                        <td className="py-2.5 px-3 font-mono font-bold text-slate-900 text-xs">{t.task_id}</td>
+                                        <td className="py-2.5 px-3 font-medium text-slate-800" title={t.description || t.taskName}>{t.taskName || t.task_name || t.title}</td>
+                                        <td className="py-2.5 px-3">
+                                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                                (t.task_type || '').toUpperCase() === 'FEATURE'
+                                                    ? 'bg-purple-100 text-purple-700'
+                                                    : 'bg-blue-100 text-blue-700'
+                                            }`}>
+                                                {t.task_type || 'TASK'}
+                                            </span>
+                                        </td>
+                                        <td className="py-2.5 px-3">
+                                            <span className={`capitalize font-semibold text-[11px] ${
+                                                String(t.priority).toLowerCase() === 'high' ? 'text-red-600' :
+                                                String(t.priority).toLowerCase() === 'medium' ? 'text-amber-600' : 'text-emerald-600'
+                                            }`}>
+                                                • {t.priority || 'medium'}
+                                            </span>
+                                        </td>
+                                        <td className="py-2.5 px-3 text-slate-500 text-[11px]">{t.sprint || 'Sprint 1'}</td>
+                                        <td className="py-2.5 px-3 text-slate-500 text-[11px]">{t.deadline || '2026-10-02'}</td>
+                                        <td className="py-2.5 px-3">
+                                            <span className={`font-semibold uppercase text-[10px] px-2 py-0.5 rounded ${
+                                                (t.status || '').toUpperCase() === 'DONE' ? 'bg-emerald-100 text-emerald-700' :
+                                                (t.status || '').toUpperCase() === 'IN_PROGRESS' ? 'bg-blue-100 text-blue-700' :
+                                                (t.status || '').toUpperCase() === 'BLOCKED' ? 'bg-rose-100 text-rose-700' :
+                                                'bg-slate-100 text-slate-700'
+                                            }`}>
+                                                {t.status || 'TODO'}
+                                            </span>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    {/* Bottom summary bar of the table */}
+                    <div className="px-4 py-2.5 bg-slate-50/90 border-t border-slate-200 text-xs text-slate-500 flex items-center justify-between">
+                        <span className="font-medium text-[11px]">
+                            Showing {displayedTasks.length} {displayedTasks.length === 1 ? 'task' : 'tasks'} in {activeSprint.name}
+                        </span>
+                        <div className="flex items-center gap-3">
+                            <span className="text-slate-400 font-medium text-[11px]">
+                                {displayedTasks.filter(t => t.selected).length} selected
+                            </span>
+                            <button
+                                onClick={handleStartSelectedTasks}
+                                className="bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs py-1 px-3 rounded-md transition-colors flex items-center gap-1.5 shadow-2xs"
+                            >
+                                <Play className="w-3 h-3 fill-current" />
+                                <span>Start Selected</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            ) : (
+                /* ── KANBAN BOARD VIEW (RESPONSIVE GRID, PROTECTED FROM SIDEBAR COLLAPSE) ── */
+                <div className="w-full flex flex-col 2xl:flex-row gap-4 items-start min-w-0">
+                    {/* The 4 Columns in an overflow-protected container */}
+                    <div className="flex-1 w-full overflow-x-auto pb-3 min-w-0 scrollbar-thin">
+                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 items-stretch min-w-[960px] xl:min-w-0">
+                            {/* ── COLUMN 1: TO DO ── */}
+                            <div
+                                onDragOver={(e) => {
+                                    e.preventDefault();
+                                    e.dataTransfer.dropEffect = 'move';
+                                    if (dragOverColumn !== 'TODO') setDragOverColumn('TODO');
+                                }}
+                                onDragLeave={(e) => {
+                                    if (e.currentTarget.contains(e.relatedTarget)) return;
+                                    setDragOverColumn(null);
+                                }}
+                                onDrop={(e) => {
+                                    e.preventDefault();
+                                    setDragOverColumn(null);
+                                    const taskId = e.dataTransfer.getData('text/plain') || draggingTaskId;
+                                    if (taskId) handleUpdateTaskStatus(taskId, 'TODO');
+                                    setDraggingTaskId(null);
+                                }}
+                                className={`rounded-xl border p-2.5 flex flex-col h-full min-h-[520px] min-w-[230px] shadow-2xs transition-all duration-150 ${
+                                    dragOverColumn === 'TODO'
+                                        ? 'bg-blue-50/80 border-blue-400 ring-2 ring-blue-400/50 shadow-md'
+                                        : 'bg-[#F1F5F9]/70 border-slate-200/90'
+                                }`}
+                            >
+                                <div className="flex items-center justify-between px-2 py-1 mb-1.5 shrink-0">
+                                    <span className="font-bold text-xs text-slate-800">To Do</span>
+                                    <span className="text-[11px] text-slate-500 font-medium bg-slate-200/60 px-1.5 py-0.5 rounded">{columnsData.todo.length} items</span>
+                                </div>
+
+                                {columnsData.todo.length === 0 ? (
+                                    <div className="flex-1 flex flex-col items-center justify-start text-center p-4 pt-14 pb-12">
+                                        <div className="w-10 h-10 rounded-full border border-slate-200/90 flex items-center justify-center text-slate-400 mb-2.5 bg-white shadow-2xs">
+                                            <ListTodo className="w-4 h-4 text-slate-400" />
+                                        </div>
+                                        <h5 className="font-bold text-xs text-slate-700">No tasks to do</h5>
+                                        <p className="text-[10px] text-slate-400 mt-1 max-w-[170px] leading-tight">All tasks in this sprint have been moved or completed.</p>
+                                    </div>
+                                ) : (
                                     <>
-                                        <button
-                                            onClick={() => handleBulkSelection(true)}
-                                            disabled={isLoading}
-                                            className="px-3.5 py-2 rounded-lg text-xs font-bold bg-app-primary hover:bg-app-primary-hover text-white transition-all shadow-sm"
-                                        >
-                                            Select All
-                                        </button>
-                                        <button
-                                            onClick={() => handleBulkSelection(false)}
-                                            disabled={isLoading}
-                                            className="px-3.5 py-2 rounded-lg text-xs font-bold bg-app-bg-page border border-app-border text-app-text-main hover:bg-app-bg-hover transition-all"
-                                        >
-                                            Deselect All
-                                        </button>
+                                        {/* Milestone Group Subheader */}
+                                        <div className="flex items-center justify-between px-1 py-1 mb-2 text-xs font-semibold text-slate-700 shrink-0">
+                                            <label className="flex items-center space-x-1.5 cursor-pointer truncate">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={columnsData.todo.length > 0 && columnsData.todo.every(t => t.selected)}
+                                                    onChange={(e) => {
+                                                        const sel = e.target.checked;
+                                                        setTasks(prev => prev.map(t => columnsData.todo.some(ct => ct.task_id === t.task_id) ? { ...t, selected: sel } : t));
+                                                    }}
+                                                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5"
+                                                />
+                                                <span className="truncate text-[11px] max-w-[140px] sm:max-w-[180px]">{columnsData.todo[0]?.milestone || 'Project Foundation'}</span>
+                                            </label>
+                                            <span className="text-[11px] text-slate-400 font-mono shrink-0 ml-1">
+                                                0/{columnsData.todo.length}
+                                            </span>
+                                        </div>
+
+                                        {/* Task Cards - natural full length */}
+                                        <div className="space-y-2">
+                                            {columnsData.todo.map((task) => (
+                                                <TaskCardItem
+                                                    key={task.id || task.task_id}
+                                                    task={task}
+                                                    allTasks={tasks}
+                                                    columnIndex={0}
+                                                    onToggleSelect={() => handleToggleTaskSelect(task.task_id)}
+                                                    isDragging={draggingTaskId === (task.task_id || task.id)}
+                                                    onDragStart={(id) => setDraggingTaskId(id)}
+                                                    onDragEnd={() => {
+                                                        setDraggingTaskId(null);
+                                                        setDragOverColumn(null);
+                                                    }}
+                                                />
+                                            ))}
+                                        </div>
                                     </>
                                 )}
-                                <button
-                                    onClick={() => loadData(1)}
-                                    disabled={isLoading}
-                                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold bg-app-bg-page border border-app-border text-app-text-main hover:bg-app-bg-hover transition-all"
-                                >
-                                    {isLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-                                    Refresh
-                                </button>
                             </div>
-                        </div>
 
-                        {isLoading ? (
-                            <div className="py-12 text-center text-sm text-app-text-muted flex flex-col items-center justify-center gap-2">
-                                <Loader2 className="w-8 h-8 text-app-primary animate-spin" />
-                                <span>Loading generated roadmap...</span>
+                            {/* ── COLUMN 2: IN PROGRESS ── */}
+                            <div
+                                onDragOver={(e) => {
+                                    e.preventDefault();
+                                    e.dataTransfer.dropEffect = 'move';
+                                    if (dragOverColumn !== 'IN_PROGRESS') setDragOverColumn('IN_PROGRESS');
+                                }}
+                                onDragLeave={(e) => {
+                                    if (e.currentTarget.contains(e.relatedTarget)) return;
+                                    setDragOverColumn(null);
+                                }}
+                                onDrop={(e) => {
+                                    e.preventDefault();
+                                    setDragOverColumn(null);
+                                    const taskId = e.dataTransfer.getData('text/plain') || draggingTaskId;
+                                    if (taskId) handleUpdateTaskStatus(taskId, 'IN_PROGRESS');
+                                    setDraggingTaskId(null);
+                                }}
+                                className={`rounded-xl border p-2.5 flex flex-col h-full min-h-[520px] min-w-[230px] shadow-2xs transition-all duration-150 ${
+                                    dragOverColumn === 'IN_PROGRESS'
+                                        ? 'bg-blue-100/70 border-blue-400 ring-2 ring-blue-500/50 shadow-md'
+                                        : 'bg-[#EFF6FF]/50 border-blue-100'
+                                }`}
+                            >
+                                <div className="flex items-center justify-between px-2 py-1 mb-1.5 shrink-0">
+                                    <span className="font-bold text-xs text-blue-700">In Progress</span>
+                                    <span className="text-[11px] text-blue-600 font-medium bg-blue-100/70 px-1.5 py-0.5 rounded">{columnsData.inProgress.length} items</span>
+                                </div>
+
+                                {columnsData.inProgress.length === 0 ? (
+                                    <div className="flex-1 flex flex-col items-center justify-start text-center p-4 pt-14 pb-12">
+                                        <div className="w-10 h-10 rounded-full border border-blue-200/80 flex items-center justify-center text-blue-500 mb-2.5 bg-white shadow-2xs">
+                                            <Clock className="w-4 h-4 text-blue-500" />
+                                        </div>
+                                        <h5 className="font-bold text-xs text-slate-700">No tasks in progress</h5>
+                                        <p className="text-[10px] text-slate-400 mt-1 max-w-[170px] leading-tight">Tasks currently being worked on will appear here.</p>
+                                    </div>
+                                ) : (
+                                    <>
+                                        {/* Milestone Group Subheader */}
+                                        <div className="flex items-center justify-between px-1 py-1 mb-2 text-xs font-semibold text-slate-700 shrink-0">
+                                            <label className="flex items-center space-x-1.5 cursor-pointer truncate">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={columnsData.inProgress.length > 0 && columnsData.inProgress.every(t => t.selected)}
+                                                    onChange={(e) => {
+                                                        const sel = e.target.checked;
+                                                        setTasks(prev => prev.map(t => columnsData.inProgress.some(ct => ct.task_id === t.task_id) ? { ...t, selected: sel } : t));
+                                                    }}
+                                                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5"
+                                                />
+                                                <ChevronDown className="w-3 h-3 text-slate-500 shrink-0" />
+                                                <span className="truncate text-[11px] max-w-[140px] sm:max-w-[180px]">{columnsData.inProgress[0]?.milestone || 'Core Implementation'}</span>
+                                            </label>
+                                            <span className="text-[11px] text-slate-400 font-mono shrink-0 ml-1">
+                                                0/{columnsData.inProgress.length}
+                                            </span>
+                                        </div>
+
+                                        {/* Task Cards - natural full length */}
+                                        <div className="space-y-2">
+                                            {columnsData.inProgress.map((task) => (
+                                                <TaskCardItem
+                                                    key={task.id || task.task_id}
+                                                    task={task}
+                                                    allTasks={tasks}
+                                                    columnIndex={1}
+                                                    onToggleSelect={() => handleToggleTaskSelect(task.task_id)}
+                                                    isDragging={draggingTaskId === (task.task_id || task.id)}
+                                                    onDragStart={(id) => setDraggingTaskId(id)}
+                                                    onDragEnd={() => {
+                                                        setDraggingTaskId(null);
+                                                        setDragOverColumn(null);
+                                                    }}
+                                                />
+                                            ))}
+                                        </div>
+                                    </>
+                                )}
                             </div>
-                        ) : groupedTasks.length === 0 ? (
-                            <div className="py-16 text-center text-sm text-app-text-muted border border-dashed border-app-border rounded-xl bg-app-bg-page/50">
-                                <FolderKanban className="w-10 h-10 text-app-text-muted mx-auto opacity-40 mb-3" />
-                                <p className="font-semibold">No tasks generated yet</p>
-                                <p className="text-xs text-app-text-muted mt-1">Use the config card above to generate sprint tasks with AI.</p>
-                            </div>
-                        ) : (
-                            <div className="space-y-5">
-                                {groupedTasks.map((sprintGroup) => {
-                                    const isCollapsed = collapsedSprints[sprintGroup.sprint.id];
-                                    const sprintTasks = tasks.filter(t => {
-                                        const taskSprintId = extractEntityId(t, 'sprint');
-                                        const taskSprintKey = taskSprintId != null ? String(taskSprintId) : 'unassigned_sprint';
-                                        return taskSprintKey === String(sprintGroup.sprint.id);
-                                    });
-                                    const selectedSprintTasksCount = sprintTasks.filter(t => t.selected).length;
 
-                                    return (
-                                        <div 
-                                            key={`s-${sprintGroup.sprint.id}`} 
-                                            className="border border-app-border-light rounded-xl overflow-hidden shadow-sm bg-app-bg-page/20"
-                                        >
-                                            {/* Collapsible Sprint Header */}
-                                            <div className="px-4 py-3 bg-app-primary-light/50 border-b border-app-border-light flex items-center justify-between gap-3 hover:bg-app-primary-light/60 transition-colors select-none">
-                                                <div className="flex items-center gap-3">
-                                                    <input
-                                                        type="checkbox"
-                                                        checked={isSprintFullySelected(sprintGroup.sprint.id)}
-                                                        onChange={(e) => handleSprintSelection(sprintGroup.sprint.id, e.target.checked)}
-                                                        className="w-4.5 h-4.5 text-app-primary border-app-border rounded focus:ring-app-primary focus:ring-2 cursor-pointer"
-                                                        title="Select all tasks in this sprint"
-                                                        onClick={(e) => e.stopPropagation()}
-                                                    />
-                                                    <div 
-                                                        onClick={() => toggleSprint(sprintGroup.sprint.id)}
-                                                        className="flex items-center gap-2 cursor-pointer"
-                                                    >
-                                                        <FolderKanban className="w-4 h-4 text-app-primary-dark" />
-                                                        <p className="text-sm font-extrabold text-app-primary-dark">{sprintGroup.sprint.name}</p>
-                                                    </div>
-                                                    <span className="px-2 py-0.5 text-[10px] font-extrabold rounded-full bg-app-primary-light text-app-primary-hover border border-app-primary-light">
-                                                        {selectedSprintTasksCount} / {sprintTasks.length} Selected
-                                                    </span>
-                                                </div>
-                                                <button
-                                                    onClick={() => toggleSprint(sprintGroup.sprint.id)}
-                                                    className="p-1 rounded hover:bg-app-primary-light transition-colors text-app-primary-dark"
-                                                >
-                                                    {isCollapsed ? (
-                                                        <ChevronRight className="w-4.5 h-4.5" />
-                                                    ) : (
-                                                        <ChevronDown className="w-4.5 h-4.5" />
-                                                    )}
-                                                </button>
-                                            </div>
+                            {/* ── COLUMN 3: BLOCKED ── */}
+                            <div
+                                onDragOver={(e) => {
+                                    e.preventDefault();
+                                    e.dataTransfer.dropEffect = 'move';
+                                    if (dragOverColumn !== 'BLOCKED') setDragOverColumn('BLOCKED');
+                                }}
+                                onDragLeave={(e) => {
+                                    if (e.currentTarget.contains(e.relatedTarget)) return;
+                                    setDragOverColumn(null);
+                                }}
+                                onDrop={(e) => {
+                                    e.preventDefault();
+                                    setDragOverColumn(null);
+                                    const taskId = e.dataTransfer.getData('text/plain') || draggingTaskId;
+                                    if (taskId) handleUpdateTaskStatus(taskId, 'BLOCKED');
+                                    setDraggingTaskId(null);
+                                }}
+                                className={`rounded-xl border p-2.5 flex flex-col h-full min-h-[520px] min-w-[230px] shadow-2xs transition-all duration-150 ${
+                                    dragOverColumn === 'BLOCKED'
+                                        ? 'bg-rose-100/60 border-rose-300 ring-2 ring-rose-400/50 shadow-md'
+                                        : 'bg-[#FFF1F2]/40 border-rose-100'
+                                }`}
+                            >
+                                <div className="flex items-center justify-between px-2 py-1 mb-1.5 shrink-0">
+                                    <span className="font-bold text-xs text-rose-600">Blocked</span>
+                                    <span className="text-[11px] text-rose-500 font-medium bg-rose-100/70 px-1.5 py-0.5 rounded">{columnsData.blocked.length} items</span>
+                                </div>
 
-                                            {/* Sprints Content Panel */}
-                                            {!isCollapsed && (
-                                                <div className="p-4 space-y-4">
-                                                    {Array.from(sprintGroup.milestones.values()).map((milestoneGroup) => {
-                                                        const milestoneTasks = milestoneGroup.tasks;
-                                                        const selectedMilestoneCount = milestoneTasks.filter(t => t.selected).length;
-
-                                                        return (
-                                                            <div key={`m-${milestoneGroup.milestone.id}`} className="flex gap-4">
-                                                                {/* Timeline vertical node line indicator */}
-                                                                <div className="hidden sm:flex flex-col items-center shrink-0">
-                                                                    <div className="w-7 h-7 rounded-full bg-violet-100 border border-violet-200 flex items-center justify-center text-violet-700 shadow-sm">
-                                                                        <Milestone className="w-3.5 h-3.5" />
-                                                                    </div>
-                                                                    <div className="w-[1.5px] flex-1 bg-gradient-to-b from-violet-200 via-slate-100 to-transparent mt-2"></div>
-                                                                </div>
-
-                                                                {/* Milestone Card content */}
-                                                                <div className="flex-1 border border-app-border-light rounded-xl overflow-hidden bg-app-bg-card shadow-sm">
-                                                                    <div className="px-4 py-2.5 bg-violet-500/5 border-b border-app-border-light flex items-center justify-between gap-3">
-                                                                        <div className="flex items-center gap-2.5">
-                                                                            <input
-                                                                                type="checkbox"
-                                                                                checked={isMilestoneFullySelected(sprintGroup.sprint.id, milestoneGroup.milestone.id)}
-                                                                                onChange={(e) => handleMilestoneSelection(sprintGroup.sprint.id, milestoneGroup.milestone.id, e.target.checked)}
-                                                                                className="w-4 h-4 text-violet-600 border-violet-300 rounded focus:ring-violet-500 focus:ring-2 cursor-pointer"
-                                                                                title="Select all tasks in this milestone"
-                                                                            />
-                                                                            <span className="text-xs font-black tracking-wide text-violet-900 uppercase">
-                                                                                {milestoneGroup.milestone.name}
-                                                                            </span>
-                                                                        </div>
-                                                                        <span className="text-[10px] font-bold text-violet-600">
-                                                                            {selectedMilestoneCount} / {milestoneTasks.length} Work Items
-                                                                        </span>
-                                                                    </div>
-                                                                    
-                                                                    <div className="p-3 space-y-2.5">
-                                                                        {milestoneTasks.map((task) => {
-                                                                            const prio = String(task.priority || 'medium').toLowerCase();
-                                                                            const isHigh = prio.includes('high');
-                                                                            const isLow = prio.includes('low');
-
-                                                                            return (
-                                                                                <div 
-                                                                                    key={task.id || task.task_id || task.taskName} 
-                                                                                    className={`group border rounded-xl p-3 bg-app-bg-card flex items-start gap-3 hover:-translate-y-0.5 hover:shadow-md transition-all duration-200 ${
-                                                                                        task.selected 
-                                                                                            ? 'border-indigo-200 bg-indigo-50/5' 
-                                                                                            : 'border-app-border-light'
-                                                                                    }`}
-                                                                                >
-                                                                                    <input
-                                                                                        type="checkbox"
-                                                                                        checked={task.selected || false}
-                                                                                        disabled={task.synced_to_nxdune}
-                                                                                        onChange={(e) => handleTaskSelection(task.id, e.target.checked)}
-                                                                                        className="mt-1 w-4.5 h-4.5 text-app-primary border-app-border rounded focus:ring-app-primary focus:ring-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                                                                                    />
-                                                                                    
-                                                                                    <div className="flex-1 min-w-0">
-                                                                                        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2">
-                                                                                            <p className="text-sm font-bold text-app-text-main leading-snug truncate">
-                                                                                                {task.title || task.taskName || 'Untitled Task'}
-                                                                                            </p>
-                                                                                            <div className="flex items-center gap-1.5 shrink-0">
-                                                                                                 {task.synced_to_nxdune && (
-                                                                                                     <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400 text-[9px] font-extrabold uppercase tracking-wider border border-emerald-200/30">
-                                                                                                         <CheckCircle2 className="w-2.5 h-2.5" />
-                                                                                                         Synced
-                                                                                                     </span>
-                                                                                                 )}
-                                                                                                 {task.selected && !task.synced_to_nxdune && (
-                                                                                                     <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-400 text-[9px] font-extrabold uppercase tracking-wider border border-indigo-200/30">
-                                                                                                         <CheckCircle2 className="w-2.5 h-2.5" />
-                                                                                                         Saved Locally
-                                                                                                     </span>
-                                                                                                 )}
-                                                                                            </div>
-                                                                                        </div>
-                                                                                        
-                                                                                        <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-app-text-muted">
-                                                                                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-semibold text-[10px] uppercase border ${
-                                                                                                isHigh 
-                                                                                                    ? 'bg-red-500/10 text-red-600 border-red-500/20' 
-                                                                                                    : isLow 
-                                                                                                        ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20' 
-                                                                                                        : 'bg-amber-500/10 text-amber-600 border-amber-500/20'
-                                                                                            }`}>
-                                                                                                <Flag className="w-2.8 h-2.8 shrink-0" />
-                                                                                                {task.priority || 'medium'}
-                                                                                            </span>
-                                                                                            <span className="inline-flex items-center gap-1 text-[11px]">
-                                                                                                <CalendarDays className="w-3.5 h-3.5 text-slate-400" />
-                                                                                                Due: {task.planned_end || task.deadline || 'No deadline'}
-                                                                                            </span>
-                                                                                            <span className="rounded bg-app-bg-page border border-app-border-light px-2 py-0.5 font-bold uppercase tracking-widest text-[9px] text-app-text-label shrink-0">
-                                                                                                {task.type || task.task_type || 'task'}
-                                                                                            </span>
-                                                                                        </div>
-                                                                                    </div>
-                                                                                </div>
-                                                                            );
-                                                                        })}
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                        );
-                                                    })}
-                                                </div>
-                                            )}
+                                {columnsData.blocked.length === 0 ? (
+                                    <div className="flex-1 flex flex-col items-center justify-start text-center p-4 pt-14 pb-12">
+                                        <div className="w-10 h-10 rounded-full border border-slate-200/90 flex items-center justify-center text-slate-400 mb-2.5 bg-white shadow-2xs">
+                                            <Minus className="w-4 h-4 text-slate-400" />
                                         </div>
-                                    );
-                                })}
-
-                                {pagination.count > 0 && (
-                                    <div className="mt-6 flex flex-col sm:flex-row items-center justify-between border-t border-app-border-light pt-5 px-1 gap-4">
-                                        <div className="text-xs font-medium text-app-text-muted">
-                                            Showing <span className="font-extrabold text-app-text-main">{tasks.length}</span> of <span className="font-extrabold text-app-text-main">{pagination.count}</span> tasks
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                            <button
-                                                onClick={() => loadData(pagination.currentPage - 1)}
-                                                disabled={!pagination.previous || isLoading}
-                                                className={`px-4 py-2 text-xs font-bold rounded-xl border transition-all duration-250 ${!pagination.previous || isLoading
-                                                    ? 'border-app-border text-app-text-muted cursor-not-allowed opacity-40 bg-app-bg-page'
-                                                    : 'border-app-border bg-app-bg-card text-app-text-main hover:bg-app-bg-hover active:scale-95'
-                                                    }`}
-                                            >
-                                                Previous
-                                            </button>
-                                            <div className="flex items-center justify-center min-w-[2.2rem] h-8 rounded-lg bg-indigo-50 text-indigo-700 text-xs font-black border border-indigo-100">
-                                                {pagination.currentPage}
-                                            </div>
-                                            <button
-                                                onClick={() => loadData(pagination.currentPage + 1)}
-                                                disabled={!pagination.next || isLoading}
-                                                className={`px-4 py-2 text-xs font-bold rounded-xl border transition-all duration-250 ${!pagination.next || isLoading ? "border-app-border text-app-text-muted cursor-not-allowed opacity-40 bg-app-bg-page" : "border-app-border bg-app-bg-card text-app-text-main hover:bg-app-bg-hover active:scale-95"}`}
-                                            >
-                                                Next
-                                            </button>
-                                        </div>
+                                        <h5 className="font-bold text-xs text-slate-700">No blocked tasks</h5>
+                                        <p className="text-[10px] text-slate-400 mt-1 max-w-[170px] leading-tight">Tasks that are blocked will appear here.</p>
+                                    </div>
+                                ) : (
+                                    <div className="space-y-2">
+                                        {columnsData.blocked.map((task) => (
+                                            <TaskCardItem
+                                                key={task.id || task.task_id}
+                                                task={task}
+                                                allTasks={tasks}
+                                                columnIndex={2}
+                                                onToggleSelect={() => handleToggleTaskSelect(task.task_id)}
+                                                isDragging={draggingTaskId === (task.task_id || task.id)}
+                                                onDragStart={(id) => setDraggingTaskId(id)}
+                                                onDragEnd={() => {
+                                                    setDraggingTaskId(null);
+                                                    setDragOverColumn(null);
+                                                }}
+                                            />
+                                        ))}
                                     </div>
                                 )}
                             </div>
-                        )}
+
+                            {/* ── COLUMN 4: DONE ── */}
+                            <div
+                                onDragOver={(e) => {
+                                    e.preventDefault();
+                                    e.dataTransfer.dropEffect = 'move';
+                                    if (dragOverColumn !== 'DONE') setDragOverColumn('DONE');
+                                }}
+                                onDragLeave={(e) => {
+                                    if (e.currentTarget.contains(e.relatedTarget)) return;
+                                    setDragOverColumn(null);
+                                }}
+                                onDrop={(e) => {
+                                    e.preventDefault();
+                                    setDragOverColumn(null);
+                                    const taskId = e.dataTransfer.getData('text/plain') || draggingTaskId;
+                                    if (taskId) handleUpdateTaskStatus(taskId, 'DONE');
+                                    setDraggingTaskId(null);
+                                }}
+                                className={`rounded-xl border p-2.5 flex flex-col h-full min-h-[520px] min-w-[230px] shadow-2xs transition-all duration-150 ${
+                                    dragOverColumn === 'DONE'
+                                        ? 'bg-emerald-100/60 border-emerald-300 ring-2 ring-emerald-400/50 shadow-md'
+                                        : 'bg-[#F0FDF4]/50 border-emerald-100'
+                                }`}
+                            >
+                                <div className="flex items-center justify-between px-2 py-1 mb-1.5 shrink-0">
+                                    <span className="font-bold text-xs text-emerald-600">Done</span>
+                                    <span className="text-[11px] text-emerald-600 font-medium bg-emerald-100/70 px-1.5 py-0.5 rounded">{columnsData.done.length} items</span>
+                                </div>
+
+                                {columnsData.done.length === 0 ? (
+                                    <div className="flex-1 flex flex-col items-center justify-start text-center p-4 pt-14 pb-12">
+                                        <div className="w-10 h-10 rounded-full border border-emerald-200/90 text-emerald-500 flex items-center justify-center mb-2.5 bg-white shadow-2xs">
+                                            <Check className="w-4 h-4 text-emerald-600 stroke-[2.5]" />
+                                        </div>
+                                        <h5 className="font-bold text-xs text-slate-700">No completed tasks</h5>
+                                        <p className="text-[10px] text-slate-400 mt-1 max-w-[170px] leading-tight">Completed tasks will appear here.</p>
+                                    </div>
+                                ) : (
+                                    <div className="space-y-2">
+                                        {columnsData.done.map((task) => (
+                                            <TaskCardItem
+                                                key={task.id || task.task_id}
+                                                task={task}
+                                                allTasks={tasks}
+                                                columnIndex={3}
+                                                onToggleSelect={() => handleToggleTaskSelect(task.task_id)}
+                                                isDragging={draggingTaskId === (task.task_id || task.id)}
+                                                onDragStart={(id) => setDraggingTaskId(id)}
+                                                onDragEnd={() => {
+                                                    setDraggingTaskId(null);
+                                                    setDragOverColumn(null);
+                                                }}
+                                            />
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* ── RIGHT SIDEBAR: SPRINT PROGRESS ── */}
+                    <div className="w-full 2xl:w-72 bg-white rounded-xl border border-slate-200 p-3.5 shadow-2xs flex flex-col shrink-0 space-y-3.5 2xl:sticky 2xl:top-4">
+                        <h4 className="font-bold text-xs text-slate-800 tracking-tight">Sprint Progress</h4>
+
+                        {/* Donut progress ring */}
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2.5">
+                                <div className="relative w-9 h-9 flex items-center justify-center">
+                                    <svg className="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
+                                        <path
+                                            className="text-slate-100"
+                                            strokeWidth="3.5"
+                                            stroke="currentColor"
+                                            fill="none"
+                                            d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                                        />
+                                        <path
+                                            className="text-emerald-500 transition-all duration-500 ease-out"
+                                            strokeDasharray={`${sprintStats.percent}, 100`}
+                                            strokeWidth="3.5"
+                                            strokeLinecap="round"
+                                            stroke="currentColor"
+                                            fill="none"
+                                            d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                                        />
+                                    </svg>
+                                </div>
+                                <div>
+                                    <div className="font-bold text-xs text-slate-800 truncate max-w-[120px]">{activeSprint.name || 'Sprint 1'}</div>
+                                    <div className="text-[11px] text-slate-400 font-medium">{sprintStats.done} / {sprintStats.total}</div>
+                                </div>
+                            </div>
+                            <span className="font-bold text-xs text-slate-900">{sprintStats.percent}%</span>
+                        </div>
+
+                        <p className="text-[11px] text-slate-600 font-medium line-clamp-2">
+                            {activeSprint.subtitle || 'Visual Prototype & Core Infrastructure'}
+                        </p>
+
+                        <div className="text-[11px] text-slate-400 flex items-center gap-1.5 pb-2 border-b border-slate-100">
+                            <Calendar className="w-3 h-3 text-slate-400" />
+                            <span>Due: {activeSprint.due || '2026-10-02'}</span>
+                        </div>
+
+                        {/* Milestone Section */}
+                        <div className="pb-2 border-b border-slate-100">
+                            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Milestone</div>
+                            <div className="text-xs font-semibold text-slate-700 hover:text-blue-600 cursor-pointer flex items-center justify-between">
+                                <span className="truncate">{columnsData.todo[0]?.milestone || columnsData.inProgress[0]?.milestone || 'Foundation Setup'}</span>
+                                <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                            </div>
+                            <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                                {sprintStats.done} / {sprintStats.total}
+                            </div>
+                        </div>
+
+                        {/* Task Types */}
+                        <div className="pb-2 border-b border-slate-100 space-y-1">
+                            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-0.5">Task Types</div>
+                            <div className="flex items-center gap-2 text-xs text-slate-600">
+                                <span className="p-0.5 rounded bg-purple-100 text-purple-600">
+                                    <FileText className="w-3 h-3" />
+                                </span>
+                                <span className="text-[11px]">Feature</span>
+                            </div>
+                            <div className="flex items-center gap-2 text-xs text-slate-600">
+                                <span className="p-0.5 rounded bg-blue-100 text-blue-600">
+                                    <CheckSquare className="w-3 h-3" />
+                                </span>
+                                <span className="text-[11px]">Task</span>
+                            </div>
+                        </div>
+
+                        {/* Priority */}
+                        <div className="pb-2 border-b border-slate-100">
+                            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Priority</div>
+                            <div className="flex items-center gap-3 text-[11px] text-slate-600">
+                                <div className="flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                                    <span>High</span>
+                                </div>
+                                <div className="flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                                    <span>Medium</span>
+                                </div>
+                                <div className="flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                    <span>Low</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Action Buttons */}
+                        <div className="space-y-1.5 pt-1">
+                            <button
+                                onClick={handleStartSelectedTasks}
+                                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 shadow-sm transition-all"
+                            >
+                                <Play className="w-3 h-3 fill-current" />
+                                <span>Start Selected Tasks</span>
+                            </button>
+
+                            <button
+                                onClick={handleStartSelectedTasks}
+                                className="w-full bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-semibold text-xs py-1.5 px-3 rounded-lg flex items-center justify-center gap-1.5 transition-all shadow-2xs"
+                            >
+                                <ArrowRight className="w-3 h-3 text-slate-500" />
+                                <span>Move to Next Phase</span>
+                            </button>
+                        </div>
+
+                        {/* Info Callout */}
+                        <div className="bg-blue-50/70 border border-blue-100 rounded-lg p-2 text-[10px] text-blue-900 flex items-start gap-1.5 leading-relaxed">
+                            <Info className="w-3.5 h-3.5 text-blue-600 shrink-0 mt-0.5" />
+                            <span>Tasks started here will be picked up by AI agents and tracked automatically.</span>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ── AI TASK GENERATION PROGRESS MODAL OVERLAY ── */}
+            <TaskGenerationModal
+                isOpen={isGenerating && showGenerationModal}
+                generationStatus={generationStatus}
+                tasksCount={tasks.length}
+                projectName={selectedProject?.name}
+                onMinimize={() => setShowGenerationModal(false)}
+            />
+        </div>
+    );
+}
+
+// ── REUSABLE TASK CARD COMPONENT (DRAG & DROP + HOVER ON (i) BUTTON FOR CARD DETAILS) ──
+function TaskCardItem({
+    task,
+    onToggleSelect,
+    isDragging,
+    onDragStart,
+    onDragEnd,
+    allTasks = [],
+    columnIndex = 0,
+}) {
+    const [showInfoPopover, setShowInfoPopover] = useState(false);
+    const [popoverPos, setPopoverPos] = useState({
+        vertical: 'top',
+        horizontal: columnIndex >= 2 ? 'left' : 'right',
+        maxHeight: 420,
+    });
+    const infoBtnRef = useRef(null);
+    const cardRef = useRef(null);
+    const hoverTimeoutRef = useRef(null);
+
+    const updatePopoverPosition = useCallback(() => {
+        if (!cardRef.current) return;
+        const rect = cardRef.current.getBoundingClientRect();
+        const vh = window.innerHeight || document.documentElement.clientHeight || 800;
+        const vw = window.innerWidth || document.documentElement.clientWidth || 1200;
+
+        // Space available below vs above the card
+        const spaceBelow = vh - rect.bottom;
+        const spaceAbove = rect.top;
+
+        // Target height is ~380-420px
+        // If room below is less than 380px and there's more room above, open UPWARDS (bottom aligned)
+        const vertical = (spaceBelow < 380 && spaceAbove > spaceBelow) ? 'bottom' : 'top';
+
+        // Check horizontal clearance: if column 2/3 or space on right < 420px, open to the left
+        const spaceRight = vw - rect.right;
+        const spaceLeft = rect.left;
+        const horizontal = (columnIndex >= 2 || (spaceRight < 420 && spaceLeft > spaceRight)) ? 'left' : 'right';
+
+        // Clamped height to ensure popover NEVER gets cut off or hidden under headers:
+        // When vertical is 'bottom', card bottom to top of viewport (leave 70px for header bar)
+        // When vertical is 'top', card top to bottom of viewport (leave 20px)
+        const maxAvailable = vertical === 'bottom'
+            ? Math.max(260, Math.min(420, rect.bottom - 70))
+            : Math.max(260, Math.min(420, spaceBelow - 20));
+
+        setPopoverPos({
+            vertical,
+            horizontal,
+            maxHeight: maxAvailable,
+        });
+    }, [columnIndex]);
+
+    const handleInfoMouseEnter = () => {
+        if (isDragging) return;
+        if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+        updatePopoverPosition();
+        hoverTimeoutRef.current = setTimeout(() => {
+            setShowInfoPopover(true);
+        }, 120);
+    };
+
+    const handleInfoMouseLeave = () => {
+        if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+        hoverTimeoutRef.current = setTimeout(() => {
+            setShowInfoPopover(false);
+        }, 220);
+    };
+
+    useEffect(() => {
+        if (isDragging) {
+            if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+            setShowInfoPopover(false);
+        }
+    }, [isDragging]);
+
+    useEffect(() => {
+        if (!showInfoPopover) return;
+        const handleScroll = () => {
+            setShowInfoPopover(false);
+        };
+        window.addEventListener('scroll', handleScroll, { passive: true });
+        return () => window.removeEventListener('scroll', handleScroll);
+    }, [showInfoPopover]);
+
+    const type = (task.task_type || task.type || 'FEATURE').toUpperCase();
+    const isFeature = type === 'FEATURE';
+    const prio = String(task.priority || 'medium').toLowerCase();
+    const isHigh = prio === 'high' || prio === 'urgent' || prio === 'critical';
+    const isMedium = prio === 'medium';
+    const dueDate = task.deadline || task.planned_start || '2026-10-02';
+    const status = (task.status || 'TODO').toUpperCase();
+
+    // 1. Linked / Dependent Tasks
+    const dependencies = useMemo(() => {
+        let raw = task.linked_tasks || task.dependencies || [];
+        if (typeof raw === 'string') {
+            try {
+                raw = JSON.parse(raw);
+            } catch {
+                raw = raw.split(',').map(s => s.trim()).filter(Boolean);
+            }
+        }
+        if (!Array.isArray(raw)) raw = [];
+
+        return raw.map(id => {
+            const cleanId = String(id).trim();
+            const found = allTasks.find(t => t.task_id === cleanId || t.id === cleanId || t.taskName === cleanId);
+            return {
+                id: cleanId,
+                name: found?.taskName || found?.title || cleanId,
+                status: found?.status || 'PENDING',
+                type: found?.task_type || 'TASK',
+            };
+        });
+    }, [task, allTasks]);
+
+    // 2. Related Tasks (same milestone or sprint)
+    const relatedTasks = useMemo(() => {
+        const myId = task.task_id || task.id;
+        const myMilestone = (task.milestone || '').toLowerCase();
+        const mySprint = (task.sprint || '').toLowerCase();
+
+        return allTasks
+            .filter(t => {
+                const tId = t.task_id || t.id;
+                if (tId === myId) return false;
+                const tm = (t.milestone || '').toLowerCase();
+                const ts = (t.sprint || '').toLowerCase();
+                return (myMilestone && tm === myMilestone) || (mySprint && ts === mySprint);
+            })
+            .slice(0, 3);
+    }, [task, allTasks]);
+
+    return (
+        <div
+            ref={cardRef}
+            draggable={true}
+            onDragStart={(e) => {
+                if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+                setShowInfoPopover(false);
+                e.dataTransfer.setData('text/plain', task.task_id || task.id);
+                e.dataTransfer.effectAllowed = 'move';
+                onDragStart?.(task.task_id || task.id);
+            }}
+            onDragEnd={() => {
+                onDragEnd?.();
+            }}
+            className={`bg-white border rounded-lg p-2.5 shadow-2xs hover:shadow-xs transition-all relative cursor-grab active:cursor-grabbing select-none ${
+                showInfoPopover ? 'z-40' : 'z-10'
+            } ${
+                isDragging
+                    ? 'opacity-40 scale-[0.98] border-dashed border-blue-400 shadow-none'
+                    : 'border-slate-200/90 hover:border-slate-300'
+            }`}
+        >
+            <div className="flex items-start gap-2">
+                {/* Square selection checkbox */}
+                <input
+                    type="checkbox"
+                    checked={Boolean(task.selected)}
+                    onChange={(e) => {
+                        e.stopPropagation();
+                        onToggleSelect();
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5 mt-0.5 cursor-pointer shrink-0"
+                />
+
+                {/* Card content */}
+                <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-1.5 min-w-0">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="text-slate-400 shrink-0">
+                                {isFeature ? <FileText className="w-3.5 h-3.5 text-purple-500 shrink-0" /> : <CheckSquare className="w-3.5 h-3.5 text-blue-500 shrink-0" />}
+                            </span>
+                            <h5 className="font-bold text-xs text-slate-800 leading-snug line-clamp-2 break-words" title={task.taskName || task.task_name || task.title}>
+                                {task.taskName || task.task_name || task.title || 'Task'}
+                            </h5>
+                        </div>
+
+                        {/* (i) Info Button with hover trigger */}
+                        <div
+                            ref={infoBtnRef}
+                            onMouseEnter={handleInfoMouseEnter}
+                            onMouseLeave={handleInfoMouseLeave}
+                            className="relative shrink-0"
+                        >
+                            <button
+                                type="button"
+                                className="p-1 -mr-1 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors focus:outline-none"
+                                title="Hover to view details"
+                            >
+                                <Info className="w-3.5 h-3.5" />
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Type badge */}
+                    <div className="mt-1.5">
+                        <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold ${
+                            isFeature
+                                ? 'bg-purple-100/80 text-purple-700'
+                                : 'bg-blue-100/80 text-blue-700'
+                        }`}>
+                            <span className="w-1.5 h-1.5 rounded-full bg-current opacity-70" />
+                            {type}
+                        </span>
+                    </div>
+
+                    {/* Metadata: Priority dot + Due date */}
+                    <div className="flex items-center justify-between gap-2 mt-2 pt-1.5 border-t border-slate-100 text-[10px] text-slate-500">
+                        <div className="flex items-center gap-1 font-semibold shrink-0">
+                            <span className={`w-1.5 h-1.5 rounded-full ${isHigh ? 'bg-red-500' : isMedium ? 'bg-amber-400' : 'bg-emerald-500'}`} />
+                            <span className={isHigh ? 'text-red-600' : isMedium ? 'text-amber-600' : 'text-emerald-600'}>
+                                {isHigh ? 'High' : isMedium ? 'Medium' : 'Low'}
+                            </span>
+                        </div>
+
+                        <div className="flex items-center gap-1 text-slate-400 font-mono text-[10px] whitespace-nowrap shrink-0">
+                            <Calendar className="w-3 h-3 text-slate-400 shrink-0" />
+                            <span className="whitespace-nowrap">Due: {dueDate}</span>
+                        </div>
                     </div>
                 </div>
             </div>
-        </>
+
+            {/* ── MEDIUM-SIZED HOVER CARD PREVIEW (PERFECT WIDTH & HEIGHT, INVISIBLE SCROLLBARS) ── */}
+            {showInfoPopover && !isDragging && (
+                <div
+                    style={{
+                        maxHeight: `${popoverPos.maxHeight}px`,
+                        scrollbarWidth: 'none',
+                        msOverflowStyle: 'none'
+                    }}
+                    className={`absolute w-[390px] bg-white rounded-xl border border-slate-200/90 shadow-2xl p-4 text-xs z-50 animate-in fade-in zoom-in-95 duration-150 pointer-events-auto select-text overflow-y-auto overflow-x-hidden no-scrollbar [&::-webkit-scrollbar]:hidden flex flex-col ${
+                        popoverPos.vertical === 'bottom' ? 'bottom-0' : 'top-0'
+                    } ${
+                        popoverPos.horizontal === 'left' ? 'right-[calc(100%+8px)]' : 'left-[calc(100%+8px)]'
+                    }`}
+                    onMouseEnter={() => {
+                        if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+                        setShowInfoPopover(true);
+                    }}
+                    onMouseLeave={handleInfoMouseLeave}
+                >
+                    {/* Invisible hover bridge across gap to avoid mouseleave jitter */}
+                    <div
+                        className={`absolute top-0 bottom-0 w-3 pointer-events-auto ${
+                            popoverPos.horizontal === 'left' ? '-right-3' : '-left-3'
+                        }`}
+                    />
+
+                    {/* Header tags: ID, Type, Priority, Status */}
+                    <div className="flex items-center justify-between gap-1.5 mb-2 pb-2 border-b border-slate-100 shrink-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
+                                {task.task_id || 'TASK'}
+                            </span>
+                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
+                                isFeature ? 'bg-purple-50 text-purple-700 border border-purple-200' : 'bg-blue-50 text-blue-700 border border-blue-200'
+                            }`}>
+                                {type}
+                            </span>
+                        </div>
+
+                        <div className="flex items-center gap-1">
+                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full capitalize ${
+                                isHigh ? 'bg-rose-50 text-rose-700 border border-rose-200' : isMedium ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            }`}>
+                                {prio}
+                            </span>
+                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+                                {status === 'IN_PROGRESS' ? 'In Progress' : status === 'TODO' ? 'To Do' : status === 'BLOCKED' ? 'Blocked' : 'Done'}
+                            </span>
+                        </div>
+                    </div>
+
+                    {/* Task Title */}
+                    <h4 className="font-bold text-xs text-slate-900 leading-snug shrink-0">
+                        {task.taskName || task.task_name || task.title || 'Task'}
+                    </h4>
+
+                    {/* Description - clean text container with invisible scroll */}
+                    <div className="mt-2 bg-slate-50/80 p-2.5 rounded-lg border border-slate-100 shrink-0">
+                        <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1 flex items-center gap-1">
+                            <FileText className="w-3 h-3 text-slate-400" />
+                            <span>Description</span>
+                        </div>
+                        <p
+                            className="text-[11px] text-slate-600 leading-relaxed max-h-28 overflow-y-auto whitespace-pre-wrap pr-1 no-scrollbar [&::-webkit-scrollbar]:hidden"
+                            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+                        >
+                            {task.description || 'No detailed description provided for this work item.'}
+                        </p>
+                    </div>
+
+                    {/* Meta key-values: 2x2 grid */}
+                    <div className="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-slate-100 text-[10px] shrink-0">
+                        <div>
+                            <span className="text-slate-400 font-medium block">Milestone</span>
+                            <span className="text-slate-700 font-semibold truncate block mt-0.5" title={task.milestone}>
+                                {task.milestone || 'Project Foundation'}
+                            </span>
+                        </div>
+                        <div>
+                            <span className="text-slate-400 font-medium block">Assigned Role</span>
+                            <span className="text-slate-700 font-semibold truncate block mt-0.5" title={task.assigned_agent_role}>
+                                {task.assigned_agent_role || 'Fullstack Developer'}
+                            </span>
+                        </div>
+                        <div>
+                            <span className="text-slate-400 font-medium block">Sprint</span>
+                            <span className="text-slate-700 font-semibold truncate block mt-0.5">
+                                {task.sprint || 'Sprint 1'}
+                            </span>
+                        </div>
+                        <div>
+                            <span className="text-slate-400 font-medium block">Deadline</span>
+                            <span className="text-slate-700 font-semibold truncate block mt-0.5">
+                                {dueDate}
+                            </span>
+                        </div>
+                    </div>
+
+                    {/* Dependencies Section */}
+                    <div className="mt-2 pt-2 border-t border-slate-100 shrink-0">
+                        <div className="flex items-center gap-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                            <Link2 className="w-3 h-3 text-slate-400" />
+                            <span>Dependencies &amp; Prerequisites</span>
+                        </div>
+                        {dependencies.length > 0 ? (
+                            <div className="space-y-1 max-h-20 overflow-y-auto pr-0.5 no-scrollbar [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+                                {dependencies.map((dep, i) => (
+                                    <div key={i} className="flex items-center justify-between text-[10px] bg-slate-50 px-2 py-1 rounded border border-slate-100">
+                                        <span className="font-medium text-slate-700 truncate max-w-[210px]" title={dep.name}>
+                                            {dep.id}: {dep.name}
+                                        </span>
+                                        <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-white text-slate-500 border border-slate-200">
+                                            {dep.status}
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <p className="text-[10px] text-slate-400 italic">
+                                Independent task &bull; No blocking dependencies
+                            </p>
+                        )}
+                    </div>
+
+                    {/* Related Tasks Section */}
+                    <div className="mt-2 pt-2 border-t border-slate-100 shrink-0">
+                        <div className="flex items-center gap-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                            <Layers className="w-3 h-3 text-slate-400" />
+                            <span>Related Tasks in Milestone</span>
+                        </div>
+                        {relatedTasks.length > 0 ? (
+                            <div className="space-y-1 max-h-20 overflow-y-auto pr-0.5 no-scrollbar [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+                                {relatedTasks.map((rel) => (
+                                    <div key={rel.task_id || rel.id} className="flex items-center justify-between text-[10px] bg-slate-50 px-2 py-1 rounded border border-slate-100">
+                                        <span className="font-medium text-slate-700 truncate max-w-[210px]" title={rel.taskName || rel.title}>
+                                            {rel.task_id}: {rel.taskName || rel.title}
+                                        </span>
+                                        <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${
+                                            (rel.status || '').toUpperCase() === 'DONE' ? 'bg-emerald-100 text-emerald-700' : (rel.status || '').toUpperCase() === 'IN_PROGRESS' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'
+                                        }`}>
+                                            {rel.status || 'TODO'}
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <p className="text-[10px] text-slate-400 italic">
+                                No other tasks in this milestone
+                            </p>
+                        )}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// ── AI TASK GENERATION PROGRESS MODAL ──
+function TaskGenerationModal({
+    isOpen,
+    generationStatus,
+    tasksCount = 0,
+    projectName = 'Project Roadmap',
+    onMinimize,
+}) {
+    if (!isOpen) return null;
+
+    const progress = Math.min(100, Math.max(10, Math.round(generationStatus?.progress_percent || 15)));
+    const statusMsg = generationStatus?.status_message || 'Analyzing project architecture and synthesizing sprint plan...';
+    const releasedSprints = Array.isArray(generationStatus?.released_sprints) ? generationStatus.released_sprints : [];
+
+    const phases = [
+        { id: 1, name: 'BRD & Scope Analysis', desc: 'Parsing requirements, modules & constraints', threshold: 20 },
+        { id: 2, name: 'Architecture & Sprints', desc: 'Establishing sprint boundaries & tech milestones', threshold: 45 },
+        { id: 3, name: 'Atomic Task Decomposition', desc: 'Generating user stories, acceptance criteria & tags', threshold: 75 },
+        { id: 4, name: 'Dependency & Role Mapping', desc: 'Linking prerequisites & AI agent role assignments', threshold: 95 },
+    ];
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-200 select-none">
+            <div className="relative w-full max-w-lg bg-white rounded-2xl border border-slate-200 shadow-2xl p-6 sm:p-7 overflow-hidden animate-in zoom-in-95 duration-200">
+                {/* Top ambient color bar */}
+                <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-blue-600 via-indigo-600 to-emerald-500" />
+
+                {/* Header */}
+                <div className="flex items-start justify-between gap-3 mb-5">
+                    <div className="flex items-center gap-3">
+                        <div className="relative flex items-center justify-center w-12 h-12 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-500/25 shrink-0">
+                            <Sparkles className="w-6 h-6 text-white animate-pulse" />
+                            <span className="absolute -inset-1 rounded-xl bg-blue-500/20 animate-ping -z-10" />
+                        </div>
+                        <div>
+                            <h3 className="text-base font-bold text-slate-900 leading-snug">
+                                AI Task Orchestrator
+                            </h3>
+                            <p className="text-xs text-slate-500">
+                                Generating sprints and work items for <span className="font-semibold text-slate-700">{projectName}</span>
+                            </p>
+                        </div>
+                    </div>
+                    {onMinimize && (
+                        <button
+                            type="button"
+                            onClick={onMinimize}
+                            className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 transition-colors"
+                            title="Run in background"
+                        >
+                            <X className="w-4 h-4" />
+                        </button>
+                    )}
+                </div>
+
+                {/* Progress bar & Percent */}
+                <div className="mb-5 bg-slate-50 p-3.5 rounded-xl border border-slate-100">
+                    <div className="flex items-center justify-between text-xs mb-2">
+                        <span className="font-semibold text-slate-700 flex items-center gap-1.5">
+                            <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin shrink-0" />
+                            <span className="truncate max-w-[280px] sm:max-w-[340px]">{statusMsg}</span>
+                        </span>
+                        <span className="font-mono font-bold text-blue-600 text-sm">
+                            {progress}%
+                        </span>
+                    </div>
+
+                    <div className="w-full bg-slate-200/80 rounded-full h-2.5 overflow-hidden p-0.5">
+                        <div
+                            className="h-full bg-gradient-to-r from-blue-600 via-indigo-600 to-emerald-500 rounded-full transition-all duration-500 ease-out shadow-xs"
+                            style={{ width: `${progress}%` }}
+                        />
+                    </div>
+                </div>
+
+                {/* 4-Stage AI Pipeline Tracker */}
+                <div className="space-y-2.5 mb-5">
+                    <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-0.5">
+                        Generation Pipeline
+                    </div>
+                    {phases.map((phase) => {
+                        const isDone = progress >= phase.threshold;
+                        const isCurrent = !isDone && (progress >= phase.threshold - 25 || phase.id === 1);
+                        return (
+                            <div
+                                key={phase.id}
+                                className={`flex items-center justify-between p-2.5 rounded-lg border transition-all ${
+                                    isDone
+                                        ? 'bg-emerald-50/50 border-emerald-200/70 text-slate-700'
+                                        : isCurrent
+                                        ? 'bg-blue-50/60 border-blue-200 text-blue-900 shadow-2xs ring-1 ring-blue-400/20'
+                                        : 'bg-white border-slate-100 text-slate-400 opacity-60'
+                                }`}
+                            >
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                    <div className="shrink-0">
+                                        {isDone ? (
+                                            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                                        ) : isCurrent ? (
+                                            <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />
+                                        ) : (
+                                            <div className="w-4 h-4 rounded-full border-2 border-slate-300" />
+                                        )}
+                                    </div>
+                                    <div className="min-w-0">
+                                        <div className={`text-xs font-semibold leading-tight ${isDone ? 'text-slate-800' : isCurrent ? 'text-blue-900' : 'text-slate-400'}`}>
+                                            {phase.name}
+                                        </div>
+                                        <div className="text-[10px] text-slate-500 truncate">
+                                            {phase.desc}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ml-2 ${
+                                    isDone
+                                        ? 'bg-emerald-100 text-emerald-700'
+                                        : isCurrent
+                                        ? 'bg-blue-100 text-blue-700 animate-pulse'
+                                        : 'bg-slate-100 text-slate-400'
+                                }`}>
+                                    {isDone ? 'Done' : isCurrent ? 'Active' : 'Queued'}
+                                </span>
+                            </div>
+                        );
+                    })}
+                </div>
+
+                {/* Released Sprints pills (if any released yet) */}
+                {releasedSprints.length > 0 && (
+                    <div className="mb-4 pt-3 border-t border-slate-100">
+                        <div className="flex items-center justify-between text-xs mb-2">
+                            <span className="font-bold text-slate-700">Released Sprints</span>
+                            <span className="text-[11px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">
+                                {tasksCount} work items ready
+                            </span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto no-scrollbar">
+                            {releasedSprints.map((rs, idx) => (
+                                <span
+                                    key={idx}
+                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-medium"
+                                >
+                                    <Check className="w-3 h-3 text-emerald-600" />
+                                    <span>{rs.sprint_name || `Sprint ${rs.sprint_number || idx + 1}`}</span>
+                                    <span className="text-emerald-600/70 font-mono text-[10px]">({rs.task_count || 0})</span>
+                                </span>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                {/* Footer action */}
+                <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-xs">
+                    <span className="text-[11px] text-slate-400">
+                        Live AI streaming &bull; Auto-updating board
+                    </span>
+                    {onMinimize && (
+                        <button
+                            type="button"
+                            onClick={onMinimize}
+                            className="text-xs font-semibold text-slate-600 hover:text-blue-600 hover:bg-slate-100 px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
+                        >
+                            Run in Background
+                        </button>
+                    )}
+                </div>
+            </div>
+        </div>
     );
 }
