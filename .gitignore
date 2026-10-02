@@ -130,3 +130,4 @@ backend/interactive_dashboard_report.html
 vibecoding/interactive_dashboard_report.html
 backend/apply_*
 backend/.coverage
+*agent_logs_live*
