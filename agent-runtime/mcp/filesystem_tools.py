@@ -102,8 +102,13 @@ class FilesystemTools:
         safe = self._sandbox.safe_resolve(path)
         if not safe.exists():
             return ToolResult(success=False, error=f"File not found: {path}")
+        if safe.is_dir():
+            return ToolResult(
+                success=False,
+                error=f"'{path}' is a directory, not a file. Call list_directory('{path}') to inspect files inside it."
+            )
         if not safe.is_file():
-            return ToolResult(success=False, error=f"Not a file: {path}")
+            return ToolResult(success=False, error=f"Not a regular file: {path}")
 
         size = safe.stat().st_size
         if size > self._limits.MAX_FILE_SIZE_BYTES:

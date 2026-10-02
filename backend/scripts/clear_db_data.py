@@ -3,8 +3,18 @@ Script to clear all database tables except user login credentials.
 Preserves: users table (email, hashed_password, is_active, etc.)
 Clears: all other tables
 """
+import os
+import sys
+from pathlib import Path
+
+# Add backend directory to sys.path so imports resolve regardless of current working directory
+backend_dir = Path(__file__).resolve().parent.parent
+if str(backend_dir) not in sys.path:
+    sys.path.insert(0, str(backend_dir))
+
 from sqlalchemy.orm import Session
-from database import SessionLocal, engine
+from app.core.database import SessionLocal, engine
+import models
 from models import (
     PasswordReset, OrganizationRole, OrganizationRolePermission,
     UserOrganizationRole, OrganizationInvite, OAuthClient,
@@ -17,8 +27,7 @@ from models import (
     SharedDocument, SharedDocumentFile, SharedDocumentRecipient,
     SharedDocumentAccessLog, ShareProject,
     AgentTaskOwnership, ProjectCanonicalState,
-    AgentExecutionCheckpoint, NXDuneSyncLog,
-    BootstrapState
+    AgentExecutionCheckpoint, NXDuneSyncLog
 )
 
 
@@ -45,7 +54,6 @@ def clear_database_except_users():
             (AgentExecutionCheckpoint, "Agent Execution Checkpoints"),
             (NXDuneSyncLog, "NXDune Sync Logs"),
             (ProjectCanonicalState, "Project Canonical States"),
-            (BootstrapState, "Bootstrap States"),
             (Task, "Tasks"),
             (GovernanceQuestionOption, "Governance Question Options"),
             (GovernanceQuestion, "Governance Questions"),
@@ -86,8 +94,9 @@ def clear_database_except_users():
         
         # Clear in-memory agent service states
         try:
-            from agent_service import _project_states
-            _project_states.clear()
+            from app.services.agents.agent_service import agent_service
+            if hasattr(agent_service, "_project_states"):
+                agent_service._project_states.clear()
             print("[OK] Cleared in-memory agent project states")
         except Exception:
             pass

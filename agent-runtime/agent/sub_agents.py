@@ -54,8 +54,17 @@ class SubAgent(ABC):
         """Build a role-specific system prompt for the ReAct loop."""
         subtask_list = ""
         for st in getattr(task, "subtasks", []):
-            done_marker = "✅" if st.get("done") else "⬜"
-            subtask_list += f"  {done_marker} {st.get('title', '')}\n"
+            if isinstance(st, dict):
+                done_marker = "✅" if st.get("done") else "⬜"
+                title_text = st.get("title") or st.get("text") or st.get("name") or str(st)
+            elif isinstance(st, str):
+                done_marker = "✅" if ("[x]" in st.lower() or "✅" in st) else "⬜"
+                clean_st = st.lstrip("*- []").strip()
+                title_text = clean_st if clean_st else st
+            else:
+                done_marker = "⬜"
+                title_text = str(st)
+            subtask_list += f"  {done_marker} {title_text}\n"
 
         return (
             f"# Agent Role: {self.role}\n"

@@ -68,7 +68,11 @@ KNOWN_PROFILES: dict[str, ModelProfile] = {
     "deepseek":             ModelProfile("deepseek",              128_000, 8_000, 3.8, 800),
     "deepseek-v3":          ModelProfile("deepseek-v3",           128_000, 8_000, 3.8, 800),
     "deepseek-v3.2":        ModelProfile("deepseek-v3.2",         128_000, 8_000, 3.8, 800),
-    # Claude Sonnet / Opus (Anthropic native or via AWS Bedrock)
+    # Kimi / Moonshot AI — 128K context
+    "kimi":                 ModelProfile("kimi",                  128_000, 8_000, 3.8, 800),
+    "moonshot":             ModelProfile("moonshot",              128_000, 8_000, 3.8, 800),
+    # Claude Sonnet / Opus (Anthropic native or via Bourntec / AWS Bedrock)
+    "claude":               ModelProfile("claude",                200_000, 8_096, 3.8, 600),
     "claude-sonnet-4-5":    ModelProfile("claude-sonnet-4-5",     200_000, 8_096, 3.8, 600),
     "claude-opus-4":        ModelProfile("claude-opus-4",         200_000, 8_096, 3.8, 600),
     "claude-3-5-sonnet":    ModelProfile("claude-3-5-sonnet",     200_000, 8_096, 3.8, 600),

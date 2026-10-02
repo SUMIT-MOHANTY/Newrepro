@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
@@ -167,8 +168,13 @@ def analyze_workspace(workspace_dir: str) -> Dict[str, Any]:
             result["entry_points"]["frontend"] = candidate
             break
 
-    for candidate in ("main.py", "app.py", "server.py", "backend/main.py",
-                       "backend/app.py", "src/main.py", "cmd/main.go", "main.go"):
+    for candidate in (
+        "backend/src/index.js", "backend/src/server.js", "backend/src/app.js",
+        "backend/index.js", "backend/server.js", "backend/app.js",
+        "server/index.js", "server/server.js", "server/app.js", "server.js", "index.js",
+        "backend/main.py", "backend/app.py", "main.py", "app.py", "server.py", "src/main.py",
+        "cmd/main.go", "main.go"
+    ):
         full = os.path.join(workspace_dir, candidate)
         if os.path.exists(full):
             result["entry_points"]["backend"] = candidate
@@ -308,31 +314,224 @@ def organize_tasks_into_phases(assignments: List[Dict[str, Any]]) -> Dict[str, L
 # Task Assignment — Skill-Based Matching
 # ══════════════════════════════════════════════════════════════════════════════
 
-def assign_tasks_to_agents(
+async def assign_tasks_to_agents(
     tasks: List[models.Task],
     agents: List[Dict[str, Any]],
     db: Session,
+    project_token: Optional[str] = None,
+    current_user: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
-    """Assign tasks to agents using skill-based relevance scoring.
+    """Dynamically assign tasks to agents using the Master Orchestrator AI (LLM).
 
-    Falls back to lane-based matching if no skill content is available.
+    The AI evaluates task domain, goals, and role requirements against agent skills,
+    assigning each task to the optimal agent and classifying its execution lane.
+    Falls back to semantic role-based matching if LLM is unavailable.
     """
     worker_agents = [a for a in agents if not _is_system_id(a.get("id", ""))]
     if not worker_agents:
         logger.warning("[MasterOrchestrator] No worker agents available for assignment")
         return []
 
-    assignments = []
+    # 1. Prepare agent metadata for AI prompt
+    agents_summary = []
+    worker_by_id = {}
+    for a in worker_agents:
+        aid = a.get("id", "")
+        worker_by_id[aid] = a
+        name = a.get("name", aid)
+        role = a.get("role") or a.get("specialization") or "Developer"
+        spec = a.get("specialization") or "General"
+        skills = a.get("skills_summary") or a.get("skills_content") or a.get("skills_tags") or ""
+        if isinstance(skills, list):
+            skills = ", ".join(str(s) for s in skills)
+        agents_summary.append({
+            "agent_id": aid,
+            "name": name,
+            "role": role,
+            "specialization": spec,
+            "skills": str(skills)[:300],
+        })
 
+    # 2. Prepare tasks metadata for AI prompt
+    tasks_summary = []
+    task_by_id = {}
     for task in tasks:
+        t_id = getattr(task, "task_id", getattr(task, "id", ""))
+        task_by_id[str(t_id)] = task
+        if "_" in str(t_id):
+            task_by_id[str(t_id).split("_", 1)[1]] = task
         t_title = getattr(task, "task_name", getattr(task, "title", "Task"))
         t_desc = getattr(task, "description", "") or ""
-        task_dict = {"title": t_title, "description": t_desc}
+        tasks_summary.append({
+            "task_id": str(t_id),
+            "title": t_title,
+            "type": getattr(task, "task_type", "FEATURE"),
+            "summary": t_desc[:350],
+        })
 
-        # Determine task lane from title/description keywords
+    assignments: List[Dict[str, Any]] = []
+
+    # 3. Call Master Orchestrator LLM for dynamic assignment
+    try:
+        from app.integrations.llm.llm_gateway import (
+            call_llm_and_extract,
+            ai_project_context,
+            current_user_id_var,
+            current_user_org_var,
+        )
+
+        u_id = getattr(current_user, "id", None) or current_user_id_var.get()
+        u_org = getattr(current_user, "organization_name", None) or current_user_org_var.get()
+        if not u_id and project_token:
+            doc = db.query(models.Document).filter(models.Document.project_token == project_token).first()
+            if doc and doc.owner_id:
+                u_id = doc.owner_id
+                u_rec = db.query(models.User).filter(models.User.id == u_id).first()
+                if u_rec and u_rec.organization_name:
+                    u_org = u_rec.organization_name
+
+        if u_id:
+            current_user_id_var.set(u_id)
+        if u_org:
+            current_user_org_var.set(u_org)
+
+        ai_prompt = (
+            "You are the Master Orchestrator AI in an autonomous multi-agent software engineering platform.\n"
+            "Analyze the tasks below and dynamically assign each task to the most appropriate worker agent based on domain, role, and technical skills.\n\n"
+            f"Available Worker Agents:\n{json.dumps(agents_summary, indent=2)}\n\n"
+            f"Tasks to Assign:\n{json.dumps(tasks_summary, indent=2)}\n\n"
+            "Assignment & Lane Rules:\n"
+            "1. Backend tasks (server, REST/GraphQL APIs, database models, schemas, auth/JWT, migrations, business logic) -> Assign to a Backend Developer. Lane MUST be 'backend'.\n"
+            "2. Frontend tasks (UI screens, web views, pages, React/Vue components, forms, client routing, dashboards, design systems) -> Assign to a Frontend Developer. Lane MUST be 'frontend'.\n"
+            "3. Testing/QA tasks (writing unit test suites, integration tests, E2E test scripts, linter audits, QA verification) -> Assign to a QA/Test Specialist. Lane MUST be 'qa'.\n"
+            "4. DevOps/Infrastructure tasks (CI/CD workflows, Docker packaging, deployment scripts, monitoring) -> Assign to a DevOps Agent. Lane MUST be 'devops'.\n"
+            "5. CRITICAL: NEVER assign UI screens or frontend views to a QA specialist or backend engineer when a Frontend Developer is available!\n"
+            "6. Each task MUST be assigned to exactly one agent ID from the provided list.\n\n"
+            "Return valid JSON ONLY with this schema:\n"
+            "{\n"
+            '  "assignments": [\n'
+            "    {\n"
+            '      "task_id": "...",\n'
+            '      "assigned_agent_id": "...",\n'
+            '      "lane": "frontend" | "backend" | "qa" | "devops" | "general",\n'
+            '      "confidence": 0.95,\n'
+            '      "reasoning": "Brief explanation why this agent and lane were chosen"\n'
+            "    }\n"
+            "  ]\n"
+            "}"
+        )
+
+        messages = [{"role": "user", "content": ai_prompt}]
+        parsed = None
+        max_retries = 3
+
+        for attempt in range(max_retries):
+            with ai_project_context(project_token=project_token):
+                raw_ai_res = await call_llm_and_extract(messages, timeout=45.0)
+
+            if not raw_ai_res:
+                logger.warning(f"[MasterOrchestrator] Empty AI assignment response (attempt {attempt + 1}/{max_retries})")
+                continue
+
+            clean_res = raw_ai_res.strip()
+            if clean_res.startswith("```"):
+                clean_res = re.sub(r"^```(?:json)?\s*", "", clean_res)
+                clean_res = re.sub(r"\s*```$", "", clean_res)
+
+            # Robust JSON extraction: search for outermost JSON object
+            json_match = re.search(r"(\{[\s\S]*\})", clean_res)
+            target_str = json_match.group(1) if json_match else clean_res
+
+            try:
+                candidate = json.loads(target_str)
+                if isinstance(candidate, dict) and "assignments" in candidate and isinstance(candidate["assignments"], list) and len(candidate["assignments"]) > 0:
+                    parsed = candidate
+                    break
+                else:
+                    raise ValueError("JSON parsed successfully but missing valid non-empty 'assignments' list")
+            except Exception as parse_err:
+                logger.warning(f"[MasterOrchestrator] AI assignment parse failure (attempt {attempt + 1}/{max_retries}): {parse_err}")
+                if attempt < max_retries - 1:
+                    messages.append({"role": "assistant", "content": raw_ai_res[:1000]})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"Your previous response failed validation. Error: {parse_err}.\n"
+                            "Please output ONLY valid, well-formed JSON conforming to the requested schema. "
+                            "Do not include explanation, markdown comments, or trailing commas. Follow this exact schema:\n"
+                            '{\n  "assignments": [\n    {"task_id": "...", "assigned_agent_id": "...", "lane": "frontend" | "backend" | "qa" | "devops" | "general", "confidence": 0.95, "reasoning": "..."}\n  ]\n}'
+                        )
+                    })
+
+        if parsed and isinstance(parsed, dict) and "assignments" in parsed:
+            assigned_task_ids = set()
+            for item in parsed["assignments"]:
+                t_id_str = str(item.get("task_id", ""))
+                task = task_by_id.get(t_id_str)
+                if not task:
+                    for k, v in task_by_id.items():
+                        if k.endswith(t_id_str) or t_id_str.endswith(k):
+                            task = v
+                            break
+                if not task:
+                    continue
+
+                actual_task_id = getattr(task, "task_id", getattr(task, "id", ""))
+                if actual_task_id in assigned_task_ids:
+                    continue
+
+                chosen_agent_id = str(item.get("assigned_agent_id", ""))
+                chosen_agent = worker_by_id.get(chosen_agent_id)
+                if not chosen_agent:
+                    item_lane = item.get("lane", "general")
+                    for a in worker_agents:
+                        a_spec = (a.get("specialization") or a.get("role") or "").lower()
+                        if item_lane in a_spec:
+                            chosen_agent = a
+                            chosen_agent_id = a["id"]
+                            break
+                    if not chosen_agent:
+                        chosen_agent = worker_agents[0]
+                        chosen_agent_id = chosen_agent["id"]
+
+                lane = item.get("lane") or "general"
+                score = float(item.get("confidence", 0.95))
+                reasoning = item.get("reasoning", "")
+
+                task.assigned_to = json.dumps([chosen_agent_id])
+                task.assigned_agent_id = chosen_agent_id
+                task.assigned_agent_role = chosen_agent.get("name", "Developer")
+                if getattr(task, "status", None) in (None, "pending", "todo", "TODO"):
+                    task.status = "in_progress"
+
+                assignments.append({
+                    "task_id": actual_task_id,
+                    "title": getattr(task, "task_name", getattr(task, "title", "Task")),
+                    "lane": lane,
+                    "assigned_to": chosen_agent_id,
+                    "score": round(score, 3),
+                    "reasoning": reasoning,
+                })
+                assigned_task_ids.add(actual_task_id)
+
+            if len(assignments) == len(tasks):
+                logger.info(f"[MasterOrchestrator] AI assigned all {len(assignments)} tasks dynamically.")
+            elif len(assignments) > 0:
+                logger.info(f"[MasterOrchestrator] AI assigned {len(assignments)}/{len(tasks)} tasks; remainder completed by semantic fallback.")
+    except Exception as ai_err:
+        logger.warning(f"[MasterOrchestrator] Dynamic AI task assignment error: {ai_err}; using semantic role fallback.")
+
+    # 4. Fallback / Remainder assignment (Semantic Role Matching, no keyword substring traps)
+    assigned_ids_set = set(a["task_id"] for a in assignments)
+    for task in tasks:
+        actual_task_id = getattr(task, "task_id", getattr(task, "id", ""))
+        if actual_task_id in assigned_ids_set:
+            continue
+
+        t_title = getattr(task, "task_name", getattr(task, "title", "Task"))
+        t_desc = getattr(task, "description", "") or ""
         task_lane = _infer_task_lane(t_title, t_desc)
 
-        # Score each agent
         best_agent = None
         best_score = -1.0
 
@@ -342,44 +541,31 @@ def assign_tasks_to_agents(
                 skills_tags=agent.get("skills_tags"),
                 specialization=agent.get("specialization"),
             )
-
-            # Skip agents that can't work in this lane
             if not is_task_in_agent_lanes(task_lane, agent_lanes):
                 continue
 
-            skills_content = agent.get("skills_content") or agent.get("skills_summary") or ""
-            if skills_content:
-                skill_keywords = extract_skill_keywords(skills_content)
-                score = calculate_task_skill_relevance(
-                    task=task_dict,
-                    skill_name=agent.get("name", ""),
-                    skill_content=skills_content,
-                    skill_keywords=skill_keywords,
-                )
-            else:
-                # If no skill content, score based on lane match specificity
-                specialized_lanes = agent_lanes - {"general"}
-                score = 0.7 if task_lane in specialized_lanes else 0.3
-
+            score = 0.85 if task_lane in agent_lanes else 0.4
             if score > best_score:
                 best_score = score
                 best_agent = agent
 
-        # Fallback: assign to any available worker
         if not best_agent:
             best_agent = worker_agents[0]
 
         assigned_id = best_agent["id"]
         task.assigned_to = json.dumps([assigned_id])
-        if getattr(task, "status", None) in (None, "pending", "todo"):
+        task.assigned_agent_id = assigned_id
+        task.assigned_agent_role = best_agent.get("name", "Developer")
+        if getattr(task, "status", None) in (None, "pending", "todo", "TODO"):
             task.status = "in_progress"
 
         assignments.append({
-            "task_id": getattr(task, "task_id", getattr(task, "id", "")),
+            "task_id": actual_task_id,
             "title": t_title,
             "lane": task_lane,
             "assigned_to": assigned_id,
             "score": round(best_score, 3),
+            "reasoning": f"Assigned to {best_agent.get('name')} based on {task_lane} domain match.",
         })
 
     try:
@@ -392,62 +578,53 @@ def assign_tasks_to_agents(
 
 
 def _infer_task_lane(title: str, description: str) -> str:
-    """Infer the execution lane from task title and description."""
-    combined = f"{title} {description}".lower()
+    """Infer the execution lane primarily from task title, with description context.
 
-    backend_kw = (
-        "backend", "api", "database", "model", "schema", "controller", "server",
-        "fastapi", "crud", "sql", "orm", "endpoint", "route", "middleware",
-        "migration", "seed", "auth", "jwt", "session", "microservice",
-    )
-    frontend_kw = (
-        "frontend", "ui", "screen", "view", "component", "button", "css",
-        "tailwind", "layout", "page", "form", "modal", "dashboard", "sidebar",
-        "navigation", "responsive", "animation", "chart", "table", "card",
-    )
-    qa_kw = (
-        "test", "qa", "lint", "validate", "verify", "audit", "e2e", "spec",
-        "integration test", "unit test", "coverage", "quality",
-    )
-    devops_kw = (
-        "deploy", "docker", "ci", "cd", "pipeline", "nginx", "kubernetes",
-        "infrastructure", "monitoring", "logging",
-    )
+    Uses title-priority and word boundaries to avoid greedy substring false positives.
+    """
+    title_lower = title.lower()
+    desc_lower = (description or "").lower()
 
-    if any(kw in combined for kw in qa_kw):
+    # 1. Title is the definitive intent of the task
+    if any(w in title_lower for w in ("screen", "screens", "ui", "view", "page", "dashboard", "component", "components", "frontend", "form", "loading", "spinner", "toast", "skeleton", "theme")):
+        return "frontend"
+    if any(w in title_lower for w in ("backend", "api", "database", "model", "schema", "controller", "server", "auth", "jwt", "migration")):
+        return "backend"
+    if re.search(r"\b(test suite|e2e|testing|unit test|quality assurance|audit|lint)\b", title_lower):
         return "qa"
-    if any(kw in combined for kw in devops_kw):
+    if any(w in title_lower for w in ("deploy", "docker", "ci/cd", "pipeline", "infrastructure")):
         return "devops"
 
-    # Check backend before frontend because some tasks mention both
-    be_score = sum(1 for kw in backend_kw if kw in combined)
-    fe_score = sum(1 for kw in frontend_kw if kw in combined)
-
-    if be_score > fe_score:
-        return "backend"
-    if fe_score > 0:
+    # 2. Contextual check using word boundaries (never greedy substring matching)
+    if re.search(r"\b(react|vite|tailwind|css|html|ui component|ui components|screen|screens|layout|frontend|toast|spinner|skeleton)\b", desc_lower):
         return "frontend"
-    if be_score > 0:
+    if re.search(r"\b(fastapi|django|flask|express|sql|orm|database|endpoint|crud|backend)\b", desc_lower):
         return "backend"
+    if re.search(r"\b(pytest|jest|vitest|cypress|playwright|e2e test|unit test)\b", desc_lower):
+        return "qa"
+    if re.search(r"\b(dockerfile|kubernetes|nginx|ci/cd)\b", desc_lower):
+        return "devops"
 
     return "general"
 
 
 def _is_system_id(agent_id: str) -> bool:
     """Check if agent_id belongs to a system/default agent."""
-    sys_ids = {"m_agent_01", "master_agent", "t_agent_01", "deploy_agent"}
-    return agent_id.lower().strip() in sys_ids
+    clean_id = agent_id.split("::")[-1].split("#")[0].lower().strip()
+    sys_ids = {"m_agent_01", "master_agent", "t_agent_01", "deploy_agent", "g_agent_01", "git_manager"}
+    return clean_id in sys_ids
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Orchestration Entry Point
 # ══════════════════════════════════════════════════════════════════════════════
 
-def orchestrate_project(
+async def orchestrate_project(
     db: Session,
     project_token: str,
     agent_service: Any,
     project_name: Optional[str] = None,
+    current_user: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Master Orchestrator: Analyze project, assign tasks, prepare execution context.
 
@@ -547,8 +724,14 @@ def orchestrate_project(
     all_agents = agent_service.get_all_agents(project_token)
     worker_agents = [a for a in all_agents if not _is_system_id(a["id"])]
 
-    # ── Step 6: Assign tasks using skill matching ──
-    assignments = assign_tasks_to_agents(target_tasks, all_agents, db)
+    # ── Step 6: Dynamically assign tasks via Master Orchestrator AI ──
+    assignments = await assign_tasks_to_agents(
+        tasks=target_tasks,
+        agents=all_agents,
+        db=db,
+        project_token=project_token,
+        current_user=current_user,
+    )
 
     agent_service.append_agent_log(
         "M_agent_01",
@@ -687,58 +870,106 @@ def build_agent_prompt(
             elif any(l in agent_lanes for l in ("frontend", "ui", "web")):
                 contracts_context += "\nConnect your UI pages and API client hooks directly to these verified routes.\n"
 
-    # Build phase 3 instructions based on agent role
+    # ── Phase 3 instructions based on agent role ──
     if is_qa_agent:
-        phase3 = """### PHASE 3: QA Execution & Test Authoring (ZERO APP CODE MODIFICATION)
-- CRITICAL: You have read-only access to application source code. You MUST NOT edit production application code.
-- Your scope: inspect code using `read_file`/`list_directory`, then author test files in `tests/` or `*.test.*`.
-- Execute test suites and report failures with file:line references.
-- If a bug is found, write a structured Defect Report — do NOT fix production code yourself."""
+        phase3 = (
+            "### PHASE 3: QA Execution & Test Authoring (ZERO APP CODE MODIFICATION)\n"
+            "- CRITICAL: You have read-only access to application source code.\n"
+            "- Detect the test framework (pytest, jest, vitest, mocha, playwright, cypress).\n"
+            "- Author test files in tests/, __tests__/, *.test.*, or *.spec.* directories.\n"
+            "- Execute: pytest tests/ -v (Python) or npm test or npx playwright test (Node.js).\n"
+            "- Report ALL failures with exact file:line references and full error messages.\n"
+            "- Write defect reports to .agent/defect_reports/ for any failing tests.\n"
+            "- If ALL tests pass: write .agent/contracts/qa_gate.json with status=PASSED."
+        )
     else:
-        phase3 = """### PHASE 3: Targeted Implementation with Authorized Tools
-- Implement the planned subtasks using your container tools (`write_file`, `read_file`, `execute_bash`, `list_directory`).
-- **CRITICAL**: Read existing files before writing. Do NOT overwrite existing working code blindly.
-- Maintain the project's existing code style, naming conventions, and architecture patterns.
-- Write clean, production-ready code with proper error handling and type safety.
-- NO hardcoded mock data — use proper data structures and API patterns."""
+        phase3 = (
+            "### PHASE 3: Targeted Implementation with Authorized Tools\n"
+            "- Implement assigned subtasks using: write_file, read_file, execute_bash, list_directory, find_and_replace.\n"
+            "- READ FIRST: Always read a file before modifying it. NEVER overwrite working code blindly.\n"
+            "- Use find_and_replace for surgical edits to existing files -- avoid full rewrites unless truly necessary.\n"
+            "- Maintain existing code style, naming conventions, and architecture patterns.\n"
+            "- NO hardcoded data -- use proper data structures, environment variables, and API patterns.\n"
+            "- Backend agents: after each endpoint, document it in .agent/contracts/api_contract.json."
+        )
 
-    prompt = f"""# Persona & Execution Assignment
-You are **{agent_name}**, serving as **{agent_role}** specialized in **{agent_spec}**.
-- Operational Lanes: {lanes_str}
-- Configured AI Engine: {assigned_model.upper()}
-- Authorized Container Tools: {tools_str}
-{f"- Skills & Focus: {skills_summary}" if skills_summary else ""}
+    # File ownership directives per lane -- prevents cross-agent file conflicts
+    if is_qa_agent or "qa" in (agent_lanes or set()):
+        file_ownership = "tests/, __tests__/, *.test.*, *.spec.*, cypress/, playwright/, .agent/defect_reports/"
+    elif "frontend" in (agent_lanes or set()) or "ui" in (agent_lanes or set()):
+        file_ownership = "src/components/, src/pages/, src/views/, src/hooks/, src/contexts/, src/styles/, public/"
+    elif "backend" in (agent_lanes or set()):
+        file_ownership = "server/, api/, controllers/, models/, database/, migrations/, services/, routes/, backend/"
+    elif "devops" in (agent_lanes or set()):
+        file_ownership = "Dockerfile, docker-compose*, .github/workflows/, nginx.conf, Makefile, scripts/, k8s/"
+    else:
+        file_ownership = "All project files relevant to your assigned tasks"
 
-{workspace_context}
-{contracts_context}
-
-{f"## Business Requirements & Architecture:{chr(10)}{brd_context}" if brd_context else ""}
-{task_summary}
-
-## ════════════════════════════════════════════════════════════════════════════
-## MANDATORY 4-PHASE AUTONOMOUS AGENT EXECUTION PROTOCOL
-## ════════════════════════════════════════════════════════════════════════════
-
-### PHASE 1: Codebase Discovery & Assessment (READ BEFORE WRITE)
-- Ground your understanding before executing tasks. Do NOT hallucinate existing file paths or imports.
-- Use `list_directory` to explore the workspace structure.
-- Use `read_file` to inspect existing code, configs (package.json, requirements.txt, etc.), and entry points.
-- Identify the tech stack, existing components, routing patterns, and data schemas.
-- If this is a GREENFIELD project, determine the appropriate project structure from the BRD requirements.
-
-### PHASE 2: Execution Planning & Subtask Breakdown
-- Create a precise, dependency-ordered plan for your assigned tasks.
-- Break each task into atomic subtasks (Data/Model → Component/Service → Route/Integration → Verification).
-- Verify prerequisites before beginning implementation.
-
-{phase3}
-
-### PHASE 4: Zero-Error Verification Gate (MANDATORY)
-- Verify ALL changes are error-free before marking any task complete.
-- Run the project's build/lint command (detect from package.json scripts or Makefile).
-- Inspect compiler/linter output. If ANY errors exist, fix them immediately.
-- ZERO-ERROR CONTRACT: A task is NOT complete if there are unresolved errors.
-"""
+    prompt = (
+        "# Persona & Execution Assignment\n"
+        f"You are **{agent_name}**, serving as **{agent_role}** specialized in **{agent_spec}**.\n"
+        f"- Operational Lanes: {lanes_str}\n"
+        f"- Configured AI Engine: {assigned_model.upper()}\n"
+        f"- Authorized Container Tools: {tools_str}\n"
+        f"- File Ownership Scope: {file_ownership}\n"
+        + (f"- Skills & Focus: {skills_summary}\n" if skills_summary else "")
+        + f"\n{workspace_context}\n{contracts_context}\n"
+        + (f"## Business Requirements & Architecture:\n{brd_context}\n" if brd_context else "")
+        + f"\n{task_summary}\n"
+        "\n## ============================================================================\n"
+        "## AGENTIC OS -- AUTONOMOUS REACT LOOP (OBSERVE -> ACT -> VERIFY -> SELF-HEAL)\n"
+        "## ============================================================================\n"
+        "## You are an autonomous software engineering process running inside a sandboxed\n"
+        "## container. Each tool call (read_file, write_file, execute_bash) is an OS syscall.\n"
+        "## You have full autonomy -- but ZERO tolerance for unverified code.\n"
+        "## ============================================================================\n"
+        "\n### PHASE 1: Tech-Stack-Agnostic Discovery (MANDATORY -- DO THIS FIRST)\n"
+        "- NEVER assume the tech stack, file structure, or existing code without reading first.\n"
+        "- Begin with list_directory('/workspace') to understand what already exists.\n"
+        "- Detect the tech stack by reading manifest files:\n"
+        "  - package.json -> Node.js (read dependencies for React/Vue/Next/Angular/Svelte/Express/NestJS)\n"
+        "  - requirements.txt / pyproject.toml -> Python (check for FastAPI/Django/Flask/SQLAlchemy)\n"
+        "  - go.mod -> Go | Cargo.toml -> Rust | pom.xml / build.gradle -> Java/Spring/Kotlin\n"
+        "  - composer.json -> PHP Laravel | Gemfile -> Ruby/Rails\n"
+        "- Read the entry point file (index.js, main.py, app.py, src/App.jsx) to understand patterns.\n"
+        "- GREENFIELD (0-2 files): design structure from BRD requirements.\n"
+        "- BROWNFIELD (existing code): read 3-5 key files BEFORE writing anything.\n"
+        f"- FILE OWNERSHIP: Only create/edit files within your scope: {file_ownership}\n"
+        "  NEVER edit files belonging to another agent's lane.\n"
+        "\n### PHASE 2: Execution Planning & Dependency-Ordered Subtask Breakdown\n"
+        "- Formulate a dependency-ordered plan BEFORE writing any code:\n"
+        "  Data/Schema layer -> Service/Business Logic -> API/Route -> UI Integration -> Verification\n"
+        "- Identify which files need to be CREATED vs MODIFIED.\n"
+        "- Verify all imports reference real, existing modules before using them.\n"
+        "- Backend agents: define the API contract (endpoint, method, request/response schema) FIRST.\n"
+        "- Frontend agents: read_file('.agent/contracts/api_contract.json') BEFORE any API client code.\n"
+        f"\n{phase3}\n"
+        "\n### PHASE 4: Zero-Error Verification Gate (MANDATORY -- EVERY TASK)\n"
+        "- After EVERY significant file change, immediately run the project's verification command:\n"
+        "  - Python: python -m py_compile <file> then python -c 'import <module_path>'\n"
+        "  - JavaScript/TypeScript: detect build command from package.json scripts field\n"
+        "  - Run: npm run build / npx tsc --noEmit / npm run lint / eslint src/ as applicable\n"
+        "- If ANY error -> OBSERVE the full error -> ACT to fix -> VERIFY again.\n"
+        "- ZERO-ERROR CONTRACT -- A task is NOT complete until:\n"
+        "  All files compile/parse without syntax errors.\n"
+        "  All imports resolve to existing, real modules (no phantom imports).\n"
+        "  Build command exits with code 0.\n"
+        "  No undefined variables, missing types, or broken references.\n"
+        "\n### PHASE 5: Inter-Agent Contract IPC (Multi-Agent Coordination)\n"
+        "- Backend Agents: After implementing endpoints, publish .agent/contracts/api_contract.json:\n"
+        '  {"updated_at": "<ISO timestamp>", "routes": [{"method": "POST", "path": "/api/...", "request": {}, "response": {}}], "models": [{"name": "User", "fields": {"id": "int", "email": "str"}}]}\n'
+        "- Frontend Agents: Read .agent/contracts/api_contract.json before wiring any API client.\n"
+        "  If not found, create stub API client with TODO comments for each expected endpoint.\n"
+        "- QA Agents: Read api_contract.json and source files before authoring tests.\n"
+        "  Write results to .agent/contracts/qa_gate.json with pass/fail status.\n"
+        "\n### REACT SELF-HEALING LOOP (Execute on EVERY error without exception)\n"
+        "1. OBSERVE: Read the full error output -- trace, file path, line number, error type\n"
+        "2. LOCATE: read_file('<error_file>', start_line=N-5, end_line=N+10) to see context\n"
+        "3. DIAGNOSE: Identify root cause (missing import? wrong type? undefined var? syntax?)\n"
+        "4. ACT: Use find_and_replace for a surgical fix -- change ONLY the broken lines\n"
+        "5. VERIFY: Re-run the exact command that failed -- confirm exit code 0\n"
+        "6. REPEAT: Until all checks pass. Minimum 1, maximum 5 self-heal iterations per error.\n"
+    )
     return prompt
 
 

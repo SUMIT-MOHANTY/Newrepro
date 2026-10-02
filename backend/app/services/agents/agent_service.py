@@ -804,19 +804,21 @@ class AgentService:
             current["tier"] = 1
         return current
 
-    def orchestrate_master_scaffold_and_tasks(
+    async def orchestrate_master_scaffold_and_tasks(
         self,
         db: Session,
         project_token: str,
         project_name: Optional[str] = None,
+        current_user: Optional[Any] = None,
     ) -> Dict[str, Any]:
-        """Master Agent: Analyzes workspace, partitions and assigns tasks using skill-based matching."""
+        """Master Agent: Analyzes workspace, partitions and dynamically assigns tasks using AI."""
         from app.services.agents.master_orchestrator import orchestrate_project
-        return orchestrate_project(
+        return await orchestrate_project(
             db=db,
             project_token=project_token,
             agent_service=self,
             project_name=project_name,
+            current_user=current_user,
         )
 
     def set_cache_invalidation_callback(self, cb=None) -> None:

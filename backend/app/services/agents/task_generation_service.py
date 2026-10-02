@@ -678,11 +678,18 @@ Return a valid JSON object:
 
 
 def _parse_task_json(content: str) -> List[Dict[str, Any]]:
-    """Parse LLM response and extract task JSON array with robust error handling"""
+    """Parse LLM response and extract task JSON array with robust error handling and schema normalization."""
+    if not content or not content.strip():
+        return []
+
     try:
         # Remove markdown code blocks
-        content = content.replace("```json", "").replace("```", "").strip()
-        
+        raw_clean = content.strip()
+        if raw_clean.startswith("```"):
+            raw_clean = re.sub(r"^```(?:json)?\s*", "", raw_clean)
+            raw_clean = re.sub(r"\s*```$", "", raw_clean)
+        raw_clean = raw_clean.replace("```json", "").replace("```", "").strip()
+
         # Replace problematic Unicode box-drawing characters
         box_chars = {
             '├': '|--', '└': '`--', '│': '|  ', '─': '-',
@@ -690,69 +697,126 @@ def _parse_task_json(content: str) -> List[Dict[str, Any]]:
             '┬': '+', '┤': '+', '╭': '+', '╮': '+',
             '╯': '+', '╰': '+'
         }
-        
         for unicode_char, ascii_replacement in box_chars.items():
-            content = content.replace(unicode_char, ascii_replacement)
-        
-        # Handle literal \n in strings
-        import re
-        content = re.sub(r'\\n', ' ', content)
-        content = content.replace('\t', '    ')
-        content = content.replace('\r\n', '\n')
-        content = content.replace('\r', '\n')
-        
-        # Find JSON array boundaries
-        start_idx = content.find("[")
-        end_idx = content.rfind("]")
-        
-        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-            content = content[start_idx:end_idx + 1]
-        
-        tasks = json.loads(content)
-        
-        if not isinstance(tasks, list):
-            logger.error("Parsed content is not a list")
-            return []
-        
-        return tasks
-    
-    except json.JSONDecodeError as e:
-        # ── Truncation detection & salvage ──
-        # LLM outputs can be cut off mid-response.  Detect that and try to
-        # salvage partial tasks rather than returning nothing.
-        content_stripped = content.strip()
-        truncated_indicators = (
-            not content_stripped.endswith(']')  # missing closing array bracket
-            or content_stripped.endswith(',')     # trailing comma (incomplete object)
-            or content_stripped.rfind('"') > content_stripped.rfind('}')  # string truncated mid-way
-        )
-        if truncated_indicators:
+            raw_clean = raw_clean.replace(unicode_char, ascii_replacement)
+
+        # Replace tabs and normalize newlines
+        raw_clean = raw_clean.replace('\t', '    ')
+        raw_clean = raw_clean.replace('\r\n', '\n').replace('\r', '\n')
+
+        # Clean trailing commas: e.g. ", ]" -> " ]" or ", }" -> " }"
+        raw_clean = re.sub(r',\s*([\]}])', r'\1', raw_clean)
+
+        # Find JSON array or object boundaries
+        array_start = raw_clean.find("[")
+        array_end = raw_clean.rfind("]")
+        obj_start = raw_clean.find("{")
+        obj_end = raw_clean.rfind("}")
+
+        target_json = raw_clean
+        if array_start != -1 and array_end != -1 and array_end > array_start:
+            # If array starts before object or object is wrapped around array
+            if obj_start == -1 or array_start < obj_start:
+                target_json = raw_clean[array_start:array_end + 1]
+            elif obj_start != -1 and obj_end != -1 and obj_end > obj_start:
+                target_json = raw_clean[obj_start:obj_end + 1]
+        elif obj_start != -1 and obj_end != -1 and obj_end > obj_start:
+            target_json = raw_clean[obj_start:obj_end + 1]
+
+        parsed = None
+        try:
+            parsed = json.loads(target_json)
+        except Exception:
+            # Clean trailing commas again inside target
+            cleaned_target = re.sub(r',\s*([\]}])', r'\1', target_json)
             try:
-                salvaged = content_stripped
-                open_braces = salvaged.count('{') - salvaged.count('}')
-                open_brackets = salvaged.count('[') - salvaged.count(']')
-                if open_braces > 0 or open_brackets > 0:
-                    # Close any unterminated structures
-                    # Remove trailing comma before closing (common truncation point)
-                    while salvaged.rstrip().endswith(','):
-                        salvaged = salvaged.rstrip()[:-1]
-                    salvaged += '}' * max(open_braces, 0) + ']' * max(open_brackets, 0)
-                    tasks = json.loads(salvaged)
-                    if isinstance(tasks, list) and tasks:
-                        logger.warning(
-                            f"⚠️ LLM output was TRUNCATED — salvaged {len(tasks)} partial tasks "
-                            f"(expected at least {len(tasks) + 1} based on truncation position)"
-                        )
-                        return tasks
+                parsed = json.loads(cleaned_target)
             except Exception:
                 pass
-            logger.error(
-                f"LLM output TRUNCATED and could not be salvaged. "
-                f"Last 200 chars: ...{content_stripped[-200:]}"
-            )
-        else:
-            logger.error(f"Failed to parse task JSON: {e}")
-            logger.error(f"Content preview: {content[:500]}")
+
+        tasks = []
+        if isinstance(parsed, list):
+            tasks = parsed
+        elif isinstance(parsed, dict):
+            # Check for common wrapper keys: "tasks", "sprint_tasks", "items"
+            for k in ("tasks", "sprint_tasks", "items", "data"):
+                if k in parsed and isinstance(parsed[k], list):
+                    tasks = parsed[k]
+                    break
+            if not tasks and ("task_id" in parsed or "taskName" in parsed or "title" in parsed):
+                tasks = [parsed]
+
+        # Normalize and validate tasks
+        normalized_tasks = []
+        for t in tasks:
+            if not isinstance(t, dict):
+                continue
+            # Ensure title / taskName
+            t_name = t.get("taskName") or t.get("title") or t.get("name") or ""
+            if not t_name:
+                continue
+            t["taskName"] = str(t_name)
+            t["title"] = str(t_name)
+
+            # Ensure task_id
+            t_id = t.get("task_id") or t.get("id") or f"TASK-{len(normalized_tasks) + 1:02d}"
+            t["task_id"] = str(t_id).strip().upper()
+
+            # Ensure description
+            t["description"] = str(t.get("description") or t_name)
+
+            # Ensure lists for checklist and linked_tasks
+            cl = t.get("checklist", [])
+            if isinstance(cl, str):
+                try:
+                    cl = json.loads(cl)
+                except Exception:
+                    cl = [cl]
+            t["checklist"] = cl if isinstance(cl, list) else []
+
+            lt = t.get("linked_tasks", [])
+            if isinstance(lt, str):
+                try:
+                    lt = json.loads(lt)
+                except Exception:
+                    lt = [lt]
+            t["linked_tasks"] = lt if isinstance(lt, list) else []
+
+            # Ensure valid task_type
+            if not t.get("task_type"):
+                t["task_type"] = "FEATURE"
+
+            # Auto-assign task wallet if missing
+            if not t.get("task_wallet"):
+                t["task_wallet"] = 3
+
+            normalized_tasks.append(t)
+
+        if normalized_tasks:
+            return normalized_tasks
+
+        logger.warning("No valid tasks could be parsed from JSON structure")
+        return []
+
+    except json.JSONDecodeError as e:
+        # Truncation salvage logic
+        content_stripped = content.strip()
+        try:
+            salvaged = content_stripped
+            open_braces = salvaged.count('{') - salvaged.count('}')
+            open_brackets = salvaged.count('[') - salvaged.count(']')
+            if open_braces > 0 or open_brackets > 0:
+                while salvaged.rstrip().endswith(','):
+                    salvaged = salvaged.rstrip()[:-1]
+                salvaged += '}' * max(open_braces, 0) + ']' * max(open_brackets, 0)
+                salvaged = re.sub(r',\s*([\]}])', r'\1', salvaged)
+                candidate = json.loads(salvaged)
+                if isinstance(candidate, list) and candidate:
+                    logger.warning(f"⚠️ Truncated output salvaged into {len(candidate)} tasks")
+                    return [c for c in candidate if isinstance(c, dict) and (c.get("task_id") or c.get("taskName") or c.get("title"))]
+        except Exception:
+            pass
+        logger.error(f"Failed to parse task JSON: {e}")
         return []
     except Exception as e:
         logger.error(f"Unexpected error parsing task JSON: {e}")
@@ -2378,26 +2442,53 @@ Set the "milestone" field of every generated task to "{sp.get('milestone', '')}"
             {"role": "user", "content": prompt_content},
         ]
 
-        try:
-            response_sprint = await llm_gateway.call_llm_and_extract(
-                messages=messages_sprint,
-                api_url=api_url,
-                api_key=api_key,
-                model=model,
-                timeout=180.0,
-                retries=3,
-                purpose=f"Generate Tasks - Sprint {sprint_num}",
-                project_token=project_token,
-            )
-            tasks_sprint = _parse_task_json(response_sprint)
-            if tasks_sprint:
-                all_tasks.extend(tasks_sprint)
-                logger.info(f"[{project_token}] Sprint {sprint_num} generated {len(tasks_sprint)} tasks")
-                await _notify_sprint(sprint_num, sprint_name, tasks_sprint)
-            else:
-                logger.warning(f"[{project_token}] Sprint {sprint_num} generated 0 tasks")
-        except Exception as e:
-            logger.error(f"[{project_token}] Sprint {sprint_num} generation failed: {e}")
+        max_sprint_retries = 3
+        tasks_sprint = []
+
+        for sprint_attempt in range(max_sprint_retries):
+            try:
+                response_sprint = await llm_gateway.call_llm_and_extract(
+                    messages=messages_sprint,
+                    api_url=api_url,
+                    api_key=api_key,
+                    model=model,
+                    timeout=180.0,
+                    retries=2,
+                    purpose=f"Generate Tasks - Sprint {sprint_num} (Attempt {sprint_attempt + 1})",
+                    project_token=project_token,
+                )
+                tasks_sprint = _parse_task_json(response_sprint)
+                if tasks_sprint:
+                    break
+                else:
+                    logger.warning(
+                        f"[{project_token}] Sprint {sprint_num} parse attempt {sprint_attempt + 1}/{max_sprint_retries} "
+                        "produced 0 valid tasks. Requesting AI retry with schema feedback..."
+                    )
+                    if sprint_attempt < max_sprint_retries - 1:
+                        messages_sprint.append({"role": "assistant", "content": (response_sprint or "")[:1500]})
+                        messages_sprint.append({
+                            "role": "user",
+                            "content": (
+                                f"Your previous response for {sprint_name} could not be parsed into a valid JSON array of tasks or was empty.\n"
+                                "Please regenerate the tasks for this sprint. Output ONLY a valid JSON array starting with `[` and ending with `]`.\n"
+                                "Do NOT wrap the output in markdown code blocks. Each task object MUST have: task_id, taskName, task_type, description, checklist (array), linked_tasks (array), sprint, milestone."
+                            )
+                        })
+            except Exception as e:
+                logger.error(f"[{project_token}] Sprint {sprint_num} generation attempt {sprint_attempt + 1}/{max_sprint_retries} failed: {e}")
+                if sprint_attempt < max_sprint_retries - 1:
+                    messages_sprint.append({
+                        "role": "user",
+                        "content": f"The previous call encountered an error: {e}. Please retry and output the valid JSON array of tasks for {sprint_name}."
+                    })
+
+        if tasks_sprint:
+            all_tasks.extend(tasks_sprint)
+            logger.info(f"[{project_token}] Sprint {sprint_num} generated {len(tasks_sprint)} tasks")
+            await _notify_sprint(sprint_num, sprint_name, tasks_sprint)
+        else:
+            logger.warning(f"[{project_token}] Sprint {sprint_num} failed to generate valid tasks after {max_sprint_retries} attempts.")
 
     if not all_tasks:
         logger.error(f"[{project_token}] No tasks generated from any sprint")

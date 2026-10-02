@@ -1620,7 +1620,10 @@ async def _bg_run_agent(
                     "title": t.get("title", f"Task {idx + 1}"),
                     "description": t.get("description", ""),
                     "lane": t.get("lane", "backend"),
-                    "subtasks": t.get("subtasks", []),
+                    "subtasks": [
+                        (s.get("title") or s.get("text") or s.get("name") or str(s)) if isinstance(s, dict) else str(s)
+                        for s in t.get("subtasks", [])
+                    ] if isinstance(t.get("subtasks"), list) else [],
                     "depends_on": t.get("depends_on", []),
                     "status": "pending",
                 }
@@ -1688,10 +1691,34 @@ async def _bg_run_agent(
                     line_callback=on_agent_log_line,
                 )
 
-                execution_success = exit_code == 0
+                # Check task_summary.json written by supervisor to determine real execution success
+                summary_path = os.path.join(workspace_dir, ".agent", "task_summary.json")
+                task_summary_data = None
+                if os.path.exists(summary_path):
+                    try:
+                        with open(summary_path, "r", encoding="utf-8") as f:
+                            task_summary_data = json.load(f)
+                    except Exception as sum_err:
+                        logger.warning(f"[_bg_run_agent] Could not read task_summary.json: {sum_err}")
+
+                failed_task_ids = set()
+                if task_summary_data:
+                    failed_task_ids = set(task_summary_data.get("failed_tasks", []))
+                    # Check task_results mapping for failures
+                    for tid, res in task_summary_data.get("task_results", {}).items():
+                        if isinstance(res, dict) and res.get("status") == "failed":
+                            failed_task_ids.add(str(tid))
+
+                # Real success requires clean container exit code AND no failed tasks
+                execution_success = (exit_code == 0) and (len(failed_task_ids) == 0)
+                status_msg = (
+                    "Agent Swarm runtime completed successfully with all tasks verified."
+                    if execution_success
+                    else f"Agent Swarm runtime finished with issues (exit_code={exit_code}, failed_tasks={list(failed_task_ids)})."
+                )
                 agent_service.append_agent_log(
                     agent_id,
-                    f"Agent Swarm runtime {'completed successfully' if execution_success else f'exited with code {exit_code}'}.",
+                    status_msg,
                     "info" if execution_success else "error",
                     project_token,
                 )
@@ -1739,21 +1766,36 @@ async def _bg_run_agent(
                     execution_success = False
 
             # ── Update task statuses based on execution result ──
-            final_status = "DONE" if execution_success else "FAILED"
-            verification_status = "PASSED" if execution_success else "FAILED"
-
+            summary_results = (task_summary_data.get("task_results", {}) if task_summary_data else {})
             for t_info in tasks_to_execute:
                 t_db_id = t_info.get("db_id")
+                t_str_id = str(t_info.get("id") or "")
+                
+                # Check individual task result from supervisor summary
+                is_this_task_success = execution_success
+                if summary_results:
+                    matched_res = summary_results.get(t_str_id)
+                    if not matched_res:
+                        for k, v in summary_results.items():
+                            if str(k).endswith(t_str_id) or t_str_id.endswith(str(k)):
+                                matched_res = v
+                                break
+                    if matched_res and isinstance(matched_res, dict):
+                        is_this_task_success = (matched_res.get("status") == "completed")
+
+                task_final_status = "DONE" if is_this_task_success else "FAILED"
+                task_verif_status = "PASSED" if is_this_task_success else "FAILED"
+
                 if t_db_id:
                     t_record = db.query(models.Task).filter(models.Task.id == t_db_id).first()
                     if t_record:
-                        t_record.status = final_status
-                        t_record.verification_status = verification_status
+                        t_record.status = task_final_status
+                        t_record.verification_status = task_verif_status
 
                 agent_service.append_agent_log(
                     agent_id,
-                    f"{'✅' if execution_success else '❌'} Task [{t_info['id']}] marked as {final_status}.",
-                    "info" if execution_success else "error",
+                    f"{'✅' if is_this_task_success else '❌'} Task [{t_info['id']}] marked as {task_final_status} (verification: {task_verif_status}).",
+                    "info" if is_this_task_success else "error",
                     project_token,
                 )
             try:

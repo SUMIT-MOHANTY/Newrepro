@@ -2316,9 +2316,18 @@ def _heal_backend_if_needed(state: LangGraphState, ctx: NodeContext, pm: Preview
             file_manifest=ctx.active_manifest,
         )
 
+        entrypoint = getattr(info, "backend_entrypoint", None)
+        cwd = getattr(info, "backend_cwd", None)
+        server_hint = (
+            f"Backend entrypoint file: {entrypoint}\n"
+            f"Working directory: {cwd}\n"
+            f"Inspect `{entrypoint}` using `read_file(path='{entrypoint}')` to diagnose the failure.\n"
+        ) if entrypoint else ""
+
         user_msg = (
             f"The backend server failed to start with this error:\n\n{error_output}\n\n"
             f"Workspace: {state['workspace_path']}\n"
+            f"{server_hint}"
             "Fix the server file so it starts successfully. "
             "One targeted edit — do NOT rewrite the entire file."
         )

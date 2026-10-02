@@ -79,6 +79,7 @@ class SupervisorAgent:
         self.tasks_completed = 0
         self.tasks_failed = 0
         self.total_files_changed: list[str] = []
+        self.task_results: dict[str, dict[str, Any]] = {}
 
     def _post_event(self, event_type: str, data: dict[str, Any]) -> None:
         """Post a lifecycle event to the control plane."""
@@ -95,11 +96,19 @@ class SupervisorAgent:
 
         Returns True if the task completed successfully.
         """
-        agent = self.agents.get(task.lane)
-        if not agent:
-            # Default to backend agent if lane is unknown
-            logger.warning(f"[Supervisor] No agent for lane '{task.lane}', defaulting to BackendAgent")
-            agent = self.agents["backend"]
+        canonical_lane = (getattr(task, "lane", "") or "backend").lower().strip()
+        if canonical_lane in ("frontend", "ui", "web", "react", "view"):
+            agent = self.agents["frontend"]
+        elif canonical_lane in ("qa", "test", "testing", "verification", "audit"):
+            agent = self.agents["qa"]
+        elif canonical_lane == "general":
+            title_desc = f"{getattr(task, 'title', '')} {getattr(task, 'description', '')}".lower()
+            if any(w in title_desc for w in ("ui", "screen", "component", "frontend", "form", "page", "modal", "view")):
+                agent = self.agents["frontend"]
+            else:
+                agent = self.agents["backend"]
+        else:
+            agent = self.agents.get(canonical_lane, self.agents["backend"])
 
         task_id = task.task_id
         print(f"\n{'='*60}")
@@ -132,6 +141,13 @@ class SupervisorAgent:
             self.tasks_completed += 1
             self.total_files_changed.extend(result.files_changed)
             self.scheduler.update_task_status(task_id, TaskStatus.COMPLETED)
+            self.task_results[task_id] = {
+                "status": "completed",
+                "agent": agent.name,
+                "lane": task.lane,
+                "elapsed_seconds": round(elapsed, 1),
+                "files_changed": result.files_changed,
+            }
 
             print(f"\n[Supervisor] ✅ Task {task_id} completed by {agent.name} "
                   f"in {elapsed:.1f}s ({len(result.files_changed)} files changed)")
@@ -185,6 +201,13 @@ class SupervisorAgent:
         else:
             self.tasks_failed += 1
             self.scheduler.update_task_status(task_id, TaskStatus.FAILED)
+            self.task_results[task_id] = {
+                "status": "failed",
+                "agent": agent.name,
+                "lane": task.lane,
+                "elapsed_seconds": round(elapsed, 1),
+                "error": result.error or "Unknown error",
+            }
 
             print(f"\n[Supervisor] ❌ Task {task_id} FAILED by {agent.name} "
                   f"after {elapsed:.1f}s: {result.error}")
@@ -300,6 +323,7 @@ class SupervisorAgent:
             "completed": self.tasks_completed,
             "failed": self.tasks_failed,
             "files_changed": len(set(self.total_files_changed)),
+            "tasks": self.task_results,
         }
 
         print(f"\n{'#'*60}")
@@ -308,6 +332,16 @@ class SupervisorAgent:
         print(f"[Supervisor]    Failed:    {summary['failed']}/{total_tasks}")
         print(f"[Supervisor]    Files:     {summary['files_changed']} unique files changed")
         print(f"{'#'*60}\n")
+
+        # Persist task summary to .agent/task_summary.json for control plane verification
+        try:
+            summary_path = os.path.join(self.workspace_path, ".agent", "task_summary.json")
+            os.makedirs(os.path.dirname(summary_path), exist_ok=True)
+            with open(summary_path, "w", encoding="utf-8") as f:
+                json.dump(summary, f, indent=2)
+            print(f"[Supervisor] 📝 Task summary written to {summary_path}")
+        except Exception as se:
+            logger.warning(f"[Supervisor] Could not write task_summary.json: {se}")
 
         self._post_event("supervisor_completed", summary)
         return summary

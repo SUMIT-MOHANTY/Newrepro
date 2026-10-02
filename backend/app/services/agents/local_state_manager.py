@@ -1072,20 +1072,26 @@ def get_agent_lanes_from_skills(agent_id: str, skills_tags: Any, specialization:
     return lanes
 
 
-def is_task_in_agent_lanes(task_lane: str, agent_lanes: Set[str]) -> bool:
+def is_task_in_agent_lanes(task_lane: str, agent_lanes: Set[str], task_type: str = "TASK") -> bool:
     """
     Returns True if the agent is allowed to work on a task of the given lane.
 
     3-Layer Fallback System (prevents agent starvation):
-    - Layer 1 (General = Wildcard): If the agent has "general" in its lane set,
-      it can take ANY task lane. "general" means flexible/catch-all.
-    - Layer 2 (Unspecialized): Agents with only "general" configured can take
-      any task (backwards compatibility for legacy agents).
-    - Layer 3 (Strict): Truly specialised agents (no "general" lane) only match
-      their exact lane.
+    - Layer 1 (QA Isolation): Pure QA agents have read-only access to app code
+      and MUST only take QA/test tasks, never feature implementation tasks.
+    - Layer 2 (General = Wildcard): If a development agent has "general",
+      it can take general tasks.
+    - Layer 3 (Strict): Specialized agents only match their exact lane.
     """
+    # Strict QA Isolation: Test/QA agents have read-only access to app code.
+    is_pure_qa = bool(agent_lanes & {"qa", "test", "verification"}) and not bool(agent_lanes & {"backend", "frontend", "general"})
+    if is_pure_qa:
+        return task_lane in ("qa", "test", "verification") or str(task_type).upper() in ("TEST", "QA", "AUDIT")
+
     if not task_lane or task_lane == "general":
-        return True  # Any agent can handle general tasks
+        if agent_lanes & {"qa", "test"} and not (agent_lanes & {"backend", "frontend", "general"}):
+            return False
+        return True
 
     specialized = agent_lanes - {"general"}
     if specialized:

@@ -868,12 +868,27 @@ class ClaudeToolClient:
 
             prompt_text = "\n\n".join(parts)
 
-            # Token budget guard: if we're over the limit, compact harder
+            # Token budget guard: if we're over the limit, compact harder or rollover to a fresh session
             estimated_chars = len(prompt_text)
             if estimated_chars > self._max_prompt_chars:
                 log(f"⚠️ [Token Budget] Prompt is ~{estimated_chars // CHARS_PER_TOKEN:,} tokens "
-                    f"(limit: {self._max_prompt_tokens:,}, headroom: {RESERVED_HEADROOM_TOKENS:,}). Applying aggressive compaction...")
-                prompt_text = self._aggressive_compact(prompt_text, system)
+                    f"(limit: {self._max_prompt_tokens:,}, headroom: {RESERVED_HEADROOM_TOKENS:,}). Evaluating context rollover...")
+                if len(conversation) > 4:
+                    conversation = self._rollover_to_new_session_context(
+                        conversation=conversation,
+                        system=system,
+                        tool_executor=tool_executor,
+                        task_tracker=task_tracker,
+                        iteration=iteration,
+                    )
+                    # Rebuild clean prompt_text for the new session
+                    parts = []
+                    if system:
+                        parts.append(f"System: {system}")
+                    parts.append(f"User: {conversation[0]['content']}")
+                    prompt_text = "\n\n".join(parts)
+                else:
+                    prompt_text = self._aggressive_compact(prompt_text, system)
 
             # Dynamic Tool Funnels (Guaranteed phase progression across all models):
             effective_tools = list(self._tools)
@@ -2186,6 +2201,85 @@ class ClaudeToolClient:
         log(f"[Conversation Compaction] {len(conversation)} messages -> {len(compacted)} messages "
             f"(merged {len(old_messages)} old messages into summary)")
         return compacted
+
+    def _rollover_to_new_session_context(
+        self,
+        conversation: list[dict[str, Any]],
+        system: str,
+        tool_executor: ToolExecutor,
+        task_tracker: Any | None,
+        iteration: int,
+    ) -> list[dict[str, Any]]:
+        """Summarize conversation history and roll over into a clean session chat.
+        
+        Triggered when context window reaches limits (e.g. 128k tokens or prompt tokens > limit).
+        Archives inspected files to disk, compresses past turns into a structured brief,
+        and returns a fresh conversation list so the agent completes its work without token exhaustion.
+        """
+        log(f"🔄 [Session Rollover] Context approaching window limit ({self._max_prompt_tokens:,} tokens). "
+            f"Consolidating prior context into new clean session at step {iteration + 1}...")
+
+        # 1. Archive inspected files to disk to preserve history without context cost
+        try:
+            hist_dir = os.path.join(self._workspace_path, ".agent_history")
+            os.makedirs(hist_dir, exist_ok=True)
+            archive_file = os.path.join(hist_dir, "session_rollover_archive.json")
+            with open(archive_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "iteration": iteration + 1,
+                    "inspected_files": self._inspected_files,
+                    "files_changed": list(tool_executor.files_changed),
+                    "timestamp": datetime.utcnow().isoformat(),
+                }, f, indent=2)
+        except Exception as e:
+            log(f"Warning writing session rollover archive: {e}")
+
+        # 2. Extract initial user requirements
+        initial_prompt = ""
+        for m in conversation:
+            if m.get("role") == "user" and isinstance(m.get("content"), str):
+                initial_prompt = m["content"]
+                break
+
+        # 3. Extract completed operations & key actions
+        files_written = list(tool_executor.files_changed)
+
+        # 4. Build task tracker status if available
+        tracker_status = ""
+        if task_tracker and hasattr(task_tracker, "render_prompt_banner"):
+            tracker_status = task_tracker.render_prompt_banner()
+
+        # 5. Extract manifest summary
+        manifest_str = self._file_manifest.to_manifest_string()
+
+        # 6. Compose clean rollover brief
+        rollover_prompt = (
+            "## 🔄 SESSION CONTEXT ROLLOVER (Fresh Session Context Resumed)\n\n"
+            "Earlier conversation context reached the model context window limit (128k tokens).\n"
+            "All previous progress has been summarized below so you can complete the work without token amnesia.\n\n"
+            f"### 1. Original User Task & Objective:\n{initial_prompt[:2500]}\n\n"
+            f"### 2. Files Modified / Written So Far ({len(files_written)} files):\n"
+            + (", ".join(f"`{f}`" for f in files_written[:30]) if files_written else "None yet") + "\n\n"
+        )
+        if tracker_status:
+            rollover_prompt += f"### 3. Task Progress & Checklist:\n{tracker_status}\n\n"
+        if manifest_str:
+            rollover_prompt += f"### 4. Verified Workspace Files:\n{manifest_str[:3000]}\n\n"
+
+        rollover_prompt += (
+            "### 5. Immediate Directive:\n"
+            "All previous progress is preserved above. Continue executing the remaining subtasks.\n"
+            "Use structured tools (`write_file`, `replace_file_content`, `install_and_build`) to finalize the implementation."
+        )
+
+        # Clear active inspected files cache to free context tokens
+        self._inspected_files.clear()
+        self._inspected_files_iter.clear()
+
+        # Reset conversation to this single authoritative brief
+        new_conversation = [{"role": "user", "content": rollover_prompt}]
+        log(f"✅ [Session Rollover] Clean session initialized with consolidated progress summary. Resuming agent loop...")
+        return new_conversation
 
 
 def _summarize_args(args: dict) -> str:

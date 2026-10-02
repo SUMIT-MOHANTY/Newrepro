@@ -28,6 +28,8 @@ class PreviewInfo:
     dist_path: str | None = None
     backend_port: int | None = None
     backend_error: str | None = None  # Error output if backend failed to start
+    backend_entrypoint: str | None = None  # Exact path to backend entrypoint
+    backend_cwd: str | None = None  # Working directory of backend service
 
 
 NGINX_FULLSTACK_STATIC_CONF = """
@@ -234,6 +236,10 @@ class PreviewManager:
         else:
             info = self._start_dev_server_preview(project_type)
 
+        if backend_info:
+            info.backend_entrypoint = backend_info.get("path")
+            info.backend_cwd = backend_info.get("cwd")
+
         # 3. Wise Frontend Health Check — verify Nginx on Port 80 is serving content
         fe_ok, fe_err = self._wait_for_frontend_health(port=self._preview_port)
         if not fe_ok:
@@ -363,13 +369,13 @@ class PreviewManager:
                     ready, backend_err = self._wait_for_backend_health(node_port)
                     if ready:
                         print(f"[PreviewManager] ✅ Backend server ready and healthy on port {node_port}")
-                        return {"type": "node", "port": node_port, "path": str(entry_file)}
+                        return {"type": "node", "port": node_port, "path": str(entry_file), "cwd": str(cwd)}
 
                     print(f"[PreviewManager] ❌ Backend health check failed: {backend_err}")
-                    return {"type": "node", "port": node_port, "path": str(entry_file), "backend_error": backend_err or "Backend did not start"}
+                    return {"type": "node", "port": node_port, "path": str(entry_file), "cwd": str(cwd), "backend_error": backend_err or "Backend did not start"}
                 except Exception as exc:
                     print(f"[PreviewManager] Failed to spawn Node backend: {exc}")
-                    return {"type": "node", "port": node_port, "path": str(entry_file), "backend_error": str(exc)}
+                    return {"type": "node", "port": node_port, "path": str(entry_file), "cwd": str(cwd), "backend_error": str(exc)}
 
         # Check Python FastAPI / Flask backend locations
         py_entrypoints = [
@@ -399,8 +405,8 @@ class PreviewManager:
                     ready, backend_err = self._wait_for_backend_health(py_port)
                     if ready:
                         print(f"[PreviewManager] ✅ Python backend ready and healthy on port {py_port}")
-                        return {"type": "python", "port": py_port, "path": str(entry_file)}
-                    return {"type": "python", "port": py_port, "path": str(entry_file), "backend_error": backend_err}
+                        return {"type": "python", "port": py_port, "path": str(entry_file), "cwd": str(cwd)}
+                    return {"type": "python", "port": py_port, "path": str(entry_file), "cwd": str(cwd), "backend_error": backend_err}
                 except Exception:
                     # Fallback to python server.py
                     try:
@@ -413,8 +419,8 @@ class PreviewManager:
                         )
                         ready, backend_err = self._wait_for_backend_health(py_port, timeout=8.0)
                         if ready:
-                            return {"type": "python", "port": py_port, "path": str(entry_file)}
-                        return {"type": "python", "port": py_port, "path": str(entry_file), "backend_error": backend_err}
+                            return {"type": "python", "port": py_port, "path": str(entry_file), "cwd": str(cwd)}
+                        return {"type": "python", "port": py_port, "path": str(entry_file), "cwd": str(cwd), "backend_error": backend_err}
                     except Exception as exc:
                         print(f"[PreviewManager] Failed to spawn Python backend: {exc}")
 
@@ -528,11 +534,17 @@ class PreviewManager:
         try:
             t = subprocess.run(["nginx", "-t"], timeout=10, capture_output=True, text=True)
             if t.returncode != 0:
-                print(f"[PreviewManager] Nginx config test failed: {t.stderr}")
+                print(f"[PreviewManager] Nginx config test failed: {t.stderr.strip()}")
             r = subprocess.run(["nginx", "-s", "reload"], timeout=10, capture_output=True, text=True)
             if r.returncode == 0:
                 print("[PreviewManager] Nginx reloaded successfully")
             else:
-                print(f"[PreviewManager] Nginx reload returned {r.returncode}: {r.stderr}")
+                # Reload failed (e.g. invalid PID or nginx not yet running) -> start nginx directly
+                print(f"[PreviewManager] Nginx reload returned {r.returncode}: {r.stderr.strip()}. Attempting direct Nginx start...")
+                start_res = subprocess.run(["nginx"], timeout=10, capture_output=True, text=True)
+                if start_res.returncode == 0:
+                    print("[PreviewManager] Nginx daemon started successfully")
+                else:
+                    print(f"[PreviewManager] Nginx start returned {start_res.returncode}: {start_res.stderr.strip()}")
         except Exception as exc:
-            print(f"[PreviewManager] WARNING: Could not reload Nginx: {exc}")
+            print(f"[PreviewManager] WARNING: Could not reload or start Nginx: {exc}")

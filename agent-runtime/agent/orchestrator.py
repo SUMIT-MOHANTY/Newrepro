@@ -1230,9 +1230,13 @@ class Orchestrator:
         # If backend failed to start, ask AI to fix it dynamically
         if info.backend_error:
             print(f"[Orchestrator] ⚠️ Backend failed to start: {info.backend_error[:200]}")
-            self._fix_server_errors(info.backend_error, pm)
+            self._fix_server_errors(
+                info.backend_error, pm,
+                entrypoint=getattr(info, "backend_entrypoint", None),
+                cwd=getattr(info, "backend_cwd", None)
+            )
 
-    def _fix_server_errors(self, error_output: str, pm) -> None:
+    def _fix_server_errors(self, error_output: str, pm, entrypoint: str | None = None, cwd: str | None = None) -> None:
         """Ask AI to fix backend server errors — retries preview after fix.
 
         Similar to build fix and console fix, but for backend startup failures.
@@ -1266,9 +1270,16 @@ class Orchestrator:
                 file_manifest=self._active_file_manifest,
             )
 
+            server_hint = (
+                f"Backend entrypoint file: {entrypoint}\n"
+                f"Working directory: {cwd}\n"
+                f"Inspect `{entrypoint}` using `read_file(path='{entrypoint}')` to diagnose the failure.\n"
+            ) if entrypoint else ""
+
             user_msg = (
                 f"The backend server failed to start with this error:\n\n{error_output}\n\n"
                 f"Workspace: {s.workspace_path}\n"
+                f"{server_hint}"
                 "Fix the server file so it starts successfully. "
                 "One targeted edit — do NOT rewrite the entire file."
             )

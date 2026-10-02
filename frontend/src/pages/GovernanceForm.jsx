@@ -26,7 +26,7 @@ const StepIndicator = ({ steps, currentStep, vertical = false, startStepNumber =
                         const done = idx < currentStep;
                         const active = idx === currentStep;
                         return (
-                            <div key={step} className={`flex items-center gap-3.5 py-2.5 px-2 rounded-xl cursor-default transition-all duration-300 group
+                            <div key={`${step}-${idx}`} className={`flex items-center gap-3.5 py-2.5 px-2 rounded-xl cursor-default transition-all duration-300 group
                                 ${active ? 'bg-gradient-to-r from-app-primary-light to-app-primary-light/60' : 'hover:bg-app-bg-page/60'}`}
                             >
                                 {/* Indicator Circle */}
@@ -204,27 +204,18 @@ const ModernizationAssessmentView = ({ goNext, navigate, projectName }) => {
                         >
                             Save & Exit
                         </button>
-                        {activeTab === 'scoring' ? (
-                            <button
-                                type="button"
-                                onClick={() => setActiveTab('repo')}
-                                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-xl text-white bg-blue-600 hover:bg-blue-700 active:scale-[0.97] transition-all cursor-pointer"
-                            >
-                                Next Step <ChevronRight className="w-3.5 h-3.5" />
-                            </button>
-                        ) : (
-                            <button
-                                type="button"
-                                onClick={goNext}
-                                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-xl text-white bg-blue-600 hover:bg-blue-700 active:scale-[0.97] transition-all cursor-pointer"
-                            >
-                                Save & Download Roadmap <ArrowRight className="w-3.5 h-3.5" />
-                            </button>
-                        )}
+                        <button
+                            type="button"
+                            onClick={goNext}
+                            className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-xl text-white bg-blue-600 hover:bg-blue-700 active:scale-[0.97] transition-all cursor-pointer"
+                        >
+                            Save & Continue <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
                     </div>
                 </div>
 
-                {/* Tabs */}
+                {/* Tabs: Repository Context commented out per requirement */}
+                {/*
                 <div className="flex items-center gap-6 mt-6 border-b border-slate-200 dark:border-white/5">
                     <button
                         type="button"
@@ -247,6 +238,7 @@ const ModernizationAssessmentView = ({ goNext, navigate, projectName }) => {
                         {activeTab === 'repo' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-400 rounded-full" />}
                     </button>
                 </div>
+                */}
             </div>
 
             {/* Grid Container */}
@@ -254,8 +246,7 @@ const ModernizationAssessmentView = ({ goNext, navigate, projectName }) => {
                 
                 {/* SECTION 1: Top Row Left Column (8 cols) */}
                 <div className="lg:col-span-8 space-y-6">
-                    {activeTab === 'scoring' ? (
-                        <div className="space-y-5">
+                    <div className="space-y-5">
                             {/* Header banner */}
                             <div className="flex items-center justify-between border-b border-app-border/40 pb-3">
                                 <h3 className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
@@ -421,101 +412,12 @@ const ModernizationAssessmentView = ({ goNext, navigate, projectName }) => {
                                 </div>
                             </div>
                         </div>
-                    ) : (
+                        {/* ── Repository Context commented out per requirement ── */}
+                        {/*
                         <div className="space-y-6">
-                            {/* Repository Overview */}
-                            <div className="p-5 bg-slate-50 dark:bg-slate-900/20 border border-app-border/40 rounded-xl space-y-4 animate-fadeIn">
-                                <div className="flex items-center justify-between border-b border-slate-200 dark:border-white/5 pb-3">
-                                    <h4 className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
-                                        <Layers className="w-4 h-4 text-blue-400" />
-                                        Repository Overview
-                                    </h4>
-                                    <span className="text-[10px] font-extrabold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 rounded-full uppercase tracking-wider">
-                                        Analysis Complete
-                                    </span>
-                                </div>
-                                <div className="grid grid-cols-2 md:grid-cols-3 gap-5">
-                                    {[
-                                        { label: 'Repository', val: 'apache/struts', icon: GitBranch },
-                                        { label: 'Type', val: 'Java Web Application', icon: Layers },
-                                        { label: 'Primary Language', val: 'Java', icon: Code },
-                                        { label: 'Size', val: '~1.2M LOC', icon: HardDrive },
-                                        { label: 'Created', val: '2003', icon: CalendarDays },
-                                        { label: 'Last Commit', val: '2 days ago', icon: Clock },
-                                    ].map((stat, idx) => {
-                                        const Icon = stat.icon;
-                                        return (
-                                            <div key={idx} className="flex items-center gap-2.5">
-                                                <div className="w-7 h-7 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-550 dark:text-slate-400 border border-slate-200 dark:border-white/5">
-                                                    <Icon className="w-3.5 h-3.5" />
-                                                </div>
-                                                <div>
-                                                    <div className="text-[10px] text-slate-500 dark:text-slate-400">{stat.label}</div>
-                                                    <div className="text-xs font-bold text-slate-800 dark:text-white mt-0.5">{stat.val}</div>
-                                                </div>
-                                            </div>
-                                        )
-                                    })}
-                                </div>
-                            </div>
-
-                            {/* Technology & Structure Split */}
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-5 animate-fadeIn">
-                                {/* Technology & Frameworks */}
-                                <div className="p-5 bg-slate-50 dark:bg-slate-900/20 border border-app-border/40 rounded-xl space-y-3.5">
-                                    <h4 className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
-                                        <Code className="w-4 h-4 text-indigo-400" />
-                                        Technology & Frameworks
-                                    </h4>
-                                    <div className="grid grid-cols-2 gap-y-3 gap-x-2.5 pt-1.5">
-                                        {[
-                                            { label: 'Framework', val: 'Apache Struts 1.3.10' },
-                                            { label: 'Build Tool', val: 'Maven' },
-                                            { label: 'Java Version', val: '1.6 - 1.8' },
-                                            { label: 'Web Layer', val: 'JSP, Servlets' },
-                                            { label: 'DI Framework', val: 'Spring (partial)' },
-                                            { label: 'Logging', val: 'Log4j 1.x' },
-                                        ].map((tech, idx) => (
-                                            <div key={idx} className="space-y-0.5">
-                                                <div className="text-[9px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider">{tech.label}</div>
-                                                <div className="text-xs font-semibold text-slate-750 dark:text-slate-200">{tech.val}</div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-
-                                {/* Repository Structure */}
-                                <div className="p-5 bg-slate-50 dark:bg-slate-900/20 border border-app-border/40 rounded-xl space-y-3.5">
-                                    <div className="flex items-center justify-between">
-                                        <h4 className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
-                                            <FolderKanban className="w-4 h-4 text-blue-400" />
-                                            Repository Structure
-                                        </h4>
-                                        <button type="button" className="text-[10px] font-bold text-blue-400 hover:text-blue-300 cursor-pointer">View Full Tree</button>
-                                    </div>
-                                    <div className="space-y-2.5 pt-1">
-                                        {[
-                                            { path: '/src/main/java', val: 32 },
-                                            { path: '/src/main/webapp', val: 28 },
-                                            { path: '/src/main/resources', val: 18 },
-                                            { path: '/src/test/java', val: 12 },
-                                            { path: '/lib', val: 10 },
-                                        ].map((folder, idx) => (
-                                            <div key={idx} className="space-y-1">
-                                                <div className="flex justify-between text-[11px] font-semibold">
-                                                    <span className="text-slate-500 dark:text-slate-400 truncate max-w-[150px] font-mono text-[10px]">{folder.path}</span>
-                                                    <span className="text-slate-700 dark:text-slate-200">{folder.val}%</span>
-                                                </div>
-                                                <div className="w-full bg-slate-200 dark:bg-slate-900 rounded-full h-1 overflow-hidden border border-slate-100 dark:border-white/5">
-                                                    <div className="bg-blue-500 h-full rounded-full" style={{ width: `${folder.val}%` }} />
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                            </div>
+                            ... Repository Overview and Structure ...
                         </div>
-                    )}
+                        */}
                 </div>
 
                 {/* Right Column (4 cols) - Sticky on desktop */}
@@ -781,11 +683,11 @@ const ModernizationAssessmentView = ({ goNext, navigate, projectName }) => {
                                 <div className="text-xs font-bold text-slate-800 dark:text-white">Key Modernization Actions</div>
                                 <div className="space-y-3 text-xs text-slate-650 dark:text-slate-300 font-semibold">
                                     {[
-                                        'Migrate from Struts 1 to Spring Boot (Java Core)',
-                                        'Replace legacy JSP with React web layer components',
-                                        'Resolve security vulnerabilities and update log4j/servlet packages',
-                                        'Implement automated unit testing (JUnit 5) and CI/CD pipelines',
-                                        'Containerize application with Docker & deploy to Cloud environment'
+                                        'Refactor monolithic architecture into modular services',
+                                        'Modernize legacy frontend views with reactive components',
+                                        'Audit and update dependencies for security and compliance',
+                                        'Implement automated unit & integration testing pipelines',
+                                        'Containerize application services for cloud deployment'
                                     ].map((action, idx) => (
                                         <div key={idx} className="flex items-start gap-2.5">
                                             <Check className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
@@ -1015,16 +917,17 @@ const GovernanceForm = ({
 
     const dimensions = useMemo(() => {
         if (baseDimensions.length === 0) return [];
-        if (projectType === 'brownfield') {
-            const dims = [...baseDimensions];
-            const govIdx = dims.indexOf('Governance');
-            if (govIdx !== -1) {
-                dims.splice(govIdx + 1, 0, 'Modernization Scoring');
-            } else {
-                dims.splice(2, 0, 'Modernization Scoring');
-            }
-            return dims;
-        }
+        // Commented out: Modernization Scoring and repository context appeared out of nowhere
+        // if (projectType === 'brownfield') {
+        //     const dims = [...baseDimensions];
+        //     const govIdx = dims.indexOf('Governance');
+        //     if (govIdx !== -1) {
+        //         dims.splice(govIdx + 1, 0, 'Modernization Scoring');
+        //     } else {
+        //         dims.splice(2, 0, 'Modernization Scoring');
+        //     }
+        //     return dims;
+        // }
         return baseDimensions;
     }, [projectType, baseDimensions]);
 
@@ -1984,12 +1887,12 @@ const GovernanceForm = ({
                                             </div>
 
                                             {dimensions.map((dim, idx) => {
-                                                const qs = questionsByDimension[dim];
-                                                const allDone = qs.every((q) => answers[q.id] !== undefined);
+                                                const qs = questionsByDimension[dim] || [];
+                                                const allDone = qs.length > 0 && qs.every((q) => answers[q.id] !== undefined);
                                                 const answered = qs.filter((q) => answers[q.id] !== undefined).length;
                                                 return (
                                                     <div
-                                                        key={dim}
+                                                        key={`${dim}-${idx}`}
                                                         className={`rounded-xl border-2 px-5 py-3.5 flex items-center gap-3 transition-all duration-200 ${allDone
                                                             ? 'border-emerald-200/60 bg-gradient-to-r from-app-status-successBg/40 to-app-status-successBg/30'
                                                             : 'border-red-200/60 bg-gradient-to-r from-app-status-errorBg/40 to-app-status-errorBg/30'}`}
