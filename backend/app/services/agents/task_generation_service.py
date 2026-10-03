@@ -3,6 +3,7 @@ Task Generation Service - Creates tasks locally before sending to NXDUNE
 Uses Agent Action Plan to generate structured tasks with multiple sprints and milestones
 """
 import json
+import re
 import logging
 import asyncio
 from datetime import datetime, timedelta

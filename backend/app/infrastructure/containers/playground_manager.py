@@ -314,7 +314,6 @@ class PlaygroundContainerManager:
                         line, buffer = buffer.split("\n", 1)
                         line_clean = line.strip()
                         if line_clean:
-                            self.append_log_to_container(container_name, line_clean[:1000])
                             if line_callback:
                                 try:
                                     line_callback(line_clean)
@@ -322,7 +321,6 @@ class PlaygroundContainerManager:
                                     pass
 
                 if buffer.strip():
-                    self.append_log_to_container(container_name, buffer.strip()[:1000])
                     if line_callback:
                         try:
                             line_callback(buffer.strip())
@@ -330,7 +328,9 @@ class PlaygroundContainerManager:
                             pass
 
                 inspect_res = self._docker_client.api.exec_inspect(exec_id)
-                exit_code = inspect_res.get("ExitCode", 0)
+                exit_code = inspect_res.get("ExitCode")
+                if exit_code is None:
+                    exit_code = 0
                 output = "".join(output_chunks)
                 return exit_code, output
             else:
@@ -344,14 +344,14 @@ class PlaygroundContainerManager:
                         output_lines.append(line)
                         line_clean = line.strip()
                         if line_clean:
-                            self.append_log_to_container(container_name, line_clean[:1000])
                             if line_callback:
                                 try:
                                     line_callback(line_clean)
                                 except Exception:
                                     pass
                 process.wait(timeout=timeout)
-                return process.returncode, "".join(output_lines)
+                exit_code = process.returncode if process.returncode is not None else 0
+                return exit_code, "".join(output_lines)
         except subprocess.TimeoutExpired:
             self.append_log_to_container(container_name, f"Command timed out after {timeout}s")
             return -1, f"Command timed out after {timeout} seconds."

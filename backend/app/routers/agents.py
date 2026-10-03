@@ -1651,6 +1651,7 @@ async def _bg_run_agent(
 
             # Execute the in-container agent runtime
             execution_success = False
+            task_summary_data = None
             if container_name:
                 # Real-time streaming log callback: streams container stdout directly to dashboard
                 def on_agent_log_line(line: str) -> None:
@@ -1693,7 +1694,6 @@ async def _bg_run_agent(
 
                 # Check task_summary.json written by supervisor to determine real execution success
                 summary_path = os.path.join(workspace_dir, ".agent", "task_summary.json")
-                task_summary_data = None
                 if os.path.exists(summary_path):
                     try:
                         with open(summary_path, "r", encoding="utf-8") as f:
@@ -1704,8 +1704,9 @@ async def _bg_run_agent(
                 failed_task_ids = set()
                 if task_summary_data:
                     failed_task_ids = set(task_summary_data.get("failed_tasks", []))
-                    # Check task_results mapping for failures
-                    for tid, res in task_summary_data.get("task_results", {}).items():
+                    # Check task_results or tasks mapping for failures
+                    t_map = task_summary_data.get("task_results") or task_summary_data.get("tasks") or {}
+                    for tid, res in t_map.items():
                         if isinstance(res, dict) and res.get("status") == "failed":
                             failed_task_ids.add(str(tid))
 
@@ -1734,27 +1735,21 @@ async def _bg_run_agent(
                 # Fallback: use the LLM gateway directly to generate code
                 try:
                     from app.integrations.llm import llm_gateway
-                    llm_response = await asyncio.to_thread(
-                        llm_gateway.call_llm,
-                        prompt=prompt,
+                    response_text = await llm_gateway.call_llm_and_extract(
+                        messages=[{"role": "user", "content": prompt}],
                         model=assigned_model,
-                        max_tokens=8000,
+                        timeout=180.0,
+                        purpose=f"Local Agent Execution: {agent_name}",
+                        project_token=project_token,
                     )
-                    response_text = ""
-                    if hasattr(llm_response, "content"):
-                        response_text = str(llm_response.content)
-                    elif isinstance(llm_response, str):
-                        response_text = llm_response
-                    elif isinstance(llm_response, dict):
-                        response_text = llm_response.get("content", str(llm_response))
-
+                    response_str = str(response_text or "")
                     agent_service.append_agent_log(
                         agent_id,
-                        f"LLM response received ({len(response_text)} chars). Applying to workspace...",
+                        f"LLM response received ({len(response_str)} chars). Applying to workspace...",
                         "output",
                         project_token,
                     )
-                    execution_success = bool(response_text and len(response_text) > 100)
+                    execution_success = bool(response_str and len(response_str) > 100)
                 except Exception as llm_err:
                     logger.error(f"[_bg_run_agent] LLM fallback failed: {llm_err}")
                     agent_service.append_agent_log(
@@ -1766,7 +1761,9 @@ async def _bg_run_agent(
                     execution_success = False
 
             # ── Update task statuses based on execution result ──
-            summary_results = (task_summary_data.get("task_results", {}) if task_summary_data else {})
+            summary_results = {}
+            if task_summary_data:
+                summary_results = task_summary_data.get("task_results") or task_summary_data.get("tasks") or {}
             for t_info in tasks_to_execute:
                 t_db_id = t_info.get("db_id")
                 t_str_id = str(t_info.get("id") or "")

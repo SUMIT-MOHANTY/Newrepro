@@ -93,8 +93,12 @@ def main() -> None:
         for key in ("FOLLOW_UP_PROMPT", "FOLLOW_UP_TASK_TYPE", "FOLLOW_UP_MODEL", "FOLLOW_UP_TASK_ID"):
             os.environ.pop(key, None)
 
-    print(f"[AgentRuntime] Session: {state.session_id} | Task: {state.task_id}")
-    print(f"[AgentRuntime] Prompt: {state.prompt}")
+    prompt_preview = state.prompt.strip()
+    if len(prompt_preview) > 300:
+        first_line = prompt_preview.split('\n')[0][:120]
+        print(f"[AgentRuntime] Prompt: {first_line}... ({len(prompt_preview)} chars)")
+    else:
+        print(f"[AgentRuntime] Prompt: {prompt_preview}")
 
 
     # Initialize MCP server

@@ -460,20 +460,21 @@ class AgentService:
         if len(agent["output_log"]) > 300:
             agent["output_log"] = agent["output_log"][-300:]
 
-        # Mirror log to container playground if active
-        try:
-            from app.infrastructure.containers.playground_manager import playground_manager
-            base_id = agent_id.split("#")[0] if agent_id else ""
-            clean_proj = (project_token or "").replace("/", "_").replace("\\", "_")
-            for c_name, c_meta in playground_manager.containers.items():
-                if c_meta.get("status") == "BUSY":
-                    c_aid = c_meta.get("agent_id")
-                    c_pt = c_meta.get("project_token")
-                    if (c_aid in (agent_id, base_id)) or (clean_proj and c_pt and clean_proj in c_pt):
-                        playground_manager.append_log_to_container(c_name, str(message))
-                        break
-        except Exception:
-            pass
+        # Mirror log to container playground if active (only for host-initiated events, not container stdout)
+        if log_type != "output":
+            try:
+                from app.infrastructure.containers.playground_manager import playground_manager
+                base_id = agent_id.split("#")[0] if agent_id else ""
+                clean_proj = (project_token or "").replace("/", "_").replace("\\", "_")
+                for c_name, c_meta in playground_manager.containers.items():
+                    if c_meta.get("status") == "BUSY":
+                        c_aid = c_meta.get("agent_id")
+                        c_pt = c_meta.get("project_token")
+                        if (c_aid in (agent_id, base_id)) or (clean_proj and c_pt and clean_proj in c_pt):
+                            playground_manager.append_log_to_container(c_name, str(message))
+                            break
+            except Exception:
+                pass
 
         return entry
 
