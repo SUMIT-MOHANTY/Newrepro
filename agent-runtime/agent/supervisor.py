@@ -49,23 +49,41 @@ class SupervisorAgent:
         mcp: MCPServer,
         router: ModelRouter,
         callback: Callable[[str, dict[str, Any]], None] | None = None,
+        task_config: dict[str, Any] | None = None,
     ):
         self.workspace_path = workspace_path
         self.mcp = mcp
         self.router = router
         self.callback = callback
+        self.task_config = task_config or {}
 
-        # DAG Scheduler — loads tasks and determines execution order
-        config_path = os.path.join(workspace_path, ".agent", "task_config.json")
-        if not os.path.exists(config_path):
-            # Fallback: try workspace root
-            config_path = os.path.join(workspace_path, "task_config.json")
-        self.scheduler = DAGScheduler(config_path)
+        # DAG Scheduler — loads tasks with per-agent isolation support
+        agent_config_file = os.environ.get("AGENT_CONFIG_FILE")
+        agent_id = os.environ.get("AGENT_ID")
+        config_path = None
+        if agent_config_file:
+            cand = os.path.join(workspace_path, ".agent", agent_config_file)
+            if os.path.exists(cand):
+                config_path = cand
+        if not config_path and agent_id:
+            clean_aid = "".join(c for c in agent_id if c.isalnum() or c == "_")
+            cand = os.path.join(workspace_path, ".agent", f"task_config_{clean_aid}.json")
+            if os.path.exists(cand):
+                config_path = cand
+        if not config_path:
+            cand = os.path.join(workspace_path, ".agent", "task_config.json")
+            if os.path.exists(cand):
+                config_path = cand
+            else:
+                config_path = os.path.join(workspace_path, "task_config.json")
+
+        tasks_list = self.task_config.get("tasks") if isinstance(self.task_config, dict) else None
+        self.scheduler = DAGScheduler(config_path, tasks_data=tasks_list)
 
         # IPC Router — file-based inter-agent communication
         self.ipc = IPCRouter(workspace_path)
 
-        # Git Tools — for auto-commit and push
+        # Git Tools — available for final delivery
         self.git_tools = GitTools(workspace_path)
 
         # Sub-Agent Pool — one per lane
@@ -134,7 +152,7 @@ class SupervisorAgent:
         # DELEGATE: Sub-agent runs its ReAct tool loop
         # ═══════════════════════════════════════════════════
         start_time = time.time()
-        result = agent.execute_task(task, self.workspace_path, self.mcp, self.router)
+        result = agent.execute_task(task, self.workspace_path, self.mcp, self.router, context=self.task_config)
         elapsed = time.time() - start_time
 
         if result.success:
@@ -158,37 +176,6 @@ class SupervisorAgent:
                 "elapsed_seconds": round(elapsed, 1),
                 "files_changed": len(result.files_changed),
             })
-
-            # ═══════════════════════════════════════════════════
-            # AUTO-COMMIT + AUTO-PUSH after each task
-            # ═══════════════════════════════════════════════════
-            try:
-                commit_msg = (
-                    f"[{agent.name}] Completed: {task.title}\n\n"
-                    f"Task ID: {task_id}\n"
-                    f"Files changed: {len(result.files_changed)}\n"
-                    f"Duration: {elapsed:.1f}s"
-                )
-                commit_result = self.git_tools.commit(commit_msg)
-                if commit_result.success:
-                    commit_hash = commit_result.data.get("commit_hash", "unknown")
-                    print(f"[Supervisor] 📝 Committed: {commit_hash[:8]}")
-
-                    # Push to remote
-                    push_result = self.git_tools.push()
-                    if push_result.success:
-                        print(f"[Supervisor] 🚀 Pushed to remote")
-                        self._post_event("git_push_completed", {
-                            "task_id": task_id,
-                            "commit_hash": commit_hash,
-                            "push_success": True,
-                        })
-                    else:
-                        print(f"[Supervisor] ⚠️ Push failed: {push_result.error}")
-                else:
-                    print(f"[Supervisor] ⚠️ Commit failed: {commit_result.error}")
-            except Exception as e:
-                logger.error(f"[Supervisor] Git operations failed for {task_id}: {e}")
 
             # Notify dependent tasks via IPC
             self.ipc.broadcast("Supervisor", "dependency_ready", {
@@ -333,12 +320,24 @@ class SupervisorAgent:
         print(f"[Supervisor]    Files:     {summary['files_changed']} unique files changed")
         print(f"{'#'*60}\n")
 
-        # Persist task summary to .agent/task_summary.json for control plane verification
+        # Persist task summary to .agent/task_summary.json (and per-agent file)
         try:
-            summary_path = os.path.join(self.workspace_path, ".agent", "task_summary.json")
-            os.makedirs(os.path.dirname(summary_path), exist_ok=True)
+            agent_id = os.environ.get("AGENT_ID")
+            clean_aid = "".join(c for c in agent_id if c.isalnum() or c == "_") if agent_id else ""
+            summary_dir = os.path.join(self.workspace_path, ".agent")
+            os.makedirs(summary_dir, exist_ok=True)
+
+            # Write standard summary
+            summary_path = os.path.join(summary_dir, "task_summary.json")
             with open(summary_path, "w", encoding="utf-8") as f:
                 json.dump(summary, f, indent=2)
+
+            # Write per-agent summary if running in dedicated sub-agent container
+            if clean_aid:
+                per_agent_path = os.path.join(summary_dir, f"task_summary_{clean_aid}.json")
+                with open(per_agent_path, "w", encoding="utf-8") as f:
+                    json.dump(summary, f, indent=2)
+
             print(f"[Supervisor] 📝 Task summary written to {summary_path}")
         except Exception as se:
             logger.warning(f"[Supervisor] Could not write task_summary.json: {se}")

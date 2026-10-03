@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { customAlert } from '../utils/modalHelpers';
-import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight, Bot, Shield, Cpu, Play, RefreshCw, Eye, ListTodo, AlertCircle, ChevronRight, Users, User, Calendar, Wallet, Tag, AlertTriangle, CheckCircle2, Loader2, Terminal, Pencil, GitBranch, Globe, ExternalLink, StopCircle, Rocket, Zap } from 'lucide-react';
+import { Flag, Activity, CheckCircle, Clock, Menu, PlusCircle, X, ArrowRight, Bot, Shield, Cpu, Play, RefreshCw, Eye, ListTodo, AlertCircle, ChevronRight, Users, User, Calendar, Wallet, Tag, AlertTriangle, CheckCircle2, Loader2, Terminal, Pencil, GitBranch, Globe, ExternalLink, StopCircle, Rocket, Zap, Code2 } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import Skeleton, { SkeletonTheme } from 'react-loading-skeleton';
 import 'react-loading-skeleton/dist/skeleton.css';
@@ -9,6 +9,7 @@ import 'react-loading-skeleton/dist/skeleton.css';
 import { API_ENDPOINTS, VIBE_WORKSPACE_URL } from '../config';
 import { getNeutralAgentLabel, getNeutralAgentName } from '../utils/agentNames';
 import AgentChatPanel from './AgentChatPanel';
+import VSCodeWorkspaceViewer from './VSCodeWorkspaceViewer';
 
 import kaktoxLogo from '../assets/Kaktox.png';
 import nModLogo from '../assets/N-Mod-icon.png';
@@ -342,6 +343,7 @@ export default function StatusDashboard({
     // ── Agent State (Docker Agents) ──────────────────────────────────
     const [runningAgent, setRunningAgent] = useState(null);
     const [showLogModal, setShowLogModal] = useState(null);
+    const [showVSCodeWorkspace, setShowVSCodeWorkspace] = useState(false);
 
     const [gitModalAgent, setGitModalAgent] = useState(null);
     const [gitRepoUrl, setGitRepoUrl] = useState('');
@@ -1541,10 +1543,14 @@ export default function StatusDashboard({
         // Use logo for specific agents, or dev agents use N-Mod logo / agent.face
         const useLogo = Boolean(cfg.logo) || isMasterAgent || isTest || isShared || isDedicated || Boolean(agent.face);
         const logoSrc = isMasterAgent ? masterLogo : isTest ? kaktoxLogo : (agent.face || cfg.logo || nModLogo);
-        const isRunning = agent.status === 'running';
-        const isCompleted = agent.status === 'completed';
+        const allTasksDone = taskList.length > 0 && taskList.every(t => {
+            const raw = (t.status || '').toUpperCase();
+            return raw === 'DONE' || t.taskStatus === 'Completed' || t.is_completed || t.task_progress === 100;
+        });
+        const isRunning = agent.status === 'running' && !allTasksDone;
+        const isCompleted = agent.status === 'completed' || (allTasksDone && agent.status !== 'error');
         const isError = agent.status === 'error';
-        const isIdle = agent.status === 'idle' || !agent.status || agent.status === 'not_started' || agent.status === 'ready';
+        const isIdle = !isRunning && !isCompleted && !isError;
         const statusColor = isRunning ? cfg.color : isCompleted ? 'emerald' : isError ? 'red' : 'gray';
         const canRun = taskList.length > 0;
 
@@ -2815,6 +2821,17 @@ export default function StatusDashboard({
                                                     {runningAll ? 'Starting...' : 'Run All'}
                                                 </button>
                                                 <button
+                                                    onClick={() => setShowVSCodeWorkspace(true)}
+                                                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide bg-[#1e1e1e] hover:bg-[#2c2d30] text-cyan-400 border border-cyan-800/80 shadow hover:shadow-cyan-950 transition-all duration-200"
+                                                    title="Open VS Code Workspace live view (files created, edited & agent attribution in real-time)"
+                                                >
+                                                    <Code2 className="w-3.5 h-3.5 text-cyan-400" />
+                                                    <span>VS Code View</span>
+                                                    {agents.some(a => a.status === 'running') && (
+                                                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse ml-0.5" />
+                                                    )}
+                                                </button>
+                                                <button
                                                     onClick={() => handleAddAgent()}
                                                     className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-app-primary bg-app-primary-light hover:bg-app-primary-light transition-colors"
                                                     title="Add a new agent"
@@ -3280,7 +3297,9 @@ export default function StatusDashboard({
                                                         const statusStyles = { 'On Going': 'bg-app-primary-light text-app-primary-hover', 'Completed': 'bg-app-status-successBg text-app-status-success', 'To Do': 'bg-app-bg-page text-app-text-label', 'In Review': 'bg-app-status-warningBg text-app-status-warning', 'Blocked': 'bg-app-status-errorBg text-app-status-error' };
                                                         const priority = (task.priority || 'medium').toLowerCase();
                                                         const taskType = (task.task_type || 'TASK').toUpperCase();
-                                                        const progress = task.task_progress || 0;
+                                                        const rawStatus = (task.status || '').toUpperCase();
+                                                        const normalizedStatus = task.taskStatus || (rawStatus === 'DONE' ? 'Completed' : rawStatus === 'IN_PROGRESS' ? 'On Going' : rawStatus === 'IN_REVIEW' ? 'In Review' : 'To Do');
+                                                        const progress = task.task_progress ?? (rawStatus === 'DONE' ? 100 : rawStatus === 'IN_PROGRESS' ? 50 : 0);
                                                         const progressColor = progress >= 80 ? 'bg-app-status-success' : progress >= 40 ? 'bg-app-primary' : 'bg-app-status-warning';
                                                         const sprintLabel = getTaskSprintLabel(task);
                                                         const assignees = safeGetAssignees(task.assignedTo);
@@ -3342,7 +3361,7 @@ export default function StatusDashboard({
 
                                                                     {/* Status */}
                                                                     <div className="flex justify-center">
-                                                                        <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold ${statusStyles[task.taskStatus] || 'bg-app-bg-page text-app-text-label'}`}>{task.taskStatus || 'Unknown'}</span>
+                                                                        <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold ${statusStyles[normalizedStatus] || 'bg-app-bg-page text-app-text-label'}`}>{normalizedStatus}</span>
                                                                     </div>
 
                                                                     {/* Priority */}
@@ -3865,6 +3884,15 @@ export default function StatusDashboard({
                     </div>
                 )
             }
+
+            {/* ── Real-Time VS Code Workspace Viewer ── */}
+            {showVSCodeWorkspace && (
+                <VSCodeWorkspaceViewer
+                    isOpen={showVSCodeWorkspace}
+                    onClose={() => setShowVSCodeWorkspace(false)}
+                    projectToken={selectedProjectKey || 'default_project'}
+                />
+            )}
         </div >
     );
 }

@@ -20,21 +20,31 @@ from pathlib import Path
 
 
 def _load_task_config(workspace_path: str = "/workspace") -> dict | None:
-    """Load task configuration from .agent/task_config.json if present.
+    """Load task configuration from per-agent config or fallback to task_config.json."""
+    import re
+    ws = Path(workspace_path)
+    agent_config_file = os.environ.get("AGENT_CONFIG_FILE")
+    agent_id = os.environ.get("AGENT_ID")
+    candidate_paths = []
+    if agent_config_file:
+        candidate_paths.append(ws / ".agent" / agent_config_file)
+        candidate_paths.append(ws / agent_config_file)
+    if agent_id:
+        clean_aid = re.sub(r'[^a-zA-Z0-9_]', '_', agent_id)
+        candidate_paths.append(ws / ".agent" / f"task_config_{clean_aid}.json")
+        candidate_paths.append(ws / f"task_config_{clean_aid}.json")
+    candidate_paths.append(ws / ".agent" / "task_config.json")
+    candidate_paths.append(ws / "task_config.json")
 
-    The control plane writes this file into the workspace before executing
-    the agent runtime so it can pass full task prompts, model selection,
-    and callback URLs without relying solely on environment variables.
-    """
-    config_path = Path(workspace_path) / ".agent" / "task_config.json"
-    if config_path.exists():
-        try:
-            raw = config_path.read_text(encoding="utf-8")
-            data = json.loads(raw)
-            print(f"[AgentRuntime] Loaded task config from {config_path}")
-            return data
-        except Exception as exc:
-            print(f"[AgentRuntime] Warning: Failed to parse task_config.json: {exc}")
+    for config_path in candidate_paths:
+        if config_path.exists():
+            try:
+                raw = config_path.read_text(encoding="utf-8")
+                data = json.loads(raw)
+                print(f"[AgentRuntime] Loaded task config from {config_path}")
+                return data
+            except Exception as exc:
+                print(f"[AgentRuntime] Warning: Failed to parse {config_path}: {exc}")
     return None
 
 
@@ -169,20 +179,15 @@ def main() -> None:
             # Frontend, QA) working in parallel via the DAG scheduler.
             # LEGACY MODE: Single task → use the existing Orchestrator.
             # ═══════════════════════════════════════════════════════════════
-            task_config_path = Path(state.workspace_path) / ".agent" / "task_config.json"
             use_supervisor = False
             task_list = []
 
-            if task_config_path.exists():
-                try:
-                    raw = json.loads(task_config_path.read_text(encoding="utf-8"))
-                    if isinstance(raw, dict):
-                        task_list = raw.get("tasks", [])
-                    elif isinstance(raw, list):
-                        task_list = raw
-                    use_supervisor = len(task_list) >= 1
-                except Exception:
-                    pass
+            if task_config:
+                if isinstance(task_config, dict):
+                    task_list = task_config.get("tasks", [])
+                elif isinstance(task_config, list):
+                    task_list = task_config
+                use_supervisor = len(task_list) >= 1
 
             if use_supervisor:
                 print(f"[AgentRuntime] 🏗️  SUPERVISOR MODE: {len(task_list)} tasks detected — launching Agent Swarm")
@@ -192,12 +197,21 @@ def main() -> None:
                     mcp=mcp,
                     router=orchestrator._router,
                     callback=orchestrator._post_event,
+                    task_config=task_config,
                 )
                 summary = supervisor.run()
                 print(f"[AgentRuntime] 📊 Swarm complete: {summary.get('completed', 0)}/{summary.get('total_tasks', 0)} tasks done")
             else:
                 print(f"[AgentRuntime] 🔧 LEGACY MODE: Single task — using Orchestrator")
                 orchestrator.run()
+
+            # Boot live preview dev server upon swarm completion
+            try:
+                print("[AgentRuntime] 🚀 Booting live preview dev server on port 80...")
+                orchestrator._run_preview()
+                print(f"[AgentRuntime] ✅ Live preview ready on port 80: {state.preview_url or 'http://localhost:80'}")
+            except Exception as pe:
+                print(f"[AgentRuntime] Preview initialization note: {pe}")
 
             init_marker.touch(exist_ok=True)
             print(f"[AgentRuntime] Task {state.task_id} complete. Preview is live.")

@@ -62,11 +62,36 @@ def extract_content_from_response(data: dict) -> str:
     Extract text content from any known AI response format.
 
     Supported formats:
-    - OpenAI:    data["choices"][0]["message"]["content"]
-    - BRN Llama: data["response"] / data["text"] / data["content"]
-    - Anthropic: data["content"][0]["text"]
+    - Kimi / Proxies: data["completion"], data["assistant_message"]["content"][0]["text"]
+    - OpenAI:         data["choices"][0]["message"]["content"]
+    - BRN Llama:      data["response"] / data["text"] / data["content"]
+    - Anthropic:      data["content"][0]["text"]
     """
-    # 1. OpenAI-style
+    if not isinstance(data, dict):
+        return ""
+
+    # 0. Direct completion key (Kimi / proxy / custom LLM gateways)
+    comp = data.get("completion")
+    if comp and isinstance(comp, str) and comp.strip():
+        return comp
+
+    # 1. assistant_message (Anthropic / Bedrock / Kimi proxy format)
+    asst_msg = data.get("assistant_message")
+    if isinstance(asst_msg, dict):
+        asst_content = asst_msg.get("content")
+        if isinstance(asst_content, str) and asst_content.strip():
+            return asst_content
+        elif isinstance(asst_content, list):
+            parts = []
+            for block in asst_content:
+                if isinstance(block, dict) and "text" in block:
+                    parts.append(block.get("text", ""))
+                elif isinstance(block, str):
+                    parts.append(block)
+            if parts:
+                return "".join(parts)
+
+    # 2. OpenAI-style
     choices = data.get("choices")
     if isinstance(choices, list) and len(choices) > 0:
         message = choices[0].get("message", {})
@@ -74,23 +99,27 @@ def extract_content_from_response(data: dict) -> str:
         if content:
             return content
 
-    # 2. BRN Llama / generic
-    for key in ("response", "text"):
+    # 3. BRN Llama / generic
+    for key in ("response", "text", "output", "result"):
         val = data.get(key)
-        if val and isinstance(val, str):
+        if val and isinstance(val, str) and val.strip():
             return val
 
-    # 3. Anthropic-style: {"content": [{"type": "text", "text": "..."}]}
+    # 4. Anthropic-style: {"content": [{"type": "text", "text": "..."}]}
     content_list = data.get("content")
     if isinstance(content_list, list):
         parts = []
         for block in content_list:
             if isinstance(block, dict) and block.get("type") == "text":
                 parts.append(block.get("text", ""))
+            elif isinstance(block, dict) and "text" in block:
+                parts.append(block.get("text", ""))
+            elif isinstance(block, str):
+                parts.append(block)
         if parts:
             return "".join(parts)
 
-    # 4. Plain "content" string
+    # 5. Plain "content" string
     plain = data.get("content")
     if isinstance(plain, str) and plain:
         return plain

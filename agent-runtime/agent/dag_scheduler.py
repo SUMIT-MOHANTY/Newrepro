@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from typing import List, Dict, Set, Any
 from enum import Enum
 
@@ -18,7 +19,18 @@ class Task:
         self.description = data.get("description", "")
         self.lane = (data.get("lane") or "backend").lower()
         self.subtasks = data.get("subtasks", [])
-        self.depends_on = data.get("depends_on", [])
+        
+        # Robustly parse depends_on or linked_tasks
+        raw_deps = data.get("depends_on") or data.get("linked_tasks") or []
+        if isinstance(raw_deps, str):
+            try:
+                raw_deps = json.loads(raw_deps)
+            except Exception:
+                raw_deps = [raw_deps]
+        if not isinstance(raw_deps, list):
+            raw_deps = []
+        self.depends_on = [str(d) for d in raw_deps if d]
+        
         raw_status = str(data.get("status", "pending")).lower()
         try:
             self.status = TaskStatus(raw_status)
@@ -38,13 +50,21 @@ class Task:
 
 class DAGScheduler:
     """DAG-based task scheduler"""
-    def __init__(self, task_config_path: str):
+    def __init__(self, task_config_path: str, tasks_data: List[Dict[str, Any]] | None = None):
         self.task_config_path = task_config_path
         self.tasks: Dict[str, Task] = {}
-        self._load_tasks()
+        if tasks_data:
+            for t in tasks_data:
+                task = Task(t)
+                if task.task_id:
+                    self.tasks[task.task_id] = task
+        else:
+            self._load_tasks()
 
     def _load_tasks(self):
         try:
+            if not os.path.exists(self.task_config_path):
+                return
             with open(self.task_config_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 if isinstance(data, dict):

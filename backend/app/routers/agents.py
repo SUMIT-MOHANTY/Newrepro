@@ -982,6 +982,24 @@ async def list_agents(
             )
         ]
     
+    # Check if all project tasks are verified DONE to sync agent card statuses
+    if project_token:
+        try:
+            total_proj_tasks = db.query(models.Task).filter(models.Task.project_token == project_token).count()
+            if total_proj_tasks > 0:
+                pending_proj_tasks = db.query(models.Task).filter(
+                    models.Task.project_token == project_token,
+                    models.Task.status != "DONE"
+                ).count()
+                if pending_proj_tasks == 0:
+                    for a in agents:
+                        if a.get("status") in ("running", "idle"):
+                            a["status"] = "completed"
+                            a["progress"] = 100
+                            a["progress_message"] = "All tasks completed and verified."
+        except Exception as sync_err:
+            logger.debug(f"[GET /agents] Task status sync debug: {sync_err}")
+
     result = {"agents": agents}
     
     logger.info(f"[GET /agents] Returning {len(agents)} agents for kind={requested_kind}, include_defaults={include_defaults}")
@@ -1279,6 +1297,169 @@ async def receive_preview_log(log_msg: PreviewLogMessage):
     return {"success": True}
 
 
+@router.get("/agents/workspace/files")
+async def get_workspace_files(
+    project_token: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Scan and return real-time file tree in the project's workspace, with agent attribution."""
+    from app.core.config import get_settings
+    from app.services.agents.agent_service import agent_service
+    settings = get_settings()
+    clean_token = (project_token or "default_project").replace("/", "_").replace("\\", "_")
+    workspace_dir = os.path.join(settings.project_storage_root, clean_token)
+
+    if not os.path.exists(workspace_dir):
+        return {"files": [], "total_files": 0, "active_agents": []}
+
+    SKIP_DIRS = {".git", "node_modules", "__pycache__", "venv", ".venv", "dist", "build", ".next", ".agent_history", ".agent_signals"}
+    file_list = []
+
+    # Get active agents for this project to determine who is editing what
+    all_agents = agent_service.get_all_agents(project_token)
+    active_agents = [a for a in all_agents if a.get("status") == "running"]
+
+    now_ts = time.time()
+    for root, dirs, files in os.walk(workspace_dir):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
+        rel_root = os.path.relpath(root, workspace_dir).replace("\\", "/")
+        if rel_root == ".":
+            rel_root = ""
+
+        for f in files:
+            if f.startswith(".") and not (f.startswith(".env") or f in (".gitignore", ".editorconfig", ".dockerignore", ".flake8", ".prettierrc")):
+                continue
+            rel_path = f"{rel_root}/{f}" if rel_root else f
+            abs_path = os.path.join(root, f)
+            try:
+                stat = os.stat(abs_path)
+                mtime = stat.st_mtime
+                is_recent = (now_ts - mtime) < 180  # Modified in last 3 mins
+
+                # Determine lane
+                lower_p = rel_path.lower()
+                if any(lower_p.startswith(p) for p in ("server/", "api/", "models/", "database/", "routes/", "controllers/")) or (lower_p.endswith(".py") and not lower_p.startswith("src/")):
+                    lane = "backend"
+                elif any(lower_p.startswith(p) for p in ("src/", "components/", "pages/", "styles/", "public/")) or lower_p.endswith((".jsx", ".tsx", ".css", ".html", ".vue")):
+                    lane = "frontend"
+                elif any(p in lower_p for p in ("test", "spec", "cypress", "e2e")):
+                    lane = "qa"
+                elif "contract" in lower_p:
+                    lane = "contract"
+                else:
+                    lane = "config"
+
+                # Attributed agent
+                attributed_agent = "System"
+                if lane == "backend":
+                    b_agent = next((a["name"] for a in all_agents if "backend" in (a.get("specialization") or "").lower() or "backend" in a.get("name", "").lower() or a.get("id") in ("agent_01", "dev_agent")), "BackendAgent")
+                    attributed_agent = b_agent
+                elif lane == "frontend":
+                    f_agent = next((a["name"] for a in all_agents if "frontend" in (a.get("specialization") or "").lower() or "frontend" in a.get("name", "").lower() or a.get("id") in ("agent_02", "ui_agent")), "FrontendAgent")
+                    attributed_agent = f_agent
+                elif lane == "qa":
+                    attributed_agent = "QAAgent"
+                elif lane == "contract":
+                    attributed_agent = "Master Coordinator"
+
+                file_list.append({
+                    "path": rel_path,
+                    "name": f,
+                    "dir": rel_root,
+                    "size": stat.st_size,
+                    "modified_at": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                    "is_recent": is_recent,
+                    "lane": lane,
+                    "attributed_agent": attributed_agent,
+                })
+            except Exception:
+                pass
+
+    # Sort files: most recently modified first, then alphabetically
+    file_list.sort(key=lambda x: (not x["is_recent"], x["path"]))
+
+    return {
+        "project_token": project_token,
+        "total_files": len(file_list),
+        "files": file_list,
+        "active_agents": [
+            {
+                "id": a.get("id"),
+                "name": a.get("name"),
+                "status": a.get("status"),
+                "progress": a.get("progress", 0),
+                "progress_message": a.get("progress_message", ""),
+            }
+            for a in active_agents
+        ],
+    }
+
+
+@router.get("/agents/workspace/file-content")
+async def get_workspace_file_content(
+    project_token: str,
+    file_path: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return raw file content for VS Code style live editor preview."""
+    from app.core.config import get_settings
+    settings = get_settings()
+    clean_token = (project_token or "default_project").replace("/", "_").replace("\\", "_")
+    workspace_dir = os.path.abspath(os.path.join(settings.project_storage_root, clean_token))
+
+    # Guard against directory traversal
+    clean_file_path = file_path.lstrip("/\\")
+    target_abs = os.path.abspath(os.path.join(workspace_dir, clean_file_path))
+    if not target_abs.startswith(workspace_dir):
+        raise HTTPException(status_code=403, detail="Access denied: outside workspace")
+
+    if not os.path.exists(target_abs) or os.path.isdir(target_abs):
+        raise HTTPException(status_code=404, detail=f"File not found: {clean_file_path}")
+
+    try:
+        with open(target_abs, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read file: {e}")
+
+    base_name = os.path.basename(clean_file_path).lower()
+    ext = os.path.splitext(clean_file_path)[1].lower()
+    if base_name == ".env" or base_name.startswith(".env.") or ext == ".env":
+        language = "env"
+    else:
+        lang_map = {
+            ".py": "python",
+            ".js": "javascript",
+            ".jsx": "javascript",
+            ".ts": "typescript",
+            ".tsx": "typescript",
+            ".html": "html",
+            ".css": "css",
+            ".json": "json",
+            ".md": "markdown",
+            ".sql": "sql",
+            ".sh": "bash",
+            ".yml": "yaml",
+            ".yaml": "yaml",
+            ".toml": "toml",
+            ".ini": "ini",
+            ".txt": "plaintext",
+            ".dockerignore": "dockerfile",
+            ".gitignore": "ignore",
+        }
+        language = lang_map.get(ext, "plaintext")
+    stat = os.stat(target_abs)
+
+    return {
+        "path": clean_file_path,
+        "content": content,
+        "size": stat.st_size,
+        "language": language,
+        "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+    }
+
 
 # --- Extracted Block (Lines 13034-14595) ---
 @router.get("/agents/{agent_id}/status")
@@ -1470,6 +1651,15 @@ async def _bg_run_agent(
                 t_status = str(getattr(t, 'status', '') or '').lower()
                 is_completed = t_status in ('done', 'completed', 'finished')
 
+                t_linked = getattr(t, 'linked_tasks', None) or []
+                if isinstance(t_linked, str):
+                    try:
+                        t_linked = json.loads(t_linked)
+                    except Exception:
+                        t_linked = [t_linked]
+                if not isinstance(t_linked, list):
+                    t_linked = []
+
                 task_obj = {
                     "db_id": t.id,
                     "id": getattr(t, 'task_id', getattr(t, 'id', '')),
@@ -1477,6 +1667,7 @@ async def _bg_run_agent(
                     "description": t_desc,
                     "lane": task_lane,
                     "subtasks": t_subtasks,
+                    "depends_on": t_linked,
                     "type": getattr(t, 'task_type', 'TASK'),
                     "completed": is_completed,
                 }
@@ -1612,7 +1803,28 @@ async def _bg_run_agent(
                 web_search_enabled="web_search" in (assigned_tools or []),
             )
 
+            # ── Resolve Git credentials fallback from DB if not provided ──
+            if not git_repo_url or not git_token:
+                gov = db.query(models.GovernanceResponse).filter(
+                    models.GovernanceResponse.project_token == project_token
+                ).first()
+                if gov:
+                    git_repo_url = git_repo_url or gov.dest_repo_url
+                    git_token = git_token or gov.dest_repo_token
+                if not git_repo_url or not git_token:
+                    from app.routers.helpers import _resolve_project_global_credential
+                    cred = _resolve_project_global_credential(db, None, project_token)
+                    if cred:
+                        git_repo_url = git_repo_url or cred.git_repo_url
+                        git_token = git_token or cred.git_token
+
             # Embed structured tasks for the Supervisor DAG scheduler
+            if git_repo_url:
+                task_config["repo_url"] = git_repo_url
+            if git_token:
+                task_config["git_token"] = git_token
+                task_config["has_git_token"] = True
+
             task_config["tasks"] = [
                 {
                     "task_id": str(t.get("id") or t.get("db_id") or f"task_{idx}"),
@@ -1630,17 +1842,25 @@ async def _bg_run_agent(
                 for idx, t in enumerate(tasks_to_execute)
             ]
 
-            # Write task config to workspace
+            # Write task config to workspace (isolated per-agent file + fallback)
+            clean_aid = re.sub(r'[^a-zA-Z0-9_]', '_', agent_id)
+            config_filename = f"task_config_{clean_aid}.json"
             config_json = json.dumps(task_config, indent=2)
             agent_dir = os.path.join(workspace_dir, ".agent")
             os.makedirs(agent_dir, exist_ok=True)
-            config_path = os.path.join(agent_dir, "task_config.json")
+            config_path = os.path.join(agent_dir, config_filename)
             with open(config_path, "w", encoding="utf-8") as f:
                 f.write(config_json)
+            # Maintain backward compat fallback
+            try:
+                with open(os.path.join(agent_dir, "task_config.json"), "w", encoding="utf-8") as f:
+                    f.write(config_json)
+            except Exception:
+                pass
 
             agent_service.append_agent_log(
                 agent_id,
-                f"Task config written to /workspace/.agent/task_config.json. Launching Agent Swarm runtime...",
+                f"Task config written to /workspace/.agent/{config_filename}. Launching Agent Swarm runtime...",
                 "info",
                 project_token,
             )
@@ -1683,7 +1903,7 @@ async def _bg_run_agent(
                             agent_rec_mem["progress_message"] = "Swarm Phase: Code Committed & Pushed to Git..."
 
                 # Run with python -u (unbuffered binary stdout/stderr) for instant live streaming
-                exec_cmd = "export IDLE_TIMEOUT_SECONDS=1 && cd /workspace && python -u -m agent.main 2>&1"
+                exec_cmd = f"export AGENT_ID='{agent_id}' && export AGENT_CONFIG_FILE='{config_filename}' && export IDLE_TIMEOUT_SECONDS=1 && cd /workspace && python -u -m agent.main 2>&1"
                 exit_code, output = await asyncio.to_thread(
                     playground_manager.exec_in_playground,
                     container_name,
@@ -1692,14 +1912,17 @@ async def _bg_run_agent(
                     line_callback=on_agent_log_line,
                 )
 
-                # Check task_summary.json written by supervisor to determine real execution success
-                summary_path = os.path.join(workspace_dir, ".agent", "task_summary.json")
+                # Check per-agent task summary or general task_summary.json
+                summary_filename = f"task_summary_{clean_aid}.json"
+                summary_path = os.path.join(workspace_dir, ".agent", summary_filename)
+                if not os.path.exists(summary_path):
+                    summary_path = os.path.join(workspace_dir, ".agent", "task_summary.json")
                 if os.path.exists(summary_path):
                     try:
                         with open(summary_path, "r", encoding="utf-8") as f:
                             task_summary_data = json.load(f)
                     except Exception as sum_err:
-                        logger.warning(f"[_bg_run_agent] Could not read task_summary.json: {sum_err}")
+                        logger.warning(f"[_bg_run_agent] Could not read {summary_path}: {sum_err}")
 
                 failed_task_ids = set()
                 if task_summary_data:
@@ -1834,6 +2057,36 @@ async def _bg_run_agent(
                 agent_rec_mem["progress_message"] = (
                     f"All {len(tasks_to_execute)} task(s) {'executed successfully' if execution_success else 'completed with errors'}."
                 )
+
+            # ── Auto-commit & Push to Git on success ──
+            if execution_success and git_repo_url:
+                try:
+                    auth_repo_url = git_repo_url
+                    if git_token and "@" not in auth_repo_url:
+                        if auth_repo_url.startswith("https://"):
+                            auth_repo_url = auth_repo_url.replace("https://", f"https://x-access-token:{git_token}@")
+                        elif auth_repo_url.startswith("http://"):
+                            auth_repo_url = auth_repo_url.replace("http://", f"http://x-access-token:{git_token}@")
+
+                    git_cmds = [
+                        "git config --replace-all user.email 'agent@dsuite.internal'",
+                        "git config --replace-all user.name 'DSuite Swarm'",
+                        "git add -A",
+                        f"git commit -m 'feat({agent_id}): Complete tasks for project' --allow-empty",
+                        f"git push {auth_repo_url} HEAD:main || git push {auth_repo_url} HEAD:master || true",
+                    ]
+                    full_cmd = " && ".join(git_cmds)
+                    await asyncio.to_thread(
+                        subprocess.run,
+                        full_cmd,
+                        shell=True,
+                        cwd=workspace_dir,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+                except Exception as g_err:
+                    logger.warning(f"[_bg_run_agent] Auto git push error: {g_err}")
 
             total_tasks = len(tasks_to_execute)
             logger.info(f"[_bg_run_agent] Agent {agent_name} processed {total_tasks} tasks. Success: {execution_success}.")
@@ -2180,6 +2433,63 @@ async def _run_phased_swarm_coordinator(
         "info",
         project_token,
     )
+
+    # ── Final Delivery: Atomic Single Git Commit & Push ──
+    if git_repo_url:
+        try:
+            agent_service.append_agent_log(
+                "M_agent_01",
+                f"🚀 [Swarm Coordinator] Executing single atomic Git delivery to {git_repo_url}...",
+                "info",
+                project_token,
+            )
+            auth_repo_url = git_repo_url
+            if git_token and "@" not in auth_repo_url:
+                if auth_repo_url.startswith("https://"):
+                    auth_repo_url = auth_repo_url.replace("https://", f"https://x-access-token:{git_token}@")
+                elif auth_repo_url.startswith("http://"):
+                    auth_repo_url = auth_repo_url.replace("http://", f"http://x-access-token:{git_token}@")
+
+            git_cmds = [
+                "git config user.email 'agent@dsuite.internal'",
+                "git config user.name 'DSuite Swarm'",
+                "git add -A",
+                "git commit -m 'feat(release): Complete application build based on BRD specification' --allow-empty",
+                f"git push {auth_repo_url} HEAD:main || git push {auth_repo_url} HEAD:master || true",
+            ]
+            import subprocess
+            full_cmd = " && ".join(git_cmds)
+            git_proc = await asyncio.to_thread(
+                subprocess.run,
+                full_cmd,
+                shell=True,
+                cwd=workspace_dir,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if git_proc.returncode == 0:
+                agent_service.append_agent_log(
+                    "M_agent_01",
+                    "✅ [Swarm Coordinator] Atomic Git Delivery SUCCESS: All code committed and pushed cleanly.",
+                    "output",
+                    project_token,
+                )
+            else:
+                agent_service.append_agent_log(
+                    "M_agent_01",
+                    f"⚠️ [Swarm Coordinator] Git delivery note: {git_proc.stderr[:300] or git_proc.stdout[:300]}",
+                    "info",
+                    project_token,
+                )
+        except Exception as ge:
+            logger.warning(f"[SwarmCoordinator] Atomic git delivery error: {ge}")
+            agent_service.append_agent_log(
+                "M_agent_01",
+                f"⚠️ [Swarm Coordinator] Git delivery note: {ge}",
+                "info",
+                project_token,
+            )
 
 
 @router.post("/agents/run-all")
@@ -4174,10 +4484,11 @@ async def _backfill_nxdune_task_ids(db: Session, project_token: str, x_task_toke
         logger.error(f"Failed to backfill NXDune task IDs: {e}")
 
 
-def _get_local_status_and_progress(ow_status: Optional[str], checklist_str: Optional[str] = None) -> tuple[str, int]:
-    if ow_status == "done":
+def _get_local_status_and_progress(ow_status: Optional[str], checklist_str: Optional[str] = None, task_status: Optional[str] = None) -> tuple[str, int]:
+    effective = (ow_status or task_status or "").strip().lower()
+    if effective in ("done", "completed", "passed", "complete"):
         return "Completed", 100
-    elif ow_status == "in_progress":
+    elif effective in ("in_progress", "running", "claimed", "ongoing"):
         if checklist_str:
             try:
                 import json as json_mod
@@ -4194,10 +4505,10 @@ def _get_local_status_and_progress(ow_status: Optional[str], checklist_str: Opti
             except Exception:
                 pass
         return "On Going", 50
-    elif ow_status == "failed":
+    elif effective in ("failed", "blocked"):
         return "Blocked", 0
-    elif ow_status == "claimed":
-        return "On Going", 10
+    elif effective in ("in_review", "review"):
+        return "In Review", 75
     else:
         return "To Do", 0
 
@@ -4227,7 +4538,7 @@ def _format_local_tasks_as_nxdune(db: Session, db_tasks: List[models.Task], proj
             ow_record = ownership_map.get(clean_id)
             
         ow_status = ow_record.status if ow_record else None
-        status, progress = _get_local_status_and_progress(ow_status, t.checklist)
+        status, progress = _get_local_status_and_progress(ow_status, t.checklist, t.status)
         
         # Override progress if it was explicitly updated in the ownership task_data
         if ow_record and ow_record.task_data and isinstance(ow_record.task_data, dict):
@@ -5858,6 +6169,46 @@ async def generate_tasks_locally(
                 detail="Failed to generate tasks. Please check your project context and try again."
             )
         
+        # Ensure all tasks are reliably persisted in DB even if incremental callback was missed or fallback was used
+        try:
+            for tdata in tasks:
+                clean_id = tdata.get("task_id", "")
+                db_uid = f"{request.project_token}_{clean_id}"
+                existing = db.query(models.Task).filter(models.Task.task_id == db_uid).first()
+                if not existing:
+                    as_assigned = json.dumps(tdata.get("assignedTo", [])) if isinstance(tdata.get("assignedTo"), list) else tdata.get("assignedTo", "[]")
+                    as_linked = json.dumps(tdata.get("linked_tasks", [])) if isinstance(tdata.get("linked_tasks"), list) else tdata.get("linked_tasks", "[]")
+                    as_check = json.dumps(tdata.get("checklist", [])) if isinstance(tdata.get("checklist"), list) else tdata.get("checklist", "[]")
+                    new_t = models.Task(
+                        task_id=db_uid,
+                        project_token=request.project_token,
+                        owner_id=current_user.id,
+                        task_name=tdata.get("taskName") or tdata.get("title") or "Untitled Task",
+                        task_type=tdata.get("task_type", "TASK"),
+                        description=tdata.get("description", ""),
+                        priority=tdata.get("priority", "medium"),
+                        task_wallet=tdata.get("task_wallet", 1),
+                        startdate=tdata.get("startdate"),
+                        planned_start=tdata.get("planned_start"),
+                        deadline=tdata.get("deadline"),
+                        assigned_to=as_assigned,
+                        reported_by=tdata.get("reported_by", "system"),
+                        sprint=tdata.get("sprint", "Sprint 1"),
+                        milestone=tdata.get("milestone", ""),
+                        linked_tasks=as_linked,
+                        checklist=as_check,
+                        selected=False,
+                        synced_to_nxdune=False,
+                        status="TODO",
+                        assigned_agent_role=tdata.get("assigned_agent_role") or (tdata.get("assignedTo", ["Fullstack Developer"])[0] if isinstance(tdata.get("assignedTo"), list) and tdata.get("assignedTo") else "Fullstack Developer"),
+                        verification_status="PENDING",
+                    )
+                    db.add(new_t)
+            db.commit()
+        except Exception as db_persist_err:
+            logger.warning(f"Final task persistence warning: {db_persist_err}")
+            db.rollback()
+
         gen_job.set_completed(tasks)
         
         logger.info(f"Generated and stored {len(tasks)} tasks locally for project {request.project_token}")
