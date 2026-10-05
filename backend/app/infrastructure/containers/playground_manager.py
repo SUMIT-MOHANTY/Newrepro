@@ -70,7 +70,8 @@ class PlaygroundContainerManager:
             res = subprocess.run(
                 ["docker", "inspect", "-f", "{{.State.Running}}", container_name],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
             )
             return res.stdout.strip().lower() == "true"
@@ -139,8 +140,13 @@ class PlaygroundContainerManager:
                     return lru_name
 
             # 4. Provision a dedicated playground container for this sub-agent
-            clean_org = "".join(c for c in (org_name or "default") if c.isalnum() or c == "_")[:12].lower()
-            clean_agent = "".join(c for c in (agent_id or "worker") if c.isalnum() or c == "_")[:18].lower()
+            clean_org = "".join(c for c in (org_name or "default") if c.isalnum() or c == "_")[:10].lower()
+            if "::" in (agent_id or ""):
+                proj_part, aid_part = agent_id.split("::", 1)
+                clean_agent = f"{proj_part[:8]}_{aid_part}"
+            else:
+                clean_agent = agent_id or "worker"
+            clean_agent = "".join(c for c in clean_agent if c.isalnum() or c == "_")[:24].lower()
             container_name = f"dsuite_agent_{clean_org}_{clean_agent}"
 
             # Make sure no conflicting stale container with this name exists in Docker
@@ -154,12 +160,19 @@ class PlaygroundContainerManager:
 
             try:
                 os.makedirs(workspace_host_path, exist_ok=True)
+                runtime_dir = os.path.abspath(
+                    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "agent-runtime")
+                )
+                vols = {os.path.abspath(workspace_host_path): {"bind": "/workspace", "mode": "rw"}}
+                if os.path.isdir(runtime_dir):
+                    vols[runtime_dir] = {"bind": "/app", "mode": "rw"}
+
                 if self._docker_client:
                     c = self._docker_client.containers.run(
                         image=image,
                         name=container_name,
                         detach=True,
-                        volumes={os.path.abspath(workspace_host_path): {"bind": "/workspace", "mode": "rw"}},
+                        volumes=vols,
                         working_dir="/workspace",
                         entrypoint="/bin/sh",
                         command=["-c", "mkdir -p /var/log && printf '[Playground Container Online] Ready for Agent Swarm execution.\\n' > /proc/1/fd/1; tail -f /dev/null"],
@@ -178,12 +191,22 @@ class PlaygroundContainerManager:
                         "docker", "run", "-d",
                         "--name", container_name,
                         "-v", f"{os.path.abspath(workspace_host_path)}:/workspace",
+                    ]
+                    if os.path.isdir(runtime_dir):
+                        cmd.extend(["-v", f"{runtime_dir}:/app"])
+                    cmd.extend([
                         "-w", "/workspace",
                         "--entrypoint", "/bin/sh",
                         image,
                         "-c", "mkdir -p /var/log && printf '[Playground Container Online] Ready for Agent Swarm execution.\\n' > /proc/1/fd/1; tail -f /dev/null",
-                    ]
-                    res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                    ])
+                    res = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=30,
+                    )
                     if res.returncode != 0:
                         logger.error(f"[PlaygroundManager] Failed to launch container CLI: {res.stderr}")
                         return None
@@ -336,7 +359,12 @@ class PlaygroundContainerManager:
             else:
                 cmd = ["docker", "exec", "-w", workdir, container_name, "sh", "-c", command]
                 process = subprocess.Popen(
-                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    encoding="utf-8",
+                    errors="replace",
+                    bufsize=1,
                 )
                 output_lines = []
                 if process.stdout:
@@ -386,7 +414,8 @@ class PlaygroundContainerManager:
             res = subprocess.run(
                 ["docker", "ps", "--filter", "name=dsuite_playground_", "--format", "{{.Names}}"],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
             )
             if res.returncode == 0:

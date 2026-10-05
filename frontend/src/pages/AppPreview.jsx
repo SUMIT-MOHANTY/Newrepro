@@ -139,17 +139,24 @@ export default function AppPreview() {
     }, [projectId, previewStatus.status, isDeploying]);
 
     const handleDeploy = async () => {
-        setIsDeploying(true);
-        setPreviewSteps([]);
+        const activeToken = token || localStorage.getItem('token');
+        if (!activeToken) {
+            customAlert('You must be logged in to deploy preview. Please log in again.', 'Authentication Required');
+            setIsDeploying(false);
+            return;
+        }
+
         try {
-            const params = projectId ? `?project_token=${projectId}` : '';
+            const params = projectId ? `?project_token=${encodeURIComponent(projectId)}` : '';
             const res = await fetch(`${API_ENDPOINTS.AGENT_PREVIEW_DEPLOY}${params}`, {
                 method: 'POST',
                 headers: {
-                    'Authorization': `Bearer ${token}`,
+                    'Authorization': `Bearer ${activeToken}`,
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({}),
+                body: JSON.stringify({
+                    project_token: projectId,
+                }),
             });
             if (res.ok) {
                 const data = await res.json();
@@ -159,7 +166,11 @@ export default function AppPreview() {
                 customAlert(err.detail || 'Deploy failed', 'Deploy Failed');
             }
         } catch (e) {
-            customAlert('Deploy failed: ' + e.message, 'Deploy Failed');
+            console.error('Deploy preview failed', e);
+            const msg = e.message === 'Failed to fetch'
+                ? 'Backend server on http://localhost:8000 is unreachable or restarting. Please ensure the backend is running.'
+                : e.message;
+            customAlert('Deploy failed: ' + msg, 'Deploy Failed');
         } finally {
             setIsDeploying(false);
         }

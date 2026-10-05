@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Check, Copy, PauseCircle, Play } from 'lucide-react';
 
 /**
  * Parses markdown inline formatting:
@@ -212,7 +213,7 @@ function cleanTechnicalFilePrefix(str) {
           title="Copy summary"
           className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 transition-colors cursor-pointer"
         >
-          <span className="material-symbols-outlined text-[12px]">{copied ? 'check' : 'content_copy'}</span>
+          {copied ? <Check className="w-3 h-3 text-emerald-500 shrink-0" /> : <Copy className="w-3 h-3 shrink-0" />}
           <span>{copied ? 'Copied' : 'Copy'}</span>
         </button>
       </div>
@@ -279,7 +280,7 @@ function cleanTechnicalFilePrefix(str) {
       {isStoppedOrLimit && (
         <div className="mt-3 p-2.5 rounded-xl border border-amber-300/80 dark:border-amber-700/60 bg-white dark:bg-slate-800/80 shadow-xs flex items-center justify-between gap-2.5 animate-fade-in">
           <div className="flex items-center gap-2 min-w-0">
-            <span className="material-symbols-outlined text-[18px] text-amber-500 shrink-0">motion_photos_paused</span>
+            <PauseCircle className="w-4 h-4 text-amber-500 shrink-0" />
             <div className="flex flex-col min-w-0">
               <span className="text-[11px] font-bold text-amber-950 dark:text-amber-200 leading-tight">Execution paused at iteration limit</span>
               <span className="text-[9.5px] text-slate-500 dark:text-slate-400 truncate">Click Continue or enter 'continue' to resume</span>
@@ -293,7 +294,7 @@ function cleanTechnicalFilePrefix(str) {
             }}
             className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 active:scale-95 text-white text-[11px] font-semibold transition cursor-pointer shrink-0 shadow-2xs"
           >
-            <span className="material-symbols-outlined text-[14px]">play_arrow</span>
+            <Play className="w-3.5 h-3.5 shrink-0" />
             <span>Continue</span>
           </button>
         </div>

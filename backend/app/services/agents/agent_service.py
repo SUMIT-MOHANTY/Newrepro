@@ -199,7 +199,12 @@ class AgentService:
         git_branch: str = "main",
         tools: Optional[List[str]] = None,
     ) -> tuple[models.AgentSession, models.AgentTask]:
-        """Record task and dispatch execution to the isolated agent container."""
+        """Record task and dispatch execution to the isolated agent container.
+
+        Coordination gate: if the project is already in a blocked execution state,
+        do not dispatch blindly. Return the session/task but mark it blocked so the
+        caller can decide whether to retry, fix upstream, or escalate.
+        """
         session = self.get_or_create_session(db, project_id=project_id, user_id=user_id)
 
         task = models.AgentTask(
@@ -219,6 +224,20 @@ class AgentService:
         # Workspace directory on host
         workspace_dir = os.path.join(self.settings.project_storage_root, project_id.replace("/", "_").replace("\\", "_"))
         os.makedirs(workspace_dir, exist_ok=True)
+
+        # Shared execution coordination gate
+        blocked_context = _assess_project_dispatch_context(project_id, workspace_dir)
+        if blocked_context.get("should_not_dispatch"):
+            logger.warning(
+                "[AgentService] Dispatch gated for project %s: %s",
+                project_id,
+                blocked_context.get("reason") or blocked_context.get("blocked_reasons"),
+            )
+            task.status = "blocked"
+            task.description = f"{prompt}\n\n[Dispatch gated] {blocked_context.get('reason') or blocked_context.get('blocked_reasons')}"
+            db.commit()
+            db.refresh(task)
+            db.refresh(session)
 
         config = AgentContainerConfig(
             session_id=session.id,
@@ -864,10 +883,6 @@ update_project_telemetry = agent_service.update_project_telemetry
 orchestrate_master_scaffold_and_tasks = agent_service.orchestrate_master_scaffold_and_tasks
 
 
-def set_cache_invalidation_callback(cb=None) -> None:
-    pass
-
-
 def _ensure_project_state(project_token: str) -> Dict[str, Any]:
     return {"agent_states": agent_service._get_agent_states(project_token)}
 
@@ -881,3 +896,126 @@ _project_tech_specs: Dict[str, Any] = {}
 
 def _generate_technical_spec(*args, **kwargs) -> Dict[str, Any]:
     return {}
+
+
+def _assess_project_dispatch_context(project_id: str, workspace_dir: str) -> Dict[str, Any]:
+    """Decide whether a project should be dispatched into agent work right now.
+
+    This is the operational hook that turns the project execution tracker from a log
+    into an active coordination signal.
+    """
+    try:
+        from app.services.agents.master_orchestrator import assess_project_runnable_state
+
+        assessment = assess_project_runnable_state(project_id, workspace_dir)
+
+        blocked_reasons = assessment.get("blocked_reasons") or []
+        is_blocked = bool(assessment.get("is_blocked"))
+        assessment_value = assessment.get("assessment")
+
+        should_not_dispatch = False
+        reason: Optional[str] = None
+
+        if assessment_value == "no_workspace":
+            should_not_dispatch = False
+            reason = "no workspace yet; scaffolding should create it"
+
+        elif is_blocked and blocked_reasons:
+            should_not_dispatch = True
+            reason = "project execution is blocked: " + ", ".join(str(x) for x in blocked_reasons)
+
+        elif assessment_value == "missing_essential_workspace_files":
+            should_not_dispatch = False
+            reason = "workspace exists but essential project files are missing; scaffold/fix first"
+
+        elif assessment_value == "unverified_but_not_blocked":
+            should_not_dispatch = False
+            reason = "not blocked, but not verified runnable yet; proceed with verification gate"
+
+        elif assessment_value == "verified_runnable":
+            should_not_dispatch = False
+            reason = "project is verified runnable; normal dispatch"
+
+        else:
+            should_not_dispatch = False
+            reason = "assessment unclear; proceed cautiously"
+
+        return {
+            "project_id": project_id,
+            "should_not_dispatch": should_not_dispatch,
+            "reason": reason,
+            "assessment": assessment_value,
+            "blocked_reasons": blocked_reasons,
+            "is_verified_runnable": assessment.get("verified_runnable"),
+        }
+    except Exception as e:
+        logger.debug(
+            "[AgentService] _assess_project_dispatch_context failed for %s: %s",
+            project_id,
+            e,
+        )
+        return {
+            "project_id": project_id,
+            "should_not_dispatch": False,
+            "reason": "assessment failed; proceeding cautiously",
+            "assessment": "assessment_error",
+            "blocked_reasons": [],
+            "is_verified_runnable": None,
+        }
+
+
+def mark_project_verified_runnable(project_id: str, runnable: bool) -> None:
+    """Record an app-level verification outcome for a project.
+
+    This is the hook that lets the system say:
+    - the app was built/started/flow-checked,
+    - and the result was Runnable / Not Runnable.
+
+    A project should not be treated as fully successful unless it is marked
+    verified_runnable=True after real verification, not just task completion.
+    """
+    try:
+        from app.services.agents.project_execution_tracker import get_tracker
+
+        tracker = get_tracker(project_id)
+        tracker.mark_verified_runnable(runnable)
+
+        if runnable:
+            tracker.set_status("verified_runnable")
+        else:
+            tracker.set_status("unrunnable")
+            tracker.register_failure(
+                task_id=None,
+                agent_id="verification",
+                error_message="App-level verification failed: project is not runnable",
+                failure_class="runtime_error",
+                context={"source": "mark_project_verified_runnable"},
+            )
+
+        logger.info(
+            "[AgentService] mark_project_verified_runnable: %s -> %s",
+            project_id,
+            runnable,
+        )
+    except Exception as e:
+        logger.debug(
+            "[AgentService] mark_project_verified_runnable failed for %s: %s",
+            project_id,
+            e,
+        )
+
+
+def _resolve_project_workspace_dir(project_id: str) -> str:
+    """Resolve the host workspace directory for a project token/id."""
+    try:
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        clean = project_id.replace("/", "_").replace("\\", "_")
+        return os.path.join(settings.project_storage_root, clean)
+    except Exception:
+        return os.path.join("workspace", str(project_id).replace("/", "_").replace("\\", "_"))
+
+
+assess_project_dispatch_context = _assess_project_dispatch_context
+mark_project_verified_runnable = mark_project_verified_runnable

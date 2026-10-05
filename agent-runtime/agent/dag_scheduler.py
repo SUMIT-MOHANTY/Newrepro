@@ -53,6 +53,7 @@ class DAGScheduler:
     def __init__(self, task_config_path: str, tasks_data: List[Dict[str, Any]] | None = None):
         self.task_config_path = task_config_path
         self.tasks: Dict[str, Task] = {}
+        self._original_config: Dict[str, Any] = {}
         if tasks_data:
             for t in tasks_data:
                 task = Task(t)
@@ -68,6 +69,7 @@ class DAGScheduler:
             with open(self.task_config_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 if isinstance(data, dict):
+                    self._original_config = data
                     task_items = data.get("tasks", [])
                 elif isinstance(data, list):
                     task_items = data
@@ -82,10 +84,80 @@ class DAGScheduler:
 
     def save_tasks(self):
         try:
+            task_list = [t.to_dict() for t in self.tasks.values()]
+            payload: Any = task_list
+            if isinstance(self._original_config, dict) and self._original_config:
+                payload = dict(self._original_config)
+                payload["tasks"] = task_list
+            elif os.path.exists(self.task_config_path):
+                try:
+                    with open(self.task_config_path, 'r', encoding='utf-8') as f:
+                        existing = json.load(f)
+                    if isinstance(existing, dict):
+                        payload = existing
+                        payload["tasks"] = task_list
+                except Exception:
+                    pass
+
             with open(self.task_config_path, 'w', encoding='utf-8') as f:
-                json.dump([t.to_dict() for t in self.tasks.values()], f, indent=4)
+                json.dump(payload, f, indent=4)
         except Exception as e:
             logger.error(f"Failed to save tasks to {self.task_config_path}: {e}")
+
+    def _find_task_by_id(self, dep_id: str) -> Task | None:
+        """Find task by exact ID or short ID suffix (e.g. 'TASK-00' matching '<uuid>_TASK-00')."""
+        if not dep_id:
+            return None
+        if dep_id in self.tasks:
+            return self.tasks[dep_id]
+        clean_dep = dep_id.strip()
+        for t_id, task in self.tasks.items():
+            if t_id == clean_dep or t_id.endswith(f"_{clean_dep}") or t_id.endswith(f"-{clean_dep}"):
+                return task
+        return None
+
+    def _is_external_dependency_completed(self, dep_id: str) -> bool:
+        """Check if a dependency assigned to another agent in the swarm has completed."""
+        clean_dep = dep_id.strip()
+        workspace_agent_dir = os.path.dirname(self.task_config_path) if self.task_config_path else "/workspace/.agent"
+        if not os.path.exists(workspace_agent_dir):
+            return False
+        try:
+            for fname in os.listdir(workspace_agent_dir):
+                fpath = os.path.join(workspace_agent_dir, fname)
+                if not os.path.isfile(fpath):
+                    continue
+                # Check task_summary files first (highest fidelity)
+                if fname.startswith("task_summary") and fname.endswith(".json"):
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            s_data = json.load(f)
+                            tasks_map = s_data.get("tasks") or s_data.get("task_results") or {}
+                            for t_id, res in tasks_map.items():
+                                if t_id == clean_dep or t_id.endswith(f"_{clean_dep}") or t_id.endswith(f"-{clean_dep}"):
+                                    if isinstance(res, dict) and str(res.get("status", "")).lower() in ("completed", "done", "passed"):
+                                        return True
+                                    elif isinstance(res, str) and res.lower() in ("completed", "done", "passed"):
+                                        return True
+                    except Exception:
+                        pass
+                # Check sibling task_config files
+                elif fname.startswith("task_config_") and fname.endswith(".json") and fpath != self.task_config_path:
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            c_data = json.load(f)
+                            items = c_data.get("tasks", []) if isinstance(c_data, dict) else (c_data if isinstance(c_data, list) else [])
+                            for item in items:
+                                if isinstance(item, dict):
+                                    t_id = str(item.get("task_id") or item.get("id") or "")
+                                    if t_id == clean_dep or t_id.endswith(f"_{clean_dep}") or t_id.endswith(f"-{clean_dep}"):
+                                        if str(item.get("status", "")).lower() in ("completed", "done", "passed"):
+                                            return True
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        return False
 
     def get_ready_tasks(self) -> List[Task]:
         ready_tasks = []
@@ -93,16 +165,24 @@ class DAGScheduler:
             if task.status == TaskStatus.PENDING:
                 can_run = True
                 for dep in task.depends_on:
-                    if dep in self.tasks and self.tasks[dep].status != TaskStatus.COMPLETED:
-                        can_run = False
-                        break
+                    dep_task = self._find_task_by_id(dep)
+                    if dep_task:
+                        if dep_task.status != TaskStatus.COMPLETED:
+                            can_run = False
+                            break
+                    else:
+                        # Dependency is external (assigned to another agent in the swarm)
+                        if not self._is_external_dependency_completed(dep):
+                            can_run = False
+                            break
                 if can_run:
                     ready_tasks.append(task)
         return ready_tasks
 
     def update_task_status(self, task_id: str, status: TaskStatus):
-        if task_id in self.tasks:
-            self.tasks[task_id].status = status
+        target_task = self._find_task_by_id(task_id)
+        if target_task:
+            target_task.status = status
             self.save_tasks()
 
     def get_execution_order(self) -> List[List[Task]]:
@@ -112,8 +192,9 @@ class DAGScheduler:
         
         for t_id, task in self.tasks.items():
             for dep in task.depends_on:
-                if dep in graph:
-                    graph[dep].append(t_id)
+                dep_task = self._find_task_by_id(dep)
+                if dep_task and dep_task.task_id in graph:
+                    graph[dep_task.task_id].append(t_id)
                     in_degree[t_id] += 1
                     
         execution_batches = []

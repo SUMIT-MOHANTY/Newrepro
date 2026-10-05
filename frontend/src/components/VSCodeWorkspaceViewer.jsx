@@ -281,6 +281,11 @@ export default function VSCodeWorkspaceViewer({ isOpen, onClose, projectToken = 
     const [isMobile, setIsMobile] = useState(false);
 
     const pollTimerRef = useRef(null);
+    const openTabsRef = useRef([]);
+
+    useEffect(() => {
+        openTabsRef.current = openTabs;
+    }, [openTabs]);
 
     // Responsive screen width tracker
     useEffect(() => {
@@ -311,47 +316,6 @@ export default function VSCodeWorkspaceViewer({ isOpen, onClose, projectToken = 
         }
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [isOpen, onClose]);
-
-    // ── Fetch File Tree & Active Agents ────────────────────────────────────
-    const fetchWorkspaceFiles = useCallback(async (isInitial = false) => {
-        if (isInitial) setLoadingFiles(true);
-        const token = localStorage.getItem('token');
-        try {
-            const url = API_ENDPOINTS.AGENT_WORKSPACE_FILES(projectToken);
-            const res = await fetch(url, {
-                headers: token ? { Authorization: `Bearer ${token}` } : {},
-            });
-            if (res.ok) {
-                const data = await res.json();
-                const fetchedFiles = data.files || [];
-                setFiles(fetchedFiles);
-                setActiveAgents(data.active_agents || []);
-                setLastSyncTime(new Date());
-
-                // Auto-expand top level folders initially
-                if (isInitial && fetchedFiles.length > 0) {
-                    const initialExpanded = { '': true };
-                    fetchedFiles.forEach(f => {
-                        const topDir = f.path.split('/')[0];
-                        if (f.path.includes('/')) {
-                            initialExpanded[topDir] = true;
-                        }
-                    });
-                    setExpandedFolders(initialExpanded);
-
-                    // Auto-open first modified or important file
-                    const primeFile = fetchedFiles.find(f => f.is_recent) || fetchedFiles[0];
-                    if (primeFile && openTabs.length === 0) {
-                        handleOpenFile(primeFile.path, false);
-                    }
-                }
-            }
-        } catch (err) {
-            console.error('Error fetching workspace files:', err);
-        } finally {
-            if (isInitial) setLoadingFiles(false);
-        }
-    }, [projectToken]);
 
     // ── Fetch Specific File Content ────────────────────────────────────────
     const fetchFileContent = useCallback(async (filePath) => {
@@ -396,19 +360,77 @@ export default function VSCodeWorkspaceViewer({ isOpen, onClose, projectToken = 
         }
     }, [projectToken]);
 
-    // ── Open a File in Tabs ────────────────────────────────────────────────
+    // ── Open a File in Tabs (Guarantees all ancestors remain expanded) ───────
     const handleOpenFile = useCallback((filePath, closeDrawerOnMobile = true) => {
-        if (!openTabs.includes(filePath)) {
-            setOpenTabs(prev => [...prev, filePath]);
-        }
+        if (!filePath) return;
+        setOpenTabs(prev => (prev.includes(filePath) ? prev : [...prev, filePath]));
         setActiveTabPath(filePath);
         fetchFileContent(filePath);
 
-        // On mobile, automatically close drawer after picking a file so code is immediately visible
-        if (closeDrawerOnMobile && window.innerWidth < 768) {
+        // Keep all ancestor folders of this file open in the explorer so it's always visible!
+        if (filePath.includes('/')) {
+            const parts = filePath.split('/');
+            setExpandedFolders(prev => {
+                const next = { ...prev };
+                for (let i = 0; i < parts.length - 1; i++) {
+                    const subPath = parts.slice(0, i + 1).join('/');
+                    next[subPath] = true;
+                }
+                return next;
+            });
+        }
+
+        // On small mobile screens, automatically close drawer so code is immediately visible
+        if (closeDrawerOnMobile && window.innerWidth < 640) {
             setSidebarOpen(false);
         }
-    }, [openTabs, fetchFileContent]);
+    }, [fetchFileContent]);
+
+    // ── Fetch File Tree & Active Agents ────────────────────────────────────
+    const fetchWorkspaceFiles = useCallback(async (isInitial = false) => {
+        if (isInitial) setLoadingFiles(true);
+        const token = localStorage.getItem('token');
+        try {
+            const url = API_ENDPOINTS.AGENT_WORKSPACE_FILES(projectToken);
+            const res = await fetch(url, {
+                headers: token ? { Authorization: `Bearer ${token}` } : {},
+            });
+            if (res.ok) {
+                const data = await res.json();
+                const fetchedFiles = data.files || [];
+                setFiles(fetchedFiles);
+                setActiveAgents(data.active_agents || []);
+                setLastSyncTime(new Date());
+
+                // Merge folder structure without collapsing existing open folders
+                if (isInitial && fetchedFiles.length > 0) {
+                    setExpandedFolders(prev => {
+                        const next = { ...prev, '': true };
+                        fetchedFiles.forEach(f => {
+                            const parts = f.path.split('/');
+                            for (let i = 0; i < parts.length - 1; i++) {
+                                const subPath = parts.slice(0, i + 1).join('/');
+                                if (next[subPath] === undefined && i < 2) {
+                                    next[subPath] = true;
+                                }
+                            }
+                        });
+                        return next;
+                    });
+
+                    // Auto-open first modified or important file if no tab is currently open
+                    const primeFile = fetchedFiles.find(f => f.is_recent) || fetchedFiles[0];
+                    if (primeFile && openTabsRef.current.length === 0) {
+                        handleOpenFile(primeFile.path, false);
+                    }
+                }
+            }
+        } catch (err) {
+            console.error('Error fetching workspace files:', err);
+        } finally {
+            if (isInitial) setLoadingFiles(false);
+        }
+    }, [projectToken, handleOpenFile]);
 
     // ── Close Tab ─────────────────────────────────────────────────────────
     const handleCloseTab = useCallback((filePath, e) => {
@@ -434,25 +456,33 @@ export default function VSCodeWorkspaceViewer({ isOpen, onClose, projectToken = 
         }));
     }, []);
 
-    // ── Initial load & live polling ───────────────────────────────────────
+    // ── Track active tab in ref to prevent re-triggering polling on tab clicks ──
+    const activeTabRef = useRef(activeTabPath);
+    useEffect(() => {
+        activeTabRef.current = activeTabPath;
+    }, [activeTabPath]);
+
+    // ── Initial load only once when opened ─────────────────────────────────
     useEffect(() => {
         if (!isOpen) return;
         fetchWorkspaceFiles(true);
+    }, [isOpen, fetchWorkspaceFiles]);
 
-        if (autoPoll) {
-            pollTimerRef.current = setInterval(() => {
-                fetchWorkspaceFiles(false);
-                // Also refresh currently active file content so live edits appear immediately
-                if (activeTabPath) {
-                    fetchFileContent(activeTabPath);
-                }
-            }, 2500);
-        }
+    // ── Live background polling (preserves folders and tabs) ───────────────
+    useEffect(() => {
+        if (!isOpen || !autoPoll) return;
+
+        pollTimerRef.current = setInterval(() => {
+            fetchWorkspaceFiles(false);
+            if (activeTabRef.current) {
+                fetchFileContent(activeTabRef.current);
+            }
+        }, 3000);
 
         return () => {
             if (pollTimerRef.current) clearInterval(pollTimerRef.current);
         };
-    }, [isOpen, autoPoll, activeTabPath, fetchWorkspaceFiles, fetchFileContent]);
+    }, [isOpen, autoPoll, fetchWorkspaceFiles, fetchFileContent]);
 
     // ── Copy Code ──────────────────────────────────────────────────────────
     const handleCopy = () => {
@@ -531,7 +561,10 @@ export default function VSCodeWorkspaceViewer({ isOpen, onClose, projectToken = 
                 <div key={node.path || 'root'} className="select-none">
                     {!isRoot && (
                         <div
-                            onClick={() => toggleFolder(node.path)}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                toggleFolder(node.path);
+                            }}
                             style={{ paddingLeft: `${depth * 12 + 6}px` }}
                             className="flex items-center gap-1.5 py-1 px-2 hover:bg-[#2a2d2e] cursor-pointer text-gray-300 hover:text-white transition-colors group text-xs font-mono"
                         >
@@ -571,7 +604,10 @@ export default function VSCodeWorkspaceViewer({ isOpen, onClose, projectToken = 
         return (
             <div
                 key={node.path}
-                onClick={() => handleOpenFile(node.path)}
+                onClick={(e) => {
+                    e.stopPropagation();
+                    handleOpenFile(node.path);
+                }}
                 style={{ paddingLeft: `${depth * 12 + 18}px` }}
                 className={`flex items-center justify-between py-1.5 px-2 cursor-pointer transition-colors group text-xs font-mono ${
                     isSelected
@@ -981,13 +1017,18 @@ export default function VSCodeWorkspaceViewer({ isOpen, onClose, projectToken = 
                                     const iconInfo = getFileIcon(fileName);
                                     const tabMeta = files.find(f => f.path === tabPath);
 
+                                    // Disambiguate duplicate file names across different folders
+                                    const isDuplicate = openTabs.filter(p => p.split('/').pop() === fileName).length > 1;
+                                    let parentHint = '';
+                                    if (isDuplicate && tabPath.includes('/')) {
+                                        const parts = tabPath.split('/');
+                                        parentHint = parts[parts.length - 2] || '';
+                                    }
+
                                     return (
                                         <div
                                             key={tabPath}
-                                            onClick={() => {
-                                                setActiveTabPath(tabPath);
-                                                if (!fileContentMap[tabPath]) fetchFileContent(tabPath);
-                                            }}
+                                            onClick={() => handleOpenFile(tabPath, false)}
                                             className={`flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-2 cursor-pointer border-r border-[#1e1e1e] transition-colors text-xs font-mono group shrink-0 ${
                                                 isActive
                                                     ? 'bg-[#1e1e1e] text-white border-t-2 border-t-[#007acc]'
@@ -995,13 +1036,21 @@ export default function VSCodeWorkspaceViewer({ isOpen, onClose, projectToken = 
                                             }`}
                                         >
                                             <span className="shrink-0">{iconInfo.icon}</span>
-                                            <span className="truncate max-w-[100px] sm:max-w-[140px]">{fileName}</span>
+                                            <span className="truncate max-w-[120px] sm:max-w-[160px] font-medium">
+                                                {fileName}
+                                                {parentHint && (
+                                                    <span className="text-[10px] text-gray-400/80 ml-1 font-normal">
+                                                        ({parentHint})
+                                                    </span>
+                                                )}
+                                            </span>
                                             {tabMeta?.is_recent && (
                                                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" title="Modified recently" />
                                             )}
                                             <button
                                                 onClick={(e) => handleCloseTab(tabPath, e)}
                                                 className="text-gray-500 hover:text-white rounded p-0.5 opacity-60 group-hover:opacity-100 shrink-0 ml-1"
+                                                title="Close"
                                             >
                                                 <X className="w-3 h-3" />
                                             </button>

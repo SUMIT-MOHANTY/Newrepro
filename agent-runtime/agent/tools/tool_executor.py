@@ -35,9 +35,10 @@ def _safe_print(msg: str) -> None:
 class ToolExecutor:
     """Executes tool calls from Claude's tool_use response blocks via MCP."""
 
-    def __init__(self, mcp: "MCPServer", registry: ToolRegistry) -> None:
+    def __init__(self, mcp: "MCPServer", registry: ToolRegistry, event_callback: Optional[Any] = None) -> None:
         self._mcp = mcp
         self._registry = registry
+        self._event_callback = event_callback
         self._files_changed: list[str] = []
         self._tool_call_count: int = 0
         self._built_successfully: bool = False
@@ -485,10 +486,12 @@ class ToolExecutor:
 
     def _track_changes(self, tool_name: str, tool_input: dict, result: Any) -> None:
         """Track which files were created or modified, and build state."""
+        changed_now: list[str] = []
         if tool_name in ("write_file", "find_and_replace", "replace_file_content", "delete_file") and result.success:
             path = tool_input.get("path", "")
             if path and path not in self._files_changed:
                 self._files_changed.append(path)
+                changed_now.append(path)
             self._built_successfully = False  # File changed, requires a new build
         elif tool_name == "batch_replace_file_content" and result.success:
             edits = []
@@ -501,9 +504,21 @@ class ToolExecutor:
                     p = edit.get("path") or edit.get("file_path") or edit.get("file")
                     if p and p not in self._files_changed:
                         self._files_changed.append(p)
+                        changed_now.append(p)
             self._built_successfully = False
         elif tool_name in ("install_and_build", "run_build") and result.success:
             self._built_successfully = True
+
+        if changed_now and getattr(self, "_event_callback", None):
+            for p in changed_now:
+                try:
+                    self._event_callback("file_written", {
+                        "project_id": os.environ.get("PROJECT_ID", ""),
+                        "agent_id": os.environ.get("AGENT_ID", ""),
+                        "file_path": str(p),
+                    })
+                except Exception:
+                    pass
 
     def _success_result(self, data: Any) -> dict[str, Any]:
         """Format a successful tool result for Claude."""
@@ -533,33 +548,114 @@ class ToolExecutor:
         """
         import json
 
-        # Handle if tool_input is a string
+        # Normalize tool_input if it arrived as a JSON string
         if isinstance(tool_input, str):
             try:
                 tool_input = json.loads(tool_input)
             except Exception:
-                pass
-
-        if isinstance(tool_input, list):
-            files = tool_input
-        elif isinstance(tool_input, dict):
-            files = tool_input.get("files", [])
-        else:
-            files = []
-
-        # If files is a JSON string, parse it
-        if isinstance(files, str):
-            try:
-                files = json.loads(files)
-            except Exception:
                 try:
                     import ast
-                    files = ast.literal_eval(files)
+                    tool_input = ast.literal_eval(tool_input)
                 except Exception:
                     pass
 
+        files = []
+        if isinstance(tool_input, list):
+            files = tool_input
+        elif isinstance(tool_input, dict):
+            # Case 1: Standard {"files": [...]}
+            raw_files = tool_input.get("files")
+            if raw_files is None:
+                # Also check common synonyms
+                raw_files = (
+                    tool_input.get("file_list")
+                    or tool_input.get("file")
+                    or tool_input.get("items")
+                    or tool_input.get("file_paths")
+                    or tool_input.get("operations")
+                    or tool_input.get("changes")
+                    or tool_input.get("modifications")
+                    or tool_input.get("sources")
+                    or tool_input.get("documents")
+                )
+
+            if isinstance(raw_files, list) and raw_files:
+                files = raw_files
+            elif isinstance(raw_files, dict) and raw_files:
+                # Case 2: {"files": {"path": "...", "content": "..."}}
+                if "path" in raw_files or "file" in raw_files:
+                    files = [raw_files]
+                else:
+                    # Case 3: {"files": {"path1": "content1", "path2": "content2"}}
+                    files = [{"path": str(k), "content": str(v)} for k, v in raw_files.items()]
+            elif isinstance(raw_files, str) and raw_files.strip():
+                # Case 4: {"files": "[{...}]"}
+                try:
+                    parsed = json.loads(raw_files)
+                    if isinstance(parsed, list):
+                        files = parsed
+                    elif isinstance(parsed, dict):
+                        files = [parsed]
+                except Exception:
+                    pass
+
+            if not files and ("path" in tool_input or "file" in tool_input) and any(k in tool_input for k in ("content", "code", "source", "text")):
+                # Case 5: Single file payload passed directly: {"path": "...", "content": "..."}
+                norm_p = tool_input.get("path") or tool_input.get("file")
+                norm_c = tool_input.get("content") or tool_input.get("code") or tool_input.get("source") or tool_input.get("text", "")
+                files = [{"path": norm_p, "content": norm_c}]
+            elif not files and any(isinstance(v, (str, dict)) for v in tool_input.values()):
+                # Case 6: Top-level dict mapping paths to contents: {"frontend/src/App.tsx": "..."}
+                inferred = []
+                for k, v in tool_input.items():
+                    if isinstance(v, str) and ('.' in k or '/' in k or '\\' in k):
+                        inferred.append({"path": k, "content": v})
+                    elif isinstance(v, dict) and any(c in v for c in ("content", "code", "source", "text")):
+                        p = v.get("path", k)
+                        c = v.get("content") or v.get("code") or v.get("source") or v.get("text", "")
+                        inferred.append({"path": p, "content": c})
+                if inferred:
+                    files = inferred
+
+        # If files is a string, attempt multiple decoding strategies
+        if isinstance(files, str):
+            clean_str = files.strip()
+            if clean_str.startswith("files=") or clean_str.startswith("files:"):
+                clean_str = clean_str[6:].strip()
+            elif clean_str.startswith("files ="):
+                clean_str = clean_str.split("=", 1)[1].strip()
+
+            try:
+                files = json.loads(clean_str)
+            except Exception:
+                try:
+                    import ast
+                    files = ast.literal_eval(clean_str)
+                except Exception:
+                    pass
+
+            # If still a string (e.g. malformed JSON or Python triple quotes """..."""), extract entries via regex
+            if isinstance(files, str):
+                import re
+                extracted = []
+                pattern = re.compile(
+                    r'["\'](?:path|file|name)["\']\s*:\s*["\']([^"\']+)["\']\s*,\s*["\'](?:content|code|source|text)["\']\s*:\s*(?:"""(.*?)"""|\'\'\'(.*?)\'\'\'|"(.*?)"|\'(.*?)\')',
+                    re.DOTALL
+                )
+                for m in pattern.finditer(clean_str):
+                    p = m.group(1)
+                    c = m.group(2) or m.group(3) or m.group(4) or m.group(5) or ""
+                    extracted.append({"path": p, "content": c})
+                if extracted:
+                    files = extracted
+
         if not isinstance(files, list) or not files:
-            return self._error_result("write_files requires a 'files' array")
+            return self._error_result(
+                "Error: write_files requires a non-empty 'files' array. You provided 0 files.\n"
+                "To write a file, you MUST use `write_file` with 'path' and 'content', e.g.:\n"
+                "write_file(path='backend/src/index.ts', content='export const app = ...')\n"
+                "Or provide the complete array: {'files': [{'path': '...', 'content': '...'}]}"
+            )
 
         results = []
         errors = []
@@ -577,8 +673,10 @@ class ToolExecutor:
                 errors.append(f"Invalid file entry: expected object, got {type(file_entry).__name__}")
                 continue
 
-            path = file_entry.get("path", "")
-            content = file_entry.get("content", "")
+            path = file_entry.get("path") or file_entry.get("file_path") or file_entry.get("file") or file_entry.get("name") or ""
+            content = file_entry.get("content")
+            if content is None:
+                content = file_entry.get("code") or file_entry.get("source") or file_entry.get("text") or file_entry.get("body") or ""
 
             if not path or not content:
                 errors.append(f"{path or 'unnamed_entry'}: skipped (missing path or content)")

@@ -239,7 +239,7 @@ def plan_node(state: LangGraphState, ctx: NodeContext) -> dict[str, Any]:
 
     config = ctx.router.route(TaskType.planning, model=state.get("model_name"))
     tools = ctx.registry.get_tools(ToolPhase.planning)  # submit_plan + web_search
-    executor = ToolExecutor(ctx.mcp, ctx.registry)
+    executor = ToolExecutor(ctx.mcp, ctx.registry, event_callback=getattr(ctx, "post_event", None))
 
     client = ClaudeToolClient(
         model=config.model,
@@ -883,7 +883,7 @@ def sequential_code_node(state: LangGraphState, ctx: NodeContext) -> dict[str, A
             },
         }]
 
-    executor = ToolExecutor(ctx.mcp, ctx.registry)
+    executor = ToolExecutor(ctx.mcp, ctx.registry, event_callback=getattr(ctx, "post_event", None))
     client = ClaudeToolClient(
         model=config.model,
         api_key=config.api_key,
@@ -1420,7 +1420,7 @@ def reconcile_deps_node(state: LangGraphState, ctx: NodeContext) -> dict[str, An
     if missing_packages:
         config = ctx.router.route(TaskType.coding)
         tools = ctx.registry.get_tools(ToolPhase.batch_coding)
-        executor = ToolExecutor(ctx.mcp, ctx.registry)
+        executor = ToolExecutor(ctx.mcp, ctx.registry, event_callback=getattr(ctx, "post_event", None))
         client = ClaudeToolClient(
             model=config.model,
             api_key=config.api_key,
@@ -1469,7 +1469,7 @@ def custom_batch_code_node(state: LangGraphState, ctx: NodeContext) -> dict[str,
 
     config = ctx.router.route(TaskType.coding, model=state.get("model_name"))
     tools = ctx.registry.get_tools(ToolPhase.batch_coding)
-    executor = ToolExecutor(ctx.mcp, ctx.registry)
+    executor = ToolExecutor(ctx.mcp, ctx.registry, event_callback=getattr(ctx, "post_event", None))
 
     client = ClaudeToolClient(
         model=config.model,
@@ -1753,7 +1753,7 @@ def formulate_followup_plan(
     )
 
     tools = ctx.registry.get_tools(ToolPhase.followup_planning)
-    executor = ToolExecutor(ctx.mcp, ctx.registry)
+    executor = ToolExecutor(ctx.mcp, ctx.registry, event_callback=getattr(ctx, "post_event", None))
 
     client = ClaudeToolClient(
         model=config.model,
@@ -2034,7 +2034,7 @@ def follow_up_node(state: LangGraphState, ctx: NodeContext) -> dict[str, Any]:
     )
 
     tools = ctx.registry.get_tools(ToolPhase.editing)
-    executor = ToolExecutor(ctx.mcp, ctx.registry)
+    executor = ToolExecutor(ctx.mcp, ctx.registry, event_callback=getattr(ctx, "post_event", None))
     coding_config = ctx.router.route(TaskType.coding, model=state.get("model_name"))
 
     client = ClaudeToolClient(
@@ -2222,7 +2222,7 @@ def fix_node(state: LangGraphState, ctx: NodeContext) -> dict[str, Any]:
     if not tools:
         tools = all_tools
 
-    executor = ToolExecutor(ctx.mcp, ctx.registry)
+    executor = ToolExecutor(ctx.mcp, ctx.registry, event_callback=getattr(ctx, "post_event", None))
 
     # 1. Statically extract failing file from compiler output and inject its full source
     failing_file = None
@@ -2305,7 +2305,7 @@ def _heal_backend_if_needed(state: LangGraphState, ctx: NodeContext, pm: Preview
     for attempt in range(MAX_ATTEMPTS):
         print(f"[Graph:PreviewNode] Server fix attempt {attempt + 1}/{MAX_ATTEMPTS}...")
         tools = ctx.registry.get_tools(ToolPhase.build_fix)
-        executor = ToolExecutor(ctx.mcp, ctx.registry)
+        executor = ToolExecutor(ctx.mcp, ctx.registry, event_callback=getattr(ctx, "post_event", None))
 
         client = ClaudeToolClient(
             model=config.model,
@@ -2365,7 +2365,7 @@ def _heal_backend_if_needed(state: LangGraphState, ctx: NodeContext, pm: Preview
             pass
 
         time.sleep(1)
-        info = pm.start_preview(project_type="react_vite")
+        info = pm.start_preview(project_type="auto")
 
         if not getattr(info, "backend_error", None):
             print(f"[Graph:PreviewNode] ✅ Backend fixed and running on port {info.backend_port}")
@@ -2407,7 +2407,7 @@ def preview_node(state: LangGraphState, ctx: NodeContext) -> dict[str, Any]:
         pass
     ProcessSupervisor.kill_port_holders(detected_backend_port)
 
-    info = pm.start_preview(project_type="react_vite")
+    info = pm.start_preview(project_type="auto")
 
     # Self-heal dead backends instead of declaring success unconditionally.
     if info is not None and getattr(info, "backend_error", None):

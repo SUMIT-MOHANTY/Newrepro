@@ -44,10 +44,23 @@ COMPACTED_ASSISTANT_MAX = 600
 MAX_CONVERSATION_MESSAGES = 100
 
 
-def _clean_pseudo_tools_from_text(text: str) -> str:
+def _clean_pseudo_tools_from_text(text: Any) -> str:
     """Strip any pseudo-tool call syntax, fake User/Input blocks, and bracketed tool calls from text."""
     if not text:
         return ""
+    if not isinstance(text, str):
+        if isinstance(text, dict):
+            try:
+                text = json.dumps(text)
+            except Exception:
+                text = str(text)
+        elif isinstance(text, (list, tuple)):
+            try:
+                text = " ".join(str(x) for x in text)
+            except Exception:
+                text = str(text)
+        else:
+            text = str(text)
     # Strip DeepSeek DSML tags
     cleaned = re.sub(r'<[ï½œ|]DSML[ï½œ|][^>]*>', '', text)
     cleaned = re.sub(r'<[ï½œ|]/?(?:DSML|function_calls?)[ï½œ|]>', '', cleaned)
@@ -130,8 +143,15 @@ class FileManifest:
     def __init__(self):
         self._entries: dict[str, FileManifestEntry] = {}
     
-    def track_file(self, path: str, content: str, iteration: int) -> None:
+    def track_file(self, path: str, content: Any, iteration: int) -> None:
         """Record a file write with extracted structural info."""
+        if not isinstance(content, str):
+            if isinstance(content, dict):
+                content = content.get("content") or content.get("code") or json.dumps(content)
+            elif isinstance(content, (bytes, bytearray)):
+                content = content.decode("utf-8", errors="ignore")
+            else:
+                content = str(content or "")
         summary = self._extract_summary(path, content)
         preview = content[:200].replace("\n", " ").strip()
         
@@ -143,12 +163,17 @@ class FileManifest:
             content_preview=preview,
         )
 
-    def add_or_update_file(self, path: str, content: str, iteration: int = 0, summary: str = "") -> None:
+    def add_or_update_file(self, path: str, content: Any, iteration: int = 0, summary: str = "") -> None:
         """Alias for track_file for manifest compatibility."""
         self.track_file(path, content, iteration)
     
-    def _extract_summary(self, path: str, content: str) -> str:
+    def _extract_summary(self, path: str, content: Any) -> str:
         """Extract key structural info from file content (exports, component names)."""
+        if not isinstance(content, str):
+            if isinstance(content, dict):
+                content = content.get("content") or content.get("code") or json.dumps(content)
+            else:
+                content = str(content or "")
         parts = []
         
         # Extract exports
@@ -849,22 +874,20 @@ class ClaudeToolClient:
                     "The file is already in Active Inspected Files above â€” write it NOW.]"
                 )
 
-            # 6. Progress Guard Guidance on Consecutive Reads (suppress when files are blocked â€” only write_file matters)
-            elif self._consecutive_reads >= 2 and not tool_executor.files_changed:
+            # 6. Progress Guard Guidance on Consecutive Reads (suppress when files are blocked — only write_file matters)
+            elif self._consecutive_reads >= 3:
                 inspected_list = ", ".join(self._inspected_files.keys()) if self._inspected_files else "workspace files"
                 parts.append(
                     f"User:\n[Notice: You have inspected {inspected_list}. "
-                    "If you have gathered sufficient context, proceed to implement your edits using `replace_file_content` or `write_file`.]"
+                    "If you have gathered sufficient context, proceed to implement your edits using `write_file` or `replace_file_content`.]"
                 )
 
             # 7. Modified files tracking reminder
             if tool_executor.files_changed:
                 parts.append(f"User:\n[Files modified so far in this session: {', '.join(tool_executor.files_changed)}]")
 
-            # Anti-amnesia directive for initial greenfield batch coding
-            has_batch_write = any((t.get("name") or t.get("function", {}).get("name")) == "write_files" for t in (self._tools or []))
-            if has_batch_write and len(tool_executor.files_changed) == 0 and iteration >= 1 and not self._inspected_files:
-                parts.append("User:\n[Action Required: Workspace files are listed in the manifest above. You MUST now call write_files to implement the application components according to the plan.]")
+            if len(tool_executor.files_changed) == 0 and iteration >= 1 and not self._inspected_files:
+                parts.append("User:\n[Action Required: Workspace files are listed in the manifest above. You MUST now call write_file with 'path' and 'content' to implement the application components.]")
 
             prompt_text = "\n\n".join(parts)
 
@@ -917,25 +940,28 @@ class ClaudeToolClient:
                         f"Restricting model to write_file ONLY.")
 
 
-            # In Editing / Follow-Up phase: Progress Guard on runaway reads (circuit breaker: >= 10 reads with 0 writes)
+            # In Editing / Follow-Up phase: Progress Guard on runaway reads (circuit breaker: >= 6 reads with 0 writes)
             # Normal exploration is supported. Runaway reading loops are funneled directly to write/build tools.
-            elif self._consecutive_reads >= 10 and not bool(tool_executor.files_changed):
+            elif self._consecutive_reads >= 6:
                 write_action_tools = [
                     t for t in effective_tools
                     if (t.get("name") or t.get("function", {}).get("name")) in (
                         "replace_file_content",
                         "batch_replace_file_content",
                         "write_file",
-                        "write_files",
                         "find_and_replace",
                         "install_and_build",
                     )
                 ]
                 if write_action_tools:
                     effective_tools = write_action_tools
-                    log(f"âš¡ [Progress Guard Funnel] Step {iteration + 1}: Consecutive reads threshold met "
+                    log(f"⚡ [Progress Guard Funnel] Step {iteration + 1}: Consecutive reads threshold met "
                         f"(consecutive_reads={self._consecutive_reads}). "
                         f"Focusing model on file modification using: {[t.get('name') for t in effective_tools]}")
+                    prompt_text += (
+                        "\n\nUser:\n[Action Required: You have completed exploration. Inspection tools are now disabled. "
+                        "You MUST write code now using `write_file` with 'path' and 'content' for the next file.]"
+                    )
 
             # Call AI engine
             try:
@@ -1119,10 +1145,7 @@ class ClaudeToolClient:
                 has_batch_write = any((t.get("name") or t.get("function", {}).get("name")) == "write_files" for t in (self._tools or []))
 
                 if has_write_tools and len(tool_executor.files_changed) == 0 and iteration == 0 and not is_question_mode:
-                    if has_batch_write:
-                        prompt_msg = "Action required: Please issue the structured `write_files` tool call now to create the planned files."
-                    else:
-                        prompt_msg = "Action required: Please apply changes using `replace_file_content` or `write_file`."
+                    prompt_msg = "Action required: Please create the necessary files using `write_file` (with 'path' and 'content') or `replace_file_content`."
                     log(f"âš ï¸ [Prompt] No files changed on first turn â€” prompting once: {prompt_msg}")
                     conversation.append({
                         "role": "user",
@@ -1177,13 +1200,20 @@ class ClaudeToolClient:
             tool_results: list[dict[str, Any]] = []
             for tc in tool_calls:
                 tool_name = tc.get("name") or tc.get("function", {}).get("name") or tc.get("tool", "")
-                tool_input = tc.get("input") or tc.get("function", {}).get("arguments") or tc.get("args") or {}
+                print(f"[TOOL_DEBUG] raw tc keys: {list(tc.keys())} content: {repr(tc)[:300]}", flush=True)
+                tool_input = (
+                    tc.get("input")
+                    or tc.get("function", {}).get("arguments")
+                    or tc.get("args")
+                    or tc.get("parameters")
+                    or {}
+                )
                 if isinstance(tool_input, str):
                     try:
                         tool_input = json.loads(tool_input)
                     except Exception:
                         pass
-                tool_id = tc.get("id") or f"call_{iteration}_{len(tool_results)}"
+                tool_id = tc.get("id") or tc.get("toolUseId") or f"call_{iteration}_{len(tool_results)}"
 
                 log(f"ðŸ”§ [Tool Call] {tool_name}({_summarize_args(tool_input if isinstance(tool_input, dict) else {})})")
 
@@ -1466,8 +1496,8 @@ class ClaudeToolClient:
                 elif tool_name in ("list_directory", "grep_search"):
                     self._consecutive_reads += 1
                 elif tool_name in write_tools or tool_name in ("delete_file", "install_dependencies", "install_and_build"):
-                    self._consecutive_reads = 0
-                    if not exec_result.get("is_error") or tool_name in write_tools:
+                    if not exec_result.get("is_error"):
+                        self._consecutive_reads = 0
                         self._last_tool_sig = ""
                         self._duplicate_call_count = 0
                     if not exec_result.get("is_error") or exec_result.get("rolled_back"):
@@ -1549,8 +1579,9 @@ class ClaudeToolClient:
                             "The files you may have described as created DO NOT EXIST on physical disk.\n"
                             "Do not assume any previous write succeeded.\n\n"
                             f"{workspace_summary}\n\n"
-                            "Next action MUST be an actual structured tool call (write_file or write_files).\n"
-                            "Plain-text tool syntax will not execute."
+                            "Next action MUST be an actual structured tool call.\n"
+                            "Use `write_file` with 'path' and 'content' to create the next file.\n"
+                            "Do NOT call write_files with an empty payload."
                         ),
                         "is_error": True,
                     })
@@ -1945,9 +1976,9 @@ class ClaudeToolClient:
                         "is_error": True,
                     }
 
-        # Consecutive Read Circuit Breaker: Block runaway read loops (>= 10 consecutive reads with 0 writes)
+        # Consecutive Read Circuit Breaker: Block runaway read loops (>= 8 consecutive reads with 0 writes)
         if (
-            self._consecutive_reads >= 10
+            self._consecutive_reads >= 8
             and tool_name in ("read_file", "list_directory", "grep_search", "get_generated_file")
         ):
             log(f"🛑 [Read Circuit Breaker] Intercepted read/search tool '{tool_name}' ({self._consecutive_reads} consecutive reads). Forcing write/edit.")
@@ -1956,7 +1987,7 @@ class ClaudeToolClient:
                 "content": (
                     f"Error: Consecutive read limit reached ({self._consecutive_reads} consecutive inspection calls). "
                     "You have already gathered sufficient context. Further read/search calls are blocked. "
-                    "You MUST now proceed to apply the planned changes using `replace_file_content` or `write_file`."
+                    "You MUST now proceed to apply the planned changes using `write_file` or `replace_file_content`."
                 ),
                 "is_error": True,
             }

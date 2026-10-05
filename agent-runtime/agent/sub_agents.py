@@ -19,6 +19,7 @@ from infrastructure.claude_tool_client import ClaudeToolClient, FileManifest
 from agent.model_router import ModelRouter, TaskType
 from agent.tools.tool_registry import ToolRegistry, ToolPhase
 from agent.tools.tool_executor import ToolExecutor
+from runtime.reality_guard import AgentRealityGuard
 
 logger = logging.getLogger(__name__)
 
@@ -79,16 +80,16 @@ class SubAgent(ABC):
         contract_guidance = ""
         if self.lane == "frontend":
             contract_guidance = (
-                "## Inter-Agent API Contract\n"
-                "Backend APIs publish verified schemas to `.agent/contracts/api_contract.json`.\n"
-                "Inspect `.agent/contracts/api_contract.json` (or read backend models/routes) to discover the "
-                "exact HTTP endpoints, methods, and payload structures before wiring API calls.\n\n"
+                "## Inter-Agent API Contract & Authentication\n"
+                "1. **Contract Discovery**: Backend APIs publish schemas to `.agent/contracts/api_contract.json` or backend route files. Discover endpoints before wiring calls.\n"
+                "2. **Authentication Flow**: If the application requires user identity or protected data, ensure a Login/Register view or modal exists, tokens are stored, and `Authorization: Bearer <token>` is sent to `/api`.\n"
+                "3. **Zero 404 / 401 Crashes**: The frontend API client must target `/api` and gracefully handle unauthenticated or loading states.\n\n"
             )
         elif self.lane == "backend":
             contract_guidance = (
-                "## Inter-Agent API Contract\n"
-                "Design clean, RESTful endpoints with consistent request/response schemas so the Frontend Agent "
-                "can seamlessly integrate with them.\n\n"
+                "## Inter-Agent API Contract & Database Health\n"
+                "1. **Clean REST Endpoints**: Publish and maintain endpoints with consistent request/response schemas.\n"
+                "2. **Migrations & Seed Data**: Ensure schema migrations are generated and applied (e.g. Django `makemigrations && migrate`, Alembic `upgrade head`, Prisma migrate). Seed default credentials (e.g. admin / admin123) so authentication works immediately.\n\n"
             )
         elif self.lane == "qa":
             contract_guidance = (
@@ -117,20 +118,36 @@ class SubAgent(ABC):
                 "   - Provide friendly empty states, contextual search/filtering, and immediate visual feedback on actions.\n\n"
             )
 
+        core_directive = (
+            "## 🚨 CORE DIRECTIVE: BRD FULFILLMENT & RUNNABLE APPLICATION (PRIMARY OBJECTIVE)\n"
+            "1. **Tasks Are Milestones, Not Cages**: The current task title and subtasks guide your focus, "
+            "but they do NOT restrict you. Your ultimate job is to fulfill the BRD and deliver a 100% working, "
+            "connected, and RUNNABLE application.\n"
+            "2. **Fix Missing Foundations**: If foundational files needed for your code to run are missing "
+            "(e.g., package.json, entry points like main.tsx/main.py, root App router, layouts, styles, or configs), "
+            "you HAVE FULL AUTHORITY AND DUTY to create or repair them. Never leave code unrunnable because a prerequisite "
+            "wasn't explicitly listed in the subtask checklist.\n"
+            "3. **Zero Orphaned Features**: Every screen or feature you create MUST be wired into the application router "
+            "and navigation (sidebar/navbar) so users can reach it. Unrendered or unrouted components are failures.\n"
+            "4. **Real End-to-End Connections**: Connect frontend code to real backend endpoints or `.agent/contracts/api_contract.json`. "
+            "Never leave calls to unbuilt routes that return 404; use the project's mock data store if an API is pending.\n\n"
+        )
+
         return (
             f"# Agent Role: {self.role}\n"
             f"You are **{self.name}**, a specialized {self.role} agent in an autonomous multi-agent swarm.\n\n"
             f"{brd_context_str}"
-            f"## File Ownership Scope\n"
-            f"You may create/edit files within: {', '.join(self.file_ownership_scope)}\n"
-            f"Do NOT overwrite or delete components outside your scope.\n\n"
+            f"{core_directive}"
+            f"## Primary Focus Scope\n"
+            f"Primary files to create/edit: {', '.join(self.file_ownership_scope)}\n"
+            f"You may create any missing prerequisite or scaffolding files necessary to make the app compile and run.\n\n"
             f"{contract_guidance}"
             f"{design_guidance}"
             f"## Skills\n{self.skills}\n\n"
-            f"## Current Task\n"
+            f"## Current Milestone Task\n"
             f"**{getattr(task, 'title', 'Unknown')}**\n"
             f"{getattr(task, 'description', '')}\n\n"
-            f"## Subtask Checklist\n{subtask_list}\n\n"
+            f"## Subtask Checklist (Guideline)\n{subtask_list}\n\n"
             f"## ReAct Execution Protocol\n"
             f"For each subtask:\n"
             f"1. **OBSERVE**: Read relevant existing files to understand context\n"
@@ -138,7 +155,7 @@ class SubAgent(ABC):
             f"3. **ACT**: Write/modify files using write_file or replace_file_content\n"
             f"4. **VERIFY**: Confirm zero syntax errors\n"
             f"5. **REPEAT**: Until all subtasks are complete\n\n"
-            f"After completing ALL subtasks, output a concise summary of what was done.\n"
+            f"After completing ALL subtasks, verify the feature compiles, integrates cleanly, and is runnable.\n"
         )
 
 
@@ -171,6 +188,9 @@ class BaseReActAgent(SubAgent):
                 manifest = FileManifest()
                 manifest.scan_workspace(workspace_path)
 
+                # Initialize RealityGuard to enforce file write verification and import resolution
+                reality_guard = AgentRealityGuard(workspace_path)
+
                 # Create the ClaudeToolClient with proper kwargs-only API
                 client = ClaudeToolClient(
                     model=config.model,
@@ -180,6 +200,7 @@ class BaseReActAgent(SubAgent):
                     temperature=config.temperature,
                     file_manifest=manifest,
                     workspace_path=workspace_path,
+                    reality_guard=reality_guard,
                 )
 
                 # Build the system prompt with role and contract enforcement
@@ -213,8 +234,19 @@ class BaseReActAgent(SubAgent):
                     max_iterations=40,
                 )
 
+                # Verify physical disk state: ensure no imported files are missing
+                valid_imports, err_msg = reality_guard.verify_pre_build()
+                if not valid_imports:
+                    raise RuntimeError(f"Missing imported files detected after task execution:\n{err_msg}")
+
                 elapsed = time.time() - start_time
                 files = list(executor.files_changed) if hasattr(executor, "files_changed") else []
+
+                if not files:
+                    raise RuntimeError(
+                        f"Task {task_id} ('{title}') failed: No files were modified or created on disk. "
+                        f"The agent stopped without applying code changes."
+                    )
 
                 logger.info(
                     f"[{self.name}] Task {task_id} completed successfully (attempt {attempt}) in {elapsed:.1f}s. "
@@ -276,7 +308,8 @@ class FrontendSubAgent(BaseReActAgent):
             file_ownership_scope=[
                 "src/", "components/", "pages/", "styles/",
                 "public/", "assets/", "frontend/", "templates/", "static/",
-                "package.json", ".env", ".env.example", "index.html", "vite.config.js", "vite.config.ts"
+                "package.json", ".env", ".env.example", "index.html", "vite.config.js", "vite.config.ts",
+                "App.tsx", "App.jsx", "main.tsx", "main.jsx", "router", "layouts/"
             ],
             skills=(
                 "Lead Frontend & UX/UI Engineer specializing in modern, beautiful web applications, "

@@ -48,13 +48,27 @@ async def receive_agent_callback(
 
     session_id = payload.get("session_id")
     task_id = payload.get("task_id")
-    project_id = payload.get("project_id")
+    project_id = payload.get("project_id") or request.headers.get("x-project-id")
 
-    # If project_id not in payload, lookup via session
+    # If project_id not in payload or header, lookup via session
     if not project_id and session_id:
         sess = db.query(models.AgentSession).filter(models.AgentSession.id == session_id).first()
         if sess:
             project_id = sess.project_id
+
+    # Fallback: resolve project_id via task_id
+    if not project_id and task_id:
+        t = db.query(models.Task).filter(models.Task.task_id == task_id).first()
+        if t and t.project_token:
+            project_id = t.project_token
+        elif "_" in str(task_id):
+            cand = str(task_id).split("_")[0]
+            if len(cand) >= 10:
+                project_id = cand
+        elif "-" in str(task_id):
+            parts = str(task_id).rsplit("-", 1)
+            if len(parts) == 2 and len(parts[0]) >= 10:
+                project_id = parts[0]
 
     # Record event in database
     if session_id:
@@ -201,3 +215,53 @@ def get_project_active_session(project_id: str, db: Session = Depends(get_db)):
         "preview": agent_service.get_preview_status(project_id),
         "recent_logs": _preview_log_store.get(project_id, [])[-50:],
     }
+
+
+def _record_callback_outcome(
+    project_token: str,
+    session_id: Optional[str],
+    task_id: Optional[str],
+    event_type: str,
+    payload: Dict[str, Any],
+) -> None:
+    """Lightweight coordination hook: reflect callback events into the execution tracker.
+
+    This is intentionally defensive. If it fails, callback processing still succeeds.
+    """
+    if not project_token:
+        return
+
+    agent_id = payload.get("agent_id") or payload.get("agent") or (session_id or "unknown")
+    message = payload.get("message") or payload.get("final_text") or ""
+
+    completed_events = {"preview_ready", "session_completed", "build_completed", "coding_completed"}
+    failed_events = {"session_failed", "build_failed", "coding_failed", "task_failed"}
+
+    if event_type in completed_events:
+        from app.services.agents.local_state_manager import publish_task_outcome_to_tracker
+
+        publish_task_outcome_to_tracker(
+            project_token=project_token,
+            task_id=task_id or "callback-task",
+            agent_id=agent_id,
+            status="done",
+            error_message=None,
+            failure_class="unknown",
+        )
+    elif event_type in failed_events:
+        from app.services.agents.local_state_manager import publish_task_outcome_to_tracker
+
+        failure_class = "runtime_error"
+        if "build" in event_type:
+            failure_class = "build_error"
+        elif "code" in event_type or "coding" in event_type:
+            failure_class = "generation_error"
+
+        publish_task_outcome_to_tracker(
+            project_token=project_token,
+            task_id=task_id or "callback-task",
+            agent_id=agent_id,
+            status="failed",
+            error_message=message or f"Callback failure: {event_type}",
+            failure_class=failure_class,
+        )

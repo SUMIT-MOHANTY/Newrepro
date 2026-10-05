@@ -40,8 +40,8 @@ class ModelRouter:
 
     def __init__(self, model: str | None = None) -> None:
         self._api_key: str | None = os.environ.get("ANTHROPIC_API_KEY")
-        self._model: str = model or os.environ.get("MODEL_NAME", "claude-sonnet-4-5")
-        self._provider: str = os.environ.get("MODEL_PROVIDER", "anthropic")
+        self._model: str = model or os.environ.get("MODEL_NAME", "kimi")
+        self._provider: str = os.environ.get("MODEL_PROVIDER", "moonshot")
         self._tool_use_enabled: bool = os.environ.get("TOOL_USE_ENABLED", "true").lower() == "true"
 
         print(f"[ModelRouter] Model: {self._model} | Provider: {self._provider} | "
@@ -57,8 +57,8 @@ class ModelRouter:
 
     @property
     def supports_tool_use(self) -> bool:
-        """Whether the current model supports Claude's native tool-use API."""
-        return self._provider == "anthropic" and self._tool_use_enabled
+        """Whether the current model supports tool-use API."""
+        return (self._provider in ("anthropic", "moonshot") or self._model in ("kimi", "claude")) and self._tool_use_enabled
 
     def route(self, task_type: TaskType = TaskType.general, model: str | None = None) -> ModelConfig:
         """Return the ModelConfig for the given task type.
@@ -104,5 +104,5 @@ class ModelRouter:
             api_key=self._api_key,
             max_tokens=max_tokens,
             temperature=temperature,
-            supports_tool_use=self._provider == "anthropic" and self._tool_use_enabled,
+            supports_tool_use=self.supports_tool_use,
         )

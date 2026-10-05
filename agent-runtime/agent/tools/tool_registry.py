@@ -32,44 +32,6 @@ class ToolPhase(str, Enum):
 
 _FILESYSTEM_TOOLS: list[dict[str, Any]] = [
     {
-        "name": "write_files",
-        "description": (
-            "Write multiple related files in a SINGLE operation. This is the PREFERRED way to create "
-            "components and their dependencies — write the component JSX, its parent that uses it, "
-            "and any shared types/utilities ALL TOGETHER in one call. This ensures prop names, imports, "
-            "and class names are 100% consistent across files. NEVER write a child component in one turn "
-            "and its parent in a separate turn — use write_files to write them together."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "files": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "Absolute path to the file.",
-                            },
-                            "content": {
-                                "type": "string",
-                                "description": "The complete file content.",
-                            },
-                        },
-                        "required": ["path", "content"],
-                    },
-                    "description": (
-                        "Array of files to write. Write RELATED files together: "
-                        "child component + parent component + shared imports. "
-                        "Example: [Sidebar.jsx, App.jsx, types.js]"
-                    ),
-                },
-            },
-            "required": ["files"],
-        },
-    },
-    {
         "name": "list_directory",
         "description": (
             "List all files and directories under a given path in the project workspace. "

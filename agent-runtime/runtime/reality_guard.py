@@ -195,19 +195,22 @@ class ImportDependencyVerifier:
         self.state = workspace_state
 
     def verify_imports(self) -> tuple[bool, list[MissingImport]]:
-        """Scan all JSX/TSX/JS/TS files and verify relative import targets exist."""
+        """Scan all JSX/TSX/JS/TS files and verify relative and aliased import targets exist."""
         self.state.refresh()
         missing: list[MissingImport] = []
         workspace_root = Path(self.state.workspace_path)
 
-        # Regex for ES import: import ... from './path' or require('./path')
+        # Regex for ES imports and require: relative (./, ../) and aliased (@/, ~/)
         import_pattern = re.compile(
-            r'''(?:import\s+(?:(?:[\w*\s{},]+)\s+from\s+)?|require\s*\(\s*)['"](\.[^'"]+)['"]''',
+            r'''(?:import\s+(?:(?:[\w*\s{},]+)\s+from\s+)?|require\s*\(\s*)['"]([.@~][^'"]+)['"]''',
             re.MULTILINE
         )
 
+        ignored_segments = {"node_modules", ".git", "dist", "build", ".venv", "venv", "__pycache__"}
+
         for rel_path in list(self.state.files.keys()):
-            if not rel_path.startswith("src/"):
+            parts = set(Path(rel_path).parts)
+            if parts & ignored_segments:
                 continue
             ext = os.path.splitext(rel_path)[1].lower()
             if ext not in (".jsx", ".tsx", ".js", ".ts", ".vue", ".svelte"):
@@ -221,29 +224,69 @@ class ImportDependencyVerifier:
                 continue
 
             file_dir = abs_file.parent
+
+            # Find nearest project root (directory with package.json or workspace root)
+            curr = file_dir
+            proj_root = workspace_root
+            while curr != workspace_root and curr != curr.parent:
+                if (curr / "package.json").exists():
+                    proj_root = curr
+                    break
+                curr = curr.parent
+
             for match in import_pattern.finditer(content):
                 import_target = match.group(1).strip()
                 # Skip package imports, CSS imports, or public assets
-                if import_target.endswith((".css", ".scss", ".svg", ".png", ".jpg")):
+                if import_target.endswith((".css", ".scss", ".svg", ".png", ".jpg", ".jpeg", ".ico", ".json")):
                     continue
 
-                # Candidate resolution paths
-                base_target = (file_dir / import_target).resolve()
-                candidates = [
-                    base_target,
-                    base_target.with_suffix(".jsx"),
-                    base_target.with_suffix(".tsx"),
-                    base_target.with_suffix(".js"),
-                    base_target.with_suffix(".ts"),
-                    base_target / "index.jsx",
-                    base_target / "index.tsx",
-                    base_target / "index.js",
-                    base_target / "index.ts",
-                ]
+                candidate_bases: list[Path] = []
+                if import_target.startswith(("@/", "~/")):
+                    clean = import_target[2:]
+                    candidate_bases.extend([
+                        (proj_root / "src" / clean).resolve(),
+                        (proj_root / clean).resolve(),
+                        (workspace_root / "src" / clean).resolve(),
+                        (workspace_root / clean).resolve(),
+                    ])
+                elif import_target.startswith("."):
+                    candidate_bases.append((file_dir / import_target).resolve())
+                else:
+                    continue
 
-                resolved = any(c.is_file() for c in candidates)
+                resolved = False
+                all_candidates: list[Path] = []
+                for base in candidate_bases:
+                    str_base = str(base)
+                    candidates = [
+                        base,
+                        Path(str_base + ".tsx"),
+                        Path(str_base + ".ts"),
+                        Path(str_base + ".jsx"),
+                        Path(str_base + ".js"),
+                        Path(str_base + ".vue"),
+                        Path(str_base + ".svelte"),
+                        base.with_suffix(".tsx"),
+                        base.with_suffix(".ts"),
+                        base.with_suffix(".jsx"),
+                        base.with_suffix(".js"),
+                        base / "index.tsx",
+                        base / "index.ts",
+                        base / "index.jsx",
+                        base / "index.js",
+                    ]
+                    all_candidates.extend(candidates)
+                    if any(c.is_file() for c in candidates):
+                        resolved = True
+                        break
+
                 if not resolved:
-                    expected_rel = [os.path.relpath(c, self.state.workspace_path).replace("\\", "/") for c in candidates[:3]]
+                    expected_rel = []
+                    for c in all_candidates[:4]:
+                        try:
+                            expected_rel.append(os.path.relpath(c, self.state.workspace_path).replace("\\", "/"))
+                        except Exception:
+                            expected_rel.append(str(c))
                     missing.append(MissingImport(
                         source_file=rel_path,
                         import_path=import_target,
@@ -252,15 +295,23 @@ class ImportDependencyVerifier:
 
         return len(missing) == 0, missing
 
-    def format_missing_imports_error(self, missing_list: list[MissingImport]) -> str:
+    def format_missing_imports_error(self, missing_list: Any) -> str:
         """Format missing import errors into an authoritative runtime directive."""
+        if isinstance(missing_list, str):
+            return missing_list
+        if not isinstance(missing_list, list):
+            return str(missing_list)
         lines = [
             "❌ PRE-BUILD IMPORT VERIFICATION FAILED (Missing Files on Physical Disk):",
             "The following files are imported in your code but DO NOT EXIST in the workspace:\n"
         ]
         for m in missing_list:
-            lines.append(f"• `{m.source_file}` imports `'{m.import_path}'`")
-            lines.append(f"  👉 Expected one of: {', '.join(f'`{p}`' for p in m.expected_paths)}")
+            if isinstance(m, str):
+                lines.append(f"• {m}")
+            else:
+                lines.append(f"• `{getattr(m, 'source_file', m)}` imports `'{getattr(m, 'import_path', '')}'`")
+                if getattr(m, 'expected_paths', None):
+                    lines.append(f"  👉 Expected one of: {', '.join(f'`{p}`' for p in m.expected_paths)}")
 
         lines.append(
             "\nREQUIRED ACTION:"

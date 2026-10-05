@@ -284,7 +284,18 @@ class Orchestrator:
         git_token = os.environ.get("GIT_TOKEN")
         git_branch = os.environ.get("GIT_BRANCH", "main")
 
-        if repo_url:
+        from pathlib import Path
+        ws_path = Path(s.workspace_path)
+        existing_items = [
+            f for f in ws_path.iterdir()
+            if not f.name.startswith(".") and f.name not in ("node_modules", "__pycache__")
+        ] if ws_path.exists() else []
+
+        if existing_items:
+            print(f"[Orchestrator] 🚀 Existing workspace code detected ({len(existing_items)} items: {[f.name for f in existing_items[:5]]}) — running directly from local workspace without re-cloning!")
+            if not (ws_path / ".git").exists():
+                self._mcp.call_tool("git", "init", {"workspace_path": s.workspace_path})
+        elif repo_url:
             self._post_event("git_clone_started", {
                 "session_id": s.session_id,
                 "task_id": s.task_id,
@@ -1214,12 +1225,12 @@ class Orchestrator:
     # Phase 4: preview
     # ------------------------------------------------------------------
 
-    def _run_preview(self) -> None:
+    def _run_preview(self) -> Any:
         from runtime.preview_manager import PreviewManager
         s = self._state
-        print("[Orchestrator] Starting preview...")
+        print("[Orchestrator] Starting dynamic preview...")
         pm = PreviewManager(workspace_path=s.workspace_path)
-        info = pm.start_preview(project_type="react_vite")
+        info = pm.start_preview(project_type="auto")
         s.preview_url = info.url
         self._post_event("preview_started", {
             "session_id": s.session_id, "task_id": s.task_id,
@@ -1227,16 +1238,146 @@ class Orchestrator:
         })
         print(f"[Orchestrator] Preview live at: {info.url}")
 
-        # If backend failed to start, ask AI to fix it dynamically
-        if info.backend_error:
+        # 1. If frontend failed to start or compile (Vite transform, missing imports, syntax), self-heal dynamically
+        if getattr(info, "frontend_error", None):
+            print(f"[Orchestrator] ⚠️ Frontend error detected: {info.frontend_error[:200]}")
+            healed = self._fix_frontend_errors(
+                info.frontend_error, pm,
+                cwd=getattr(info, "frontend_cwd", None)
+            )
+            if healed:
+                info = healed
+                s.preview_url = info.url
+
+        # 2. If backend failed to start, self-heal dynamically
+        if getattr(info, "backend_error", None):
             print(f"[Orchestrator] ⚠️ Backend failed to start: {info.backend_error[:200]}")
-            self._fix_server_errors(
+            healed = self._fix_server_errors(
                 info.backend_error, pm,
                 entrypoint=getattr(info, "backend_entrypoint", None),
                 cwd=getattr(info, "backend_cwd", None)
             )
+            if healed:
+                info = healed
+                s.preview_url = info.url
 
-    def _fix_server_errors(self, error_output: str, pm, entrypoint: str | None = None, cwd: str | None = None) -> None:
+        # 3. Dynamic API endpoint health probe
+        api_ok, api_err = pm.probe_api_health(info)
+        if not api_ok and api_err:
+            print(f"[Orchestrator] ⚠️ Backend API returned server error: {api_err[:200]}")
+            healed = self._fix_server_errors(
+                f"API health check failed with server error:\n{api_err}\nCheck database models, unapplied migrations, and route handlers.",
+                pm,
+                entrypoint=getattr(info, "backend_entrypoint", None),
+                cwd=getattr(info, "backend_cwd", None)
+            )
+            if healed:
+                info = healed
+                s.preview_url = info.url
+
+        return info
+
+    def _fix_frontend_errors(self, error_output: str, pm, cwd: str | None = None) -> Any:
+        """Ask AI to fix frontend startup/compilation errors — retries preview after fix.
+        
+        Dynamically handles ANY frontend tech stack (Vite, Webpack, Next.js, Nuxt, React, Vue, Svelte, Angular).
+        Uses the existing conversation context if available.
+        Max 2 attempts.
+        """
+        from infrastructure.claude_tool_client import ClaudeToolClient
+        s = self._state
+        config = self._router.route(TaskType.build_fix, model=s.model_name)
+        MAX_ATTEMPTS = 2
+
+        for attempt in range(MAX_ATTEMPTS):
+            print(f"[Orchestrator] Frontend fix attempt {attempt + 1}/{MAX_ATTEMPTS}...")
+            self._post_event("frontend_fix_started", {
+                "session_id": s.session_id, "task_id": s.task_id,
+                "attempt": attempt + 1,
+                "error": error_output[:500],
+            })
+
+            tools = self._registry.get_tools(ToolPhase.build_fix)
+            executor = ToolExecutor(self._mcp, self._registry)
+
+            client = ClaudeToolClient(
+                model=config.model,
+                api_key=config.api_key,
+                tools=tools,
+                max_tokens=config.max_tokens,
+                temperature=config.temperature,
+                file_manifest=self._active_file_manifest,
+            )
+
+            fe_hint = f"Working directory: {cwd}\n" if cwd else ""
+            user_msg = (
+                f"The frontend dev server or build failed to start/compile with this error:\n\n{error_output}\n\n"
+                f"Workspace: {s.workspace_path}\n"
+                f"{fe_hint}"
+                "Diagnose and fix the issue. Common causes:\n"
+                "- Missing imported file or component (e.g. routes, components, pages) — create it or correct the import.\n"
+                "- Missing path alias configuration (e.g. `@/` in vite.config or tsconfig) — configure alias or adjust imports.\n"
+                "- Syntax error, broken export, or invalid JSX/TSX.\n"
+                "Inspect the failing file and make the targeted fix so the frontend compiles and runs cleanly."
+            )
+
+            if self._active_conversation:
+                messages = list(self._active_conversation)
+                messages.append({"role": "user", "content": user_msg})
+            else:
+                messages = [{"role": "user", "content": user_msg}]
+
+            result = client.run_tool_loop(
+                system=PromptBuilder.build(PromptPhase.BUILD_FIX),
+                messages=messages,
+                tool_executor=executor,
+                max_iterations=15,
+            )
+
+            self._active_conversation = result.conversation
+            self._active_file_manifest = client._file_manifest
+
+            s.tool_call_count += executor.tool_call_count
+            for f in executor.files_changed:
+                s.track_file_change(f)
+
+            print(f"[Orchestrator] Frontend fix: {executor.tool_call_count} tool calls, {len(executor.files_changed)} files changed")
+
+            if not executor.files_changed:
+                print("[Orchestrator] No files changed — stopping frontend fix")
+                break
+
+            # Kill old frontend process and restart preview
+            try:
+                pm.stop_frontend()
+            except Exception:
+                pass
+
+            time.sleep(1)
+            info = pm.start_preview(project_type="auto")
+            s.preview_url = info.url
+
+            if not getattr(info, "frontend_error", None):
+                print(f"[Orchestrator] ✅ Frontend fixed and running!")
+                self._post_event("frontend_fix_completed", {
+                    "session_id": s.session_id, "task_id": s.task_id,
+                    "attempt": attempt + 1,
+                    "status": "fixed",
+                })
+                return info
+
+            error_output = info.frontend_error
+            print(f"[Orchestrator] Frontend still failing: {error_output[:200]}")
+
+        print("[Orchestrator] Frontend fix attempts exhausted")
+        self._post_event("frontend_fix_completed", {
+            "session_id": s.session_id, "task_id": s.task_id,
+            "status": "exhausted",
+            "error": error_output[:500],
+        })
+        return None
+
+    def _fix_server_errors(self, error_output: str, pm, entrypoint: str | None = None, cwd: str | None = None) -> Any:
         """Ask AI to fix backend server errors — retries preview after fix.
 
         Similar to build fix and console fix, but for backend startup failures.
@@ -1277,10 +1418,11 @@ class Orchestrator:
             ) if entrypoint else ""
 
             user_msg = (
-                f"The backend server failed to start with this error:\n\n{error_output}\n\n"
+                f"The backend server failed to start or threw a server error:\n\n{error_output}\n\n"
                 f"Workspace: {s.workspace_path}\n"
                 f"{server_hint}"
-                "Fix the server file so it starts successfully. "
+                "Fix the server file, models, or configuration so it starts successfully and responds cleanly. "
+                "If database tables or migrations are missing, ensure migrations are created or tables defined. "
                 "One targeted edit — do NOT rewrite the entire file."
             )
 
@@ -1320,7 +1462,7 @@ class Orchestrator:
                 pass
 
             time.sleep(1)
-            info = pm.start_preview(project_type="react_vite")
+            info = pm.start_preview(project_type="auto")
             s.preview_url = info.url
 
             if not info.backend_error:
@@ -1330,7 +1472,7 @@ class Orchestrator:
                     "attempt": attempt + 1,
                     "status": "fixed",
                 })
-                return
+                return info
 
             error_output = info.backend_error
             print(f"[Orchestrator] Backend still failing: {error_output[:200]}")
@@ -1341,6 +1483,7 @@ class Orchestrator:
             "status": "exhausted",
             "error": error_output[:500],
         })
+        return None
 
     # ------------------------------------------------------------------
     # Phase 5: console error check
@@ -1679,11 +1822,15 @@ class Orchestrator:
         else:
             payload = dict(payload)
 
-        # Ensure session_id and task_id are always injected so callbacks route correctly
+        # Ensure session_id, task_id, and project_id are always injected so callbacks route correctly
         if "session_id" not in payload and getattr(s, "session_id", None):
             payload["session_id"] = s.session_id
         if "task_id" not in payload and getattr(s, "task_id", None):
             payload["task_id"] = s.task_id
+        if "project_id" not in payload:
+            proj_id = getattr(s, "project_id", None) or os.environ.get("PROJECT_ID")
+            if proj_id:
+                payload["project_id"] = proj_id
 
         body = json.dumps({"event_type": event_type, "payload": payload}).encode()
         sig = hmac.new(s.callback_secret.encode(), body, hashlib.sha256).hexdigest()
@@ -1697,6 +1844,7 @@ class Orchestrator:
                     "X-Callback-Secret": sig,
                     "X-Session-Id": getattr(s, "session_id", "") or "",
                     "X-Task-Id": getattr(s, "task_id", "") or "",
+                    "X-Project-Id": getattr(s, "project_id", "") or os.environ.get("PROJECT_ID", "") or "",
                 },
                 method="POST",
             )

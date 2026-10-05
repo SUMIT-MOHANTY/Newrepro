@@ -82,6 +82,11 @@ class AgentManager:
         volumes = {
             config.workspace_path: {"bind": "/workspace", "mode": "rw"},
         }
+        runtime_dir = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "agent-runtime")
+        )
+        if os.path.isdir(runtime_dir):
+            volumes[runtime_dir] = {"bind": "/app", "mode": "rw"}
         clean_project_id = config.project_id.replace("/", "_").replace("\\", "_")[:16]
         container_name = f"dsuite-agent-{clean_project_id}"
 
@@ -289,6 +294,41 @@ class AgentManager:
             "GIT_REPO_URL": config.repo_url or "",
             "GIT_TOKEN": config.git_token or "",
             "GIT_BRANCH": config.git_branch or "main",
-            "IDLE_TIMEOUT_SECONDS": "900",
+            "IDLE_TIMEOUT_SECONDS": "7200",
         }
+        if getattr(settings, "use_brn_llama", False):
+            brn_model = getattr(settings, "brn_model", "claude-sonnet-4-5") or "claude-sonnet-4-5"
+            env["AI_API_URL"] = getattr(settings, "brn_llama_url", "https://brn-llama.bourntec.com/api/process")
+            env["MODEL_PROVIDER"] = "anthropic"
+            env["MODEL_NAME"] = config.model or brn_model
+            env["AI_MODEL"] = config.model or brn_model
+            env["AI_AGENT_ID"] = getattr(settings, "brn_agent_id", "uhli23jn3oiuhgo847yyjvdhtrdy3tgfe8gfgoe87rugekuuyjommjferhjgo5go49uoi3uyrp938ry")
+            env["AI_PLATFORM_ID"] = getattr(settings, "brn_platform_id", "DSuite")
         return env
+
+    def report_task_outcome(
+        self,
+        project_id: str,
+        task_id: str,
+        agent_id: str,
+        status: str,
+        error_message: str | None = None,
+        failure_class: str = "unknown",
+    ) -> None:
+        """Publish a task outcome to the project execution tracker.
+
+        This makes container results visible to the shared coordination layer.
+        """
+        try:
+            from app.services.agents.local_state_manager import publish_task_outcome_to_tracker
+
+            publish_task_outcome_to_tracker(
+                project_token=project_id,
+                task_id=task_id,
+                agent_id=agent_id,
+                status=status,
+                error_message=error_message,
+                failure_class=failure_class,
+            )
+        except Exception as exc:
+            print(f"[AgentManager] report_task_outcome failed for {project_id}/{task_id}: {exc}")

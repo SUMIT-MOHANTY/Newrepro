@@ -1371,3 +1371,46 @@ def queue_nxdune_sync(
     finally:
         db.close()
 
+
+def publish_task_outcome_to_tracker(
+    project_token: str,
+    task_id: str,
+    agent_id: str,
+    status: str,
+    error_message: Optional[str] = None,
+    failure_class: str = "unknown",
+) -> None:
+    """
+    Reflect a task outcome into the project execution tracker.
+
+    This is the lightweight coordination hook that lets the swarm notice:
+    - repeated failures
+    - blocked project state
+    - whether the project is still potentially runnable
+
+    It does NOT replace task ownership or NXDune sync. It is a shared signal layer.
+    """
+    try:
+        from .project_execution_tracker import get_tracker
+
+        tracker = get_tracker(project_token)
+        if status in ("done", "completed", "success"):
+            tracker.mark_task_completed(task_id, verified=False)
+            tracker.set_status("in_progress" if tracker.is_blocked() else "tasks_completed")
+        elif status in ("failed", "error", "failed permanently"):
+            tracker.mark_task_failed(task_id, error_message or "")
+            tracker.register_failure(
+                task_id=task_id,
+                agent_id=agent_id,
+                error_message=error_message or "Task failed",
+                failure_class=failure_class,
+                context={"source": "local_state_outcome"},
+            )
+            tracker.set_status("blocked" if tracker.is_blocked() else "in_progress")
+    except Exception as e:
+        logger.debug(
+            "[LocalState] publish_task_outcome_to_tracker failed for %s: %s",
+            project_token,
+            e,
+        )
+

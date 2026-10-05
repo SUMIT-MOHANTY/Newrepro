@@ -370,10 +370,23 @@ class SyntaxValidator:
             "});"
         )
         try:
+            env = os.environ.copy()
+            node_paths = [
+                str(self.ws / "frontend" / "node_modules"),
+                str(self.ws / "backend" / "node_modules"),
+                str(self.ws / "node_modules"),
+                "/usr/local/lib/node_modules",
+                "/usr/lib/node_modules",
+            ]
+            existing_node_path = env.get("NODE_PATH", "")
+            if existing_node_path:
+                node_paths.append(existing_node_path)
+            env["NODE_PATH"] = os.pathsep.join(node_paths)
+
             result = subprocess.run(
                 ["node", "-e", node_script, loader],
                 input=content, capture_output=True, text=True,
-                timeout=15, cwd=str(self.ws),
+                timeout=15, cwd=str(self.ws), env=env,
             )
         except FileNotFoundError:
             return ('unavailable', None)  # node not present
@@ -780,36 +793,9 @@ class SyntaxValidator:
                         "fixable": True,
                     }
 
-        # ── 3. JSX component tag balance check ───────────────────────────
-        # Catches unclosed wrapper tags like <ThemeProvider> without </ThemeProvider>
-        clean_code = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
-        clean_code = re.sub(r'//.*$', '', clean_code, flags=re.MULTILINE)
-        clean_code = re.sub(r'`(?:\\.|[^`\\])*`', '', clean_code)
-        clean_code = re.sub(r'"(?:\\.|[^"\\])*"', '', clean_code)
-        clean_code = re.sub(r"'(?:\\.|[^'\\])*'", '', clean_code)
-
-        closing_tags = re.findall(r'</([A-Z][A-Za-z0-9_.]*)>', clean_code)
-        close_counts: dict[str, int] = {}
-        for t in closing_tags:
-            close_counts[t] = close_counts.get(t, 0) + 1
-
-        open_tags = re.findall(r'<([A-Z][A-Za-z0-9_.]*)(?:\s+[^>]*?)?(?<!/)>', clean_code)
-        open_counts: dict[str, int] = {}
-        for t in open_tags:
-            open_counts[t] = open_counts.get(t, 0) + 1
-
-        for tag, o_count in open_counts.items():
-            c_count = close_counts.get(tag, 0)
-            if o_count > c_count:
-                line_no = 1
-                for idx, line in enumerate(content.splitlines(), start=1):
-                    if f"<{tag}" in line:
-                        line_no = idx
-                return {
-                    "error": f'JSX syntax error: Unexpected end of file before a closing "{tag}" tag.',
-                    "line": line_no,
-                    "fixable": True,
-                }
+        # Note: JSX/TSX tag matching is accurately handled by _parser_check (esbuild/@babel/parser).
+        # We do NOT run naive regex matching here because TypeScript generics like
+        # `createContext<NotificationContextType>` and `useState<T>` produce false positives.
 
         # ── 4. Truncation detection ──────────────────────────────────────
         # INVERTED heuristic: only flag when the last line PROVABLY ends
@@ -1106,6 +1092,20 @@ class SyntaxValidator:
                 txt = (self.ws / rel).read_text(encoding="utf-8", errors="replace")
                 exports_by_file[rel] = self._validate_export_symbols(ext, txt)
 
+            # Standard library and common third-party framework modules that must NOT
+            # be shadowed by local project files (e.g. local models.py, logging.py, auth.py)
+            stdlib_and_framework = {
+                "os", "sys", "pathlib", "re", "json", "math", "datetime", "time", "typing",
+                "collections", "itertools", "functools", "unittest", "hashlib", "random",
+                "uuid", "shutil", "subprocess", "io", "abc", "contextlib", "copy",
+                "dataclasses", "enum", "inspect", "threading", "traceback", "urllib",
+                "logging", "string", "tempfile", "socket", "http", "warnings", "glob",
+                "csv", "sqlite3", "pickle", "base64", "secrets", "types", "multiprocessing",
+                "django", "rest_framework", "fastapi", "pydantic", "flask", "sqlalchemy",
+                "pytest", "requests", "numpy", "pandas", "celery", "redis", "alembic",
+                "models", "views", "admin", "serializers", "urls"
+            }
+
             # Python: `import M` / `from pkg import M` then `M.attr`
             py_mod = re.compile(r'^import\s+(?:[A-Za-z0-9_]*\.)*([A-Za-z0-9_]+)', re.MULTILINE)
             py_from = re.compile(r'^from\s+([A-Za-z0-9_.]+)\s+import\s+([A-Za-z0-9_, ]+)', re.MULTILINE)
@@ -1124,10 +1124,16 @@ class SyntaxValidator:
                 # to the importing file), e.g. `from todo_app import views` -> todo_app/views.
                 alias2target = {}
                 for m in py_from.finditer(txt):
-                    mod_path = m.group(1).replace('.', '/')   # todo_app.mod -> todo_app/mod
+                    raw_mod = m.group(1)
+                    root_pkg = raw_mod.split('.')[0].strip()
+                    if root_pkg in stdlib_and_framework:
+                        continue
+                    mod_path = raw_mod.replace('.', '/')   # todo_app.mod -> todo_app/mod
                     syms = [s.strip() for s in m.group(2).split(',') if s.strip()]
                     for s in syms:
                         if s == '*' or '.' in s:
+                            continue
+                        if s in stdlib_and_framework:
                             continue
                         # Prefer root-resolved package path; fall back to parent-relative
                         # for same-dir modules (e.g. `from helper import do_thing`).
@@ -1141,7 +1147,12 @@ class SyntaxValidator:
                 for m in py_mod.finditer(txt):
                     # `import views` (or `import pkg.views`) -> alias = last name.
                     alias = m.group(1)
+                    if alias in stdlib_and_framework:
+                        continue
                     import_path = m.group(0).split(None, 2)[-1]  # e.g. `views` or `todo_app.views`
+                    root_pkg = import_path.split('.')[0].strip()
+                    if root_pkg in stdlib_and_framework:
+                        continue
                     mod_path = import_path.replace('.', '/')     # -> `views` / `todo_app/views`
                     tkey = self._resolve_from_root(mod_path, files_map)
                     if not tkey:
@@ -1158,6 +1169,8 @@ class SyntaxValidator:
                 for a2 in attr_use.finditer(txt):
                     alias = a2.group('mod')
                     attr = a2.group('attr')
+                    if alias in stdlib_and_framework:
+                        continue
                     tkey = alias2target.get(alias)
                     if not tkey:
                         continue  # many builtins/stdlib aliases are unknown; ignore
@@ -1165,7 +1178,7 @@ class SyntaxValidator:
                     named = exports.get("named") or set()
                     if attr not in named:
                         # Skip if it's a known stdlib/builtin (os, sys, pathlib, re, …)
-                        if tkey not in files_map:
+                        if alias in stdlib_and_framework or tkey not in files_map:
                             continue
                         line_no = txt[: a2.start()].count("\n") + 1
                         errors.append({

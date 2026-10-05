@@ -893,17 +893,17 @@ def build_agent_prompt(
             "- Backend agents: after each endpoint, document it in .agent/contracts/api_contract.json."
         )
 
-    # File ownership directives per lane -- prevents cross-agent file conflicts
+    # File ownership directives per lane -- prevents cross-agent conflicts while allowing full application scaffolding
     if is_qa_agent or "qa" in (agent_lanes or set()):
         file_ownership = "tests/, __tests__/, *.test.*, *.spec.*, cypress/, playwright/, .agent/defect_reports/"
     elif "frontend" in (agent_lanes or set()) or "ui" in (agent_lanes or set()):
-        file_ownership = "src/components/, src/pages/, src/views/, src/hooks/, src/contexts/, src/styles/, public/"
+        file_ownership = "frontend/, src/, components/, pages/, views/, hooks/, contexts/, styles/, public/, package.json, index.html, App.*, main.*, vite.config.*, tsconfig.json"
     elif "backend" in (agent_lanes or set()):
-        file_ownership = "server/, api/, controllers/, models/, database/, migrations/, services/, routes/, backend/"
+        file_ownership = "backend/, server/, api/, controllers/, models/, database/, migrations/, services/, routes/, main.py, app.py, requirements.txt, pyproject.toml"
     elif "devops" in (agent_lanes or set()):
         file_ownership = "Dockerfile, docker-compose*, .github/workflows/, nginx.conf, Makefile, scripts/, k8s/"
     else:
-        file_ownership = "All project files relevant to your assigned tasks"
+        file_ownership = "All project files relevant to your assigned tasks and making the application runnable"
 
     prompt = (
         "# Persona & Execution Assignment\n"
@@ -911,11 +911,30 @@ def build_agent_prompt(
         f"- Operational Lanes: {lanes_str}\n"
         f"- Configured AI Engine: {assigned_model.upper()}\n"
         f"- Authorized Container Tools: {tools_str}\n"
-        f"- File Ownership Scope: {file_ownership}\n"
+        f"- Primary Focus Scope: {file_ownership}\n"
         + (f"- Skills & Focus: {skills_summary}\n" if skills_summary else "")
         + f"\n{workspace_context}\n{contracts_context}\n"
         + (f"## Business Requirements & Architecture:\n{brd_context}\n" if brd_context else "")
         + f"\n{task_summary}\n"
+        "\n## ============================================================================\n"
+        "## CORE DIRECTIVE: BRD FULFILLMENT & RUNNABLE APPLICATION (PRIMARY OBJECTIVE)\n"
+        "## ============================================================================\n"
+        "## 1. TASKS ARE MILESTONES, NOT CAGES: The assigned task and subtasks guide your\n"
+        "##    milestone focus. They do NOT limit your engineering responsibility. Your primary\n"
+        "##    duty is to fulfill the Business Requirements Document (BRD) and deliver a 100%\n"
+        "##    working, connected, and RUNNABLE application.\n"
+        "## 2. FIX MISSING FOUNDATIONS: If foundational files are missing or broken (such as\n"
+        "##    package.json, entry points main.tsx/main.py, root App router, layouts, styling,\n"
+        "##    or environment configs), you HAVE FULL AUTONOMY AND RESPONSIBILITY to create or\n"
+        "##    repair them immediately. Never leave code unrunnable because a prerequisite wasn't\n"
+        "##    explicitly written in the subtask checklist.\n"
+        "## 3. ZERO ORPHANED FEATURES: Every UI feature or page you build MUST be wired into\n"
+        "##    the application router and navigation layout (sidebar/header) so real users can\n"
+        "##    reach and interact with it. Components floating unrendered on disk are FAILURES.\n"
+        "## 4. END-TO-END CONNECTION: Connect frontend features to real backend endpoints or\n"
+        "##    verified contracts (.agent/contracts/api_contract.json). Never leave fake routes\n"
+        "##    that 404. If a backend endpoint is still pending, provide clean local mock data.\n"
+        "## ============================================================================\n"
         "\n## ============================================================================\n"
         "## AGENTIC OS -- AUTONOMOUS REACT LOOP (OBSERVE -> ACT -> VERIFY -> SELF-HEAL)\n"
         "## ============================================================================\n"
@@ -934,10 +953,15 @@ def build_agent_prompt(
         "- Read the entry point file (index.js, main.py, app.py, src/App.jsx) to understand patterns.\n"
         "- GREENFIELD (0-2 files): design structure from BRD requirements.\n"
         "- BROWNFIELD (existing code): read 3-5 key files BEFORE writing anything.\n"
-        f"- FILE OWNERSHIP: Only create/edit files within your scope: {file_ownership}\n"
-        "  NEVER edit files belonging to another agent's lane.\n"
+        f"- PRIMARY FOCUS: Concentrate work within: {file_ownership}\n"
+        "  Ensure all changes support a unified, runnable project.\n"
         "\n### PHASE 2: Execution Planning & Dependency-Ordered Subtask Breakdown\n"
         "- Formulate a dependency-ordered plan BEFORE writing any code:\n"
+        "  Data/Schema layer -> Service/Business Logic -> API/Route -> UI Integration -> Verification\n"
+        "- Identify which files need to be CREATED vs MODIFIED.\n"
+        "- Verify all imports reference real, existing modules before using them.\n"
+        "- Backend agents: define the API contract (endpoint, method, request/response schema) FIRST.\n"
+        "- Frontend agents: read_file('.agent/contracts/api_contract.json') BEFORE any API client code.\n"
         "  Data/Schema layer -> Service/Business Logic -> API/Route -> UI Integration -> Verification\n"
         "- Identify which files need to be CREATED vs MODIFIED.\n"
         "- Verify all imports reference real, existing modules before using them.\n"
@@ -1010,3 +1034,109 @@ def build_task_config(
         "web_search_enabled": web_search_enabled,
         "max_tool_calls": 80,
     }
+
+
+def get_project_execution_status(project_token: str) -> Dict[str, Any]:
+    """Return the current shared execution status for a project.
+
+    This is the single coordination view that other services should consult
+    when deciding whether to start agents, retry work, or escalate a blocker.
+    """
+    try:
+        from .project_execution_tracker import get_tracker
+
+        tracker = get_tracker(project_token)
+        return tracker.snapshot()
+    except Exception as e:
+        logger.debug(
+            "[MasterOrchestrator] get_project_execution_status failed for %s: %s",
+            project_token,
+            e,
+        )
+        return {
+            "project_token": project_token,
+            "status": "unknown",
+            "is_blocked": False,
+            "blocked_reasons": [],
+            "error": str(e),
+        }
+
+
+def assess_project_runnable_state(
+    project_token: str,
+    workspace_dir: str,
+    build_cmd: Optional[str] = None,
+    run_cmd: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Assess whether the project is currently blocked or potentially runnable.
+
+    This is a lightweight coordination gate, not a full verification suite.
+    It combines:
+    - execution tracker blocked reasons
+    - workspace-level presence of essential project files
+    - any passed runnable verification marker if one exists
+    """
+    try:
+        from .project_execution_tracker import get_tracker
+
+        tracker = get_tracker(project_token)
+        snapshot = tracker.snapshot()
+
+        result: Dict[str, Any] = {
+            "project_token": project_token,
+            "is_blocked": tracker.is_blocked(),
+            "blocked_reasons": list(tracker.blocked_reasons),
+            "verified_runnable": tracker.is_verified_runnable(),
+            "workspace_dir": workspace_dir,
+            "essential_files_present": False,
+            "assessment": "unknown",
+        }
+
+        workspace_present = False
+        essential_files: List[str] = []
+
+        if os.path.isdir(workspace_dir):
+            workspace_present = True
+            entries = os.listdir(workspace_dir)
+            requirements = any(f in entries for f in ("requirements.txt", "pyproject.toml", "setup.py"))
+            package = "package.json" in entries
+            docker_compose = any(f in entries for f in ("docker-compose.yml", "docker-compose.yaml"))
+            dockerfile = "Dockerfile" in entries
+
+            essential_files = []
+            if requirements or package:
+                essential_files.append("project_manifest")
+            if dockerfile or docker_compose:
+                essential_files.append("container_defs")
+            if os.path.isdir(os.path.join(workspace_dir, "backend")) or os.path.isdir(os.path.join(workspace_dir, "src")):
+                essential_files.append("source_dir")
+
+            result["essential_files_present"] = len(essential_files) > 0
+            result["essential_files"] = essential_files
+
+        if not workspace_present:
+            result["assessment"] = "no_workspace"
+        elif tracker.is_blocked():
+            result["assessment"] = "blocked_by_execution_state"
+        elif not result["essential_files_present"]:
+            result["assessment"] = "missing_essential_workspace_files"
+        elif tracker.is_verified_runnable() is True:
+            result["assessment"] = "verified_runnable"
+        else:
+            result["assessment"] = "unverified_but_not_blocked"
+
+        return result
+    except Exception as e:
+        logger.debug(
+            "[MasterOrchestrator] assess_project_runnable_state failed for %s: %s",
+            project_token,
+            e,
+        )
+        return {
+            "project_token": project_token,
+            "is_blocked": False,
+            "blocked_reasons": [],
+            "assessment": "assessment_error",
+            "error": str(e),
+        }
+

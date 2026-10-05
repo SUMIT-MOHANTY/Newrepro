@@ -67,14 +67,18 @@ Sprint 1 builds the **living application prototype & core foundation** — a com
 
 If an agent builds a button that does nothing, the task has FAILED.
 
-### NAVIGATION ARCHITECTURE REQUIREMENT
+### NAVIGATION & FULL-STACK CONNECTIVITY ARCHITECTURE REQUIREMENT
 TASK-00 MUST establish the project foundation that ALL subsequent tasks depend on:
   1. **Framework Routing Setup** in the main application entry file with application routes pre-registered according to the detected tech stack
   2. **Shared Layout component / Template** containing persistent navigation (sidebar/navbar) and main content rendering area
   3. **Design token / styling file** (e.g., CSS variables or theme configuration) defining primary/secondary colors, typography scale, spacing, and shadows
   4. **Global mock data store** with realistic domain-appropriate records per entity type
   5. **Shared UI components** (buttons, badges, cards, modals, tables, inputs) used consistently across screens
-  6. **Core Backend Scaffold & Database Models**: Initial backend directory layout, ORM/DB model definitions, configuration files, and API route skeletons so backend agents can build immediately
+  6. **Core Backend Scaffold, Database Models & Migrations**: Initial backend directory layout, ORM/DB model definitions, migration execution scripts (e.g. Django `makemigrations && migrate`, Alembic `upgrade head`, Prisma), and initial seed data with default user accounts.
+  7. **Full-Stack Authentication & Login Flow (CONDITIONAL — ONLY IF REQUIRED BY BRD)**:
+     - **If the BRD specifies user accounts, roles, permissions, login/signup, or protected data**: establish a dedicated Login & Registration page/modal, authentication state store (token/session management), and default pre-seeded demo credentials (e.g., admin / admin123) with a one-click demo login option.
+     - **If the application is a public portal, open tool, calculator, or does NOT require user accounts**: do NOT force an authentication wall. Keep the application open, accessible, and frictionless.
+  8. **Unified API Client with Dynamic Fallback**: Frontend HTTP/API client targeting `/api` that attaches auth tokens (when authentication is enabled), handles error states cleanly, and falls back gracefully to mock data if an endpoint is pending backend deployment, ensuring zero 404/401 runtime breaks.
 
 All subsequent early-sprint tasks IMPORT from these shared foundations. No task invents its own navigation, colors, or mock data structure.
 

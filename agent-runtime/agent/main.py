@@ -130,7 +130,12 @@ def main() -> None:
             pass
 
     init_marker = Path(state.workspace_path) / ".agent_initialized"
-    is_existing_workspace = init_marker.exists()
+    ws_path = Path(state.workspace_path)
+    has_code_files = any(
+        f for f in ws_path.iterdir()
+        if not f.name.startswith(".") and f.name not in ("node_modules", "__pycache__")
+    ) if ws_path.exists() else False
+    is_existing_workspace = init_marker.exists() or has_code_files
 
     # Check if this task was already executed in this workspace
     prompts_history_file = Path(state.workspace_path) / ".agent_history" / "prompts_history.json"
@@ -146,7 +151,29 @@ def main() -> None:
 
     has_active_prompt = bool(state.prompt and state.prompt.strip())
 
-    if is_existing_workspace and (task_already_executed or not has_active_prompt):
+    if state.task_type == "deploy" and is_existing_workspace:
+        print("[AgentRuntime] 🚀 Deploy task detected with existing workspace! Launching live preview directly without re-cloning...")
+        try:
+            p_info = orchestrator._run_preview()
+            has_err = getattr(p_info, "frontend_error", None) or getattr(p_info, "backend_error", None)
+            if not has_err:
+                orchestrator._post_event("preview_ready", {
+                    "status": "success",
+                    "preview_url": f"/app/{state.project_id}/",
+                    "message": "Live preview is ready on port 80",
+                })
+                print(f"[AgentRuntime] ✅ Live preview verified healthy on port 80: {state.preview_url or 'http://localhost:80'}")
+            else:
+                orchestrator._post_event("preview_failed", {
+                    "status": "error",
+                    "preview_url": f"/app/{state.project_id}/",
+                    "error": f"Preview error: {getattr(p_info, 'frontend_error', None) or getattr(p_info, 'backend_error', None)}",
+                })
+                print(f"[AgentRuntime] ⚠️ Live preview launched with unresolved errors.")
+        except Exception as pe:
+            print(f"[AgentRuntime] Preview initialization note: {pe}")
+        init_marker.touch(exist_ok=True)
+    elif is_existing_workspace and (task_already_executed or not has_active_prompt):
         print("[AgentRuntime] 🌅 Container awakened from sleep state! Workspace & history preserved.")
         try:
             orchestrator._run_preview()
@@ -268,6 +295,25 @@ def main() -> None:
                             os.environ["AI_MODEL"] = follow_model
 
                         if follow_prompt:
+                            if follow_task_type == "deploy":
+                                print(f"[AgentRuntime] 🚀 Deploy signal received: task={follow_task_id}. Booting live preview...")
+                                p_info = orchestrator._run_preview()
+                                has_err = getattr(p_info, "frontend_error", None) or getattr(p_info, "backend_error", None)
+                                if not has_err:
+                                    orchestrator._post_event("preview_ready", {
+                                        "status": "success",
+                                        "preview_url": f"/app/{state.project_id}/",
+                                        "message": "Live preview is ready on port 80",
+                                    })
+                                else:
+                                    orchestrator._post_event("preview_failed", {
+                                        "status": "error",
+                                        "preview_url": f"/app/{state.project_id}/",
+                                        "error": f"Preview error: {getattr(p_info, 'frontend_error', None) or getattr(p_info, 'backend_error', None)}",
+                                    })
+                                last_activity_time = time.time()
+                                continue
+
                             print(f"[AgentRuntime] 📩 Mailbox signal received: task={follow_task_id} (session={state.session_id}, model={state.model_name}) | {follow_prompt[:100]}...")
                             last_activity_time = time.time()
                             orchestrator.run_follow_up(

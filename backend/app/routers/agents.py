@@ -1158,11 +1158,19 @@ async def deploy_preview(
             git_repo_url = git_repo_url or global_cred.git_repo_url
             git_token = git_token or global_cred.git_token
 
-    # Only require git_repo_url - token is optional for public repos
-    if not git_repo_url:
+    # Check if local workspace exists on disk with files
+    clean_token = (project_token or "").replace("/", "_").replace("\\", "_")
+    storage_root = getattr(settings, "project_storage_root", os.path.join("backend", "storage", "projects"))
+    workspace_dir = os.path.join(storage_root, clean_token)
+    has_local_workspace = os.path.isdir(workspace_dir) and any(
+        f for f in os.scandir(workspace_dir) if not f.name.startswith(".")
+    )
+
+    # Only require git_repo_url if workspace does NOT exist locally
+    if not has_local_workspace and not git_repo_url:
         raise HTTPException(
             status_code=400,
-            detail="Git repo URL is required. Token is optional for public repositories."
+            detail="Git repo URL is required because no local workspace was found to deploy from. Token is optional for public repositories."
         )
 
     result = await agent_service.deploy_preview(
@@ -1523,6 +1531,119 @@ async def get_agent_status(
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+async def reconcile_and_dispatch_next(
+    project_token: str,
+    completed_agent_id: Optional[str] = None,
+    git_repo_url: Optional[str] = None,
+    git_token: Optional[str] = None,
+    x_task_token: Optional[str] = None,
+) -> List[str]:
+    """
+    Autonomous Swarm Reactive Dispatcher:
+    Reconciles project tasks against completed statuses and workspace task summaries.
+    Identifies newly unblocked tasks whose dependencies are satisfied and automatically
+    launches the next assigned agent without requiring manual user intervention.
+    """
+    if not project_token:
+        return []
+
+    from app.core.database import SessionLocal
+    import models
+    from app.services.agents.agent_service import agent_service
+    from app.routers.helpers import broadcast_preview_log
+
+    logger.info(f"[ReactiveSwarm] Reconciling dependencies for project {project_token}...")
+    dispatched_agents: List[str] = []
+
+    with SessionLocal() as db:
+        all_tasks = db.query(models.Task).filter(models.Task.project_token == project_token).all()
+        if not all_tasks:
+            return []
+
+        # Map completed task IDs
+        completed_ids = set()
+        for t in all_tasks:
+            if t.status in ("DONE", "COMPLETED") or t.verification_status == "PASSED":
+                if t.task_id:
+                    completed_ids.add(t.task_id)
+                    if "_" in t.task_id:
+                        completed_ids.add(t.task_id.split("_")[-1])
+                    if "-" in t.task_id:
+                        completed_ids.add(t.task_id.split("-")[-1])
+
+        # Find pending tasks whose dependencies are satisfied
+        ready_tasks_by_agent: Dict[str, List[models.Task]] = {}
+        for t in all_tasks:
+            if t.status in ("TODO", "PENDING", "BACKLOG") and t.status != "IN_PROGRESS":
+                raw_deps = t.linked_tasks or []
+                if isinstance(raw_deps, str):
+                    try:
+                        raw_deps = json.loads(raw_deps)
+                    except Exception:
+                        raw_deps = [raw_deps]
+                if not isinstance(raw_deps, list):
+                    raw_deps = []
+
+                deps_satisfied = True
+                for dep in raw_deps:
+                    clean_dep = str(dep).strip()
+                    if not clean_dep:
+                        continue
+                    matched = (
+                        clean_dep in completed_ids
+                        or any(cid.endswith(f"_{clean_dep}") or cid.endswith(f"-{clean_dep}") for cid in completed_ids)
+                    )
+                    if not matched:
+                        deps_satisfied = False
+                        break
+
+                if deps_satisfied and t.assigned_agent_id:
+                    aid = t.assigned_agent_id
+                    if aid not in ready_tasks_by_agent:
+                        ready_tasks_by_agent[aid] = []
+                    ready_tasks_by_agent[aid].append(t)
+
+    # For each agent with newly unblocked tasks:
+    for aid, r_tasks in ready_tasks_by_agent.items():
+        if completed_agent_id and aid.lower() == completed_agent_id.lower():
+            continue
+
+        # Skip if agent is currently running
+        st = agent_service.get_agent_status(aid, project_token)
+        if st and st.get("status") == "running":
+            continue
+
+        logger.info(f"[ReactiveSwarm] Auto-dispatching agent {aid} for {len(r_tasks)} unblocked tasks in {project_token}")
+        agent_service.append_agent_log(
+            aid,
+            f"[Reactive Swarm] 🚀 Auto-dispatching agent {aid}: {len(r_tasks)} unblocked tasks ready to execute.",
+            "info",
+            project_token,
+        )
+        try:
+            await broadcast_preview_log(
+                project_token=project_token,
+                content=f"🚀 Swarm Auto-Dispatch: Agent {aid} unblocked ({len(r_tasks)} tasks ready).",
+                event_type="agent_dispatched",
+                payload={"agent_id": aid, "ready_tasks": [getattr(t, 'task_id', '') for t in r_tasks]}
+            )
+        except Exception:
+            pass
+
+        asyncio.create_task(
+            _bg_run_agent(
+                agent_id=aid,
+                git_repo_url=git_repo_url,
+                git_token=git_token,
+                project_token=project_token,
+                x_task_token=x_task_token,
+            )
+        )
+        dispatched_agents.append(aid)
+
+    return dispatched_agents
 
 
 async def _bg_run_agent(
@@ -1933,12 +2054,12 @@ async def _bg_run_agent(
                         if isinstance(res, dict) and res.get("status") == "failed":
                             failed_task_ids.add(str(tid))
 
-                # Real success requires clean container exit code AND no failed tasks
-                execution_success = (exit_code == 0) and (len(failed_task_ids) == 0)
+                # Real success requires clean container exit code, summary data generated, AND no failed tasks
+                execution_success = (exit_code == 0) and bool(task_summary_data) and (len(failed_task_ids) == 0)
                 status_msg = (
                     "Agent Swarm runtime completed successfully with all tasks verified."
                     if execution_success
-                    else f"Agent Swarm runtime finished with issues (exit_code={exit_code}, failed_tasks={list(failed_task_ids)})."
+                    else f"Agent Swarm runtime finished with issues (exit_code={exit_code}, summary_present={bool(task_summary_data)}, failed_tasks={list(failed_task_ids)})."
                 )
                 agent_service.append_agent_log(
                     agent_id,
@@ -1992,7 +2113,7 @@ async def _bg_run_agent(
                 t_str_id = str(t_info.get("id") or "")
                 
                 # Check individual task result from supervisor summary
-                is_this_task_success = execution_success
+                is_this_task_success = False
                 if summary_results:
                     matched_res = summary_results.get(t_str_id)
                     if not matched_res:
@@ -2000,8 +2121,17 @@ async def _bg_run_agent(
                             if str(k).endswith(t_str_id) or t_str_id.endswith(str(k)):
                                 matched_res = v
                                 break
+                    task_err_details = None
                     if matched_res and isinstance(matched_res, dict):
                         is_this_task_success = (matched_res.get("status") == "completed")
+                        if not is_this_task_success:
+                            task_err_details = matched_res.get("error") or "Task reported failed status in agent summary"
+                elif execution_success and not container_name:
+                    # In local LLM fallback mode only, consider success if LLM produced output
+                    is_this_task_success = True
+                else:
+                    is_this_task_success = False
+                    task_err_details = "Container execution finished without task completion verification"
 
                 task_final_status = "DONE" if is_this_task_success else "FAILED"
                 task_verif_status = "PASSED" if is_this_task_success else "FAILED"
@@ -2011,6 +2141,8 @@ async def _bg_run_agent(
                     if t_record:
                         t_record.status = task_final_status
                         t_record.verification_status = task_verif_status
+                        if not is_this_task_success and task_err_details:
+                            t_record.error_details = str(task_err_details)[:1000]
 
                 agent_service.append_agent_log(
                     agent_id,
@@ -2036,6 +2168,19 @@ async def _bg_run_agent(
                             f"📜 Published verified API contracts: {rc} routes, {mc} data schemas.",
                             "output",
                             project_token,
+                        )
+                        from app.routers.helpers import sync_broadcast_preview_log
+                        sync_broadcast_preview_log(
+                            project_token=project_token,
+                            content=f"📜 Published verified API contracts: {rc} routes, {mc} data schemas.",
+                            event_type="contract_published",
+                            payload={
+                                "project_id": project_token,
+                                "agent_id": agent_id,
+                                "routes_count": rc,
+                                "models_count": mc,
+                                "contracts": c,
+                            }
                         )
                 except Exception as ce:
                     logger.debug(f"Contract extraction debug: {ce}")
@@ -2082,11 +2227,25 @@ async def _bg_run_agent(
                         shell=True,
                         cwd=workspace_dir,
                         capture_output=True,
-                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         timeout=60,
                     )
                 except Exception as g_err:
                     logger.warning(f"[_bg_run_agent] Auto git push error: {g_err}")
+
+            # ── Reactive Swarm Dispatch: automatically unblock & trigger downstream agents ──
+            if execution_success:
+                try:
+                    await reconcile_and_dispatch_next(
+                        project_token=project_token,
+                        completed_agent_id=agent_id,
+                        git_repo_url=git_repo_url,
+                        git_token=git_token,
+                        x_task_token=x_task_token,
+                    )
+                except Exception as r_err:
+                    logger.warning(f"[_bg_run_agent] Reactive swarm dispatch error: {r_err}")
 
             total_tasks = len(tasks_to_execute)
             logger.info(f"[_bg_run_agent] Agent {agent_name} processed {total_tasks} tasks. Success: {execution_success}.")
@@ -2103,6 +2262,23 @@ async def _bg_run_agent(
                 agent_rec_mem["progress_message"] = f"Runtime execution failed: {e}"
         except Exception:
             pass
+
+        # Reconcile DB task rows: do NOT leave them stuck in IN_PROGRESS!
+        try:
+            from app.core.database import SessionLocal
+            with SessionLocal() as err_db:
+                stuck_tasks = err_db.query(models.Task).filter(
+                    models.Task.project_token == project_token,
+                    models.Task.assigned_agent_id == agent_id,
+                    models.Task.status == "IN_PROGRESS"
+                ).all()
+                for rec in stuck_tasks:
+                    rec.status = "FAILED"
+                    rec.verification_status = "FAILED"
+                    rec.error_details = str(e)[:1000]
+                err_db.commit()
+        except Exception as db_err:
+            logger.warning(f"[_bg_run_agent] Failed to reconcile task error statuses: {db_err}")
 
 
 class RunAgentRequest(BaseModel):
@@ -2242,15 +2418,97 @@ async def reset_agent(
         if agent:
             agent = {**agent, "id": agent_id}
 
+        # Also reset any task ownerships associated with this agent back to pending
+        try:
+            base_aid = agent_id.split("#")[0] if "#" in agent_id else agent_id
+            ows = db.query(models.AgentTaskOwnership).filter(
+                models.AgentTaskOwnership.agent_id.in_([agent_id, base_aid])
+            )
+            if project_token:
+                ows = ows.filter(models.AgentTaskOwnership.project_token == project_token)
+            for o in ows.all():
+                o.status = "pending"
+                o.task_data = {}
+            db.commit()
+        except Exception as ow_err:
+            db.rollback()
+            logger.warning(f"[ResetAgent] Could not reset ownerships for {agent_id}: {ow_err}")
+
         agent_service.append_agent_log(
             agent_id,
-            "🛑 Agent execution manually stopped by user.",
+            "🛑 Agent execution manually reset to idle.",
             "warning",
             project_token,
         )
         return {"agent": agent, "status": "stopped"}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/agents/reset-all")
+async def reset_all_agents(
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+    project_token: Optional[str] = None,
+):
+    """Reset all agents and task ownerships back to idle/pending for a project."""
+    try:
+        project_token = _normalize_project_token(project_token)
+        
+        # Stop any active containers
+        try:
+            from app.infrastructure.containers.playground_manager import playground_manager
+            playground_manager.stop_agent_container(project_token=project_token)
+        except Exception as e:
+            logger.warning(f"[ResetAllAgents] Could not stop containers: {e}")
+
+        # Reset all in-memory agents
+        all_agents = agent_service.get_all_agents(project_token)
+        for a in all_agents:
+            aid = a.get("id")
+            if aid:
+                agent_service.reset_agent(aid, project_token)
+
+        # Reset all task ownerships
+        ows_q = db.query(models.AgentTaskOwnership)
+        if project_token:
+            ows_q = ows_q.filter(models.AgentTaskOwnership.project_token == project_token)
+        for o in ows_q.all():
+            o.status = "pending"
+            o.task_data = {}
+
+        # Reset all tasks
+        tasks_q = db.query(models.Task)
+        if project_token:
+            tasks_q = tasks_q.filter(models.Task.project_token == project_token)
+        for t in tasks_q.all():
+            t.status = "TODO"
+
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+
+        # Clean .agent task summaries from workspace
+        try:
+            from app.core.config import get_settings
+            settings = get_settings()
+            clean_token = (project_token or "default_project").replace("/", "_").replace("\\", "_")
+            ws_agent_dir = os.path.join(settings.project_storage_root, clean_token, ".agent")
+            if os.path.exists(ws_agent_dir):
+                for f in os.listdir(ws_agent_dir):
+                    if f.startswith("task_summary") and f.endswith(".json"):
+                        try:
+                            os.remove(os.path.join(ws_agent_dir, f))
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        return {"status": "success", "message": "All agents and tasks reset to idle/pending."}
+    except Exception as e:
+        logger.error(f"[ResetAllAgents] Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 class RunAllRequest(BaseModel):
@@ -2343,8 +2601,55 @@ async def _run_phased_swarm_coordinator(
                 "output",
                 project_token,
             )
+            from app.routers.helpers import broadcast_preview_log
+            await broadcast_preview_log(
+                project_token=project_token,
+                content=f"📜 Published verified API contracts: {len(routes)} routes, {len(models_list)} data schemas.",
+                event_type="contract_published",
+                payload={
+                    "project_id": project_token,
+                    "agent_id": "M_agent_01",
+                    "routes_count": len(routes),
+                    "models_count": len(models_list),
+                    "contracts": contracts,
+                }
+            )
         except Exception as e:
             logger.warning(f"[SwarmCoordinator] Contract extraction error: {e}")
+
+        # ── Phase 1 Quality Gate ──
+        try:
+            from app.core.database import SessionLocal
+            import models
+            with SessionLocal() as gate_db:
+                p1_failed = gate_db.query(models.Task).filter(
+                    models.Task.project_token == project_token,
+                    models.Task.lane.in_(["backend", "database", "api", "governance"]),
+                    models.Task.status.in_(["FAILED", "IN_PROGRESS"])
+                ).all()
+                p1_done = gate_db.query(models.Task).filter(
+                    models.Task.project_token == project_token,
+                    models.Task.lane.in_(["backend", "database", "api", "governance"]),
+                    models.Task.status == "DONE"
+                ).count()
+
+            if p1_failed and p1_done == 0:
+                agent_service.append_agent_log(
+                    "M_agent_01",
+                    f"[Swarm Coordinator] ⚠️ Phase 1 (Backend) failed or produced no completed tasks ({len(p1_failed)} failed/stalled). Pausing swarm before Phase 2 to prevent broken UI generation.",
+                    "error",
+                    project_token,
+                )
+                from app.routers.helpers import broadcast_preview_log
+                await broadcast_preview_log(
+                    project_token=project_token,
+                    content=f"⚠️ Swarm Phase 1 Failed: {len(p1_failed)} tasks failed. Swarm paused.",
+                    event_type="phase_failed",
+                    payload={"phase": 1, "failed_tasks_count": len(p1_failed)}
+                )
+                return
+        except Exception as gate_err:
+            logger.warning(f"[SwarmCoordinator] Phase gate evaluation error: {gate_err}")
 
     # ── Phase 2: Frontend / UI Layer ──
     p2 = phased_plan.get("phase2_frontend", [])
@@ -2427,69 +2732,179 @@ async def _run_phased_swarm_coordinator(
         except Exception as qe:
             logger.debug(f"[SwarmCoordinator] QA gate read error: {qe}")
 
+    # ── Dynamic Fullstack Build & Runnable Verification Gate ──
     agent_service.append_agent_log(
         "M_agent_01",
-        "🏁 [Swarm Coordinator] Multi-agent phased execution and verification gates completed.",
+        "🔍 [Swarm Coordinator] Running Dynamic Fullstack Build & Runnable Verification Gate...",
         "info",
         project_token,
     )
+    runnable_success = True
+    verification_failures = []
 
-    # ── Final Delivery: Atomic Single Git Commit & Push ──
-    if git_repo_url:
+    # 1. Frontend dynamic build check across all subdirectories with package.json
+    frontend_dirs_found = []
+    for root_dir, dirs, files in os.walk(workspace_dir):
+        if any(skip in root_dir for skip in ("node_modules", ".git", ".agent", "venv", "__pycache__", "dist", "build")):
+            continue
+        if "package.json" in files:
+            frontend_dirs_found.append(root_dir)
+
+    for f_dir in frontend_dirs_found:
+        rel_dir = os.path.relpath(f_dir, workspace_dir)
         try:
+            with open(os.path.join(f_dir, "package.json"), "r", encoding="utf-8") as pf:
+                pkg_data = json.load(pf)
+            has_build = "build" in pkg_data.get("scripts", {})
+        except Exception:
+            has_build = False
+
+        if has_build:
             agent_service.append_agent_log(
                 "M_agent_01",
-                f"🚀 [Swarm Coordinator] Executing single atomic Git delivery to {git_repo_url}...",
+                f"[Swarm Coordinator] 📦 Running npm run build in {rel_dir}...",
                 "info",
                 project_token,
             )
-            auth_repo_url = git_repo_url
-            if git_token and "@" not in auth_repo_url:
-                if auth_repo_url.startswith("https://"):
-                    auth_repo_url = auth_repo_url.replace("https://", f"https://x-access-token:{git_token}@")
-                elif auth_repo_url.startswith("http://"):
-                    auth_repo_url = auth_repo_url.replace("http://", f"http://x-access-token:{git_token}@")
-
-            git_cmds = [
-                "git config user.email 'agent@dsuite.internal'",
-                "git config user.name 'DSuite Swarm'",
-                "git add -A",
-                "git commit -m 'feat(release): Complete application build based on BRD specification' --allow-empty",
-                f"git push {auth_repo_url} HEAD:main || git push {auth_repo_url} HEAD:master || true",
-            ]
             import subprocess
-            full_cmd = " && ".join(git_cmds)
-            git_proc = await asyncio.to_thread(
+            build_proc = await asyncio.to_thread(
                 subprocess.run,
-                full_cmd,
+                "npm run build",
                 shell=True,
-                cwd=workspace_dir,
+                cwd=f_dir,
                 capture_output=True,
-                text=True,
-                timeout=60,
+                encoding="utf-8",
+                errors="replace",
+                timeout=120,
             )
-            if git_proc.returncode == 0:
+            if build_proc.returncode != 0:
+                runnable_success = False
+                err_detail = (build_proc.stderr or build_proc.stdout)[:400]
+                verification_failures.append(f"Frontend build failed in {rel_dir}: {err_detail}")
                 agent_service.append_agent_log(
                     "M_agent_01",
-                    "✅ [Swarm Coordinator] Atomic Git Delivery SUCCESS: All code committed and pushed cleanly.",
-                    "output",
+                    f"❌ [Swarm Coordinator] Frontend build failed in {rel_dir}:\n{err_detail}",
+                    "error",
                     project_token,
                 )
             else:
                 agent_service.append_agent_log(
                     "M_agent_01",
-                    f"⚠️ [Swarm Coordinator] Git delivery note: {git_proc.stderr[:300] or git_proc.stdout[:300]}",
+                    f"✅ [Swarm Coordinator] Frontend build succeeded in {rel_dir}.",
+                    "output",
+                    project_token,
+                )
+
+    # 2. Backend python syntax verification
+    py_files_to_check = []
+    for root_dir, dirs, files in os.walk(workspace_dir):
+        if any(skip in root_dir for skip in ("node_modules", ".git", ".agent", "venv", "__pycache__")):
+            continue
+        for f in files:
+            if f.endswith(".py"):
+                py_files_to_check.append(os.path.join(root_dir, f))
+
+    if py_files_to_check:
+        import py_compile
+        for py_f in py_files_to_check[:150]:
+            try:
+                py_compile.compile(py_f, doraise=True)
+            except Exception as py_err:
+                runnable_success = False
+                rel_f = os.path.relpath(py_f, workspace_dir)
+                verification_failures.append(f"Syntax error in {rel_f}: {py_err}")
+                agent_service.append_agent_log(
+                    "M_agent_01",
+                    f"❌ [Swarm Coordinator] Backend syntax error in {rel_f}: {py_err}",
+                    "error",
+                    project_token,
+                )
+                break
+
+    if qa_status == "FAILED":
+        runnable_success = False
+        verification_failures.append("QA test suite reported failures.")
+
+    if runnable_success:
+        agent_service.append_agent_log(
+            "M_agent_01",
+            "🏁 [Swarm Coordinator] Multi-agent phased execution and verification gates PASSED. Application is verified runnable.",
+            "output",
+            project_token,
+        )
+    else:
+        agent_service.append_agent_log(
+            "M_agent_01",
+            f"⚠️ [Swarm Coordinator] Verification Gate FAILED. {len(verification_failures)} failure(s) detected: {'; '.join(verification_failures)}",
+            "error",
+            project_token,
+        )
+
+    # ── Final Delivery: Atomic Single Git Commit & Push ──
+    if git_repo_url:
+        if not runnable_success:
+            agent_service.append_agent_log(
+                "M_agent_01",
+                f"⛔ [Swarm Coordinator] Delivery BLOCKED: Application verification failed ({len(verification_failures)} issue(s)). Code will NOT be delivered as release until errors are resolved.",
+                "error",
+                project_token,
+            )
+        else:
+            try:
+                agent_service.append_agent_log(
+                    "M_agent_01",
+                    f"🚀 [Swarm Coordinator] Executing single atomic Git delivery to {git_repo_url}...",
                     "info",
                     project_token,
                 )
-        except Exception as ge:
-            logger.warning(f"[SwarmCoordinator] Atomic git delivery error: {ge}")
-            agent_service.append_agent_log(
-                "M_agent_01",
-                f"⚠️ [Swarm Coordinator] Git delivery note: {ge}",
-                "info",
-                project_token,
-            )
+                auth_repo_url = git_repo_url
+                if git_token and "@" not in auth_repo_url:
+                    if auth_repo_url.startswith("https://"):
+                        auth_repo_url = auth_repo_url.replace("https://", f"https://x-access-token:{git_token}@")
+                    elif auth_repo_url.startswith("http://"):
+                        auth_repo_url = auth_repo_url.replace("http://", f"http://x-access-token:{git_token}@")
+
+                git_cmds = [
+                    "git config user.email 'agent@dsuite.internal'",
+                    "git config user.name 'DSuite Swarm'",
+                    "git add -A",
+                    "git commit -m 'feat(release): Complete application build based on BRD specification' --allow-empty",
+                    f"git push {auth_repo_url} HEAD:main || git push {auth_repo_url} HEAD:master || true",
+                ]
+                import subprocess
+                full_cmd = " && ".join(git_cmds)
+                git_proc = await asyncio.to_thread(
+                    subprocess.run,
+                    full_cmd,
+                    shell=True,
+                    cwd=workspace_dir,
+                    capture_output=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=60,
+                )
+                if git_proc.returncode == 0:
+                    agent_service.append_agent_log(
+                        "M_agent_01",
+                        "✅ [Swarm Coordinator] Atomic Git Delivery SUCCESS: All code committed and pushed cleanly.",
+                        "output",
+                        project_token,
+                    )
+                else:
+                    agent_service.append_agent_log(
+                        "M_agent_01",
+                        f"⚠️ [Swarm Coordinator] Git delivery note: {git_proc.stderr[:300] or git_proc.stdout[:300]}",
+                        "info",
+                        project_token,
+                    )
+            except Exception as ge:
+                logger.warning(f"[SwarmCoordinator] Atomic git delivery error: {ge}")
+                agent_service.append_agent_log(
+                    "M_agent_01",
+                    f"⚠️ [Swarm Coordinator] Git delivery note: {ge}",
+                    "info",
+                    project_token,
+                )
 
 
 @router.post("/agents/run-all")
@@ -2649,11 +3064,25 @@ async def run_all_agents(
     git_repo_url_to_use = dest_repo_url or provided_repo
     git_token_to_use = dest_repo_token or provided_token
     # ── Resolve Phased Execution Plan (Dependency DAG) ──
-    phased_plan = master_result.get("phased_plan") or {
-        "phase1_backend": available_agents,
-        "phase2_frontend": [],
-        "phase3_qa_gate": ["T_agent_01"],
-    }
+    phased_plan = master_result.get("phased_plan")
+    if not phased_plan or not any(phased_plan.values()):
+        p1, p2, p3 = [], [], []
+        for aid in available_agents:
+            a_info = agent_service.get_agent_status(aid, project_token) or {}
+            role_str = (a_info.get("type") or a_info.get("name") or aid).lower()
+            if any(k in role_str for k in ("backend", "data", "db", "api", "02")):
+                p1.append(aid)
+            elif any(k in role_str for k in ("frontend", "ui", "web", "01")):
+                p2.append(aid)
+            elif any(k in role_str for k in ("qa", "test", "03", "t_agent")):
+                p3.append(aid)
+            else:
+                p1.append(aid)
+        phased_plan = {
+            "phase1_backend": p1 or available_agents,
+            "phase2_frontend": p2,
+            "phase3_qa_gate": p3 or ["T_agent_01"],
+        }
 
     # Mark all involved agents as running in UI immediately
     all_target_agents = list(set(
@@ -7503,6 +7932,40 @@ async def put_agent_project_config(
         "repo_link_url": repo_link_url,
         "saved_input_file": saved_input_filename,
     }
+
+
+@router.get("/api/agent/project-execution-status/{project_token}")
+@router.get("/agents/project-execution-status/{project_token}")
+async def get_project_execution_status(
+    project_token: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Return shared execution status for a project.
+
+    This is the coordination view used to detect blocked projects,
+    repeated failures, and whether the project is verified runnable.
+    """
+    project_token = _normalize_project_token(project_token)
+
+    try:
+        from app.services.agents.master_orchestrator import get_project_execution_status as fetch_status
+
+        status = fetch_status(project_token)
+        return status
+    except Exception as e:
+        logger.debug(
+            "[GET /agents/project-execution-status] fetch failed for %s: %s",
+            project_token,
+            e,
+        )
+        return {
+            "project_token": project_token,
+            "status": "unknown",
+            "is_blocked": False,
+            "blocked_reasons": [],
+            "error": str(e),
+        }
 
 
 if __name__ == "__main__":

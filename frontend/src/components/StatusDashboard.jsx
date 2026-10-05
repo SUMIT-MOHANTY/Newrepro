@@ -10,6 +10,8 @@ import { API_ENDPOINTS, VIBE_WORKSPACE_URL } from '../config';
 import { getNeutralAgentLabel, getNeutralAgentName } from '../utils/agentNames';
 import AgentChatPanel from './AgentChatPanel';
 import VSCodeWorkspaceViewer from './VSCodeWorkspaceViewer';
+import SwarmFlightControl from './SwarmFlightControl';
+import ExecutionStream from './ExecutionStream';
 
 import kaktoxLogo from '../assets/Kaktox.png';
 import nModLogo from '../assets/N-Mod-icon.png';
@@ -377,6 +379,10 @@ export default function StatusDashboard({
     const [agentRunCompletedTime, setAgentRunCompletedTime] = useState(null);
     const wsRef = useRef(null);
     const [processMode, setProcessMode] = useState(() => getProcessModeForProject(localStorage.getItem(PROJECT_STORAGE_KEY) || ''));
+    const [activeSwarmFile, setActiveSwarmFile] = useState(null);
+    const [activeSwarmAgent, setActiveSwarmAgent] = useState(null);
+    const [contractInfo, setContractInfo] = useState(null);
+    const [showExecutionStream, setShowExecutionStream] = useState(true);
     const currentPreviewLogs = (deployLogs && deployLogs.length > 0) ? deployLogs : (previewStatus?.logs || []);
 
 
@@ -1331,6 +1337,27 @@ export default function StatusDashboard({
                     let label = msg;
                     if (isThinking) {
                         label = msg.replace(/^Thinking:\s*/, '');
+                    } else if (eventType === 'file_written' && (payload.file_path || payload.file)) {
+                        const fp = payload.file_path || payload.file;
+                        setActiveSwarmFile(fp);
+                        label = `📝 [${payload.agent_id || 'Agent'}] Generated file: ${fp}`;
+                    } else if (eventType === 'contract_published') {
+                        setContractInfo(payload);
+                        label = `📜 Published Verified API Contract: ${payload.routes_count || 0} routes, ${payload.models_count || 0} schemas`;
+                    } else if (eventType === 'task_started') {
+                        setActiveSwarmAgent(payload.agent || payload.agent_id);
+                        label = `🚀 [${payload.agent || 'Agent'}] Started Task: ${payload.title || payload.task_id}`;
+                    } else if (eventType === 'task_completed') {
+                        label = `✅ [${payload.agent || 'Agent'}] Completed Task: ${payload.title || payload.task_id}`;
+                        refreshRoadmap();
+                        fetchTasks();
+                    } else if (eventType === 'task_failed') {
+                        label = `❌ [${payload.agent || 'Agent'}] Task Failed: ${payload.title || payload.task_id}`;
+                        fetchTasks();
+                    } else if (eventType === 'agent_dispatched') {
+                        label = `⚡ Autonomous Swarm Dispatched: ${payload.agent_id} (${payload.ready_tasks?.length || 0} tasks ready)`;
+                    } else if (eventType === 'phase_failed') {
+                        label = `⚠️ Swarm Phase Paused: backend verification gate failed`;
                     } else if (eventType === 'planning_completed') {
                         label = `Architecture Plan Created (${payload.steps || 1} steps)`;
                     } else if (eventType === 'git_clone_started') {
@@ -1392,15 +1419,25 @@ export default function StatusDashboard({
         setAgentRunStartTime(new Date().toISOString());
         setAgentRunCompletedTime(null);
         setExecutionSteps([]);
+        const activeToken = token || localStorage.getItem('token');
+        const targetProject = selectedProjectKey || location.state?.projectToken;
+        if (!activeToken) {
+            customAlert('You must be logged in to deploy preview. Please log in again.', 'Authentication Required');
+            setIsDeploying(false);
+            return;
+        }
+
         try {
-            const params = selectedProjectKey ? `?project_token=${selectedProjectKey}` : '';
+            const params = targetProject ? `?project_token=${encodeURIComponent(targetProject)}` : '';
             const res = await fetch(`${API_ENDPOINTS.AGENT_PREVIEW_DEPLOY}${params}`, {
                 method: 'POST',
                 headers: {
-                    'Authorization': `Bearer ${token}`,
+                    'Authorization': `Bearer ${activeToken}`,
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({}),
+                body: JSON.stringify({
+                    project_token: targetProject,
+                }),
             });
             if (res.ok) {
                 const data = await res.json();
@@ -1411,7 +1448,10 @@ export default function StatusDashboard({
             }
         } catch (e) {
             console.error('Deploy preview failed', e);
-            customAlert('Deploy failed: ' + e.message, 'Deploy Failed');
+            const msg = e.message === 'Failed to fetch'
+                ? 'Backend server on http://localhost:8000 is unreachable or restarting. Please ensure the backend is running.'
+                : e.message;
+            customAlert('Deploy failed: ' + msg, 'Deploy Failed');
         } finally {
             setIsDeploying(false);
         }
@@ -2848,6 +2888,29 @@ export default function StatusDashboard({
                                                 </button>
                                             </div>
                                         </div>
+
+                                        {/* ── Swarm Flight Control (Live Inter-Agent Coordination) ── */}
+                                        <SwarmFlightControl
+                                            agents={orderedAgents}
+                                            activeAgentId={activeSwarmAgent}
+                                            activeFile={activeSwarmFile}
+                                            contractInfo={contractInfo}
+                                            isLive={agents.some(a => a.status === 'running') || isDeploying}
+                                            onOpenLogs={(agentId) => setShowLogModal(agentId)}
+                                        />
+
+                                        {/* ── Live Multi-Agent Execution Stream ── */}
+                                        {executionSteps.length > 0 && (
+                                            <div className="mb-6">
+                                                <ExecutionStream
+                                                    steps={executionSteps}
+                                                    isLive={agents.some(a => a.status === 'running') || isDeploying}
+                                                    timestamp={agentRunStartTime}
+                                                    completedAt={agentRunCompletedTime}
+                                                />
+                                            </div>
+                                        )}
+
                                         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
 
                                             {orderedAgents.map(agent => renderAgentCard(agent))}

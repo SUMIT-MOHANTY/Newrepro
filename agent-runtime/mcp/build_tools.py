@@ -229,22 +229,41 @@ class BuildTools:
         except Exception:
             return ""
 
+    def _resolve_target_dir(self, workspace: str | None = None) -> Path:
+        """Find the directory containing package.json (root or frontend/client subdirectory)."""
+        root = Path(workspace) if workspace else self._workspace
+        if (root / "package.json").exists():
+            return root
+        for sub in ("frontend", "client", "ui", "web"):
+            cand = root / sub
+            if (cand / "package.json").exists():
+                return cand
+        try:
+            for child in root.iterdir():
+                if child.is_dir() and not child.name.startswith(".") and child.name not in ("node_modules", "venv", "__pycache__"):
+                    if (child / "package.json").exists():
+                        return child
+        except Exception:
+            pass
+        return root
+
     def install_dependencies(self, workspace: str | None = None) -> ToolResult:
         """Run npm install only when package.json dependencies have changed."""
-        cwd = workspace or str(self._workspace)
-        pkg = Path(cwd) / "package.json"
+        target_path = self._resolve_target_dir(workspace)
+        cwd = str(target_path)
+        pkg = target_path / "package.json"
         if not pkg.exists():
             return ToolResult(success=True, data={"message": "No package.json — skipping install"})
 
-        node_modules = Path(cwd) / "node_modules"
-        hash_file = Path(cwd) / ".package_deps_hash"
+        node_modules = target_path / "node_modules"
+        hash_file = target_path / ".package_deps_hash"
         current_hash = self._get_package_deps_hash(pkg)
 
         # If node_modules exists and hash matches cached hash, skip install completely
         if node_modules.exists() and hash_file.exists() and current_hash:
             cached_hash = hash_file.read_text(encoding="utf-8").strip()
             if cached_hash == current_hash:
-                print(f"[BuildTools] Dependencies unchanged (hash={current_hash[:8]}) — skipping redundant npm install")
+                print(f"[BuildTools] Dependencies unchanged (hash={current_hash[:8]}) — skipping redundant npm install in {cwd}")
                 return ToolResult(success=True, data={"message": "SUCCESS: All dependencies already installed and up-to-date. npm install was skipped because package.json has not changed. Installation task is complete."})
 
         print(f"[BuildTools] Dependencies modified or initial install — running npm install in {cwd}...")
@@ -265,7 +284,8 @@ class BuildTools:
 
     def run_build(self, workspace: str | None = None) -> ToolResult:
         """Run npm run build in the workspace."""
-        cwd = workspace or str(self._workspace)
+        target_path = self._resolve_target_dir(workspace)
+        cwd = str(target_path)
         print(f"[BuildTools] Running npm run build in {cwd}...")
         result = self._exec.run_command(
             ["npm", "run", "build"],
@@ -276,8 +296,9 @@ class BuildTools:
 
     def install_and_build(self, workspace: str | None = None) -> ToolResult:
         """Combined install + build. Returns unified error if either step fails."""
-        cwd = workspace or str(self._workspace)
-        root = Path(cwd)
+        target_path = self._resolve_target_dir(workspace)
+        cwd = str(target_path)
+        root = target_path
         install = self.install_dependencies(cwd)
         if not install.success:
             return ToolResult(success=False,
